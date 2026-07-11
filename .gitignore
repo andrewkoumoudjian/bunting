@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Cloudflare
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# JavaScript / frontend
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors and operating systems
+.DS_Store
+.vscode/
+.idea/
+
+# Local state and credentials
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+
+# Generated diagnostics
+coverage/
+artifacts/local/
