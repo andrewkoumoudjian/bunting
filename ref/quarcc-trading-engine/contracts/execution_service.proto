@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package quarcc.v1;
+
+import "common.proto";
+import "strategy_signal.proto";
+import "market_data.proto";
+
+service ExecutionService {
+  // Sending strategy signals
+  rpc SubmitSignal(StrategySignal) returns (SubmitSignalResponse);
+  rpc CancelOrder(CancelSignal) returns (CancelOrderResponse);
+  rpc ReplaceOrder(ReplaceSignal) returns (ReplaceOrderResponse);
+  rpc StreamSignals(stream StrategySignal) returns (stream SubmitSignalResponse);
+
+  // Getting positions from the PositionKeeper
+  rpc GetPosition(GetPositionRequest) returns (Position);
+  rpc GetAllPositions(Empty) returns (PositionList);
+
+  // Killswitch for all strategies
+  rpc ActivateKillSwitch(KillSwitchRequest) returns (Empty);
+
+  // Streaming from server for live data (ticks/bars)
+  rpc StreamMarketData(SubscribeMarketDataRequest) returns (stream MarketDataEvent);
+}
+
+message SubmitSignalResponse {
+  bool accepted = 1;
+  string order_id = 2;
+  string rejection_reason = 3;
+  string received_at = 4;
+}
+
+message CancelOrderResponse {
+  bool accepted = 1;
+  string rejection_reason = 2;
+  string received_at = 3;
+}
+
+message ReplaceOrderResponse {
+  bool accepted = 1;
+  string order_id = 2;
+  string rejection_reason = 3;
+  string received_at = 4;
+}
+
+message GetPositionRequest {
+  string symbol = 1;
+}
+
+message Position {
+  string symbol = 1;
+  double quantity = 2;
+  double avg_price = 3;
+  double unrealized_pnl = 4;
+  double realized_pnl = 5;
+}
+
+message PositionList {
+  repeated Position positions = 1;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  string gateway_status = 2;
+  int32 pending_orders = 3;
+  string last_fill_time = 4;
+  double daily_pnl = 5;
+}
+
+message KillSwitchRequest {
+  string reason = 1;
+  string initiated_by = 2;
+}

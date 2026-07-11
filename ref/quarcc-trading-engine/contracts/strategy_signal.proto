@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package quarcc.v1;
+
+import "common.proto";
+
+message StrategySignal {
+  string strategy_id = 1;
+  string symbol = 2;
+  Side side = 3;
+  double target_quantity = 4;
+  double confidence = 5;
+  string generated_at = 6;
+}
+
+message CancelSignal {
+  string strategy_id = 1;
+  string order_id = 2;
+  string generated_at = 3;
+}
+
+message ReplaceSignal {
+  string strategy_id = 1;
+  string symbol = 2;
+  Side side = 3;
+  double target_quantity = 4;
+  double confidence = 5;
+  string generated_at = 6;
+  string order_id = 7;
+}

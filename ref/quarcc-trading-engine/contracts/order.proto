@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package quarcc.v1;
+
+import "common.proto";
+
+enum OrderType {
+  UNKNOWN_TYPE = 0;
+  MARKET = 1;
+  LIMIT = 2;
+  STOP = 3;
+  STOP_LIMIT = 4;
+}
+
+enum OrderStatus {
+  NEW = 0;
+  SUBMITTED = 1;
+  PARTIAL_FILL = 2;
+  FILLED = 3;
+  CANCELLED = 4;
+  REJECTED = 5;
+}
+
+enum TimeInForce {
+  DAY = 0;
+  GTC = 1;  // Good till cancelled
+  IOC = 2;  // Immediate or cancel
+  FOK = 3;  // Fill or kill
+}
+
+message Order {
+  string id = 1;
+  string symbol = 2;
+  Side side = 3;
+  double quantity = 4;
+  double price = 5;
+  OrderType type = 6;
+  OrderStatus status = 7;
+  TimeInForce time_in_force = 8;
+  string account_id = 9;
+  string strategy_id = 10;
+  string created_at = 11;
+}

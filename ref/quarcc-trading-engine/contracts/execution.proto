@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package quarcc.v1;
+
+import "common.proto";
+
+message ExecutionReport {
+  string broker_order_id = 1;
+  string symbol = 2;
+  Side side = 3;
+  double filled_quantity = 4;
+  double avg_fill_price = 5;
+  string fill_time = 6;
+  // string execution_id = 7;
+}

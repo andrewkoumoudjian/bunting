@@ -1,0 +1,15 @@
+{
+  "params": {
+    "const": 0.0,
+    "beta_qi_centered": 0.0,
+    "beta_micro_edge_ticks": 0.0,
+    "beta_spread_ticks": -1.2873889363373967,
+    "beta_volume_delta": 0.0
+  },
+  "metrics": {
+    "samples": 39.0,
+    "brier_score": 6.574754644300198e-12,
+    "accuracy": 1.0,
+    "pseudo_r2": Infinity
+  }
+}

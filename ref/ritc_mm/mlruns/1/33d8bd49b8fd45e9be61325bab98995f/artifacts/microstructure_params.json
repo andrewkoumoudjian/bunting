@@ -1,0 +1,20 @@
+{
+  "params": {
+    "const": -0.29805585147876257,
+    "beta_qi_centered": -0.014836265777493092,
+    "beta_micro_edge_ticks": -0.14836245771394582,
+    "beta_spread_ticks": -2.9805615533030516,
+    "beta_volume_delta": -0.3919289890762427,
+    "bayes_alpha_mean": -0.089,
+    "bayes_beta_qi_centered_mean": -0.039,
+    "bayes_beta_micro_edge_ticks_mean": -0.08,
+    "bayes_beta_spread_ticks_mean": -1.034,
+    "bayes_beta_volume_delta_mean": -0.323
+  },
+  "metrics": {
+    "samples": 39.0,
+    "brier_score": 1.0253130518252337e-27,
+    "accuracy": 1.0,
+    "pseudo_r2": Infinity
+  }
+}

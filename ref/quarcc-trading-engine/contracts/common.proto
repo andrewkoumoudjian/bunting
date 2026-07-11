@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package quarcc.v1;
+
+message Money {
+  string currency = 1;  // "USD"
+  double amount = 2;
+}
+
+enum Side {
+  UNKNOWN_SIDE = 0;
+  BUY = 1;
+  SELL = 2;
+}
+
+message Empty {}
