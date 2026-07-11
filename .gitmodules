@@ -26,3 +26,35 @@
 	path = ref/wirefilter
 	url = https://github.com/cloudflare/wirefilter.git
 	branch = master
+[submodule "ref/orderbook-rs"]
+	path = ref/orderbook-rs
+	url = https://github.com/joaquinbejar/OrderBook-rs.git
+	branch = main
+[submodule "ref/liquibook"]
+	path = ref/liquibook
+	url = https://github.com/enewhuis/liquibook.git
+	branch = master
+[submodule "ref/exchange-core"]
+	path = ref/exchange-core
+	url = https://github.com/exchange-core/exchange-core.git
+	branch = master
+[submodule "ref/cqrs"]
+	path = ref/cqrs
+	url = https://github.com/serverlesstechnology/cqrs.git
+	branch = main
+[submodule "ref/nexosim"]
+	path = ref/nexosim
+	url = https://github.com/asynchronics/nexosim.git
+	branch = main
+[submodule "ref/abides"]
+	path = ref/abides
+	url = https://github.com/abides-sim/abides.git
+	branch = master
+[submodule "ref/quickfixj"]
+	path = ref/quickfixj
+	url = https://github.com/quickfix-j/quickfixj.git
+	branch = master
+[submodule "ref/market-maker-rs"]
+	path = ref/market-maker-rs
+	url = https://github.com/joaquinbejar/market-maker-rs.git
+	branch = main
