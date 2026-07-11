@@ -1,0 +1,28 @@
+[submodule "ref/workers-rs"]
+	path = ref/workers-rs
+	url = https://github.com/cloudflare/workers-rs.git
+	branch = main
+[submodule "ref/nbc-hft-simulation"]
+	path = ref/nbc-hft-simulation
+	url = https://github.com/carterj-c/NBC_HFT_Simulation.git
+	branch = main
+[submodule "ref/ironfix"]
+	path = ref/ironfix
+	url = https://github.com/joaquinbejar/IronFix.git
+	branch = main
+[submodule "ref/fixer"]
+	path = ref/fixer
+	url = https://github.com/fixer-rs/fixer.git
+	branch = master
+[submodule "ref/ferrumfix"]
+	path = ref/ferrumfix
+	url = https://github.com/ferrumfix/ferrumfix.git
+	branch = main
+[submodule "ref/nautilus-trader"]
+	path = ref/nautilus-trader
+	url = https://github.com/nautechsystems/nautilus_trader.git
+	branch = develop
+[submodule "ref/wirefilter"]
+	path = ref/wirefilter
+	url = https://github.com/cloudflare/wirefilter.git
+	branch = master
