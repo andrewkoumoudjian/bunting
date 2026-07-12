@@ -1,0 +1,6 @@
+[alias]
+check-wasm = "check --target wasm32-unknown-unknown"
+test-all = "test --workspace --all-targets"
+
+[build]
+incremental = true
