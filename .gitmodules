@@ -58,3 +58,27 @@
 	path = ref/market-maker-rs
 	url = https://github.com/joaquinbejar/market-maker-rs.git
 	branch = main
+[submodule "ref/barter-rs"]
+	path = ref/barter-rs
+	url = https://github.com/barter-rs/barter-rs.git
+	branch = main
+[submodule "ref/slotmap"]
+	path = ref/slotmap
+	url = https://github.com/orlp/slotmap.git
+	branch = master
+[submodule "ref/intrusive-rs"]
+	path = ref/intrusive-rs
+	url = https://github.com/Amanieu/intrusive-rs.git
+	branch = master
+[submodule "ref/rand"]
+	path = ref/rand
+	url = https://github.com/rust-random/rand.git
+	branch = master
+[submodule "ref/postcard"]
+	path = ref/postcard
+	url = https://github.com/jamesmunns/postcard.git
+	branch = main
+[submodule "ref/proptest"]
+	path = ref/proptest
+	url = https://github.com/proptest-rs/proptest.git
+	branch = main

@@ -2,7 +2,11 @@
 
 This inventory records why each source exists under `ref/`. Reference code is evidence, not production code. A submodule pin does not authorize copying: every extracted file requires a license check, attribution, a port note and equivalence tests.
 
-Operational dependency, vendoring and borrowing decisions are normative in `docs/reference-adoption.md`. Detailed target mapping for the imported implementations is in `docs/ports/`.
+Operational dependency, vendoring and borrowing decisions are normative in:
+
+- `docs/reference-adoption.md` for the original reference set;
+- `docs/rust-reference-sprint-map.md` for the Rust sprint-support additions;
+- `docs/ports/` for source-target port mappings.
 
 ## Selection criteria
 
@@ -10,11 +14,11 @@ A repository is admitted to `ref/` only when it contributes at least one of:
 
 1. mature exchange or protocol semantics that can serve as a behavioral oracle;
 2. implementation patterns directly relevant to a Bunting sprint;
-3. substantial automated tests, replay fixtures or conformance coverage;
-4. a permissive or otherwise understood license compatible with its intended use;
+3. substantial automated tests, replay fixtures, fuzzing or conformance coverage;
+4. a known license compatible with its intended use;
 5. a clear boundary that lets Bunting borrow behavior without importing an unsuitable runtime.
 
-Popularity and performance claims are not proof of correctness.
+Popularity and performance claims are not proof of correctness. Repositories without a clear license are not added as new submodules.
 
 ## Reference confidence classes
 
@@ -43,20 +47,25 @@ Popularity and performance claims are not proof of correctness.
 | `ref/abides` | `abides-sim/abides@c4bf157678928934417aba6073eb0651aeaf6d15` | BSD-3-Clause | B/C | exchange-agent boundary, seeded agents, latency scheduling and scenario composition |
 | `ref/quickfixj` | `quickfix-j/quickfixj@73e45dbe487be54d7c2badec2a846a45ef116ce2` | QuickFIX Software License 1.0 | B | independent FIX sequence/resend/reset conformance oracle |
 | `ref/market-maker-rs` | `joaquinbejar/market-maker-rs@36899f3e910997400bc95c3a8f3606776c002fbe` | MIT | A/B | pure market-making formula, risk/execution boundary and test donor |
+| `ref/barter-rs` | `barter-rs/barter-rs@33e56188e2095781331f85aa3d7f88e251eec65a` | MIT | A/B/C | Rust OMS/risk type flow, indexed state, execution boundaries and audit replicas |
+| `ref/slotmap` | `orlp/slotmap@0d130ed5bbd6e51fbb64a6b6cd80d3adfbb04294` | Zlib | A | stable generational handles for an order arena and linked-list examples |
+| `ref/intrusive-rs` | `Amanieu/intrusive-rs@e7b27a0ea9a23084a62c5896161b8805db72e5b9` | MIT OR Apache-2.0 | A/C | intrusive FIFO/list/tree invariants, cursor mutation and allocation behavior |
+| `ref/rand` | `rust-random/rand@8272d49f03b4900b648df39b24d9a0343cbd45b5` | MIT OR Apache-2.0 | A/C | explicit seeded RNGs, distributions and reproducibility constraints |
+| `ref/postcard` | `jamesmunns/postcard@de182557cff45f2ca9b2b67a6b93be5917612a44` | MIT OR Apache-2.0 | A/C | stable compact no-std snapshot encoding candidate |
+| `ref/proptest` | `proptest-rs/proptest@85a3de393331b951e20c5da1cdac9d342fc36a6f` | MIT OR Apache-2.0 | A/C | property/state-machine generation, shrinking and persistent regressions |
 
 The `workers-rs` submodule already contains official `examples/`; it is not duplicated separately.
 
 ## Current adoption summary
 
 - **Approved production dependency:** released Cloudflare `worker` packages in Worker-only crates.
-- **Dependency spikes:** minimal IronFix codec crates and `wirefilter-engine`.
-- **Selective source candidates:** narrow IronFix codec code, pure `market-maker-rs` formulas/tests and deterministic OrderBook-rs test/helper material.
+- **Expected dev dependency:** Proptest for generated invariant and state-machine tests, after toolchain compatibility confirmation.
+- **Dependency spikes:** minimal IronFix codec crates, `wirefilter-engine`, SlotMap for the order arena, Rand with an explicitly named algorithm, and Postcard for snapshot payloads.
+- **Selective source candidates:** narrow IronFix codec code, pure `market-maker-rs` formulas/tests and deterministic OrderBook-rs or intrusive-collection test material.
 - **External integration contract:** NautilusTrader.
-- **Oracles:** Liquibook, OrderBook-rs, exchange-core, Fixer, FerrumFIX, QuickFIX/J, ABIDES and NeXosim.
+- **Architecture/oracle references:** Barter, Liquibook, OrderBook-rs, exchange-core, Fixer, FerrumFIX, QuickFIX/J, ABIDES, NeXosim and intrusive-rs.
 - **Data/compatibility sources:** NBC assets and client.
 - **No whole-reference vendoring is approved.**
-
-See `docs/reference-adoption.md` for required gates and per-source prohibitions.
 
 ## High-value paths
 
@@ -68,121 +77,99 @@ See `docs/reference-adoption.md` for required gates and per-source prohibitions.
 - `ref/workers-rs/test/src/sql_counter.rs`
 - `ref/workers-rs/test/src/sql_iterator.rs`
 
-### Matching, risk and accounting
+### Matching, handles, risk and accounting
 
 - `ref/orderbook-rs/src/orderbook/book.rs`
 - `ref/orderbook-rs/src/orderbook/matching.rs`
 - `ref/orderbook-rs/src/orderbook/snapshot.rs`
 - `ref/orderbook-rs/src/orderbook/sequencer/replay.rs`
-- `ref/orderbook-rs/src/orderbook/clock.rs`
 - `ref/liquibook/src/book/order_book.h`
 - `ref/liquibook/src/book/order_tracker.h`
-- `ref/liquibook/src/book/depth_order_book.h`
-- `ref/exchange-core/src/main/java/exchange/core2/core/orderbook/IOrderBook.java`
-- `ref/exchange-core/src/main/java/exchange/core2/core/orderbook/OrderBookDirectImpl.java`
 - `ref/exchange-core/src/main/java/exchange/core2/core/processors/RiskEngine.java`
 - `ref/exchange-core/src/main/java/exchange/core2/core/common/SymbolPositionRecord.java`
-- `ref/exchange-core/src/main/java/exchange/core2/core/common/StateHash.java`
+- `ref/barter-rs/barter/src/risk/mod.rs`
+- `ref/barter-rs/barter/src/risk/check/`
+- `ref/barter-rs/barter/src/engine/state/`
+- `ref/slotmap/src/basic.rs`
+- `ref/slotmap/src/dense.rs`
+- `ref/slotmap/examples/doubly_linked_list.rs`
+- `ref/intrusive-rs/src/linked_list.rs`
+- `ref/intrusive-rs/src/adapter.rs`
+- `ref/intrusive-rs/src/rbtree.rs`
 
-### Event sourcing and replay
+### Event sourcing, audit and replay
 
 - `ref/cqrs/src/aggregate.rs`
 - `ref/cqrs/src/event.rs`
 - `ref/cqrs/src/store.rs`
 - `ref/cqrs/src/persist/replay.rs`
-- `ref/orderbook-rs/src/orderbook/sequencer/types.rs`
-- `ref/orderbook-rs/src/orderbook/sequencer/replay.rs`
+- `ref/barter-rs/barter/examples/engine_sync_with_audit_replica_engine_state.rs`
+- `ref/barter-rs/barter/tests/test_engine_process_engine_event_with_audit.rs`
+- `ref/postcard/spec/`
+- `ref/postcard/src/ser/`
+- `ref/postcard/src/de/`
 
-### Simulation
+### Simulation and randomness
 
 - `ref/nexosim/nexosim/src/time.rs`
-- `ref/nexosim/nexosim/src/simulation/sim_init.rs`
 - `ref/nexosim/nexosim/src/simulation/queue_items.rs`
 - `ref/abides/Kernel.py`
-- `ref/abides/util/OrderBook.py`
-- `ref/abides/agent/TradingAgent.py`
 - `ref/abides/agent/NoiseAgent.py`
 - `ref/abides/agent/ValueAgent.py`
-- `ref/abides/config/rmsc01.py`
-- `ref/abides/config/rmsc02.py`
+- `ref/rand/src/rngs/mod.rs`
+- `ref/rand/src/rngs/std.rs`
+
+### Property and state-machine testing
+
+- `ref/proptest/proptest/src/strategy/`
+- `ref/proptest/proptest/src/collection.rs`
+- `ref/proptest/proptest/src/test_runner/`
+- `ref/proptest/proptest-state-machine/`
+- `ref/slotmap/fuzz/fuzz_targets/target.rs`
 
 ### FIX
 
 - `ref/ironfix/ironfix-tagvalue/src/encoder.rs`
 - `ref/ironfix/ironfix-tagvalue/src/decoder.rs`
-- `ref/ironfix/ironfix-core/src/message.rs`
 - `ref/fixer/fixer/src/session/mod.rs`
 - `ref/quickfixj/quickfixj-core/src/main/java/quickfix/Session.java`
-- `ref/quickfixj/quickfixj-core/src/main/java/quickfix/SessionState.java`
 - QuickFIX/J session/reset/sequence tests
-- corresponding FerrumFIX tag-value/session layers after dictionary-license review
 
 ### Market making and adapters
 
 - `ref/market-maker-rs/src/strategy/avellaneda_stoikov.rs`
 - `ref/market-maker-rs/src/strategy/glft.rs`
 - `ref/market-maker-rs/src/strategy/interface.rs`
-- risk, execution and backtest modules under `ref/market-maker-rs/src/`
-- `ref/ritc_mm/src/main.rs`
+- `ref/barter-rs/barter-execution/`
+- `ref/barter-rs/barter-integration/`
 - `ref/nautilus-trader/docs/developer_guide/adapters.md`
+- `ref/ritc_mm/src/main.rs`
 
 ## Existing in-repository references
 
 ### `ref/quarcc-trading-engine`
 
-Useful behavior:
-
-- order lifecycle and sequential dispatch semantics;
-- execution gateway, journal, order-store and feed interfaces;
-- local/external order identifier mapping;
-- deferred and out-of-order fill handling;
-- position projection;
-- kill switch;
-- unit tests and protobuf contracts.
-
-Rejected architecture:
-
-- threads, mutexes and native queues;
-- recursive callbacks;
-- gRPC service boundary;
-- native SQLite implementation;
-- wall-clock domain reads;
-- floating-point order units;
-- race recovery caused by separate dispatch/gateway threads.
-
-License status is unresolved, so source copying is blocked. See `docs/ports/quarcc-trading-engine.md` and the `order-reconciliation` target in `docs/ports/ritc-market-making.md`.
+Use only as an internal behavioral source for lifecycle transitions, identifier mapping, deferred/out-of-order fills, position projection and kill-switch semantics. Reject its threads, callbacks, gRPC, native SQLite, wall-clock and floating-point architecture. Source copying remains blocked until ownership/license is recorded.
 
 ### `ref/nbc_engine`
 
-Contains five verified scenario families and parameter vocabulary. The source catalog, blob hashes, duplicate verification and unresolved units are in `docs/ports/nbc-scenario-catalog.md`.
-
-A complete reviewed Java source/license set is not established. Treat the tree as data/provenance only. See `docs/ports/nbc-simulation.md`.
+Contains five verified scenario families and parameter vocabulary. Treat the tree as data/provenance only until licensing and unit semantics are resolved. See `docs/ports/nbc-scenario-catalog.md`.
 
 ### `ref/ritc_mm`
 
-Contains RIT API models, blocking transport, Avellaneda-Stoikov, GARCH, spectral analysis, queue signals, quote management and scenario duplicates. The implementation is monolithic and license status is unresolved.
+Contains RIT API models, blocking transport, market-making analytics and duplicate NBC scenario files. Use only as behavior/API inventory while its license remains unresolved. See `docs/ports/ritc-market-making.md`.
 
-Use it only as behavior/API inventory. Exact target crates and primitive mapping are in `docs/ports/ritc-market-making.md`.
+## Rejected Rust candidate
 
-## Port record requirements
+`cmd05/lob-engine-rs` was technically relevant—integer ticks, FIFO matching, deterministic replay and latency scheduling—but was not added because no repository license was present at the audited revision. It must be re-audited if a license is added.
 
-Every port note records:
+## Port and dependency rules
 
-1. upstream path and exact commit/blob;
-2. license and required notices;
-3. retained behavior;
-4. rejected behavior;
-5. Bunting target crate/module;
-6. platform and dependency impact;
-7. equivalence, property, replay and fuzz tests;
-8. local patches and future divergence;
-9. whether material was copied, translated, independently reimplemented, or used only as an oracle.
+Every port note records the upstream path/commit, license, retained and rejected behavior, target crate, platform impact, tests, divergence and whether material was copied, translated, independently reimplemented or used only as an oracle.
 
-## Dependency rule
+A direct dependency additionally requires:
 
-A direct dependency requires:
-
-- acceptable license and attribution plan;
+- an acceptable license and attribution plan;
 - pure Rust or an explicitly isolated native boundary;
 - bounded memory and input behavior;
 - no hidden time, thread, filesystem, socket or global RNG authority in kernel paths;
@@ -190,4 +177,4 @@ A direct dependency requires:
 - measured binary-size and latency impact;
 - deterministic replay tests where behavior affects canonical state.
 
-Vendored source additionally follows `vendor/README.md`.
+Vendored source follows `vendor/README.md`; production manifests never use paths under `ref/`.
