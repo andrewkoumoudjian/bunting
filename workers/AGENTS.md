@@ -1,3 +1,9 @@
 # Worker instructions
 
-Workers are thin runtime adapters around pure crates. Use official `workers-rs` APIs, compile for Wasm, avoid unsupported native assumptions, and keep Durable Object access behind explicit ports.
+Workers are plain Cloudflare Workers. Do not add a Durable Object binding without a new user-approved ADR.
+
+Use `workers-rs` official APIs. `workers/edge-api` owns HTTP/WebSocket routing and calls Bunting adapters.
+
+Workers Cache is mandatory for immutable checksum-addressed OrderBook-rs snapshot packages. Cache entries are recoverable accelerators, not locks or accepted-command journals.
+
+Never rely on global memory or isolate affinity for correctness. Commit origin events before acknowledgement or stream publication.

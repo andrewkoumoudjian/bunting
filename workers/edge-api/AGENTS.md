@@ -1,3 +1,11 @@
-# edge-api instructions
+# Edge API instructions
 
-Authenticate, authorize, validate, rate-limit, cache safe reads, and route commands to Durable Objects. It must not own live market state or matching decisions.
+This package is the plain Rust Cloudflare Worker entrypoint.
+
+- Do not route commands to a Durable Object.
+- Use `bunting-orderbook`; never implement matching here.
+- Use `bunting-worker-cache` for immutable upstream snapshot packages.
+- Authenticate before exposing private routes or cache-derived private data.
+- Mutating routes require idempotency and an expected origin version.
+- Publish only committed events.
+- Keep request, response, snapshot, subscription, and backlog sizes bounded.

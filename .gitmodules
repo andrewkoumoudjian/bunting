@@ -82,3 +82,19 @@
 	path = ref/proptest
 	url = https://github.com/proptest-rs/proptest.git
 	branch = main
+[submodule "ref/pricelevel"]
+	path = ref/pricelevel
+	url = https://github.com/joaquinbejar/PriceLevel.git
+	branch = main
+[submodule "ref/option-chain-orderbook"]
+	path = ref/option-chain-orderbook
+	url = https://github.com/joaquinbejar/Option-Chain-OrderBook.git
+	branch = main
+[submodule "ref/ironsbe"]
+	path = ref/ironsbe
+	url = https://github.com/joaquinbejar/IronSBE.git
+	branch = main
+[submodule "ref/fauxchange"]
+	path = ref/fauxchange
+	url = https://github.com/joaquinbejar/fauxchange.git
+	branch = main
