@@ -10,7 +10,7 @@ use bunting_orderbook::{ORDERBOOK_RS_AUDIT_COMMIT, ORDERBOOK_RS_VERSION};
 use bunting_worker_cache::{SnapshotCacheKey, cloudflare};
 use serde::Serialize;
 use worker::{
-    event, Context, Env, Error, Request, Response, ResponseBuilder, Result, RouteContext, Router,
+    Context, Env, Error, Request, Response, ResponseBuilder, Result, RouteContext, Router, event,
 };
 
 #[derive(Serialize)]
