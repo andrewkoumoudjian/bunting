@@ -16,16 +16,23 @@ The authoritative live runtime is one `MarketRun` Durable Object per run. The ma
 
 FIX is carried as raw FIX 4.4 messages over a WebSocket subprotocol. An installable native Rust bridge exposes ordinary local FIX/TCP to standard FIX clients.
 
+The native market-data stream is snapshot plus absolute L1/L2 deltas from the committed authoritative book, with hibernation-aware reset/resume cursors and bounded ACK-based backpressure.
+
+User Python never runs in the market transaction. Committed strategy invocation requests are dispatched asynchronously to isolated Dynamic Workers, and accepted results return through the normal idempotency, risk, matching and persistence pipeline.
+
 See:
 
+- [`docs/core-implementation-questions.md`](docs/core-implementation-questions.md)
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/reference-inventory.md`](docs/reference-inventory.md)
+- [`docs/reference-adoption.md`](docs/reference-adoption.md)
+- [`docs/rust-reference-sprint-map.md`](docs/rust-reference-sprint-map.md)
 - [`docs/adr/`](docs/adr/)
 - [`docs/codex-implementation-prompt.md`](docs/codex-implementation-prompt.md)
 
 ## Repository status
 
-This bootstrap PR establishes architectural constraints, pinned references, workspace instructions and initial fixed-point/event primitives. Reference projects under `ref/` are unaudited and read-only; no reference implementation is assumed correct or Worker-compatible.
+This bootstrap PR establishes architectural constraints, pinned references, workspace instructions, initial fixed-point/event primitives, and binding implementation decisions for streaming, recovery, strategy isolation and port boundaries. Reference projects under `ref/` are read-only evidence; no reference implementation is assumed correct or Worker-compatible.
 
 ## Initialize references
 
