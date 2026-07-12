@@ -4,19 +4,20 @@
 
 use bunting_market_events::{EventPayload, Side};
 use bunting_market_types::{InstrumentId, MoneyMinor, ParticipantId, PriceTicks, QuantityLots};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LedgerError {
     ArithmeticOverflow,
     InvalidRelease,
 }
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Account {
     pub cash: MoneyMinor,
     pub reserved_cash: MoneyMinor,
 }
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Holding {
     pub position: QuantityLots,
     pub reserved_inventory: QuantityLots,
@@ -28,6 +29,18 @@ pub struct Ledger {
 }
 pub type AccountProjection = Vec<(ParticipantId, Account)>;
 pub type HoldingProjection = Vec<(ParticipantId, InstrumentId, Holding)>;
+
+/// Exact inputs for one zero-fee trade settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TradeSettlement {
+    pub buyer: ParticipantId,
+    pub seller: ParticipantId,
+    pub instrument: InstrumentId,
+    pub buyer_limit: PriceTicks,
+    pub seller_limit: PriceTicks,
+    pub execution_price: PriceTicks,
+    pub quantity: QuantityLots,
+}
 
 impl Ledger {
     #[must_use]
@@ -144,6 +157,65 @@ impl Ledger {
             }
             _ => {}
         }
+        Ok(())
+    }
+    /// Restores exact account and holding projections.
+    #[must_use]
+    pub fn from_projection(accounts: AccountProjection, holdings: HoldingProjection) -> Self {
+        Self {
+            accounts: accounts.into_iter().collect(),
+            holdings: holdings
+                .into_iter()
+                .map(|(participant, instrument, holding)| ((participant, instrument), holding))
+                .collect(),
+        }
+    }
+
+    /// Settles a zero-fee trade and releases reservations at limit prices.
+    pub fn settle_trade(&mut self, trade: TradeSettlement) -> Result<(), LedgerError> {
+        self.release(
+            trade.buyer,
+            trade.instrument,
+            Side::Buy,
+            trade.buyer_limit,
+            trade.quantity,
+        )?;
+        self.release(
+            trade.seller,
+            trade.instrument,
+            Side::Sell,
+            trade.seller_limit,
+            trade.quantity,
+        )?;
+        let notional =
+            MoneyMinor::checked_mul_price_quantity(trade.execution_price, trade.quantity)
+                .map_err(|_| LedgerError::ArithmeticOverflow)?;
+        let buyer_account = self.accounts.entry(trade.buyer).or_default();
+        buyer_account.cash = buyer_account
+            .cash
+            .checked_sub(notional)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        let seller_account = self.accounts.entry(trade.seller).or_default();
+        seller_account.cash = seller_account
+            .cash
+            .checked_add(notional)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        let buyer_holding = self
+            .holdings
+            .entry((trade.buyer, trade.instrument))
+            .or_default();
+        buyer_holding.position = buyer_holding
+            .position
+            .checked_add(trade.quantity)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        let seller_holding = self
+            .holdings
+            .entry((trade.seller, trade.instrument))
+            .or_default();
+        seller_holding.position = seller_holding
+            .position
+            .checked_sub(trade.quantity)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
         Ok(())
     }
     #[must_use]

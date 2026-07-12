@@ -5,9 +5,10 @@
 use bunting_ledger::Ledger;
 use bunting_market_events::{OrderKind, RejectCode, Side, SubmitOrder};
 use bunting_market_types::{InstrumentId, ParticipantId, PriceBounds, PriceTicks, QuantityLots};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RiskLimits {
     pub max_order_quantity: QuantityLots,
     pub max_open_order_quantity: QuantityLots,
@@ -43,6 +44,11 @@ impl RiskState {
         } else {
             self.enabled.remove(&id);
         }
+    }
+    /// Returns whether a participant is enabled.
+    #[must_use]
+    pub fn is_enabled(&self, id: ParticipantId) -> bool {
+        self.enabled.contains(&id)
     }
     pub fn check(
         &self,

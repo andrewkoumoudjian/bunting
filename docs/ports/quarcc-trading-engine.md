@@ -48,17 +48,24 @@ The first belongs in the deterministic kernel. The second belongs in the new pro
 - race recovery caused only by separate gateway/dispatch threads;
 - one order manager owning both exchange matching and remote broker workflow.
 
+## Implemented Rust compatibility port
+
+`crates/quarcc-trading-engine` provides WASM-safe Rust enums, request and response records, market-data records, position records, and a transport-neutral `ExecutionService` trait matching the names and numeric discriminants of the legacy `quarcc.v1` surface. It contains no threads, sockets, filesystem access, SQLite dependency, ambient clock, or matching engine.
+
+The records retain legacy floating-point fields because changing them would break existing generated clients. Those values are quarantined at the compatibility boundary and require checked fixed-point conversion before entering Bunting domain logic. Native gRPC code generation and a distributable Python wheel remain packaging work; the shared Rust contract passes `wasm32-unknown-unknown`.
+
 ## Exact Bunting mapping
 
 | C++ concept | Bunting destination | Port form |
 |---|---|---|
+| legacy service records and names | `crates/quarcc-trading-engine` | behavior-derived WASM-safe compatibility contract |
 | order command and exchange lifecycle events | `crates/market-events` | canonical versioned commands/events and stable rejection codes |
-| exchange matching state | `crates/orderbook`, `crates/matching-engine` | independent deterministic implementation; not an OMS translation |
+| exchange matching state | `crates/orderbook` | pinned `OrderBook-rs` adapter; no independent matcher |
 | local/client/external ID map | `crates/order-reconciliation/ids.rs` | typed mapping with collision and idempotency rules |
 | ack/reject/fill/cancel transitions | `crates/order-reconciliation/transition.rs` | explicit deterministic state machine |
 | desired/live order diff | `crates/order-reconciliation/planner.rs` | bounded submit/cancel/replace/requery intents |
 | execution gateway | native/FIX/NBC/RITC/Nautilus adapters | transport trait at client/host boundary |
-| journal | Durable Object event append | canonical event stream with expected sequence and idempotency |
+| journal | `crates/origin-store` and Worker D1 adapter | canonical event stream with expected sequence and idempotency |
 | order store | hot aggregate projection and snapshots | rebuilt from events; snapshot non-authoritative |
 | position keeper | `crates/ledger` | checked execution-event projection |
 | kill switch | `crates/risk-engine` and reconciliation planner | durable admission state plus deterministic cancel plan |
@@ -118,6 +125,6 @@ The C++ source is an OMS/lifecycle reference, not the exchange matching oracle. 
 ## Copy status
 
 - Code copied: none.
-- Code translated: none.
-- Target crate boundary: documented and scoped with `crates/order-reconciliation/AGENTS.md`.
-- Current use: behavioral inventory and future semantic fixture source.
+- Code translated: none; public field names and enum discriminants were behavior-derived.
+- Target crate boundaries: `crates/quarcc-trading-engine` for compatibility and `crates/order-reconciliation` for future broker lifecycle state.
+- Current use: WASM-safe shared Rust contract plus behavioral oracle for future native and Python packaging.

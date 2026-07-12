@@ -7,13 +7,18 @@
 //! switch are upstream responsibilities. Bunting owns authentication, canonical event
 //! envelopes, participant accounting, persistence and Worker protocols.
 
+use bunting_market_events::Side as BuntingSide;
+use bunting_market_types::{OrderId, PriceTicks, QuantityLots};
 use orderbook_rs::orderbook::OrderBookSnapshotPackage;
-use orderbook_rs::{DefaultOrderBook, Id, OrderBookError, Side, TimeInForce, TradeResult};
+use orderbook_rs::orderbook::modifications::OrderQuantity;
+use orderbook_rs::{DefaultOrderBook, Id, OrderBookError, Side, TradeResult};
+use std::str::FromStr;
+use std::sync::Arc;
 
 pub use orderbook_rs::orderbook::ORDERBOOK_SNAPSHOT_FORMAT_VERSION;
 pub use orderbook_rs::{
     EnrichedSnapshot, FeeSchedule, MetricFlags, OrderBookSnapshot, RejectReason, RiskConfig,
-    STPMode, StubClock, TradeInfo,
+    STPMode, StubClock, TimeInForce, TradeInfo,
 };
 
 /// Released upstream version approved for the Bunting kernel.
@@ -30,6 +35,64 @@ pub struct LimitSubmission {
     pub trade_result: Option<TradeResult>,
 }
 
+/// Exact persisted snapshot package metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotPackage {
+    /// Serialized upstream package.
+    pub json: String,
+    /// Upstream SHA-256 checksum.
+    pub checksum: String,
+    /// Upstream engine sequence represented.
+    pub engine_sequence: u64,
+}
+
+/// Checked protocol-to-upstream conversion failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConversionError {
+    /// The external order identifier exceeds the sequential upstream range.
+    OrderIdOutOfRange,
+    /// Prices must be positive and representable as `u128`.
+    InvalidPrice,
+    /// Quantities must be positive and representable as `u64`.
+    InvalidQuantity,
+}
+
+/// Converts a Bunting order identifier into the supported upstream range.
+pub fn to_upstream_order_id(order_id: OrderId) -> Result<u64, ConversionError> {
+    u64::try_from(order_id.get()).map_err(|_| ConversionError::OrderIdOutOfRange)
+}
+
+/// Converts a positive fixed-point price into upstream ticks.
+pub fn to_upstream_price(price: PriceTicks) -> Result<u128, ConversionError> {
+    u128::try_from(price.get())
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(ConversionError::InvalidPrice)
+}
+
+/// Converts a positive fixed-point quantity into upstream lots.
+pub fn to_upstream_quantity(quantity: QuantityLots) -> Result<u64, ConversionError> {
+    u64::try_from(quantity.get())
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(ConversionError::InvalidQuantity)
+}
+
+/// Converts Bunting side identity without changing semantics.
+#[must_use]
+pub const fn to_upstream_side(side: BuntingSide) -> Side {
+    match side {
+        BuntingSide::Buy => Side::Buy,
+        BuntingSide::Sell => Side::Sell,
+    }
+}
+
+/// Recovers a sequential upstream identifier from its stable textual form.
+#[must_use]
+pub fn sequential_id_from_text(value: &str) -> Option<u64> {
+    Id::from_str(value).ok().and_then(|id| id.as_u64())
+}
+
 /// The production book wrapper used by Bunting.
 ///
 /// This type intentionally does not expose a second Bunting-owned matching structure.
@@ -41,8 +104,17 @@ impl KernelBook {
     /// Creates a book backed by `OrderBook-rs`.
     #[must_use]
     pub fn new(symbol: &str) -> Self {
+        Self::new_at(symbol, 0)
+    }
+
+    /// Creates a deterministic book using a recorded logical millisecond.
+    #[must_use]
+    pub fn new_at(symbol: &str, logical_millis: u64) -> Self {
         Self {
-            inner: DefaultOrderBook::new(symbol),
+            inner: DefaultOrderBook::with_clock(
+                symbol,
+                Arc::new(StubClock::starting_at(logical_millis)),
+            ),
         }
     }
 
@@ -62,7 +134,7 @@ impl KernelBook {
         time_in_force: TimeInForce,
     ) -> Result<LimitSubmission, OrderBookError> {
         let (order, trade_result) = self.inner.add_limit_order_with_result(
-            Id::from_u64(order_id),
+            Id::sequential(order_id),
             price,
             quantity,
             side,
@@ -85,7 +157,7 @@ impl KernelBook {
     ) -> Result<TradeResult, OrderBookError> {
         let match_result =
             self.inner
-                .submit_market_order(Id::from_u64(order_id), quantity, side)?;
+                .submit_market_order(Id::sequential(order_id), quantity, side)?;
         Ok(TradeResult::new(
             self.inner.symbol().to_string(),
             match_result,
@@ -94,7 +166,15 @@ impl KernelBook {
 
     /// Cancels an order through the upstream order-location index.
     pub fn cancel(&self, order_id: u64) -> Result<bool, OrderBookError> {
-        Ok(self.inner.cancel_order(Id::from_u64(order_id))?.is_some())
+        Ok(self.inner.cancel_order(Id::sequential(order_id))?.is_some())
+    }
+
+    /// Cancels an order and returns its exact remaining quantity.
+    pub fn cancel_remaining(&self, order_id: u64) -> Result<Option<u64>, OrderBookError> {
+        Ok(self
+            .inner
+            .cancel_order(Id::sequential(order_id))?
+            .map(|order| order.quantity()))
     }
 
     /// Engages the upstream operational kill switch.
@@ -112,11 +192,31 @@ impl KernelBook {
         self.inner.create_snapshot_package(depth)?.to_json()
     }
 
+    /// Creates a checksum-protected package with explicit metadata.
+    pub fn snapshot_package(&self, depth: usize) -> Result<SnapshotPackage, OrderBookError> {
+        let package = self.inner.create_snapshot_package(depth)?;
+        Ok(SnapshotPackage {
+            json: package.to_json()?,
+            checksum: package.checksum.clone(),
+            engine_sequence: package.engine_seq,
+        })
+    }
+
     /// Restores a fresh upstream book from a validated snapshot package.
     pub fn restore_snapshot_json(symbol: &str, json: &str) -> Result<Self, OrderBookError> {
+        Self::restore_snapshot_json_at(symbol, json, 0)
+    }
+
+    /// Restores a package with a recorded logical clock for future operations.
+    pub fn restore_snapshot_json_at(
+        symbol: &str,
+        json: &str,
+        logical_millis: u64,
+    ) -> Result<Self, OrderBookError> {
         let package = OrderBookSnapshotPackage::from_json(json)?;
         package.validate()?;
-        let mut inner = DefaultOrderBook::new(symbol);
+        let mut inner =
+            DefaultOrderBook::with_clock(symbol, Arc::new(StubClock::starting_at(logical_millis)));
         inner.restore_from_snapshot_package(package)?;
         Ok(Self { inner })
     }
@@ -162,5 +262,22 @@ mod tests {
             Err(OrderBookError::KillSwitchActive)
         ));
         assert!(book.cancel(1).unwrap());
+    }
+
+    #[test]
+    fn checked_conversions_reject_invalid_values() {
+        assert_eq!(
+            to_upstream_order_id(OrderId::new(u128::from(u64::MAX) + 1)),
+            Err(ConversionError::OrderIdOutOfRange)
+        );
+        assert_eq!(
+            to_upstream_price(PriceTicks(0)),
+            Err(ConversionError::InvalidPrice)
+        );
+        assert_eq!(
+            to_upstream_quantity(QuantityLots(-1)),
+            Err(ConversionError::InvalidQuantity)
+        );
+        assert_eq!(to_upstream_side(BuntingSide::Sell), Side::Sell);
     }
 }

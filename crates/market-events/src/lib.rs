@@ -5,22 +5,25 @@ use bunting_market_types::{
     CommandId, CorrelationId, EventId, EventSequence, InstrumentId, LogicalTimeNs, MoneyMinor,
     OrderId, ParticipantId, PriceTicks, QuantityLots, RunId,
 };
+use serde::{Deserialize, Serialize};
 
 pub const EVENT_SCHEMA_VERSION: u16 = 1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Side {
     Buy,
     Sell,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OrderKind {
     Limit { price: PriceTicks },
     Market,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SubmitOrder {
     pub order_id: OrderId,
     pub instrument_id: InstrumentId,
@@ -30,20 +33,21 @@ pub struct SubmitOrder {
     pub kind: OrderKind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CancelOrder {
     pub order_id: OrderId,
     pub participant_id: ParticipantId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommandPayload {
     SubmitOrder(SubmitOrder),
     CancelOrder(CancelOrder),
     ActivateKillSwitch,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Command {
     pub run_id: RunId,
     pub command_id: CommandId,
@@ -54,9 +58,11 @@ pub struct Command {
     pub payload: CommandPayload,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RejectCode {
     DuplicateOrderId,
+    InvalidOrderId,
     UnknownOrder,
     NotOrderOwner,
     KillSwitchActive,
@@ -74,14 +80,16 @@ pub enum RejectCode {
     ArithmeticOverflow,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CancelReason {
     Requested,
     KillSwitch,
     MarketRemainder,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EventPayload {
     OrderReceived {
         order: SubmitOrder,
@@ -105,6 +113,9 @@ pub enum EventPayload {
         order_id: OrderId,
         remaining: QuantityLots,
     },
+    OrderCompleted {
+        order_id: OrderId,
+    },
     OrderCanceled {
         order_id: OrderId,
         participant_id: ParticipantId,
@@ -120,6 +131,7 @@ pub enum EventPayload {
         seller_id: ParticipantId,
         price: PriceTicks,
         quantity: QuantityLots,
+        upstream_engine_sequence: u64,
     },
     PositionChanged {
         participant_id: ParticipantId,
@@ -133,7 +145,7 @@ pub enum EventPayload {
     KillSwitchActivated,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EventEnvelope {
     pub schema_version: u16,
     pub run_id: RunId,

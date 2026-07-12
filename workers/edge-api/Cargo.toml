@@ -10,11 +10,15 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bunting-command-transaction = { path = "../../crates/command-transaction" }
+bunting-market-events.workspace = true
 bunting-market-types = { path = "../../crates/market-types" }
 bunting-orderbook = { path = "../../crates/orderbook" }
+bunting-origin-store = { path = "../../crates/origin-store" }
 bunting-worker-cache = { path = "../../crates/worker-cache" }
 serde.workspace = true
-worker.workspace = true
+serde_json.workspace = true
+worker = { workspace = true, features = ["d1"] }
 
 [lints]
 workspace = true

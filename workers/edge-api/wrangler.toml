@@ -2,5 +2,11 @@ name = "bunting-edge-api"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-12"
 
+[[d1_databases]]
+binding = "ORIGIN_DB"
+database_name = "bunting-origin"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
 [build]
 command = "worker-build --release"

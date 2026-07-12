@@ -33,14 +33,38 @@ The current workspace contains:
 - `orderbook`: a thin version-pinned adapter around `OrderBook-rs`;
 - `ledger`: participant cash, position, and reservation projections;
 - `risk-engine`: Bunting participant/account limits not covered by the upstream book;
+- `origin-store`: authoritative projections, idempotency, expected-version commits, and recovery metadata;
+- `command-transaction`: recovery, risk, matching, accounting, and commit orchestration;
+- `quarcc-trading-engine`: a WASM-safe compatibility contract for the legacy `quarcc.v1` service surface;
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `workers/edge-api`: the plain Rust Cloudflare Worker entrypoint.
+
+## Initial command API
+
+The Worker exposes authenticated, bounded JSON routes for limit GTC submission and cancellation:
+
+```text
+POST /v1/runs/:run_id/instruments/:instrument_id/orders
+POST /v1/runs/:run_id/instruments/:instrument_id/orders/:order_id/cancel
+```
+
+Send `Authorization: Bearer <token>` and `X-Bunting-Participant-Id: <u128>`. Exact identifiers, expected sequence, and logical time are JSON strings; price and quantity are checked integer units.
+
+Create the D1 database, replace `REPLACE_WITH_D1_DATABASE_ID` in `workers/edge-api/wrangler.toml`, apply the migration, and install the authentication secret:
+
+```bash
+npx wrangler d1 create bunting-origin
+npx wrangler d1 migrations apply bunting-origin --config workers/edge-api/wrangler.toml --remote
+npx wrangler secret put BUNTING_API_TOKEN --config workers/edge-api/wrangler.toml
+```
+
+Scenario/orchestration code provisions runs before order entry. The command endpoint returns `unknown_run` instead of creating authoritative state implicitly.
 
 ## Checks
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo check --workspace --target wasm32-unknown-unknown
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo check --locked --workspace --target wasm32-unknown-unknown
 ```
