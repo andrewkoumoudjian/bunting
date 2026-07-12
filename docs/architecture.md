@@ -51,7 +51,7 @@ User strategy source
 
 ## 4. Repository ownership
 
-### Core crates
+### Reusable packages and composition
 
 - `market-types`: Bunting identifiers and checked fixed-point values.
 - `market-events`: commands, event envelopes, rejection codes, correlation, and causation.
@@ -63,10 +63,11 @@ User strategy source
 - `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later crates: scenario clock, scenario engine, agent models, protocol-native, FIX, replay exports, and scoring.
+- `bunting-rs`: thin portable composition boundary with curated stable re-exports and product metadata.
 
 ### Worker
 
-- `workers/edge-api`: the plain Worker entrypoint and route boundary.
+- `apps/edge-api`: the plain Worker entrypoint and route boundary.
 
 There is no `market-run-do` runtime in the accepted architecture. Historical directories or instructions referring to it are superseded by ADR 0013 and should be removed as implementation proceeds.
 

@@ -1,7 +1,5 @@
-# Core crate instructions
+# Future scaffold instructions
 
-Crates remain protocol-focused and testable. The intentional exception is `crates/orderbook`, which wraps the approved `OrderBook-rs` production dependency and therefore inherits its transitive concurrency/runtime packages.
+The Cargo-less directories under `crates/` are future scaffolds, not active workspace packages. Do not move them into `packages/` or add manifests until their roadmap phase introduces real implementation, tests and a reviewed reusable boundary.
 
-Do not build a parallel matching engine. Other Bunting-owned domain crates should avoid Worker bindings, filesystem I/O, sockets, ambient time, and hidden global state.
-
-`crates/worker-cache` is a platform adapter and may depend on `workers-rs`.
+Do not build a parallel matching engine. Reusable first-party implementation belongs under `packages/`; deployment-specific implementation belongs under `apps/`.

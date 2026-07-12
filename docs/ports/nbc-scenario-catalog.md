@@ -142,7 +142,7 @@ crates/scenario-engine/       scheduled-item queue and phase ordering
 crates/agent-models/          one pure implementation per agent family
 crates/protocol-legacy-nbc/   legacy names, routes, messages and DONE barrier
 crates/test-fixtures/         normalized source and compatibility fixtures
-workers/edge-api/             legacy HTTP/WebSocket route surface
+apps/edge-api/                legacy HTTP/WebSocket route surface
 workers/market-run-do/        authoritative schedule sequencing
 ```
 

@@ -22,16 +22,16 @@ submit/cancel -> expected-version load -> cache/origin recovery -> participant r
               -> immutable cache write -> response
 ```
 
-## P0: mechanical repository reorganization
+## Completed P0: mechanical repository reorganization
 
-Execute [`repository-reorganization.md`](repository-reorganization.md) without semantic changes:
+The repository now follows [`repository-reorganization.md`](repository-reorganization.md) without semantic changes:
 
-- move implemented reusable crates from `crates/` to `packages/` with Cargo package names preserved;
-- add a thin `bunting-rs` composition crate;
-- move `workers/edge-api` to `apps/edge-api`;
-- keep one root Cargo workspace and lockfile;
-- assemble generated release bundles under ignored `out/` paths;
-- update Cargo, CI, Wrangler, migrations, documentation and scoped instructions atomically.
+- implemented reusable crates live under `packages/` with Cargo package names preserved;
+- the thin `bunting-rs` composition crate depends inward on reusable packages;
+- the Worker, its Wrangler config and its migrations live under `apps/edge-api`;
+- one root Cargo workspace and lockfile remain authoritative;
+- ignored `out/` is reserved for generated release bundles;
+- Cargo, CI, deployment commands, documentation and scoped instructions use the active paths.
 
 Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algorithm dumping grounds, fork OrderBook-rs, upgrade dependencies or change runtime behavior in this PR.
 

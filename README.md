@@ -37,16 +37,9 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The current workspace is still rooted at the repository `Cargo.toml`, with implemented libraries under `crates/` and the Worker under `workers/edge-api`.
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the deployable Worker lives under `apps/edge-api/`. The Cargo package names and runtime boundaries are unchanged by this layout.
 
-The next focused pull request is mechanical:
-
-- move reusable first-party Rust crates to `packages/` without renaming them;
-- add a thin `bunting-rs/` composition package;
-- move `workers/edge-api` to `apps/edge-api`;
-- keep one root Cargo workspace and lockfile;
-- assemble generated release bundles under ignored `out/` paths;
-- do not implement NBC, expand QUARCC, select a FIX stack or fork OrderBook-rs in the move.
+Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
 Read the complete move map and Codex execution contract in [`docs/repository-reorganization.md`](docs/repository-reorganization.md).
 
@@ -61,7 +54,8 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `command-transaction`: recovery, risk, matching, accounting and commit orchestration;
 - `quarcc-trading-engine`: current WASM-safe `quarcc.v1` compatibility-contract seed, not the complete execution engine;
 - `worker-cache`: immutable Workers Cache snapshot adapter;
-- `workers/edge-api`: current plain Rust Cloudflare Worker entrypoint.
+- `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
+- `apps/edge-api`: current plain Rust Cloudflare Worker entrypoint.
 
 ## Initial command API
 
@@ -74,12 +68,12 @@ POST /v1/runs/:run_id/instruments/:instrument_id/orders/:order_id/cancel
 
 Send `Authorization: Bearer <token>` and `X-Bunting-Participant-Id: <u128>`. Exact identifiers, expected sequence and logical time are JSON strings; price and quantity are checked integer units.
 
-Before the mechanical move, deployment commands still use `workers/edge-api/wrangler.toml`:
+Deployment and migration commands use the Worker config at `apps/edge-api/wrangler.toml`:
 
 ```bash
 npx wrangler d1 create bunting-origin
-npx wrangler d1 migrations apply bunting-origin --config workers/edge-api/wrangler.toml --remote
-npx wrangler secret put BUNTING_API_TOKEN --config workers/edge-api/wrangler.toml
+npx wrangler d1 migrations apply bunting-origin --config apps/edge-api/wrangler.toml --remote
+npx wrangler secret put BUNTING_API_TOKEN --config apps/edge-api/wrangler.toml
 ```
 
 Scenario/orchestration code provisions runs before order entry. The command endpoint returns `unknown_run` instead of creating authoritative state implicitly.

@@ -2,6 +2,14 @@
 
 Read `AGENTS.md` and ADR 0013 before changing code.
 
+## Repository paths
+
+- Reusable first-party crates live under `packages/`.
+- The curated portable composition crate is `bunting-rs/`.
+- The plain Worker, Wrangler config and D1 migrations live together under `apps/edge-api/`.
+- Cargo-less future scaffolds remain under `crates/` until their roadmap phase adds real implementation and tests.
+- Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
+
 ## Non-negotiable decisions
 
 - The runtime is a plain Rust Cloudflare Worker.

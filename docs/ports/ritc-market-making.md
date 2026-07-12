@@ -134,9 +134,9 @@ This crate is shared with native venue adapters and captures the valuable order-
 Existing crates remain authoritative:
 
 ```text
-crates/risk-engine/             final order admission and kill switch
-crates/ledger/                  authoritative positions, cash and P&L
-crates/market-events/           canonical commands and execution events
+packages/risk-engine/           final order admission and kill switch
+packages/ledger/                authoritative positions, cash and P&L
+packages/market-events/         canonical commands and execution events
 clients/ritc-adapter/           normalized external account reports only
 ```
 

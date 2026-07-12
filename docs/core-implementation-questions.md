@@ -8,7 +8,7 @@ ADR 0013 is authoritative when older documents disagree.
 |---|---|
 | Runtime? | A plain Rust Cloudflare Worker. No Durable Object requirement. |
 | Matching kernel? | `orderbook-rs = 0.10.3`, with `pricelevel = 0.8.4`. |
-| Bunting-owned book? | No. `crates/orderbook` is a thin adapter only. |
+| Bunting-owned book? | No. `packages/orderbook` is a thin adapter only. |
 | Snapshot recovery? | `OrderBookSnapshotPackage` JSON, checksum validation, Workers Cache first, origin fallback. |
 | Workers Cache role? | Mandatory immutable snapshot acceleration; never a lock or accepted-command journal. |
 | Concurrent commands? | Optimistic expected-version commit in the origin store. |
