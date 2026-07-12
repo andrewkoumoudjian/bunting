@@ -3,171 +3,284 @@
 ## Sources
 
 - Existing implementation: `ref/ritc_mm/src/main.rs`
-- Comparison source: `joaquinbejar/market-maker-rs@36899f3e910997400bc95c3a8f3606776c002fbe`
+- Existing scenario duplicates: `ref/ritc_mm/app/src/main/resources/scenarios/`
+- Pure strategy comparison: `joaquinbejar/market-maker-rs@36899f3e910997400bc95c3a8f3606776c002fbe`
 - Adapter comparison: `nautechsystems/nautilus_trader@c28b1335c95abbf1bef2385def9a75a1b3862f76`
+- Lifecycle/reconciliation comparison: `ref/quarcc-trading-engine`
 
 ## License status
 
-No confirmed license was identified for `ref/ritc_mm`; do not copy or mechanically translate it until ownership and license are recorded. `market-maker-rs` is MIT. NautilusTrader notices and license requirements must be preserved for any adapted material.
+No confirmed license was identified for `ref/ritc_mm`; do not copy or mechanically translate its implementation text until ownership and license are recorded. `market-maker-rs` is MIT. NautilusTrader is LGPL-3.0 and is used as an integration contract, not a source-vendoring target.
 
-## Current implementation inventory
+The scenario files under `ref/ritc_mm/app/.../scenarios` have the same Git blob SHAs as the five verified files under `ref/nbc_engine`. They are one provenance lineage and are catalogued in `docs/ports/nbc-scenario-catalog.md`.
 
-The existing monolithic binary contains:
+## Architectural conclusion
 
-- RIT REST response types;
-- blocking HTTP client and API key handling;
-- polling loop and wall-clock sleeps;
-- Avellaneda–Stoikov reservation price and spread logic;
-- GARCH(1,1) volatility state;
-- radix-2 FFT and spectral order-flow analysis;
-- queue-rate/imbalance estimation;
-- inventory and position limits;
-- quote placement, cancellation and reconciliation;
-- calibration constants and clamps;
-- P&L and open-order inspection.
+The existing file is not a crate to port. It is a behavior inventory that must be split into three reusable boundaries and one host:
 
-This is useful research code, but it mixes transport, time, strategy math, risk and order lifecycle in one process.
+1. a native RIT transport and venue-model adapter;
+2. pure market-making analytics and desired-quote generation;
+3. protocol-neutral desired-versus-live order reconciliation;
+4. a native host that composes those parts with canonical risk and account state.
 
-## Retain
+None of those parts belongs in matching, ledger or the authoritative Durable Object runtime.
+
+## Exact Bunting target layout
+
+### Native venue adapter
+
+```text
+clients/ritc-adapter/
+  AGENTS.md
+  Cargo.toml                    # added only when implementation starts
+  src/
+    lib.rs
+    config.rs                   # base URL, API key reference, retry/rate policy
+    error.rs
+    models/
+      case.rs
+      security.rs
+      book.rs
+      order.rs
+      pnl.rs
+    http/
+      transport.rs              # trait plus reqwest implementation
+      client.rs
+      query.rs
+    parse.rs                    # RIT payload -> normalized observations/reports
+    clock.rs                    # injected native monotonic clock for timeouts only
+    fixtures.rs
+    bin/ritc-mm.rs              # optional native host, never a kernel dependency
+  tests/
+    fixtures/
+    contract.rs
+    reconnect.rs
+```
+
+Responsibilities:
+
+- authentication and endpoint construction;
+- async HTTP and optional venue WebSocket transport;
+- request/response models and typed errors;
+- retry, timeout and rate-limit policy;
+- conversion from venue decimals into validated instrument units;
+- venue snapshots, open orders, fills, position and P&L reports;
+- recorded contract fixtures.
+
+It does not calculate quotes, own authoritative position, infer fills from request success or enforce the final Bunting risk decision.
+
+### Pure strategy analytics
+
+```text
+crates/market-making/
+  AGENTS.md
+  src/
+    lib.rs
+    observation.rs              # bounded normalized book/trade observation
+    parameters.rs               # versioned model configuration
+    volatility/
+      ewma.rs                    # first implementation
+      garch.rs                   # deferred
+    imbalance.rs                # bounded queue/order-flow features
+    avellaneda_stoikov.rs       # pure reservation/spread calculation
+    inventory.rs                # skew and side suppression suggestions
+    quote.rs                    # DesiredQuotes and exact intent conversion
+    state.rs                    # warmup and estimator state
+    snapshot.rs
+    spectral.rs                 # optional and deferred
+```
+
+Responsibilities:
+
+- consume explicit observations, inventory input and logical/host-supplied horizon;
+- update bounded estimator state;
+- calculate continuous or decimal quote proposals;
+- clamp and round proposals into exact `PriceTicks` and `QuantityLots` intents;
+- return typed errors and readiness state;
+- snapshot and restore strategy-owned estimator state.
+
+It has no sockets, Tokio, persistence, wall-clock reads, sleeps, global configuration, live order IDs or account mutation.
+
+### Protocol-neutral reconciliation
+
+```text
+crates/order-reconciliation/
+  AGENTS.md
+  src/
+    lib.rs
+    ids.rs                      # client/local/venue ID mapping
+    report.rs                   # normalized ack/reject/fill/cancel/snapshot reports
+    state.rs                    # live order and pending-operation state
+    transition.rs               # deterministic idempotent report application
+    planner.rs                  # minimal desired/live diff
+    action.rs                   # submit/cancel/replace/requery intents
+    snapshot.rs
+```
+
+Responsibilities:
+
+- local, client and venue order ID mapping;
+- explicit pending-submit, live, partially-filled, cancel-pending, canceled, rejected and terminal states;
+- duplicate and out-of-order report handling;
+- desired-versus-live quote diffing;
+- reconnect reconstruction from authoritative venue snapshots;
+- stale order cleanup and kill-switch cancel planning;
+- deterministic, bounded, snapshot-capable state transitions.
+
+This crate is shared with native venue adapters and captures the valuable order-lifecycle/reconciliation behavior from the C++ QUARCC reference without its threads or callbacks.
+
+### Risk and canonical state
+
+Existing crates remain authoritative:
+
+```text
+crates/risk-engine/             final order admission and kill switch
+crates/ledger/                  authoritative positions, cash and P&L
+crates/market-events/           canonical commands and execution events
+clients/ritc-adapter/           normalized external account reports only
+```
+
+A strategy may suppress a side because of inventory, but this is not a substitute for canonical position/notional/open-order limits. Every generated action passes the same risk path as a user order.
+
+## Primitive-to-module map
+
+| Existing primitive | Bunting destination | Port treatment |
+|---|---|---|
+| `CaseResp` | `clients/ritc-adapter/src/models/case.rs` | independently define from captured API payloads |
+| `SecResp` | `models/security.rs` plus `parse.rs` | normalize position/security metadata; do not trust as canonical Bunting state |
+| `BookLevel` / `BookResp` | `models/book.rs` | parse decimal strings/numbers, validate, bound depth |
+| `OrderResp` | `models/order.rs` -> normalized reconciliation report | explicit status mapping and unknown-status rejection |
+| `HistBar` | adapter model; optional estimator warmup input | bounded history only |
+| `PnlResp` | adapter report/diagnostics | external comparison, not canonical ledger authority |
+| HTTP client and headers | `http/transport.rs`, `http/client.rs` | rewrite async with injected credentials |
+| polling loop | native host | replace sleeps with explicit cadence and cancellation token |
+| GARCH state | `market-making/volatility/garch.rs` | defer; implement only after EWMA baseline |
+| radix-2 FFT | `market-making/spectral.rs` | defer; use bounded iterative implementation only if measured |
+| queue-rate estimator | `market-making/imbalance.rs` | rewrite as pure bounded state with golden vectors |
+| Avellaneda-Stoikov | `market-making/avellaneda_stoikov.rs` | independently verify formula and adapt pure MIT comparison code if useful |
+| inventory skew | `market-making/inventory.rs` | strategy suggestion; canonical limits stay in risk engine |
+| quote clamps/rounding | `market-making/quote.rs` | side-aware exact tick conversion with tests |
+| cancel/place logic | `order-reconciliation/planner.rs` | state-machine rewrite, not direct port |
+| open-order tracking | `order-reconciliation/state.rs` | normalized venue reports and reconnect snapshot |
+| constants | versioned configuration | no hidden global constants |
+
+## Retained behavior
 
 - typed RIT request/response models after validating the actual API contract;
-- explicit strategy configuration instead of hidden magic constants;
+- explicit strategy configuration and model version;
 - reservation-price and spread decomposition;
-- inventory skew and hard position limits;
-- volatility, order-flow and queue signals as separately testable components;
-- quote distance and spread clamps;
+- inventory skew and hard external controls;
+- volatility and imbalance as separately testable estimators;
+- quote distance/spread clamps;
 - desired-versus-live quote reconciliation;
-- warmup state and calibration fixtures;
-- observability for proposed quotes, risk decisions and execution outcomes.
+- warmup/readiness state;
+- observability for proposed quotes, risk decisions and executions.
 
-## Reject or redesign
+## Rejected behavior
 
 - `reqwest::blocking` and synchronous polling in reusable code;
-- embedded API credentials and fixed localhost URLs;
+- embedded credentials and fixed localhost URLs;
 - `thread::sleep` as strategy time;
-- one-file architecture;
-- direct `f64` conversion into authoritative order prices and quantities;
-- recursive heap-allocating FFT in a hot polling loop;
-- assuming theoretical queue parameters are calibrated because constants exist;
-- strategy-owned position truth;
-- cancel-all/replace behavior without idempotency and reconciliation state;
-- using this strategy implementation inside the authoritative matching kernel.
-
-## Proposed package split
-
-### Native connector
-
-Create a native-only `ritc-adapter` client or place it under a general connector crate:
-
-- async HTTP transport;
-- typed endpoints and errors;
-- authentication injected from configuration;
-- explicit retry and rate-limit policy;
-- no strategy logic;
-- mock transport and recorded fixtures;
-- optional WebSocket support if the RIT environment exposes it.
-
-This crate may use Tokio and native TLS. It is not part of the Worker/Wasm kernel.
-
-### Strategy analytics
-
-Create pure modules for:
-
-- mid-price and book observation normalization;
-- volatility estimator;
-- queue/imbalance estimator;
-- optional spectral feature estimator;
-- Avellaneda–Stoikov quote model;
-- inventory skew;
-- quote clamps and tick rounding.
-
-Each module consumes explicit inputs and returns values or typed errors. No module reads time, network, position or global configuration.
-
-### Strategy state machine
-
-A strategy instance owns:
-
-- configuration version;
-- estimator state;
-- last observation sequence;
-- desired bid/ask intents;
-- outstanding client-order IDs;
-- last reconciliation result;
-- explicit warmup/readiness state.
-
-It receives account/order state from the connector or Bunting events. It never declares an order filled solely because a request succeeded.
-
-### Risk and reconciliation
-
-Risk remains outside the quote formula:
-
-- maximum absolute position;
-- maximum order/notional size;
-- stale-data halt;
-- maximum open orders;
-- drawdown or loss limits where supported;
-- kill switch.
-
-The order manager computes a minimal diff between desired quotes and live orders. Reconciliation must handle partial fills, rejected cancels, duplicate responses, delayed acknowledgements and reconnects.
+- a one-file architecture;
+- direct `f64` values at authoritative order boundaries;
+- recursive allocation-heavy FFT in the polling loop;
+- strategy-owned position or P&L truth;
+- cancel-all/replace behavior without idempotent reconciliation;
+- using strategy analytics inside the matching kernel;
+- copying the duplicate NBC scenario files into a second lineage.
 
 ## Numeric policy
 
-Authoritative Bunting orders are expressed in ticks and lots. Strategy analytics may use decimal/floating calculations only behind an explicit conversion boundary:
+Authoritative orders use ticks and lots. Strategy analytics may use `rust_decimal` or carefully bounded floating-point calculations only behind this conversion contract:
 
-1. validate all inputs are finite;
+1. validate all inputs and parameters are finite and in domain;
 2. calculate a proposed continuous price/size;
-3. apply documented side-aware rounding and clamps;
-4. convert to exact `PriceTicks` and `QuantityLots`;
-5. pass through normal risk and matching.
+3. apply model clamps;
+4. apply documented side-aware rounding;
+5. convert to exact `PriceTicks` and `QuantityLots`;
+6. reject zero, overflow or invalid tick/lot output;
+7. submit through normal canonical risk and matching.
 
-For deterministic built-in simulation agents, prefer fixed-point/decimal formulations or record the resulting intents as canonical events. Cross-platform `f64` results must not be assumed byte-identical without golden-vector verification for the chosen Wasm/native targets.
+Built-in deterministic simulation agents should prefer fixed/decimal formulations. Cross-platform floating results require native/Wasm golden-vector agreement or must be recorded as external strategy intents rather than recomputed during replay.
 
-The FFT is optional. It should not enter the first port. First demonstrate incremental, allocation-bounded value over simpler imbalance and volatility signals.
+## Reference adoption decisions
 
-## Market-maker-rs borrowing plan
+### `market-maker-rs`
 
-High-value comparison areas:
+Use as a selective MIT source/test candidate, not a whole-crate dependency. Its default crate depends on OrderBook-rs, and importing that graph would pull concurrency and runtime assumptions into a pure strategy package.
 
-- `src/strategy/avellaneda_stoikov.rs` for formula decomposition and typed errors;
-- `src/strategy/interface.rs` for strategy interfaces;
-- risk modules for limit/circuit-breaker separation;
-- execution modules for connector/order-manager boundaries;
-- backtest fill models for test scenarios.
+Candidate material:
 
-Do not adopt its entire feature surface, concurrency model, metrics stack or decimal type automatically. Extract the smallest pure interfaces and preserve MIT attribution for any copied code.
+- `src/strategy/avellaneda_stoikov.rs`;
+- `src/strategy/glft.rs` after the baseline;
+- `src/strategy/interface.rs` as interface comparison;
+- risk and execution boundaries;
+- backtest fill cases as test ideas.
+
+Any adapted code records exact paths/commit and strips unrelated execution, API and order-book dependencies.
+
+### NautilusTrader
+
+Use its adapter guide as a contract for layering and reconciliation. Do not vendor NautilusTrader. The Bunting Nautilus adapter and RITC adapter may share normalized connector/reconciliation concepts, but remain separate clients.
+
+### QUARCC C++ engine
+
+Use lifecycle, external ID mapping, deferred/out-of-order fill and kill-switch cases to strengthen `order-reconciliation`. Do not port callback dispatch, threads, gateway races, gRPC or SQLite.
 
 ## Implementation sequence
 
-1. Record the RIT API contract and example payloads.
-2. Move response/request models into a connector module with fixture tests.
-3. Extract Avellaneda–Stoikov calculation into a pure function with golden vectors.
-4. Extract inventory skew, volatility and imbalance one at a time.
-5. Add exact tick/lot conversion and side-aware rounding tests.
-6. Implement a desired-quote model independent of live order IDs.
-7. Implement reconciliation against a mock connector.
-8. Add position, stale-data and kill-switch controls.
-9. Add the native RIT connector.
-10. Integrate the same pure strategy with Bunting-native events if desired.
-11. Evaluate GARCH and spectral features only after a baseline strategy is measured.
+1. Create `clients/ritc-adapter`, `crates/market-making` and `crates/order-reconciliation` manifests only when the first compiling vertical slice is implemented.
+2. Capture and document RIT REST payload fixtures.
+3. Define transport and normalized report traits; implement a mock transport.
+4. Implement typed RIT models and parsing with bounds.
+5. Implement the reconciliation transition table and generated transition tests before live transport.
+6. Implement a minimal desired-quote planner using exact static inputs.
+7. Implement independently verified Avellaneda-Stoikov vectors.
+8. Add exact tick/lot rounding and clamps.
+9. Add EWMA volatility and simple imbalance; measure each independently.
+10. Add native async HTTP transport and reconnect reconstruction.
+11. Compose the native host with canonical risk and kill-switch behavior.
+12. Evaluate GARCH only after the baseline is stable.
+13. Evaluate spectral features last and retain them only with demonstrated incremental value.
+14. Optionally expose the pure strategy to Bunting-native simulation agents under a separate model version.
 
 ## Required tests
 
-- published or independently calculated Avellaneda–Stoikov vectors;
-- zero/negative/NaN/infinite parameter rejection;
-- gamma and intensity edge cases;
+### Adapter contract
+
+- success and error payload parsing;
+- missing/unknown fields according to documented compatibility policy;
+- authentication injection without secret logging;
+- timeout, retry classification and rate-limit behavior;
+- bounded order-book/history payloads;
+- reconnect and venue snapshot reconstruction.
+
+### Strategy analytics
+
+- independently calculated Avellaneda-Stoikov vectors;
+- zero, negative, NaN and infinite parameter rejection where applicable;
 - inventory sign moves reservation price in the expected direction;
-- tick rounding never crosses an unintended price boundary;
-- position limit disables the risk-increasing side;
-- stale data disables quoting;
-- partial fill causes correct desired/live reconciliation;
-- duplicate acknowledgement is idempotent;
-- reconnect reconstructs outstanding-order state from the venue;
+- side-aware tick rounding never creates an unintended crossing;
 - estimator warmup and snapshot/restore;
 - bounded buffers and no per-tick unbounded growth;
-- optional native-versus-Wasm deterministic vectors for built-in agents.
+- native/Wasm vectors for any built-in deterministic model.
 
-## Copy status
+### Reconciliation
 
-- Code copied from `ref/ritc_mm`: none.
-- Code copied from `market-maker-rs`: none.
-- Current use: architecture decomposition, formula inventory and test-plan source.
+- request success does not imply fill;
+- partial fill updates remaining quantity and desired/live diff;
+- duplicate acknowledgement/report is idempotent;
+- fill-before-ack and cancel-reject sequences are handled explicitly;
+- reconnect rebuilds live orders from the venue snapshot;
+- stale quote creates a bounded cancel plan;
+- kill switch prevents new submits and plans cancellation;
+- ID collisions and unknown venue IDs reject or enter a documented quarantine state.
+
+## Copy and dependency status
+
+- Code copied from `ref/ritc_mm`: none; blocked by unresolved license.
+- Code copied from `market-maker-rs`: none yet.
+- Whole-crate `market-maker-rs` dependency: rejected.
+- NautilusTrader vendoring: rejected.
+- New Bunting manifests: not yet added; only target boundaries and scoped instructions are committed.
+- Current use: API/behavior inventory, package decomposition, provenance and test planning.
