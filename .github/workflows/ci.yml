@@ -39,8 +39,21 @@ jobs:
           grep -Fq 'Cache::default()' crates/worker-cache/src/lib.rs
           test ! -e workers/market-run-do/AGENTS.md
 
+      - name: Generate rustfmt patch
+        run: |
+          cargo fmt --all
+          git diff --binary > rustfmt.patch
+
+      - name: Upload rustfmt patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-patch
+          path: rustfmt.patch
+          if-no-files-found: error
+
       - name: Check formatting
-        run: cargo fmt --check
+        run: git diff --exit-code
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
