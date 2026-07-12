@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -34,24 +34,14 @@ jobs:
 
       - name: Enforce architecture dependency policy
         run: |
+          test -f Cargo.lock
           grep -Fq 'orderbook-rs = { version = "=0.10.3", default-features = false }' Cargo.toml
           grep -Fq 'worker = "=0.8.5"' Cargo.toml
+          grep -Fq 'getrandom = { version = "=0.3.4", features = ["wasm_js"] }' crates/orderbook/Cargo.toml
+          grep -Fq 'uuid = { version = "=1.23.4", features = ["js"] }' crates/orderbook/Cargo.toml
+          grep -Fq 'getrandom_backend="wasm_js"' .cargo/config.toml
           grep -Fq 'Cache::default()' crates/worker-cache/src/lib.rs
           test ! -e workers/market-run-do/AGENTS.md
-
-      - name: Resolve dependency lockfile
-        run: cargo generate-lockfile
-
-      - name: Commit resolved lockfile on integration branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/orderbook-rs-worker-kernel'
-        run: |
-          git add Cargo.lock
-          if ! git diff --cached --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "build: lock resolved dependencies"
-            git push origin HEAD:${GITHUB_REF_NAME}
-          fi
 
       - name: Check formatting
         run: cargo fmt --all --check
