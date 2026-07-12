@@ -2,42 +2,159 @@
 
 ## Role
 
-NBC is a market engine, not merely a scenario catalog. The Rust port must represent the venue/simulation side of a market run:
+NBC is a venue-side market/exchange simulator. It is not merely a scenario catalog and it is not the participant client in `ref/nbc-hft-simulation`.
 
-- market/run lifecycle;
-- logical clock and step advancement;
-- scenario configuration;
-- seeded agent populations;
-- fundamental-value and shock processes;
-- order acceptance, rejection, cancellation, and execution;
-- order-book and trade state;
-- public market-data publication;
-- snapshots, replay, scoring, and run completion;
-- legacy NBC HTTP/WebSocket and `DONE` compatibility.
+The Rust port is intended to become a first-class Bunting market-engine package. This document separates the recorded reference evidence from new Bunting requirements and unresolved internals.
 
-Bunting will expose the NBC port as an explicit market-engine implementation, alongside the current OrderBook-rs-backed Bunting engine.
+See ADR 0014 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
 
-See ADR 0014.
+## Evidence baseline
 
-## Sources
+### Direct NBC snapshot
 
-- imported engine/assets: `ref/nbc_engine`;
-- duplicate scenario assets: `ref/ritc_mm/app/src/main/resources/scenarios/`;
-- legacy client/compatibility source: `ref/nbc-hft-simulation`;
-- external compatibility pin: `carterj-c/NBC_HFT_Simulation@35b8050546679547dc737198ea13aa0ec8ed7db8`;
-- source scenario catalog: `docs/ports/nbc-scenario-catalog.md`;
-- independent design references: ABIDES and NeXosim.
+`ref/nbc_engine` currently contains:
+
+- `app/README.md`;
+- `app/application.yml`;
+- five scenario JSON files under `app/src/main/resources/scenarios/`.
+
+The README instructs running `exchange-simulator-0.0.1-SNAPSHOT.jar`, but that JAR and the Java implementation source are not present in the recorded tree.
+
+### External protocol evidence
+
+The external behavior is additionally evidenced by:
+
+- `ref/nbc-hft-simulation`, the participant/student Python client;
+- `ref/ritc_mm/API_REFERENCE.md`;
+- `ref/ritc_mm/src/bin/rit_sim_adapter.rs`, which consumes the NBC API and WebSockets;
+- captured or future conformance fixtures derived from actual runs.
+
+The RIT adapter/API reference corroborates the protocol used by that integration. It is not proof of undocumented NBC internals or proof that every example field exists in every binary revision.
+
+### Scenario evidence
+
+The five scenario files are:
+
+- normal market;
+- flash crash;
+- mini flash crash;
+- stressed market;
+- HFT-dominated market.
+
+They record IDs, descriptions, seeds, duration steps, step interval, market configuration, trader families/parameters, and special-event arrays. Their exact Git blob SHAs are catalogued in `nbc-scenario-catalog.md`.
+
+## Observed reference functionality
+
+### Packaged application/runtime
+
+The recorded application is identified as an Exchange Simulator. Its configuration proves:
+
+- a Spring application named `hackathon-simulator`;
+- HTTP service on port 8080 under `/api`;
+- SQLite/JPA persistence configuration with WAL and a single-connection pool;
+- team registration/password configuration;
+- JWT authentication and expiry;
+- per-team run rate limiting;
+- default simulator step interval and total-step settings.
+
+### Scenario configuration
+
+The scenario files prove configurable:
+
+- deterministic seed;
+- step count and interval;
+- initial fundamental value;
+- tick size and, in normal market, initial spread;
+- fundamental drift and volatility fields;
+- populations/parameter records for fundamental, long/short momentum, noise, market-maker, institutional and spiking participants depending on the scenario.
+
+The files do not prove the formulas, units, random distributions, wake-up rules, cancellation-selection rules, or intra-step ordering associated with those parameter names.
+
+### Observable HTTP behavior
+
+The recorded client/protocol evidence supports:
+
+- scenario listing;
+- starting a named scenario for a team and receiving `run_id`, token, seed/duration metadata;
+- listing a team’s runs;
+- leaderboard and student/run history views;
+- authentication through team identity/password and a run token.
+
+### Observable market/order WebSockets
+
+The recorded client/protocol evidence supports:
+
+- a market-data WebSocket keyed by run ID;
+- an authenticated order-entry WebSocket keyed by token and run ID;
+- connection/authentication notifications;
+- market snapshots containing at least step and best bid/ask, with the documented integration also handling depth, trades, sizes and last trade;
+- client limit-order messages containing client order ID, side, price and quantity;
+- client cancellation messages;
+- fill notifications with quantity, price, remaining quantity and maker/taker attribution where emitted;
+- error messages;
+- a mandatory `DONE` action after a participant processes a market snapshot, used by the observed protocol to advance the simulation.
+
+No replace-order message is proven by the recorded NBC client contract. Replacement must therefore be an explicit unsupported capability or a Bunting extension until evidence establishes otherwise.
+
+### Observable limits and run results
+
+The recorded protocol documents:
+
+- quantity-lot validation;
+- maximum open-order behavior;
+- per-team run limits;
+- run termination on specified limit failures;
+- result/leaderboard fields including PnL, inventory, notional, trade count, maximum inventory, aggressive quantity, blow-up state/reason and decision time.
+
+Treat limits as versioned compatibility evidence, not timeless constants, until verified against the selected reference binary/configuration.
+
+## Internals not established by the current snapshot
+
+The repository does not currently prove:
+
+- exact order-book data structures;
+- matching and price/time priority semantics;
+- simultaneous command versus agent ordering;
+- partial-fill, cancellation and disconnect race behavior;
+- agent formulas or distribution families;
+- random-number generator and stream derivation;
+- fundamental-value transition equations;
+- internal database schema and transaction boundaries;
+- persistence/restart semantics;
+- internal snapshots, event journals, replay, or state hashing;
+- scoring equations;
+- timeout policy for the `DONE` barrier;
+- whether runs are fully lockstep across all participants or advanced under another policy.
+
+Do not turn field names or API examples into invented implementation claims.
 
 ## License and clean-room status
 
-The imported NBC tree does not currently expose a confirmed repository-level license in the recorded audit. Until ownership/license is resolved:
+No repository-level license or port authorization is recorded for the NBC application/assets. Until authority is documented:
 
-- do not copy or mechanically translate implementation text;
-- use scenario/configuration files only according to their documented provenance and permissions;
-- recover behavior from public interfaces, captured messages, tests, observable behavior, and an independently written specification;
-- record every source, assumption, unresolved field, and behavioral divergence.
+- do not decompile the missing JAR;
+- do not copy or mechanically translate unlicensed implementation text obtained elsewhere;
+- use observable interfaces, authorized configuration/scenario data, captured traces, independently written specifications, and independently licensed literature/reference systems;
+- label every behavior as observed, independently specified, literature-derived, Bunting-added or unresolved;
+- document all intentional divergences.
 
-If the project has authority to relicense or port the original code, record that decision before direct translation begins.
+## Bunting-added requirements for the Rust port
+
+The following are requirements of the new Bunting implementation. They are not claims about the reference Java internals:
+
+- transport-neutral deterministic engine API;
+- checked fixed-point price, quantity and money boundaries;
+- bounded command, event, queue, market-data and snapshot sizes;
+- versioned engine/scenario configuration;
+- explicit engine capability metadata;
+- deterministic state hashing;
+- snapshot/restore and replay sufficient for Bunting recovery;
+- exact source/provenance records for scenarios and model implementations;
+- typed errors instead of implicit connection termination;
+- canonical Bunting event/ledger translation without discarding NBC-specific metadata;
+- native and Wasm test coverage for the selected deployment graph.
+
+These additions can intentionally improve recoverability and auditability while preserving the externally specified NBC compatibility profile.
 
 ## Target package
 
@@ -47,6 +164,7 @@ packages/nbc-market-engine/
   Cargo.toml
   src/
     lib.rs
+    capabilities.rs
     config.rs
     engine.rs
     run.rs
@@ -58,210 +176,129 @@ packages/nbc-market-engine/
     scoring.rs
     errors.rs
     agents/
-      mod.rs
-      fundamental.rs
-      momentum.rs
-      noise.rs
-      market_maker.rs
-      institutional.rs
-      spiking.rs
     compatibility/
-      mod.rs
-      messages.rs
-      aliases.rs
-      done_barrier.rs
-      mapping.rs
   tests/
+    external_contract.rs
     deterministic_replay.rs
-    compatibility.rs
     scenarios.rs
 ```
 
-This is one coherent market-engine package. Internal support crates may be introduced only when they provide a real reusable boundary; do not split NBC into disconnected scenario, scheduler, and agent packages merely for directory symmetry.
+This is one coherent market-engine package. Extract a support package only after a second real consumer proves a reusable boundary. Do not split NBC into disconnected packages merely to mirror directory categories.
 
-Canonical scenario documents remain separate:
+Scenario documents remain separate under `scenarios/nbc/`; executable behavior belongs in the engine package.
 
-```text
-scenarios/nbc/
-  AGENTS.md
-  README.md
-  source-manifest.json
-  normal-market.v1.json
-  flash-crash.v1.json
-  mini-flash-crash.v1.json
-  stressed-market.v1.json
-  hft-dominated.v1.json
-```
+## Relationship to shared packages
 
-`scenarios/nbc` owns data and provenance. `packages/nbc-market-engine` owns executable behavior.
+The NBC engine may reuse:
 
-## Relationship to shared Bunting packages
+- `packages/market-types` for checked IDs and units;
+- `packages/market-events` for common envelopes;
+- `packages/orderbook` when its behavior can satisfy a verified NBC matching contract;
+- shared ledger/risk components when semantics match;
+- a selected deterministic RNG/distribution package under an explicit versioned stream specification.
 
-The NBC engine should reuse shared packages when behavior is compatible:
+Reuse is conditional. Do not alter NBC compatibility to fit the default OrderBook-rs-backed engine silently.
 
-- `packages/market-types` for checked identifiers and exact units;
-- `packages/market-events` for common command/event envelopes;
-- `packages/orderbook` for order-book/matching behavior when it can reproduce the NBC contract;
-- `packages/ledger` and `packages/risk-engine` for common accounting and controls when semantics match;
-- shared deterministic random, probability, or simulation primitives only after a concrete reusable boundary exists.
+If matching semantics cannot be proven from the current reference, the first implementation should define an explicit `nbc-v1` clean-room matching specification and state that it is Bunting-defined pending stronger evidence. An engine-specific matcher requires an ADR only when it duplicates functionality that could otherwise be shared.
 
-NBC remains responsible for its own engine-level behavior even when it composes these packages. Shared code must not erase NBC-specific lifecycle, scenario, timing, market-data, or compatibility semantics.
+## Capability model
 
-If NBC requires matching behavior that the default OrderBook-rs-backed package cannot reproduce, document the gap and choose among configuration, adapter logic, an upstream contribution, or an approved engine-specific implementation. Do not silently change NBC semantics to fit the default engine.
+The market-engine contract must not assume every engine supports every operation. Store typed capabilities such as:
 
-## Market-engine contract
+- submit limit;
+- cancel;
+- replace;
+- market order;
+- explicit time advance;
+- lockstep `DONE` compatibility;
+- depth levels;
+- private execution reports;
+- snapshot/restore;
+- scoring.
 
-The NBC package must provide a deterministic, transport-neutral API capable of:
-
-```text
-create_run(config, seed) -> engine_state
-apply_command(state, command) -> accepted/rejected events
-advance_to(state, logical_time_or_step) -> scheduled events
-snapshot(state) -> versioned snapshot
-restore(snapshot) -> state
-market_view(state) -> bounded snapshot/delta source
-state_hash(state) -> deterministic digest
-finish(state) -> score/result
-```
-
-The exact Rust traits should be designed after an inventory of the NBC engine and the current Bunting engine. Do not introduce a lowest-common-denominator abstraction that loses engine-specific capabilities.
-
-## Engine responsibilities
-
-### Run and clock
-
-- explicit deterministic seed and engine version;
-- exact step interval/logical-time mapping;
-- bounded advancement;
-- deterministic ordering of external commands, scheduled agents, market consequences, and scoring;
-- snapshot/restore of clock, pending work, and random streams.
-
-### Market configuration
-
-- instruments, tick/lot units, initial book/spread where applicable;
-- fundamental value, drift, volatility, shocks, and phases;
-- exact validation of all scenario fields;
-- explicit handling of unknown or unresolved legacy parameters.
-
-### Agents
-
-NBC agent families are part of the engine behavior. Each implementation must have:
-
-- versioned parameters and formulas;
-- deterministic per-agent/per-purpose random streams;
-- bounded state and output;
-- immutable market observations;
-- ordinary venue commands as output rather than direct book mutation;
-- provenance stating whether behavior is recovered, literature-derived, or redesigned.
-
-Known families include fundamental, long/short momentum, noise, market maker, institutional seller, and spiking agents.
-
-### Venue/order behavior
-
-- order validation and lifecycle;
-- matching/trade generation;
-- cancellation and replacement where supported;
-- participant balances/positions required by the simulation;
-- market-data snapshots and incremental updates;
-- deterministic rejection and error behavior.
-
-### Compatibility
-
-Legacy NBC routes, messages, scenario aliases, authentication shape, and `DONE` barrier belong at the package compatibility boundary or a thin app adapter. `DONE` controls simulation advancement but must not obscure the canonical engine state transition.
-
-## Scenario provenance
-
-The five known source scenarios remain catalogued with exact Git blob SHAs:
-
-- normal market;
-- flash crash;
-- mini flash crash;
-- stressed market;
-- HFT-dominated market.
-
-Every canonical scenario records source path/hash, source ID, transcription commit, unit mapping, PRNG version, unresolved/redesigned fields, and agent implementation provenance.
+For the currently observed NBC profile, submit-limit, cancel, market-data, fills/errors, run lifecycle and explicit `DONE` are evidenced. Replace and other order types remain unsupported/unverified until proven or added as versioned extensions.
 
 ## Port phases
 
-### Phase 0: complete engine inventory
+### Phase 0: evidence manifest and external contract
 
-1. Inventory all NBC runtime components, commands, market state, lifecycle, data feeds, agent classes, scenario loaders, snapshots, scoring, and protocol behavior.
-2. Separate facts proven by source/interface/tests from assumptions.
-3. Resolve license/ownership or approve clean-room constraints.
-4. Produce a language-neutral engine specification and state diagram.
+1. Record the exact reference-tree commit and every source file/hash.
+2. Record the absence of implementation source/JAR as an explicit limitation.
+3. Resolve ownership/license or establish the authorized clean-room process.
+4. Turn the observed REST/WebSocket messages and error cases into a language-neutral external contract.
+5. Capture black-box traces from an authorized reference deployment when available.
+6. Record which API-reference fields are observed in traces versus documented only.
 
-### Phase 1: package skeleton and static configuration
+### Phase 1: strict configuration and provenance
 
-1. Create `packages/nbc-market-engine` with no placeholder behavior.
-2. Implement strict scenario/configuration types and provenance.
-3. Define exact time, price, quantity, probability, and seed representations.
-4. Parse and validate a source manifest without running agents.
+1. Implement strict scenario/config types with unknown-field rejection.
+2. Define exact time, tick, lot, quantity, money, probability and seed representations.
+3. Add a source manifest containing file hashes and unresolved semantic fields.
+4. Do not execute an unresolved parameter.
 
-### Phase 2: deterministic run kernel
+### Phase 2: Bunting-defined deterministic run kernel
 
-1. Implement run state, logical clock/step advancement, scheduled work ordering, random-stream derivation, snapshot/restore, and state hashing.
-2. Add bounds and overflow handling.
-3. Add deterministic replay tests before agent formulas.
+1. Define total ordering for external commands, agent wakeups, matching consequences, publication and scoring.
+2. Select/version RNG algorithms and domain-separated streams.
+3. Implement bounded run state, step advancement, snapshot/restore and state hashing.
+4. Mark these as Bunting-added unless proven equivalent to the reference.
 
-### Phase 3: first executable market
+### Phase 3: minimum executable market
 
-1. Implement the minimum venue/order path and market-data view.
-2. Port the normal-market configuration.
-3. Implement the first required agent families.
-4. Run an end-to-end deterministic NBC market session.
+1. Implement the externally observed limit-order/cancel/fill/error contract.
+2. Specify and test a clean-room matching policy.
+3. Implement market snapshots and `DONE` advancement.
+4. Run one deterministic normal-market scenario with explicitly versioned model behavior.
 
-### Phase 4: full agent/scenario coverage
+### Phase 4: agents, scenarios and scoring
 
-Add remaining agent families, special events, four remaining scenarios, scoring, and distributional/behavioral comparisons.
+Add agent families and remaining scenarios one at a time. Each model needs provenance, formula/units, RNG streams, bounds, golden vectors and distributional tests. Implement scoring from observed/authorized rules or label it Bunting-defined.
 
 ### Phase 5: Bunting integration
 
-1. Register `nbc-v1` as an explicit run engine in `bunting-rs`.
-2. Translate common commands/events without discarding NBC-specific metadata.
-3. Persist engine identity/version and NBC snapshot state.
-4. Expose bounded market-data streaming.
+1. Register `nbc-v1` explicitly per run.
+2. Persist engine identity, version/config and recovery state.
+3. Translate common commands/events while retaining NBC metadata.
+4. Expose bounded streaming and private reports.
+5. Test the Bunting client and QUARCC execution engine against NBC through public interfaces only.
 
-### Phase 6: legacy compatibility
+### Phase 6: compatibility profile
 
-Implement and validate registration/start, market/order WebSockets, fills/errors, aliases, and `DONE` behavior against captured fixtures.
+Implement the observed registration, run, market WebSocket, order WebSocket, limit/cancel, fill/error and `DONE` profile. Add optional extensions under separate protocol/version identifiers rather than silently changing legacy behavior.
 
 ## Required tests
 
-### Determinism
+### Evidence and compatibility
 
-- same engine version, scenario, seed, and external command stream produces identical event bytes and state hash;
-- snapshot plus tail replay equals uninterrupted execution;
-- unrelated-agent insertion does not perturb existing named random streams where the specification requires isolation;
-- same-time ordering is exact and documented.
+- every external fixture records source, date/version and whether observed or documentation-derived;
+- registration/start, authentication, market/order connections, limit order, cancel, fill, error and `DONE` sequences;
+- quantity/open-order/run limit behavior for the selected profile;
+- unknown/unsupported operations produce explicit errors.
 
-### Market behavior
+### Determinism and recovery
 
-- order acceptance/rejection/cancel/fill sequences;
-- price-time or NBC-specific priority rules;
-- market-data snapshot/delta correctness;
-- participant inventory/cash and scoring consistency;
-- phase, shock, and run-completion behavior.
+- same engine/scenario/config/seed and external command stream produces identical Bunting events and state hash;
+- snapshot plus replay equals uninterrupted Bunting execution;
+- ordering and RNG version changes require a new engine/model version.
 
-### Scenarios and agents
+These prove the Rust port’s contract; they do not prove equivalence to unobserved Java internals.
 
-- strict field validation and exact unit conversion;
-- golden vectors for recovered formulas;
-- distributional tests for stochastic behavior with stated tolerances;
-- all unresolved parameters reject or remain inert.
+### Market/scenario behavior
 
-### Compatibility
-
-- legacy registration/start and scenario aliases;
-- market snapshots, order messages, fills, errors, and `DONE` sequences;
-- timeout/disconnect behavior;
-- exact decimal conversion or explicit rejection.
-
-### Cross-engine integration
-
-- Bunting can create and run both `orderbook-v1` and `nbc-v1` explicitly;
-- the Bunting client and QUARCC execution engine can submit ordinary commands to NBC;
-- no external execution package receives direct mutable NBC state.
+- checked unit conversion and strict field validation;
+- clean-room matching invariants;
+- market-data and participant execution consistency;
+- agent/model golden and distributional tests with provenance;
+- scoring and termination consistency for rules that are actually specified.
 
 ## Completion criteria
 
-The NBC port is complete when it can run its scenarios deterministically as a first-class Bunting market engine, publish compatible market data, recover from snapshots, pass behavioral/compatibility tests, and document every intentional divergence from the reference.
+The first NBC Rust port is complete when it:
+
+- implements a documented `nbc-v1` market-engine specification;
+- supports the evidenced external compatibility profile;
+- runs versioned scenarios deterministically;
+- recovers through Bunting snapshots/replay;
+- publishes bounded market/private data;
+- records every reference-proven, Bunting-added and unresolved behavior;
+- makes no unsupported claim of internal equivalence to the missing Java implementation.
