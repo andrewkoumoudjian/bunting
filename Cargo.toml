@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/quarcc-trading-engine",
+  "crates/origin-store",
+  "crates/command-transaction",
   "crates/market-types",
   "crates/market-events",
   "crates/orderbook",
@@ -23,6 +26,8 @@ bunting-market-types = { path = "crates/market-types" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
 worker = "=0.8.5"
 
 [workspace.lints.rust]

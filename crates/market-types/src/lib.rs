@@ -2,8 +2,10 @@
 //! Strongly typed, fixed-point primitives shared by the Bunting market kernel.
 
 use core::fmt;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NumericError {
     NonPositiveQuantity,
     InvalidPriceBounds,
@@ -19,7 +21,20 @@ impl fmt::Display for NumericError {
 
 macro_rules! integer_newtype {
     ($name:ident, $inner:ty) => {
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            Default,
+            Deserialize,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+        )]
+        #[serde(transparent)]
         #[repr(transparent)]
         pub struct $name(pub $inner);
 
@@ -59,7 +74,20 @@ integer_newtype!(EventSequence, u64);
 
 macro_rules! identifier {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            Default,
+            Deserialize,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+        )]
+        #[serde(transparent)]
         #[repr(transparent)]
         pub struct $name(u128);
 
@@ -90,7 +118,7 @@ identifier!(CommandId);
 identifier!(EventId);
 identifier!(CorrelationId);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PriceBounds {
     pub min: PriceTicks,
     pub max: PriceTicks,

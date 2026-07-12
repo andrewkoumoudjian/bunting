@@ -12,24 +12,27 @@ This pathway implements ADR 0013 and replaces the previous custom-order-book/Dur
 6. Replace conflicting architecture, ADR, reference, and Codex instructions.
 7. Pin the high-value Joaquín repositories under `ref/` and document their adoption status.
 
-## Next PR: command transaction and origin store
+## Implemented: command transaction and origin store
 
-Implement one vertical slice:
+The current implementation completes this vertical slice:
 
 ```text
 submit limit -> expected-version load -> restore/cache -> risk -> OrderBook-rs
              -> canonical events -> ledger -> origin commit -> cache put -> response
 ```
 
-Required work:
+Implemented work:
 
-- D1 or equivalent origin schema for run version, commands, events, idempotency, and snapshot metadata;
-- atomic expected-version commit proof;
+- D1 schema for run version, commands, canonical events, idempotency, private projections, and snapshot metadata;
+- transactional D1 batch guarded by expected version, plus a contended in-memory concurrency proof;
 - upstream-to-Bunting event translation;
 - participant/order ownership index;
 - exact conversion between Bunting IDs/units and upstream IDs/units;
 - cache miss and invalid-snapshot recovery;
-- integration tests for duplicate command, version conflict, fill, cancellation, and restart.
+- authenticated bounded Worker routes for limit GTC submission and cancellation;
+- integration tests for duplicates, command-ID conflict, version conflict, fills, owner cancellation, risk rejection, cache/origin failure, and restart.
+
+The initial slice stores a complete authoritative package and private projection after every command. Its recovery event tail is therefore empty, while canonical events remain durable for audit and later coarser snapshot intervals.
 
 ## Following PR: streaming
 

@@ -1,0 +1,20 @@
+[package]
+name = "bunting-command-transaction"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+bunting-ledger = { path = "../ledger" }
+bunting-market-events.workspace = true
+bunting-market-types.workspace = true
+bunting-orderbook = { path = "../orderbook" }
+bunting-origin-store = { path = "../origin-store" }
+bunting-risk-engine = { path = "../risk-engine" }
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

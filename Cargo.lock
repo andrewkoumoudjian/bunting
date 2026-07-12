@@ -44,13 +44,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bunting-command-transaction"
+version = "0.1.0"
+dependencies = [
+ "bunting-ledger",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-orderbook",
+ "bunting-origin-store",
+ "bunting-risk-engine",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "bunting-edge-api"
 version = "0.1.0"
 dependencies = [
+ "bunting-command-transaction",
+ "bunting-market-events",
  "bunting-market-types",
  "bunting-orderbook",
+ "bunting-origin-store",
  "bunting-worker-cache",
  "serde",
+ "serde_json",
  "worker",
 ]
 
@@ -60,6 +78,7 @@ version = "0.1.0"
 dependencies = [
  "bunting-market-events",
  "bunting-market-types",
+ "serde",
 ]
 
 [[package]]
@@ -67,20 +86,38 @@ name = "bunting-market-events"
 version = "0.1.0"
 dependencies = [
  "bunting-market-types",
+ "serde",
 ]
 
 [[package]]
 name = "bunting-market-types"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bunting-orderbook"
 version = "0.1.0"
 dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
  "getrandom 0.3.4",
  "orderbook-rs",
  "pricelevel",
  "uuid",
+]
+
+[[package]]
+name = "bunting-origin-store"
+version = "0.1.0"
+dependencies = [
+ "bunting-ledger",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-risk-engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -90,6 +127,7 @@ dependencies = [
  "bunting-ledger",
  "bunting-market-events",
  "bunting-market-types",
+ "serde",
 ]
 
 [[package]]
@@ -687,6 +725,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quarcc-trading-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

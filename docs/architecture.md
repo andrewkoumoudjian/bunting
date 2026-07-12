@@ -58,6 +58,9 @@ User strategy source
 - `orderbook`: thin version-pinned adapter around `OrderBook-rs`.
 - `ledger`: participant cash, inventory, reservation, position, fee, and P&L projections.
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
+- `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
+- `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
+- `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later crates: scenario clock, scenario engine, agent models, protocol-native, FIX, replay exports, and scoring.
 
@@ -139,6 +142,10 @@ commit(command, expected_version, event_batch, snapshot_metadata)
 The commit succeeds only when the current run version equals `expected_version`. A loser reloads the new state and returns or retries according to a bounded policy.
 
 Workers Cache does not provide this compare-and-swap function and cannot be used as a lock.
+
+The D1 adapter stores `u128` identifiers and `u64` sequences as decimal `TEXT`, avoiding JavaScript's 53-bit integer boundary. One D1 `batch()` inserts a command guard only when the run version matches, conditionally appends every event, result, and snapshot row, then conditionally updates the complete recovery projection. A zero-row final update is a sequence conflict; any statement error rolls back the batch.
+
+The initial slice writes an authoritative upstream package and complete private projection after every command. Its event tail is empty without making Workers Cache authoritative; canonical events are still appended for audit and later bounded-tail replay.
 
 ## 8. Snapshot and Cache API
 
