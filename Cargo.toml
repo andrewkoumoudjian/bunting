@@ -3,6 +3,11 @@ resolver = "2"
 members = [
   "crates/market-types",
   "crates/market-events",
+  "crates/orderbook",
+  "crates/ledger",
+  "crates/risk-engine",
+  "crates/worker-cache",
+  "workers/edge-api",
 ]
 exclude = ["ref", "vendor"]
 
@@ -11,6 +16,14 @@ edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.88"
 repository = "https://github.com/andrewkoumoudjian/bunting"
+
+[workspace.dependencies]
+bunting-market-events = { path = "crates/market-events" }
+bunting-market-types = { path = "crates/market-types" }
+orderbook-rs = { version = "=0.10.3", default-features = false }
+pricelevel = "=0.8.4"
+serde = { version = "1", features = ["derive"] }
+worker = "=0.8.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

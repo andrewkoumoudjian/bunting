@@ -1,0 +1,13 @@
+[package]
+name = "bunting-risk-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+[dependencies]
+bunting-ledger = { path = "../ledger" }
+bunting-market-events = { path = "../market-events" }
+bunting-market-types = { path = "../market-types" }
+[lints]
+workspace = true
