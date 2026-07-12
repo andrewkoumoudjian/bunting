@@ -1,130 +1,280 @@
-# Port note: C++ QUARCC trading engine
+# Port plan: QUARCC trading/execution engine to Rust
+
+## Role
+
+The QUARCC trading engine is a participant-side execution engine for a user, trader, or strategy operating outside the market. It is not a market engine and does not own authoritative venue state.
+
+Its purpose in Bunting is to let users test and optionally enable a realistic execution stack against a Bunting market engine or another venue. It consumes market data and strategy signals, manages local and venue order state, applies participant-side controls, routes orders, reconciles reports, and tracks positions.
+
+Bunting must remain usable without this package.
+
+See ADR 0014.
 
 ## Source
 
-- Local source: `ref/quarcc-trading-engine`
-- Bunting source snapshot: `bd90e7e9f7402bb3e7f5e1f085b8e291c016f798`
-- Key paths:
-  - `engine-cpp/include/trading/core/order_manager.h`
-  - `engine-cpp/src/core/order_manager.cpp`
-  - `engine-cpp/include/trading/core/trading_engine.h`
-  - `engine-cpp/src/core/trading_engine.cpp`
-  - `engine-cpp/include/trading/core/position_keeper.h`
-  - execution, journal, order-store and feed interfaces under `engine-cpp/include/trading/interfaces/`
-  - `engine-cpp/tests/unit/test_order_manager.cpp`
+- reference tree: `ref/quarcc-trading-engine`;
+- public contracts under `contracts/`;
+- C++ engine under `engine-cpp/`;
+- Python client under `python_client/`;
+- key concepts include trading engine, order manager, position keeper, feed registry, simulated feed, execution service, order store, journal, risk checks, gateways, and gRPC server.
 
 ## License status
 
-No repository-level license was identified during this audit. Until ownership and license are recorded, use this source only as an internal behavioral oracle. Do not copy or mechanically translate implementation text into Bunting.
+No repository-level license was identified in the recorded audit. Until ownership and license are resolved:
 
-## Architectural conclusion
+- preserve public service/record names and discriminants only as required for compatibility;
+- do not copy or mechanically translate implementation text;
+- derive behavior from interfaces, tests, public contracts, captured sequences, and an independently written transition specification;
+- record any authority or relicensing decision before direct porting.
 
-The reference combines two concerns that Bunting must separate:
+## Target package
 
-1. exchange-side matching, risk, ledger and canonical events;
-2. participant/venue-side order lifecycle, identifier mapping and reconciliation.
+The mechanical repository move preserves the current package name first:
 
-The first belongs in the deterministic kernel. The second belongs in the new protocol-neutral `crates/order-reconciliation` boundary and native/protocol adapters. Neither inherits the C++ threads, callbacks, gRPC or native storage model.
+```text
+packages/quarcc-trading-engine/
+```
 
-## Retained behavior
+A later semantic PR should rename and expand it to:
 
-- explicit order lifecycle states and invalid-transition rejection;
-- typed correlation among client, local and external order IDs;
-- duplicate and out-of-order execution handling;
-- deferred reconciliation when venue messages arrive unexpectedly;
-- kill-switch activation as durable state;
-- position projection from executions;
-- journal/store tests as command/event fixture sources;
-- gateway and feed interfaces at adapter boundaries.
+```text
+packages/quarcc-execution-engine/
+  AGENTS.md
+  Cargo.toml
+  src/
+    lib.rs
+    config.rs
+    engine.rs
+    command.rs
+    event.rs
+    errors.rs
+    ids.rs
+    order.rs
+    lifecycle.rs
+    reconciliation.rs
+    planner.rs
+    positions.rs
+    risk.rs
+    market_data.rs
+    strategy_signal.rs
+    journal.rs
+    snapshot.rs
+    transport.rs
+  tests/
+    lifecycle.rs
+    reconciliation.rs
+    recovery.rs
+    simulated_market.rs
+```
 
-## Rejected behavior
+Native-only adapters should be isolated from the portable core, for example:
 
-- `std::jthread`, mutexes and cross-thread event queues in domain code;
-- callback-driven recursive mutation;
-- gRPC or sockets in the market kernel;
-- native SQLite abstractions inside domain crates;
-- wall-clock reads;
-- floating-point prices or quantities;
-- race recovery caused only by separate gateway/dispatch threads;
-- one order manager owning both exchange matching and remote broker workflow.
+```text
+packages/quarcc-execution-native/
+  gRPC, SQLite/filesystem journals, native sockets, external broker gateways
+```
 
-## Implemented Rust compatibility port
+or as clearly separated optional features if that does not contaminate the Wasm-safe dependency graph.
 
-`crates/quarcc-trading-engine` provides WASM-safe Rust enums, request and response records, market-data records, position records, and a transport-neutral `ExecutionService` trait matching the names and numeric discriminants of the legacy `quarcc.v1` surface. It contains no threads, sockets, filesystem access, SQLite dependency, ambient clock, or matching engine.
+## Existing implementation
 
-The records retain legacy floating-point fields because changing them would break existing generated clients. Those values are quarantined at the compatibility boundary and require checked fixed-point conversion before entering Bunting domain logic. Native gRPC code generation and a distributable Python wheel remain packaging work; the shared Rust contract passes `wasm32-unknown-unknown`.
+The current Rust crate provides a WASM-safe compatibility surface for the legacy `quarcc.v1` records, enums, market-data/position records, and transport-neutral `ExecutionService` trait.
 
-## Exact Bunting mapping
+That work is a valid first layer, but it is not the final purpose of the package. The port must grow into a participant-side execution engine while preserving the compatibility contract.
 
-| C++ concept | Bunting destination | Port form |
-|---|---|---|
-| legacy service records and names | `crates/quarcc-trading-engine` | behavior-derived WASM-safe compatibility contract |
-| order command and exchange lifecycle events | `crates/market-events` | canonical versioned commands/events and stable rejection codes |
-| exchange matching state | `crates/orderbook` | pinned `OrderBook-rs` adapter; no independent matcher |
-| local/client/external ID map | `crates/order-reconciliation/ids.rs` | typed mapping with collision and idempotency rules |
-| ack/reject/fill/cancel transitions | `crates/order-reconciliation/transition.rs` | explicit deterministic state machine |
-| desired/live order diff | `crates/order-reconciliation/planner.rs` | bounded submit/cancel/replace/requery intents |
-| execution gateway | native/FIX/NBC/RITC/Nautilus adapters | transport trait at client/host boundary |
-| journal | `crates/origin-store` and Worker D1 adapter | canonical event stream with expected sequence and idempotency |
-| order store | hot aggregate projection and snapshots | rebuilt from events; snapshot non-authoritative |
-| position keeper | `crates/ledger` | checked execution-event projection |
-| kill switch | `crates/risk-engine` and reconciliation planner | durable admission state plus deterministic cancel plan |
-| feed registry | Worker subscriptions | non-authoritative fan-out after commit |
-| protobuf/gRPC | protocol adapters only | no transport-generated types in canonical events |
+Legacy floating-point fields remain quarantined at the protocol boundary and must convert through checked fixed-point types before entering execution, risk, or position logic.
 
-## Reconciliation state requirements
+## Execution-engine responsibilities
 
-At minimum model:
+### Strategy and user input
+
+- accept strategy signals or explicit user order intents;
+- validate bounded order parameters;
+- assign stable client/local identifiers;
+- preserve correlation and causation across retries;
+- expose typed submit, cancel, replace, and query intents.
+
+### Market-data consumption
+
+- subscribe to committed Bunting or venue market data;
+- maintain a bounded local view suitable for strategy/execution decisions;
+- detect stream gaps, resets, and stale data;
+- never treat local market data as authoritative venue state.
+
+### Order management
+
+Model at least:
 
 - pending submit;
 - acknowledged/live;
 - partially filled;
 - cancel pending;
-- replace pending when added later;
+- replace pending;
 - canceled;
 - rejected;
 - fully filled;
 - externally discovered after reconnect;
 - quarantined unknown/collision state.
 
-Every normalized venue report includes venue/source identity, report ID or deduplication key, client/local/external IDs when available, cumulative and last quantity, exact price, logical/received sequence metadata and reason code.
+Request success does not imply venue acknowledgement or fill.
 
-Request success never implies acknowledgement or fill. Duplicate reports are idempotent. Out-of-order reports produce a documented transition or quarantine result rather than hidden deferred callbacks.
+### Reconciliation
 
-## Implementation sequence
+- map client, local, and venue order identifiers;
+- handle duplicate and out-of-order reports idempotently;
+- reconcile desired orders with live venue state;
+- recover after reconnect from venue snapshots and report tails;
+- quarantine impossible or ambiguous states instead of silently mutating;
+- produce bounded submit/cancel/replace/requery actions.
 
-1. Inventory lifecycle enums, fields, rejection paths and C++ tests.
-2. Write a language-neutral transition table.
-3. Define typed IDs in `market-types`.
-4. Define normalized venue reports and reconciliation actions.
-5. Implement pure transition/replay logic in `order-reconciliation`.
-6. Convert representative C++ test sequences into semantic JSON fixtures without copying source text.
-7. Implement canonical order events and matching separately.
-8. Implement kill-switch and limits in `risk-engine`.
-9. Project executions into `ledger`.
-10. Integrate reconciliation in RITC, FIX, Nautilus and other external adapters.
+### Participant risk and positions
+
+- project positions and cash/exposure from execution reports;
+- enforce user-configured execution limits before routing;
+- expose a participant-side kill switch and deterministic cancel plan;
+- distinguish local estimates from authoritative venue/Bunting account reports;
+- reconcile discrepancies explicitly.
+
+### Routing and gateways
+
+Route through transport adapters such as:
+
+- Bunting native HTTP/WebSocket client;
+- FIX;
+- legacy `quarcc.v1` gRPC;
+- simulated feed/venue adapters;
+- future external broker gateways.
+
+Transport code must not define lifecycle semantics. The core engine emits routing intents and consumes normalized venue reports.
+
+### Journal and recovery
+
+- persist command intent, normalized reports, lifecycle transitions, positions, and configuration revisions;
+- snapshot portable state;
+- replay deterministically;
+- keep native storage adapters outside the portable core.
+
+## Authority boundary
+
+The QUARCC execution engine may:
+
+- submit commands;
+- consume market data and private execution/account reports;
+- maintain local execution state;
+- apply stricter participant-side limits;
+- retry, cancel, reconcile, and stop routing.
+
+It may not:
+
+- match orders;
+- write Bunting canonical events directly;
+- mutate a market engine or authoritative ledger through an internal reference;
+- assign authoritative venue sequence numbers;
+- treat local acknowledgements or positions as venue truth;
+- bypass Bunting authentication, risk, idempotency, or expected-version rules.
+
+## Relationship to Bunting packages
+
+The execution engine should depend on reusable package surfaces such as:
+
+- `packages/market-types` for exact IDs and units;
+- `packages/client` for Bunting transport and stream recovery;
+- `packages/fix` for FIX codecs/sessions when enabled;
+- narrowly scoped reconciliation and journal packages if later extracted.
+
+It must not depend on `bunting-rs` internals or `apps/edge-api`. Integration occurs through public client/protocol contracts.
+
+## Relationship to market engines
+
+The same QUARCC execution engine should be testable against:
+
+- a deterministic in-memory fake venue;
+- the default OrderBook-rs-backed Bunting market engine;
+- the NBC Rust market engine;
+- external venues through gateways where supported.
+
+Market-engine-specific details belong in adapters. The execution lifecycle core should consume normalized reports.
+
+## Port phases
+
+### Phase 0: behavioral inventory
+
+1. Inventory contracts, engine state, order manager, position keeper, feed registry, simulated feed, gateways, storage, journal, risk, tests, and failure paths.
+2. Produce a language-neutral lifecycle/reconciliation table.
+3. Resolve license/ownership or establish clean-room rules.
+4. Record which behaviors are portable core versus native adapter behavior.
+
+### Phase 1: compatibility and exact types
+
+1. Retain the existing `quarcc.v1` records and discriminants.
+2. Add checked canonical conversions.
+3. Define typed local/client/venue IDs and normalized venue reports.
+4. Add compatibility fixtures for serialization and service behavior.
+
+### Phase 2: portable execution core
+
+1. Implement lifecycle transitions and invalid-transition rejection.
+2. Implement desired/live reconciliation and bounded action planning.
+3. Implement participant positions, execution risk, kill switch, snapshots, and replay.
+4. Add property tests for arbitrary report ordering and duplication.
+
+### Phase 3: Bunting client integration
+
+1. Connect through the public Bunting client package.
+2. Consume committed market data and private reports.
+3. Route submit/cancel/replace commands with idempotency and expected versions.
+4. Test reconnect/reset recovery.
+
+### Phase 4: optional native adapters
+
+Add gRPC packaging, Python bindings/wheel, SQLite or file journals, FIX, and external broker gateways only behind isolated adapters/features with dedicated tests and licenses.
+
+### Phase 5: user-facing enablement
+
+- expose configuration for enabling the QUARCC engine in a user test setup;
+- provide example strategy-signal and manual-order flows;
+- provide observability for orders, positions, risk, reconciliation, and gateway state;
+- make clear that enabling the engine does not change the selected market engine.
 
 ## Required tests
 
-- submit, acknowledgement, partial fill, full fill and cancel paths;
-- cancel versus fill ordering;
+### Lifecycle
+
+- submit, acknowledge, reject, partial fill, full fill, cancel, cancel reject, and replace;
 - fill before acknowledgement;
-- duplicate external execution/report ID;
-- unknown or colliding external ID;
-- reconnect snapshot discovers missing live order;
-- cancel reject returns order to the correct live state;
-- kill switch blocks new submits and produces deterministic bounded cancel intents;
-- replay and snapshot/restore yield identical reconciliation and ledger state;
-- generated transition sequences never reach impossible states;
-- no expected result depends on C++ thread scheduling.
+- cancel versus fill ordering;
+- duplicate report IDs;
+- unknown/colliding external IDs;
+- invalid transitions and quarantine.
 
-## Differential-testing posture
+### Reconciliation
 
-The C++ source is an OMS/lifecycle reference, not the exchange matching oracle. Comparison is semantic: transitions, accepted/rejected actions, quantities, mappings and position deltas. Liquibook, OrderBook-rs and exchange-core remain the exchange-side matching/risk/accounting oracles.
+- reconnect discovers missing or unexpected live orders;
+- desired/live planning is bounded and deterministic;
+- repeated venue snapshots are idempotent;
+- stale market data or missing private reports produces an explicit safe state.
 
-## Copy status
+### Positions and risk
 
-- Code copied: none.
-- Code translated: none; public field names and enum discriminants were behavior-derived.
-- Target crate boundaries: `crates/quarcc-trading-engine` for compatibility and `crates/order-reconciliation` for future broker lifecycle state.
-- Current use: WASM-safe shared Rust contract plus behavioral oracle for future native and Python packaging.
+- execution-driven position projection;
+- local versus authoritative position reconciliation;
+- pre-route limit rejection;
+- kill switch blocks new orders and generates deterministic cancel actions.
+
+### Recovery
+
+- snapshot plus replay equals uninterrupted execution;
+- journal duplicates do not change state;
+- corrupted/incompatible snapshots reject safely.
+
+### Integration
+
+- simulated venue adapter;
+- default Bunting market engine;
+- NBC market engine;
+- Bunting stream reset and expected-version conflict;
+- transport failure without lifecycle corruption.
+
+## Completion criteria
+
+The port is complete when a user can optionally run the QUARCC execution engine outside a selected market engine, feed it strategy/user intents and market data, route orders through a supported adapter, recover/reconcile safely, and inspect deterministic order, risk, and position state.
