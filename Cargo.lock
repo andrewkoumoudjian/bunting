@@ -131,6 +131,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bunting-rs"
+version = "0.1.0"
+dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+]
+
+[[package]]
 name = "bunting-worker-cache"
 version = "0.1.0"
 dependencies = [
