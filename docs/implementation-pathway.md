@@ -34,6 +34,31 @@ Implemented work:
 
 The initial slice stores a complete authoritative package and private projection after every command. Its recovery event tail is therefore empty, while canonical events remain durable for audit and later coarser snapshot intervals.
 
+## Immediate PR: repository organization
+
+Execute [`repository-reorganization.md`](repository-reorganization.md) as a behavior-preserving pull request:
+
+- keep the repository root as the Cargo workspace root;
+- add `bunting-rs` as the small public facade package;
+- keep internal Rust libraries under `crates/`;
+- move `workers/edge-api` to `apps/edge-api` with history preserved;
+- reserve `packages/` for independently distributed SDKs rather than internal crates;
+- repair Cargo, CI, Wrangler, migration, documentation, and agent-instruction paths atomically;
+- establish an ignored `dist/` release boundary without committing generated output.
+
+Do not combine this move with crate renames, dependency upgrades, new order behavior, streaming, or persistence changes.
+
+## Immediate product-readiness PR: staging and run provisioning
+
+The order routes intentionally reject unknown runs, so a usable deployment requires an explicit provisioning boundary before streaming becomes valuable.
+
+- create the real D1 database and environment-specific configuration;
+- apply migrations and install the API token secret;
+- add an administrative run-provisioning API or CLI for runs, instruments, participants, opening balances, and limits;
+- keep provisioning authenticated, idempotent, bounded, and separate from participant order entry;
+- add staging smoke tests for provisioning, submit, cancel, duplicate command, stale version, cache miss, and restart recovery;
+- document migration, rollback, secret rotation, and environment promotion.
+
 ## Following PR: streaming
 
 - plain Worker WebSocket endpoint;
@@ -41,7 +66,8 @@ The initial slice stores a complete authoritative package and private projection
 - committed event-sequence cursors;
 - reset and event-tail recovery;
 - bounded subscriptions, frames, and backlog;
-- no reliance on isolate-local resume rings.
+- no reliance on isolate-local resume rings;
+- no public or private publication before the origin commit succeeds.
 
 ## Following PR: broader upstream capabilities
 
@@ -60,6 +86,14 @@ Scenario agents propose commands and never modify the upstream book directly. Us
 
 Dynamic Worker outputs remain external participant actions and use the same expected-version command path.
 
+Prioritize:
+
+1. scenario schema and provenance;
+2. deterministic run clock and named PRNG streams;
+3. explicit participant and instrument provisioning;
+4. NBC agent-model ports with unresolved legacy values retained as metadata;
+5. scoring, replay, and conformance fixtures.
+
 ## FIX and native adapters
 
 Protocol implementations translate to Bunting commands and events. They do not own a second matching engine.
@@ -68,6 +102,15 @@ Protocol implementations translate to Bunting commands and events. They do not o
 - QuickFIX/J and Fixer remain conformance oracles.
 - Nautilus and RITC remain external/native adapters.
 - IronSBE is evaluated later for compact market-data and order-entry frames.
+- A Rust FIX codec belongs in a focused crate; a deployable gateway belongs under `apps/` only when implemented.
+
+## SDK and release packaging
+
+- expose stable client-facing APIs through the `bunting-rs` facade;
+- place independently versioned Python or JavaScript SDKs under `packages/`;
+- produce the complete Worker bundle and raw Wasm under ignored `dist/` paths;
+- attach versioned bundles, checksums, and build metadata to GitHub Releases;
+- keep native gRPC and Python compatibility packaging blocked until licensing and source-provenance requirements are resolved.
 
 ## Dependency upgrade gate
 
