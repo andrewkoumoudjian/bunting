@@ -7,6 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 orderbook-rs.workspace = true
 pricelevel.workspace = true
 uuid = { version = "=1.23.4", features = ["js"] }
