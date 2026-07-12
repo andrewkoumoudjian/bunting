@@ -1,225 +1,226 @@
 # Repository reorganization and Codex execution plan
 
-Status: corrected planning baseline for the next focused pull request
+Status: source-audited planning baseline for the next focused pull request
 
 Last reviewed: 2026-07-12
 
-This plan starts from `main` after PR #3. It implements ADR 0014 and reflects the intended architecture:
+This plan starts from `main` after PR #3 and the reference functionality audit. The reorganization pull request is mechanical and behavior-preserving. It does not implement NBC, expand QUARCC, select a FIX stack, fork OrderBook-rs, or change runtime semantics.
 
-- `packages/` contains the reusable Rust components that compose Bunting;
-- `bunting-rs/` is the integrated product/composition project;
-- NBC is a complete market-engine package;
-- the QUARCC trading engine is an optional participant-side execution-engine package;
-- generated Wasm and release bundles go to ignored `out/` paths and GitHub Releases.
+Required reading:
 
-The reorganization pull request must remain behavior-preserving. Engine ports and package renames follow in separate pull requests.
+- `AGENTS.md`;
+- `docs/reference-functionality-audit.md`;
+- `docs/reference-adoption.md`;
+- `docs/architecture.md`;
+- ADR 0013;
+- ADR 0014;
+- scoped `AGENTS.md` files under every moved path.
 
-## Core interpretation
+## Audited architecture interpretation
 
-### NBC
+### Market engines
 
-NBC is not merely a set of scenarios. The Rust port is a market engine that owns venue/simulation behavior: run lifecycle, logical clock, scenario execution, agent populations, deterministic randomness, order processing, market data, snapshots/replay, and NBC compatibility.
+- The current default Bunting market engine uses released `OrderBook-rs = 0.10.3` through a first-party adapter.
+- NBC is a complete venue-side market-engine port target.
+- The current NBC snapshot proves its packaged application/config/scenarios and observable external protocol, but not its missing Java internals. The package plan must preserve that evidence boundary.
 
-The NBC engine may reuse shared Bunting primitives and the common order-book package when they preserve required behavior. It remains one coherent engine package even when implemented with internal modules or support crates.
+### Participant execution and strategy packages
 
-### QUARCC trading engine
+- QUARCC is an optional external participant execution/OMS engine.
+- RITC market making, NautilusTrader, Barter, market-maker-rs and the NBC student client are participant-side strategy/execution/client references, not market engines.
 
-The QUARCC trading engine is not the venue or market kernel. It runs for a user, trader, or strategy outside the market. It consumes market data, manages local and venue order state, performs participant-side risk and reconciliation, tracks positions, and routes commands through Bunting client APIs, FIX, or other gateways.
+### Protocol references
 
-Bunting must run without it. Users may enable it to test execution and trading behavior against Bunting market engines.
-
-See [`docs/adr/0014-market-and-execution-engine-boundaries.md`](adr/0014-market-and-execution-engine-boundaries.md).
+IronFix, fixer, FerrumFIX, QuickFIX/J and IronSBE have different codec, dictionary, session, store, transport, generation and runtime layers. The mechanical reorganization must not create one empty catch-all `packages/fix` or `packages/sbe` directory before concrete components are selected.
 
 ## Workspace decision
 
-Keep the repository root as one virtual Cargo workspace with one committed `Cargo.lock` and workspace-wide `.cargo/config.toml`.
+Keep one virtual Cargo workspace at the repository root with:
 
-Use these ownership levels:
+- one committed `Cargo.lock`;
+- workspace-wide `.cargo/config.toml`;
+- all first-party Rust packages and apps as workspace members;
+- `ref/` and `vendor/` excluded.
 
-1. `packages/`: reusable Rust component packages that can be tested and versioned independently;
-2. `bunting-rs/`: the integrated Bunting library/product that composes packages;
-3. `bunting-rs/crates/`: Bunting-private implementation crates only when code is not reusable as a package;
-4. `apps/`: deployable entrypoints that depend on `bunting-rs`;
-5. `out/`: generated release assembly, ignored by Git and uploaded by CI.
+Do not create a nested workspace inside `bunting-rs`.
 
-Do not create a nested Cargo workspace inside `bunting-rs`. The root `Cargo.toml` owns every member, including `packages/*`, `bunting-rs`, `bunting-rs/crates/*`, and `apps/*`.
+## Target ownership levels
 
-Cargo workspaces share one lockfile and output directory. The root workspace prevents dependency drift while allowing independently structured packages.
+1. `packages/`: reusable first-party Rust packages that compose Bunting;
+2. `bunting-rs/`: integrated product/composition package;
+3. `bunting-rs/crates/`: justified product-private glue only;
+4. `apps/`: deployable entrypoints;
+5. `scenarios/`: versioned human-reviewable scenario data/provenance;
+6. `schemas/`: versioned protocol/file schemas when implemented;
+7. `tests/`: cross-package and black-box conformance;
+8. `tools/`: repository/release automation;
+9. `ref/`: read-only evidence;
+10. `vendor/`: approved copied/patched third-party source;
+11. `out/`: generated ignored release assembly.
 
-## Target tree
+## Target tree after the mechanical PR
 
 ```text
 /
-├── Cargo.toml                         # one virtual Cargo workspace
-├── Cargo.lock                         # one committed lockfile
+├── Cargo.toml
+├── Cargo.lock
 ├── .cargo/
-│   └── config.toml                    # workspace-wide Wasm config
+│   └── config.toml
 ├── AGENTS.md
 ├── README.md
-├── packages/                          # reusable components composing Bunting
+├── packages/
 │   ├── market-types/
 │   ├── market-events/
-│   ├── orderbook/                     # shared adapter; fork only if approved
+│   ├── orderbook/                    # first-party adapter; upstream remains a dependency
 │   ├── ledger/
 │   ├── risk-engine/
 │   ├── origin-store/
 │   ├── command-transaction/
 │   ├── worker-cache/
-│   ├── nbc-market-engine/             # complete NBC Rust market engine
-│   ├── quarcc-execution-engine/       # optional external trader engine
-│   ├── fix/                           # future FIX codec/session family
-│   ├── client/                        # future Bunting client package
-│   └── ...narrow simulator/algorithm packages
-├── bunting-rs/                        # integrated Bunting project
+│   └── quarcc-trading-engine/        # mechanical name only; semantic rename later
+├── bunting-rs/
 │   ├── AGENTS.md
 │   ├── Cargo.toml
-│   ├── src/
-│   │   ├── lib.rs
-│   │   ├── engine.rs                  # engine registry/selection
-│   │   ├── run.rs
-│   │   └── config.rs
-│   └── crates/                        # private glue only when justified
+│   └── src/
+│       └── lib.rs
 ├── apps/
-│   └── edge-api/                      # deployable Cloudflare Worker
-├── scenarios/                         # scenario documents and fixtures
+│   └── edge-api/
+├── scenarios/
 │   └── nbc/
-├── schemas/                           # JSON Schema, Proto, FIX/SBE schemas
-├── tests/                             # cross-package/end-to-end conformance
-├── tools/                             # xtask/release/repository tooling
+├── tests/
 ├── docs/
-│   ├── adr/
-│   └── ports/
-├── ref/                               # read-only, commit-pinned evidence
-├── vendor/                            # approved built third-party source only
-└── out/                               # generated release bundles; ignored
+├── ref/
+├── vendor/
+└── out/                              # generated and ignored
 ```
 
-Do not create placeholder directories except when an instruction file or initial owned source is introduced.
+Do not create empty future packages. In particular, the mechanical PR does not create:
+
+- `packages/nbc-market-engine`;
+- `packages/quarcc-execution-engine` under its final name;
+- FIX/SBE packages;
+- algorithm/model packages;
+- an OrderBook-rs fork;
+- empty client or simulator packages.
+
+They are introduced only with real source, tests and an approved boundary.
 
 ## Directory ownership
 
 | Path | Owns | Must not own |
 |---|---|---|
-| `packages/` | Reusable Rust components composing Bunting | Product-only wiring, deployment secrets, generated release output |
-| `packages/nbc-market-engine` | Complete NBC market/simulation engine | Trader-side OMS or Bunting deployment adapters |
-| `packages/quarcc-execution-engine` | Optional participant-side execution/OMS engine | Venue matching or authoritative Bunting market state |
-| `bunting-rs/` | Public Bunting API, package composition, engine selection, run orchestration | Copies of reusable package logic |
-| `bunting-rs/crates/` | Product-private glue with no independent package use | General primitives that belong under `packages/` |
-| `apps/` | Deployable binaries, Workers, CLIs, and gateways | Canonical domain definitions or reusable engine logic |
-| `scenarios/` | Human-reviewable scenario data and provenance | NBC runtime implementation |
-| `schemas/` | Versioned wire/file schemas | Handwritten business logic |
-| `tests/` | Cross-package, cross-engine, protocol, and deployment tests | Unit tests owned by one package |
-| `ref/` | Source evidence, exact revisions, examples, licenses | Production path dependencies |
-| `vendor/` | Approved local third-party source with notices and patches | General reference repositories |
-| `out/` | Reproducible release artifacts | Source of truth or compiler cache |
+| `packages/` | Reusable first-party Rust components | Copied third-party source, deployment configuration, product-only wiring |
+| `bunting-rs/` | Public composition API and selected package re-exports | Copies of reusable package logic or a second matcher |
+| `bunting-rs/crates/` | Product-private glue with no independent consumer | General primitives or future placeholders |
+| `apps/` | Deployable Worker/binary/CLI/gateway entrypoints | Canonical domain definitions or matching logic |
+| `scenarios/` | Scenario documents, fixtures and provenance | Executable NBC engine behavior |
+| `tests/` | Cross-package/engine/protocol/deployment tests | Unit tests owned by one package |
+| `ref/` | Exact external evidence and research snapshots | Production dependencies |
+| `vendor/` | Approved copied/patched upstream source with notices and patches | First-party code or general references |
+| `out/` | Reproducible release bundles | Source of truth or build cache |
 
-## Package rules
+## First-party package rules
 
-A top-level package must have:
+A package needs:
 
-- one clear responsibility;
-- a stable package name and documented public surface;
-- explicit dependency direction;
-- workspace-inherited metadata and lints;
-- native and, when relevant, Wasm tests;
-- an `AGENTS.md` when special rules apply;
-- no dependency on `apps/` or `bunting-rs`.
+- one implemented responsibility;
+- documented public surface and dependency direction;
+- workspace-inherited metadata/lints;
+- native tests and Wasm tests where relevant;
+- scoped instructions for special constraints;
+- no dependency on `bunting-rs` or `apps/`.
 
-Avoid generic dumping grounds such as `common`, `utils`, or one broad `algorithms` crate. Use narrowly named packages such as `market-making-models`, `arrival-processes`, or `execution-reconciliation` when the first implementation justifies them.
+Avoid generic `common`, `utils`, `algorithms`, `protocols`, `fix` or `sbe` dumping grounds. Select concrete names only after implementation proves a boundary.
 
-## Market-engine composition
+## OrderBook-rs rule
 
-`bunting-rs` must select a market engine explicitly per run. The run record stores an engine identifier and versioned engine configuration.
+The existing `crates/orderbook` becomes `packages/orderbook`. It remains the Bunting adapter around the released dependency.
 
-Initial engine families:
+A source fork is not part of this reorganization. Handle a future upstream issue through:
 
-- `orderbook-v1`: current Bunting engine using the OrderBook-rs-backed market path;
-- `nbc-v1`: Rust NBC market engine.
+1. configuration/features;
+2. upstream contribution;
+3. released upstream fix;
+4. a dedicated pinned fork repository;
+5. `vendor/orderbook-rs` only when an approved in-repository patched copy is necessary.
 
-The shared market-engine boundary should cover deterministic commands, time/step advancement, market data, snapshots, restore, state hashes, and canonical event translation. Engine-specific configuration must remain typed.
-
-## OrderBook-rs placement
-
-The current production path uses released `orderbook-rs = 0.10.3` through Bunting's adapter.
-
-During the mechanical reorganization:
-
-- move the existing adapter to `packages/orderbook`;
-- keep using the released upstream dependency;
-- do not create a fork merely because the package directory exists.
-
-If a fork becomes necessary for NBC compatibility or a release-blocking Wasm issue, approve it separately. The fork may live under `packages/orderbook-rs` when it is an intentional maintained component of the Bunting package set, or under `vendor/` when treated as patched third-party source. The ADR approving the fork must choose one model and document upstream synchronization, licensing, patches, and compatibility tests.
+Do not copy upstream source under `packages/orderbook`.
 
 ## Current-to-target move map
 
-The first reorganization PR is mechanical and preserves Cargo package names.
-
-| Current path | Target path | Action |
+| Current path | Target path | Mechanical action |
 |---|---|---|
-| `Cargo.toml` | `Cargo.toml` | Keep root workspace; change member paths |
-| `Cargo.lock` | `Cargo.lock` | Keep one lockfile |
-| `.cargo/config.toml` | `.cargo/config.toml` | Keep at workspace root |
-| `crates/market-types` | `packages/market-types` | `git mv`; preserve package name |
+| `Cargo.toml` | `Cargo.toml` | Keep workspace root; update member/dependency paths |
+| `Cargo.lock` | `Cargo.lock` | Keep one lockfile; regenerate only through Cargo if path metadata changes |
+| `.cargo/config.toml` | `.cargo/config.toml` | Keep at root |
+| `crates/market-types` | `packages/market-types` | `git mv`; preserve Cargo package name |
 | `crates/market-events` | `packages/market-events` | `git mv`; preserve package name |
-| `crates/orderbook` | `packages/orderbook` | `git mv`; preserve package name and upstream dependency |
+| `crates/orderbook` | `packages/orderbook` | `git mv`; preserve package name and released dependency |
 | `crates/ledger` | `packages/ledger` | `git mv`; preserve package name |
 | `crates/risk-engine` | `packages/risk-engine` | `git mv`; preserve package name |
 | `crates/origin-store` | `packages/origin-store` | `git mv`; preserve package name |
 | `crates/command-transaction` | `packages/command-transaction` | `git mv`; preserve package name |
 | `crates/worker-cache` | `packages/worker-cache` | `git mv`; preserve package name |
-| `crates/quarcc-trading-engine` | `packages/quarcc-trading-engine` | Move mechanically; rename/expand later |
-| `workers/edge-api` | `apps/edge-api` | `git mv`; update Cargo, Wrangler, migrations, docs, CI |
-| none | `bunting-rs` | Add integrated composition crate, initially thin |
-| `scenarios/nbc` | `scenarios/nbc` | Keep scenario documents separate from engine runtime |
-| generated Worker output | `out/edge-api/<version>/` | Generate and ignore; upload to Releases |
+| `crates/quarcc-trading-engine` | `packages/quarcc-trading-engine` | Move as-is; preserve package/API name |
+| `workers/edge-api` | `apps/edge-api` | `git mv`; update Cargo, Wrangler, migrations, docs and CI |
+| none | `bunting-rs` | Add one thin composition crate with no duplicated logic |
+| `scenarios/nbc` | `scenarios/nbc` | Keep |
+| generated Worker output | `out/edge-api/<version>/` | Generate, ignore and upload through release tooling |
 
-The initial move does not yet create `packages/nbc-market-engine`. Add that package in the NBC port PR with real source and tests. Do not represent NBC only through scenario packages.
+Do not move stub-only directories into the active package set. Review each scaffold separately after the mechanical PR; delete or retain instructions according to the audited roadmap.
 
-## Follow-up semantic package changes
+## Non-goals
 
-After the mechanical move:
-
-1. expand and rename `packages/quarcc-trading-engine` to `packages/quarcc-execution-engine`, preserving a migration path for the current `quarcc.v1` compatibility API;
-2. create `packages/nbc-market-engine` as the coherent Rust port of NBC;
-3. add a common market-engine contract or registry only after comparing the actual needs of the default and NBC engines;
-4. add FIX and client package families when implementation begins;
-5. introduce a maintained OrderBook-rs fork only through a dedicated ADR.
-
-## Non-goals of the mechanical PR
-
-- no engine behavior changes;
-- no Cargo package-name changes;
-- no NBC runtime implementation;
-- no QUARCC OMS/execution implementation beyond existing code;
+- no Cargo package renames;
+- no behavior or public Rust API changes beyond a new thin composition package;
+- no NBC implementation;
+- no QUARCC execution implementation beyond the existing compatibility crate;
+- no protocol-stack selection;
 - no dependency upgrades;
-- no D1 schema changes;
-- no order-type or streaming changes;
+- no D1 migration/schema changes;
+- no new order types or streaming;
 - no source copied from `ref/`;
-- no tracked `target/`, Worker `build/`, `out/`, or raw Wasm artifacts.
+- no generated `target/`, Worker `build/`, `out/` or raw Wasm committed;
+- no branch deletion inside the reorganization PR.
 
-## Codex execution contract
+# Codex execution contract
 
-### 1. Preflight
+## 1. Preflight and evidence
 
-1. Start from latest `main` containing ADR 0014 and this document.
-2. Confirm the worktree is clean.
-3. Read root `AGENTS.md`, this plan, `docs/architecture.md`, `docs/reference-adoption.md`, ADR 0013, ADR 0014, and scoped instructions under every moved path.
+1. Start from the latest `main` containing the source-backed reference audit.
+2. Confirm the worktree and submodule state are clean.
+3. Read all required documents and scoped instructions.
 4. Create `chore/repository-layout`; do not reorganize directly on `main`.
-5. Capture:
+5. Record the exact reference state without initializing/updating it:
 
 ```bash
-cargo metadata --locked --format-version 1 --no-deps
+git submodule status
+git ls-tree HEAD ref
+git status --short
+```
+
+6. Capture the pre-move workspace:
+
+```bash
+cargo metadata --locked --format-version 1 --no-deps > /tmp/bunting-metadata-before.json
 cargo test --locked --workspace
 cargo check --locked --workspace --target wasm32-unknown-unknown
 ```
 
-### 2. Move reusable crates to packages
+## 2. Move existing reusable crates only
 
-Use `git mv` for each current `crates/*` member listed in the move map. Preserve package names, public Rust paths, source contents, and tests. Do not combine or split packages in this PR.
+Use `git mv` for each implemented workspace crate in the move map. Preserve:
 
-Move `crates/quarcc-trading-engine` to `packages/quarcc-trading-engine` without renaming it yet. Update its instructions to state that it is the seed of an optional external execution engine.
+- Cargo package names;
+- public Rust paths;
+- source/tests;
+- scoped instructions;
+- lockfile dependency versions;
+- runtime behavior.
 
-### 3. Add the Bunting composition project
+Do not combine, split or semantically rename packages.
+
+## 3. Add the thin Bunting composition package
 
 Create:
 
@@ -230,23 +231,32 @@ bunting-rs/
   src/lib.rs
 ```
 
-The initial package should depend on and re-export curated stable package APIs. It may define engine identifiers/configuration scaffolding, but it must not duplicate package implementation or introduce a premature generic engine abstraction.
+The initial crate may:
 
-### 4. Move the deployable Worker
+- re-export a deliberately small stable set of first-party types;
+- expose product/version metadata;
+- provide nonfunctional engine-ID/config scaffolding only if it does not invent an abstraction.
 
-Move `workers/edge-api` to `apps/edge-api` with history preserved. Repair relative dependencies, `wrangler.toml`, migration discovery, CI checks, and deployment commands.
+It may not:
 
-### 5. Repair all paths atomically
+- duplicate command transaction or matching logic;
+- expose Worker-only adapters by default;
+- claim NBC or QUARCC is implemented;
+- introduce a nested workspace.
 
-Update:
+## 4. Move the deployable Worker
 
-- root workspace members and workspace dependencies;
-- every package path dependency;
-- `.github/workflows/*.yml` checks;
-- Worker/Wrangler paths and migration commands;
-- README, architecture, port notes, and active ADR clarifications;
-- scoped `AGENTS.md` files;
-- scripts, fixtures, and release tooling.
+Move `workers/edge-api` to `apps/edge-api` with history preserved. Update:
+
+- relative path dependencies;
+- root workspace members;
+- `wrangler.toml` build/migration context;
+- deployment/migration/secret commands;
+- CI architecture-policy checks;
+- scoped instructions;
+- documentation and scripts.
+
+## 5. Repair all path consumers atomically
 
 Search the full tracked tree:
 
@@ -254,30 +264,38 @@ Search the full tracked tree:
 git grep -n 'crates/'
 git grep -n 'workers/edge-api'
 git grep -n 'workers/'
-git grep -n 'dist/'
 git grep -n 'quarcc-trading-engine'
+git grep -n 'dist/'
+git grep -n 'out/'
 ```
 
-Historical ADR text may retain old paths when clearly marked historical. Active commands and ownership descriptions must use new paths.
+Classify each hit as:
 
-### 6. Release output
+- active path that must change;
+- historical ADR text that remains intentionally historical;
+- reference-source path that must not change;
+- stale text to remove.
 
-Add or update a script/`xtask` that:
+Do not use global blind replacement inside `ref/`, historical diffs or archived planning evidence.
 
-1. builds `apps/edge-api` in release mode;
-2. collects the generated JavaScript shim, Wasm module, and required metadata;
-3. writes `out/edge-api/<version>/`;
-4. emits SHA-256 checksums and a manifest containing commit, toolchain, target, and package versions;
-5. leaves `out/` ignored.
+## 6. Release boundary
 
-A later workflow uploads the directory as an Actions artifact and attaches it to version-tagged GitHub Releases.
+A repository tool may be added to:
 
-### 7. Validation
+1. run the existing Worker release build from `apps/edge-api`;
+2. collect the generated JavaScript shim, Wasm module and required metadata;
+3. write `out/edge-api/<version>/`;
+4. emit SHA-256 checksums and a manifest with commit, toolchain, target and package versions;
+5. leave `out/` ignored.
+
+A later workflow uploads that complete bundle. A raw Wasm module alone is not the deployable Worker entrypoint.
+
+## 7. Validation
 
 Run from root:
 
 ```bash
-cargo metadata --locked --format-version 1 --no-deps
+cargo metadata --locked --format-version 1 --no-deps > /tmp/bunting-metadata-after.json
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
@@ -286,66 +304,70 @@ cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```
 
-Also verify:
+Verify additionally:
 
-- workspace members changed only by path plus the new `bunting-rs` package;
-- package names did not change;
+- workspace members changed only by paths plus the new `bunting-rs` package;
+- Cargo package names and dependency versions are unchanged;
 - no production manifest references `ref/`;
 - no package depends on `bunting-rs` or `apps/`;
-- `bunting-rs` depends inward on packages;
-- migration discovery and Worker build still work;
+- `bunting-rs` depends inward only on first-party packages;
+- Worker build and D1 migration discovery work from `apps/edge-api`;
 - no generated artifact is tracked;
-- active docs no longer describe `packages/` as non-Rust-only;
-- active docs identify NBC as a market engine and QUARCC as an execution engine;
+- no copied upstream source entered `packages/`;
+- `docs/reference-functionality-audit.md` and reference pins are unchanged unless the PR explicitly explains an evidence-only correction;
 - CI passes.
 
-### 8. Commit shape
+## 8. Commit and PR shape
 
-Prefer reviewable commits:
+Prefer:
 
 1. `chore: move reusable Rust crates under packages`
 2. `chore: move edge API under apps`
-3. `feat: add bunting composition crate`
-4. `docs: align package and engine boundaries`
+3. `feat: add thin bunting composition crate`
+4. `docs: align active paths and commands`
 
-The PR must include before/after trees, a move map, exact validation output, and an explicit statement that runtime semantics did not change.
+The PR includes:
 
-## Next engineering work
+- before/after trees;
+- exact move map;
+- before/after Cargo metadata member lists;
+- validation output;
+- stale-path search results;
+- explicit statement that runtime semantics, package names and dependency versions did not change.
 
-### P0: mechanical repository reorganization
+# Work after reorganization
 
-Execute this plan only.
+## P1: NBC evidence and market-engine foundation
 
-### P1: NBC market-engine port foundation
+- finish the external-contract fixture manifest;
+- resolve ownership/license or formalize clean-room authority;
+- create `packages/nbc-market-engine` with strict config/provenance only when real source/tests are added;
+- specify `nbc-v1` matching/order/step capabilities without claiming hidden Java equivalence;
+- implement deterministic Bunting-added recovery and state hashing;
+- add agent/model behavior incrementally with provenance.
 
-- inventory the complete NBC engine surface, not only scenarios;
-- resolve ownership/license or define a clean-room behavioral specification;
-- define package modules for run lifecycle, market configuration, clock, agents, order handling, market data, snapshots, scoring, and compatibility;
-- implement deterministic scenario parsing and the first end-to-end market run;
-- compare behavior against captured NBC fixtures;
-- expose NBC as an explicit Bunting run engine.
+## P2: QUARCC execution-engine port
 
-### P2: QUARCC execution-engine port
+- retain the `quarcc.v1` contract;
+- finish the evidence-linked transition table;
+- implement portable exact-unit lifecycle/report handling;
+- add Bunting-defined reconciliation/recovery explicitly;
+- isolate native gRPC/store/gateway packages;
+- test through public adapters against fake/default/NBC markets.
 
-- preserve the existing `quarcc.v1` compatibility surface;
-- implement portable order lifecycle, ID mapping, desired/live reconciliation, positions, participant risk, feed handling, and journaling;
-- isolate native gRPC, FIX, SQLite, and socket adapters;
-- connect it through the Bunting client as an optional user engine;
-- test it against both a deterministic test market and Bunting engines.
+## P3: staging and run provisioning
 
-### P3: staging and run provisioning
+Provision D1/secrets and add authenticated engine-aware run creation without conflating market-engine selection with participant execution-engine enablement.
 
-Provision D1/secrets, add authenticated engine-aware run creation, and test default and NBC engine selection.
+## P4: streaming and broader default-engine capabilities
 
-### P4: streaming and broader market capabilities
+Add committed market/private streams, reset recovery and upstream order features under typed capabilities.
 
-Add committed market-data streaming, upstream order capabilities, replay/upgrade tests, and engine-specific market-data compatibility.
+## P5: concrete protocol/client/model packages and releases
 
-### P5: FIX, clients, algorithms, and release distribution
+Select protocol layers through focused spikes, then create narrowly named packages with real implementation. Publish complete Worker bundles and approved reusable packages.
 
-Add focused packages as implementations become real; publish complete Worker bundles and selected reusable packages.
-
-## Branch disposition
+# Branch disposition
 
 | Branch | Relationship to `main` | Recommendation |
 |---|---|---|
@@ -354,4 +376,4 @@ Add focused packages as implementations become real; publish complete Worker bun
 | `feat/bootstrap-architecture` | zero commits ahead; contained in `main` | Safe to delete |
 | `feat/deterministic-kernel-vertical-slice` | one unique commit, substantially behind, superseded custom matcher | Tag/archive for history, then delete |
 
-Do not infer safety for unlisted branches. Compare each branch with `main`; delete only when it is zero commits ahead or its unique work has been intentionally preserved.
+For unlisted branches, compare against current `main`. Delete only when zero commits ahead or after every unique commit is merged, cherry-picked, or intentionally preserved.
