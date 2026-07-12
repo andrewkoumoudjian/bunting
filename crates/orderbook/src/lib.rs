@@ -145,7 +145,7 @@ mod tests {
             result
                 .match_result
                 .executed_quantity()
-                .map_or(0, |quantity| quantity.as_u64()),
+                .map_or(0, pricelevel::Quantity::as_u64),
             3
         );
     }
