@@ -132,17 +132,16 @@ pub mod cloudflare {
     }
 
     /// Stores a committed checksum-protected snapshot package.
-    pub async fn put_json(
-        key: &SnapshotCacheKey,
-        json: String,
-        policy: CachePolicy,
-    ) -> Result<()> {
+    pub async fn put_json(key: &SnapshotCacheKey, json: String, policy: CachePolicy) -> Result<()> {
         let cache_control = policy.cache_control();
         let response = ResponseBuilder::new()
             .with_header("cache-control", &cache_control)?
             .with_header("content-type", "application/json")?
             .with_header("etag", &key.etag())?
-            .with_header("x-bunting-event-sequence", &key.sequence().get().to_string())?
+            .with_header(
+                "x-bunting-event-sequence",
+                &key.sequence().get().to_string(),
+            )?
             .fixed(json.into_bytes());
         Cache::default().put(key.url(), response).await
     }
@@ -169,10 +168,7 @@ mod tests {
         .expect("valid test key");
         assert_eq!(
             key.url(),
-            format!(
-                "{CACHE_ORIGIN}/v1/orderbooks/7/11/19/{}",
-                "a".repeat(64)
-            )
+            format!("{CACHE_ORIGIN}/v1/orderbooks/7/11/19/{}", "a".repeat(64))
         );
     }
 
