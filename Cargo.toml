@@ -10,7 +10,7 @@ members = [
   "packages/command-transaction",
   "packages/worker-cache",
   "packages/quarcc-trading-engine",
-  "workers/edge-api",
+  "apps/edge-api",
 ]
 exclude = ["ref", "vendor", "out"]
 
