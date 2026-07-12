@@ -2,127 +2,207 @@
 
 - Status: accepted
 - Date: 2026-07-12
-- Supersedes: any documentation that describes NBC only as scenario data or describes the QUARCC trading engine only as a compatibility DTO crate
+- Evidence baseline: `docs/reference-functionality-audit.md`
+- Supersedes: documentation that describes NBC only as scenario data or describes the QUARCC trading engine only as compatibility DTOs
 
 ## Context
 
-Bunting composes several independently useful Rust packages. Two imported systems have different roles and must not be collapsed into one generic "engine" concept.
+Bunting composes systems that use the word “engine” for different authority boundaries. Repository names and planned package names are insufficient evidence; the recorded source and contracts establish two distinct roles.
 
-1. **NBC is a market engine.** It represents the venue/simulation side: market state, scenario execution, clock advancement, market participants/agents, order processing, market-data publication, and compatibility with the NBC run protocol.
-2. **The QUARCC trading engine is a participant-side execution engine.** It is used by a user, trader, or strategy outside the market to consume data, manage orders and positions, perform risk/reconciliation, and route commands to Bunting or another venue. It may be enabled for testing, but it is not authoritative market state.
+1. **NBC is a venue-side exchange/market simulator.** The checked-in snapshot proves a packaged Exchange Simulator, scenario/run configuration, team/JWT setup, and an observable REST/WebSocket order/market protocol with explicit step advancement. The snapshot does not include the Java implementation or named JAR, so exact internal matching, scheduler and agent semantics remain unresolved.
+2. **The QUARCC trading engine is a participant-side execution/OMS service.** Its C++ headers and protobuf contracts prove strategy-signal intake, submit/cancel/replace, order managers, execution gateways, market-data feeds, participant risk, ID mapping, journal/store interfaces, positions, kill switch, gRPC and Python clients. It routes to a venue and consumes execution reports; it does not own venue matching.
 
-The current Bunting vertical slice uses `OrderBook-rs` as its default matching kernel. That decision does not reduce NBC to a collection of scenarios, and it does not make the QUARCC execution engine part of the venue kernel.
+The current Bunting vertical slice uses released `OrderBook-rs` as the default matching kernel. That does not reduce NBC to scenarios and does not make QUARCC part of the venue kernel.
+
+## Evidence rule
+
+Every implementation and port document must distinguish:
+
+- observed reference behavior;
+- inferred but unproved behavior;
+- Bunting-added requirements;
+- unresolved behavior;
+- source that cannot be copied without authorization.
+
+No compatibility claim may exceed the recorded evidence. See `docs/reference-functionality-audit.md` and `docs/reference-adoption.md`.
 
 ## Decision
 
 ### Bunting composition
 
-`bunting-rs` is the product/composition layer. It imports reusable packages and selects a market engine for a run.
+`bunting-rs` is the product/composition layer. It imports reusable first-party packages and explicitly selects a market-engine implementation for each run.
 
-A market-engine boundary must support at least:
+A Bunting market-engine boundary must support the common capabilities required by the product, while representing unsupported operations explicitly. Common concerns include:
 
-- run creation and configuration;
+- run creation and versioned configuration;
 - deterministic command application;
-- logical time or step advancement when the engine is simulated;
-- order acknowledgement, rejection, cancellation, replacement, and trade output;
-- public market-data snapshots and deltas;
-- engine snapshots, restoration, and state hashing;
+- logical time/step advancement when applicable;
+- typed acceptance, rejection, cancellation and trade output;
+- public/private market views;
+- Bunting-required recovery state, snapshot/restore and state hashing;
 - bounded deterministic errors;
-- canonical translation into Bunting events and ledgers.
+- canonical translation without discarding engine-specific metadata.
+
+The contract is capability-based. It must not assume every engine supports replace, market orders, all order types, explicit clock advancement, scoring, or the NBC `DONE` protocol.
 
 ### Default OrderBook-rs-backed market engine
 
-The existing Bunting market path remains the default engine. It uses the released `OrderBook-rs` package for CLOB matching and combines it with Bunting identity, ledger, risk, persistence, recovery, protocols, and Worker adapters.
+The existing Bunting market path remains the default engine. It uses released `OrderBook-rs = 0.10.3` for CLOB matching and combines it with Bunting identity, ledger, risk, persistence, recovery, protocols and Worker adapters.
 
-### NBC market engine package
+`packages/orderbook` is the first-party Bunting adapter. It is not a copied upstream source tree.
 
-The Rust NBC port is a complete market-engine package, not merely a scenario parser or an agent library. It owns NBC-compatible market behavior, including:
+### NBC market-engine package
 
-- NBC scenario loading and validation;
-- simulation clock and step/run lifecycle;
-- deterministic seeded randomness;
-- NBC agent populations and market-impact behavior;
-- market configuration and fundamental-value process;
-- venue-side order processing and resulting market data;
-- run state, snapshots, replay, and scoring where present;
-- legacy NBC HTTP/WebSocket and `DONE` compatibility through adapters.
+The Rust NBC port is one coherent market-engine package, not merely a scenario parser or agent library.
 
-The port should reuse shared Bunting packages, including fixed-point primitives, canonical events, and the common order-book package, when those components can preserve required NBC behavior. It must not be artificially split into unrelated packages that erase the fact that NBC is one market engine. Internal modules or narrowly scoped support crates are allowed where they improve testing and dependency direction.
+#### Reference-proven external profile
 
-Exact source translation remains subject to ownership and license review. Until that is resolved, implementation must be clean-room and behavior/specification driven, with provenance and differential tests.
+The recorded evidence supports:
 
-### QUARCC execution engine package
+- an Exchange Simulator application;
+- team registration/authentication and named scenario runs;
+- seeded/step-configured scenario files and trader-population parameter records;
+- market-data and order-entry WebSockets;
+- client limit orders, cancellation, fills/errors and mandatory `DONE` step advancement;
+- run/history/leaderboard result surfaces.
 
-The QUARCC Rust port is an optional participant-side execution package. It owns:
+It does not prove the internal matching algorithm, scheduler ordering, agent formulas, persistence/restart, snapshots/replay, state hashes or scoring equations.
 
-- local/client/venue order identifiers;
-- desired-versus-live order state;
-- acknowledgement, reject, fill, cancel, and replace reconciliation;
-- participant-side positions, exposure, and execution risk;
-- market-data feed consumption;
-- strategy-signal intake;
-- order routing through Bunting client APIs, FIX, or other gateways;
-- journaling/recovery appropriate to the participant application;
-- test and simulated-feed adapters.
+#### Bunting port requirements
 
-It does not own venue matching, authoritative market balances, canonical venue sequencing, or Bunting origin commits. Request success does not imply venue acknowledgement or execution.
+The new `packages/nbc-market-engine` must add a documented, deterministic, transport-neutral Rust contract with exact units, bounds, capability metadata, recovery, snapshots/replay and state hashes. These additions are Bunting requirements unless separately proven equivalent to the reference.
 
-The existing WASM-safe `quarcc.v1` records and transport-neutral service trait are the initial compatibility surface, not the final scope of the port. The package should grow into the execution engine while keeping a portable core and isolating native gRPC, filesystem, database, and socket adapters behind separate features or crates.
+The port may reuse shared market types, events, ledger/risk and OrderBook-rs-backed matching only when a verified or explicitly specified NBC contract is preserved. Missing internals require a versioned clean-room `nbc-v1` specification, not invented equivalence.
+
+Direct translation remains subject to ownership/license authorization.
+
+### QUARCC execution-engine package
+
+The QUARCC Rust port is an optional participant-side execution package.
+
+#### Reference-proven surface
+
+The recorded source supports:
+
+- strategy signal and explicit submit/cancel/replace service operations;
+- per-strategy/account order managers;
+- local/broker ID mapping;
+- execution gateway and market-data feed boundaries;
+- participant-side risk, position projection and kill switch;
+- journal/order-store abstractions and SQLite implementations;
+- sequential event dispatch and deferred fill handling;
+- gRPC service and Python client surfaces.
+
+#### Bunting port requirements
+
+The portable Rust package should add exact fixed-point conversions, normalized venue reports, explicit duplicate/out-of-order outcomes, safe lifecycle transitions, desired/live reconciliation, deterministic portable snapshots/replay and a public Bunting client adapter. These are new design requirements where the C++ source/tests do not prove an equivalent behavior.
+
+Native gRPC, sockets, broker SDKs, SQLite/filesystem stores and protocol adapters remain isolated from the portable core.
+
+The execution engine does not own venue matching, authoritative balances, Bunting canonical sequencing or origin commits. Transport delivery does not imply venue acknowledgement or execution.
 
 ## Repository consequence
 
-The intended package topology is:
+The intended topology is:
 
 ```text
 packages/
-  orderbook/                    shared order-book boundary or approved fork
-  nbc-market-engine/            complete NBC Rust market engine
-  quarcc-execution-engine/      optional trader-side execution engine
-  fix/                          FIX codec/session packages
-  client/                       Bunting client and transport adapters
   market-types/
   market-events/
+  orderbook/                    # first-party adapter around released OrderBook-rs
   ledger/
   risk-engine/
   origin-store/
   command-transaction/
   worker-cache/
-  ...narrow reusable simulator and algorithm packages
+  nbc-market-engine/            # complete NBC Rust market-engine port
+  quarcc-execution-engine/      # optional participant execution/OMS port
+  client/                       # future public client boundary when implemented
+  ...focused protocol/model packages selected from real implementations
 
 bunting-rs/
-  src/                          integrated Bunting product API and composition
-  crates/                       Bunting-private glue only when it is not reusable
+  src/                          # composition, engine selection, public API
+  crates/                       # private glue only when genuinely product-private
 
 apps/
-  edge-api/                     deployable Cloudflare Worker
-  ...future CLIs and gateways
+  edge-api/
+  ...future deployable gateways/CLIs
+
+vendor/
+  ...approved copied/patched third-party source only
 ```
 
-The repository root remains one Cargo workspace. `packages/` contains reusable Rust components that compose Bunting, not only non-Rust SDKs.
+The repository root remains one Cargo workspace. Do not create generic `fix`, `protocols` or `algorithms` dumping grounds before selecting concrete responsibilities.
+
+A copied or patched OrderBook-rs source tree does not belong under `packages/orderbook`. Prefer upstream fixes or a dedicated pinned fork repository; use `vendor/orderbook-rs` only through a separate approval if in-repository source is required.
 
 ## Engine selection
 
-A run configuration must identify its market-engine implementation and engine-specific version/configuration. Engine selection is explicit and durable; it must not depend on a feature flag chosen implicitly at request time.
+Every run record identifies:
 
-Examples:
+- market-engine ID;
+- engine version;
+- typed engine configuration/schema version;
+- capability set;
+- recovery/snapshot format version.
 
-- `orderbook-v1`: the default OrderBook-rs-backed Bunting market engine;
-- `nbc-v1`: the Rust NBC-compatible market engine.
+Selection is explicit and durable, never an implicit request-time feature choice.
 
-Canonical APIs may normalize common commands and events, but engine-specific capabilities and metadata must remain typed rather than silently discarded.
+Initial families:
+
+- `orderbook-v1`: current OrderBook-rs-backed Bunting engine;
+- `nbc-v1`: documented Rust NBC-compatible/clean-room engine profile.
+
+Common APIs normalize only genuinely common commands/events. Engine-specific metadata and unsupported capabilities remain typed.
+
+## Authority boundary
+
+Market engines may:
+
+- accept participant commands;
+- own matching/venue state and venue sequences;
+- emit canonical/engine-specific events;
+- publish authoritative market/private reports;
+- persist their Bunting recovery state.
+
+Participant execution engines may:
+
+- consume market/private reports;
+- maintain local intent, lifecycle, risk and positions;
+- submit, cancel, replace, query and stop routing through public interfaces;
+- persist their own application state.
+
+No participant/client/strategy package receives a mutable internal reference to a market engine or writes venue state directly.
 
 ## Consequences
 
-- NBC implementation work is elevated from a late scenario task to a first-class package port.
-- The QUARCC port is tested as an external participant against market-engine implementations.
-- Bunting can run without the QUARCC execution engine.
-- A user can enable the QUARCC engine to test OMS, execution, reconciliation, risk, and strategy behavior.
-- OrderBook-rs remains the default matching dependency unless an approved fork or NBC compatibility requirement establishes a documented alternative.
-- Cross-engine conformance tests are required for common command/event behavior, but exact output equality is required only where contracts specify it.
+- NBC is elevated to a first-class market-engine port, with compatibility claims limited by available evidence.
+- QUARCC is tested as an external participant engine and remains optional.
+- Bunting can run without QUARCC.
+- The same QUARCC core can be tested against deterministic fake venues, the default Bunting engine and NBC through adapters.
+- OrderBook-rs remains the default matching dependency unless an approved engine-specific compatibility requirement establishes an alternative.
+- Cross-engine conformance tests target only common capabilities; exact equality is required only by an explicit contract.
+- Reference and port audits become prerequisites to package design.
 
 ## Required validation
 
-- NBC tests must cover deterministic run replay, scenario/agent behavior, market-data output, snapshot restoration, and compatibility fixtures.
-- QUARCC tests must cover external order lifecycle, duplicate/out-of-order venue reports, reconnect reconciliation, position projection, and gateway failures.
-- End-to-end tests must connect the QUARCC execution engine to both a deterministic test market and at least one Bunting market-engine implementation.
-- No package may cross the venue/participant authority boundary through direct state mutation.
+### NBC
+
+- external compatibility fixtures distinguish observed traces from documentation-derived examples;
+- unsupported capabilities reject explicitly;
+- deterministic Rust replay/state hashes prove the Rust contract without claiming hidden Java equivalence;
+- scenario/model provenance and all Bunting-added behavior are recorded.
+
+### QUARCC
+
+- public contract/discriminant fixtures;
+- lifecycle and report-ordering tests linked to evidence/specification;
+- reconciliation/recovery tests identify Bunting-added behavior;
+- gateway failures do not corrupt portable state.
+
+### End to end
+
+- QUARCC connects to market engines only through public client/protocol adapters;
+- no authority-boundary state mutation;
+- engine ID/version/capabilities survive persistence and recovery;
+- reference pins, licenses and evidence classifications remain current.
