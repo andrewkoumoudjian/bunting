@@ -55,8 +55,27 @@ jobs:
       - name: Check formatting
         run: git diff --exit-code
 
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Collect Clippy diagnostics
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets --message-format=short -- -D warnings > clippy.log 2>&1
+          echo "$?" > clippy.status
+          exit 0
+
+      - name: Upload Clippy diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-diagnostics
+          path: |
+            clippy.log
+            clippy.status
+          if-no-files-found: error
+
+      - name: Check Clippy result
+        run: |
+          cat clippy.log
+          test "$(cat clippy.status)" = "0"
 
       - name: Run unit tests
         run: cargo test --workspace
