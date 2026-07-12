@@ -24,6 +24,14 @@ See:
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/reference-adoption.md`](docs/reference-adoption.md)
 
+## Repository organization
+
+The current workspace remains rooted at the repository `Cargo.toml`, with internal libraries under `crates/` and the Worker currently under `workers/edge-api`.
+
+The next focused pull request will preserve the root Cargo workspace, add `bunting-rs/` as a small public facade package, move the deployable Worker to `apps/edge-api`, reserve `packages/` for independently distributed SDKs, and keep generated release bundles under ignored `dist/` paths and GitHub Releases.
+
+Read the complete move map, branch disposition, acceptance criteria, and Codex execution contract in [`docs/repository-reorganization.md`](docs/repository-reorganization.md).
+
 ## Workspace
 
 The current workspace contains:
@@ -63,6 +71,7 @@ Scenario/orchestration code provisions runs before order entry. The command endp
 ## Checks
 
 ```bash
+cargo metadata --locked --format-version 1 --no-deps
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
