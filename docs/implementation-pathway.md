@@ -1,125 +1,154 @@
 # Implementation pathway
 
-This pathway implements ADR 0013 and replaces the previous custom-order-book/Durable-Object sequence.
+This pathway implements ADR 0013 and ADR 0014. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
-## Completed in the corrective integration PR
+## Completed foundation
 
-1. Pin `OrderBook-rs` `0.10.3` and `PriceLevel` `0.8.4` as workspace dependencies.
-2. Add `crates/orderbook` as a thin upstream adapter.
-3. Salvage Bunting-owned checked identifiers, events, ledger, and participant risk from the old Codex branch.
-4. Add `crates/worker-cache` with immutable content-addressed Workers Cache keys and official Cache API operations.
-5. Add a plain `workers/edge-api` Rust Worker without a Durable Object binding.
-6. Replace conflicting architecture, ADR, reference, and Codex instructions.
-7. Pin the high-value Joaquín repositories under `ref/` and document their adoption status.
+1. Pin `OrderBook-rs` `0.10.3` and `PriceLevel` `0.8.4` for the current default market engine.
+2. Add a thin Bunting adapter around the upstream matcher.
+3. Add checked identifiers, canonical events, participant ledger and risk boundaries.
+4. Add immutable Workers Cache snapshot operations.
+5. Add a plain Rust Cloudflare Worker without a Durable Object requirement.
+6. Add origin-store and command-transaction boundaries with expected-version commits, idempotency and recovery.
+7. Add authenticated bounded limit-GTC and cancellation routes.
+8. Add the initial WASM-safe `quarcc.v1` compatibility contract.
+9. Audit the reference inventory and distinguish market, execution, protocol, simulation and utility roles.
 
-## Implemented: command transaction and origin store
-
-The current implementation completes this vertical slice:
+The implemented command path is:
 
 ```text
-submit limit -> expected-version load -> restore/cache -> risk -> OrderBook-rs
-             -> canonical events -> ledger -> origin commit -> cache put -> response
+submit/cancel -> expected-version load -> cache/origin recovery -> participant risk
+              -> OrderBook-rs -> canonical events -> ledger -> origin commit
+              -> immutable cache write -> response
 ```
 
-Implemented work:
+## P0: mechanical repository reorganization
 
-- D1 schema for run version, commands, canonical events, idempotency, private projections, and snapshot metadata;
-- transactional D1 batch guarded by expected version, plus a contended in-memory concurrency proof;
-- upstream-to-Bunting event translation;
-- participant/order ownership index;
-- exact conversion between Bunting IDs/units and upstream IDs/units;
-- cache miss and invalid-snapshot recovery;
-- authenticated bounded Worker routes for limit GTC submission and cancellation;
-- integration tests for duplicates, command-ID conflict, version conflict, fills, owner cancellation, risk rejection, cache/origin failure, and restart.
+Execute [`repository-reorganization.md`](repository-reorganization.md) without semantic changes:
 
-The initial slice stores a complete authoritative package and private projection after every command. Its recovery event tail is therefore empty, while canonical events remain durable for audit and later coarser snapshot intervals.
+- move implemented reusable crates from `crates/` to `packages/` with Cargo package names preserved;
+- add a thin `bunting-rs` composition crate;
+- move `workers/edge-api` to `apps/edge-api`;
+- keep one root Cargo workspace and lockfile;
+- assemble generated release bundles under ignored `out/` paths;
+- update Cargo, CI, Wrangler, migrations, documentation and scoped instructions atomically.
 
-## Immediate PR: repository organization
+Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algorithm dumping grounds, fork OrderBook-rs, upgrade dependencies or change runtime behavior in this PR.
 
-Execute [`repository-reorganization.md`](repository-reorganization.md) as a behavior-preserving pull request:
+## P1: NBC evidence and market-engine foundation
 
-- keep the repository root as the Cargo workspace root;
-- add `bunting-rs` as the small public facade package;
-- keep internal Rust libraries under `crates/`;
-- move `workers/edge-api` to `apps/edge-api` with history preserved;
-- reserve `packages/` for independently distributed SDKs rather than internal crates;
-- repair Cargo, CI, Wrangler, migration, documentation, and agent-instruction paths atomically;
-- establish an ignored `dist/` release boundary without committing generated output.
+The checked-in NBC snapshot proves a packaged exchange simulator, configuration/scenarios and an observable REST/WebSocket/DONE protocol, but it does not contain the Java implementation or named JAR.
 
-Do not combine this move with crate renames, dependency upgrades, new order behavior, streaming, or persistence changes.
+### Evidence work
 
-## Immediate product-readiness PR: staging and run provisioning
+1. Record exact reference commit/file hashes and license/authority status.
+2. Build a fixture manifest separating observed traces from documentation-derived examples.
+3. Specify the externally evidenced profile: scenario/run registration, authentication, market/order streams, limit orders, cancel, fills/errors, limits, result fields and `DONE` advancement.
+4. Mark internal matching, scheduling, agent formulas, persistence, recovery and scoring equations unresolved unless stronger evidence is obtained.
 
-The order routes intentionally reject unknown runs, so a usable deployment requires an explicit provisioning boundary before streaming becomes valuable.
+### Initial package work
 
-- create the real D1 database and environment-specific configuration;
-- apply migrations and install the API token secret;
-- add an administrative run-provisioning API or CLI for runs, instruments, participants, opening balances, and limits;
-- keep provisioning authenticated, idempotent, bounded, and separate from participant order entry;
-- add staging smoke tests for provisioning, submit, cancel, duplicate command, stale version, cache miss, and restart recovery;
-- document migration, rollback, secret rotation, and environment promotion.
+1. Create `packages/nbc-market-engine` only with real source and tests.
+2. Implement strict configuration/provenance and exact units.
+3. Define typed engine capabilities; do not assume replace or unsupported order types.
+4. Specify a clean-room/versioned `nbc-v1` run/matching/step contract where the reference is silent.
+5. Add Bunting-required deterministic recovery, snapshots/replay and state hashing as explicitly new behavior.
+6. Implement the observed limit/cancel/fill/error/market-data/DONE profile.
+7. Add agent families and scenarios incrementally with formula, unit, RNG and provenance records.
 
-## Following PR: streaming
+Do not claim internal Java equivalence from scenario field names.
+
+## P2: QUARCC execution-engine port
+
+The C++/protobuf reference proves a participant OMS/execution service with submit/cancel/replace, per-strategy order managers, gateways/feeds, participant risk, ID mapping, journal/store interfaces, positions, kill switch and gRPC/Python clients.
+
+### Evidence work
+
+1. Record exact source/test evidence for lifecycle, report ordering, risk, positions, stores and gateways.
+2. Produce an evidence-linked language-neutral transition table.
+3. Resolve ownership/license or document clean-room authority.
+4. Distinguish reference-proven behavior from new portable Rust behavior.
+
+### Portable package work
+
+1. Retain the current `quarcc.v1` compatibility contract.
+2. Rename/expand to `packages/quarcc-execution-engine` in a semantic PR.
+3. Add checked units, typed client/local/venue IDs and normalized venue reports.
+4. Implement source-proven lifecycle transitions and explicit invalid/quarantine outcomes.
+5. Add desired/live reconciliation, portable snapshots/replay and deterministic cancel planning as Bunting-added capabilities.
+6. Integrate through a public Bunting client adapter.
+7. Isolate gRPC, SQLite/filesystem, sockets, FIX and external gateways from the portable core.
+8. Test through public interfaces against a fake venue, the default Bunting engine and NBC.
+
+## P3: staging and engine-aware run provisioning
+
+The current order routes reject unknown runs. Add an authenticated, idempotent and bounded administrative boundary for:
+
+- market-engine ID/version/capabilities;
+- run and instrument creation;
+- participant identities, balances and limits;
+- engine-specific configuration;
+- environment-specific D1 setup and migrations;
+- secret installation/rotation;
+- staging smoke tests for provisioning, submit, cancel, duplicate command, stale version, cache miss and restart.
+
+Selecting a market engine is separate from enabling an external participant execution engine.
+
+## P4: committed streaming and broader default-engine capabilities
+
+### Streaming
 
 - plain Worker WebSocket endpoint;
-- snapshot plus absolute L1/L2 updates;
+- publish only after origin commit;
+- bounded public/private subscriptions, frames and backlog;
 - committed event-sequence cursors;
-- reset and event-tail recovery;
-- bounded subscriptions, frames, and backlog;
-- no reliance on isolate-local resume rings;
-- no public or private publication before the origin commit succeeds.
+- snapshot/reset and event-tail recovery;
+- no isolate-local resume guarantee.
 
-## Following PR: broader upstream capabilities
+### Default OrderBook-rs-backed engine
 
-Expose upstream features incrementally instead of reimplementing them:
+Expose upstream capabilities incrementally under typed engine capabilities:
 
-- IOC, FOK, post-only, replace, mass cancel, STP, and fees;
-- host-driven GTD/DAY expiry;
+- IOC, FOK and post-only;
+- replace and mass cancel;
+- STP and fees;
+- host-driven expiry;
 - upstream risk configuration;
 - lifecycle history and typed rejects;
-- depth/metrics/market impact/enriched snapshots;
-- snapshot/replay verification and upgrade tests.
+- depth, metrics, impact and enriched snapshots;
+- snapshot/journal upgrade verification.
 
-## Scenarios and strategies
+Do not imply that NBC supports the same operations unless its profile specifies them.
 
-Scenario agents propose commands and never modify the upstream book directly. Use explicit logical time and named deterministic random streams.
+## P5: focused protocol, client and model packages
 
-Dynamic Worker outputs remain external participant actions and use the same expected-version command path.
+The reference audit shows that FIX and SBE repositories are layered workspaces. Select components through focused spikes:
 
-Prioritize:
+- FIX core/dictionary/tag-value parsing;
+- FIX session sequencing, stores and transport as separate concerns;
+- SBE core/schema/codegen separately from native channels/transports/client/server;
+- public Bunting client and stream recovery;
+- pure market-making/arrival/agent models with exact units and provenance.
 
-1. scenario schema and provenance;
-2. deterministic run clock and named PRNG streams;
-3. explicit participant and instrument provisioning;
-4. NBC agent-model ports with unresolved legacy values retained as metadata;
-5. scoring, replay, and conformance fixtures.
+Create narrowly named packages only with real implementation and tests. Do not create empty `fix`, `protocols`, `algorithms` or `common` packages.
 
-## FIX and native adapters
+## Release and SDK packaging
 
-Protocol implementations translate to Bunting commands and events. They do not own a second matching engine.
+- expose curated Rust APIs through `bunting-rs`;
+- keep independently versioned language SDKs in clearly named packages when implemented;
+- produce the complete Worker shim/Wasm bundle under ignored `out/` paths;
+- attach checksums and build metadata to versioned releases;
+- keep native gRPC/Python QUARCC packaging blocked until license/provenance requirements are resolved.
 
-- IronFix remains the FIX codec candidate.
-- QuickFIX/J and Fixer remain conformance oracles.
-- Nautilus and RITC remain external/native adapters.
-- IronSBE is evaluated later for compact market-data and order-entry frames.
-- A Rust FIX codec belongs in a focused crate; a deployable gateway belongs under `apps/` only when implemented.
+## OrderBook-rs upgrade gate
 
-## SDK and release packaging
+Every upgrade must run:
 
-- expose stable client-facing APIs through the `bunting-rs` facade;
-- place independently versioned Python or JavaScript SDKs under `packages/`;
-- produce the complete Worker bundle and raw Wasm under ignored `dist/` paths;
-- attach versioned bundles, checksums, and build metadata to GitHub Releases;
-- keep native gRPC and Python compatibility packaging blocked until licensing and source-provenance requirements are resolved.
-
-## Dependency upgrade gate
-
-Every OrderBook-rs upgrade must run:
-
-- native and Wasm compilation;
+- native and Wasm compilation with the exact selected feature set;
 - limit/market/cancel/partial-fill tests;
-- snapshot checksum and restore tests;
-- risk, kill-switch, expiry, and deterministic mass-cancel tests;
-- cache round-trip tests;
+- snapshot checksum/restore tests;
+- risk, kill-switch, expiry and deterministic mass-cancel tests;
+- cache round-trip and command-transaction tests;
 - size and cold-start comparison;
-- review of snapshot format, public API, and PriceLevel version changes.
+- review of public API, snapshot/wire format and PriceLevel version changes;
+- update of the reference functionality audit and recorded pin.
