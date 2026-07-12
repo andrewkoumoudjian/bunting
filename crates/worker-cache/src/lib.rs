@@ -71,13 +71,13 @@ impl SnapshotCacheKey {
         )
     }
 
-    /// Returns the snapshot checksum used as the HTTP ETag.
+    /// Returns the snapshot checksum used as the HTTP `ETag`.
     #[must_use]
     pub fn checksum(&self) -> &str {
         &self.checksum
     }
 
-    /// Returns a standards-compliant strong HTTP ETag value.
+    /// Returns a standards-compliant strong HTTP `ETag` value.
     #[must_use]
     pub fn etag(&self) -> String {
         format!("\"{}\"", self.checksum)
