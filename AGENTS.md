@@ -9,58 +9,81 @@ Build a Rust market-simulation and exchange-testing platform composed from reusa
 - Read this file before changing the repository.
 - Read the nearest scoped `AGENTS.md` for every path touched.
 - Accepted ADRs and `docs/architecture.md` are binding.
-- ADR 0014 defines the distinction between market engines and participant-side execution engines.
-- Before reorganizing paths, read `docs/repository-reorganization.md` and follow its Codex execution contract.
+- ADR 0014 defines market-engine versus participant execution-engine authority.
+- Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
+- Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
+- Before reorganizing paths, read `docs/repository-reorganization.md` and follow its execution contract.
+
+When documents conflict, do not silently select the convenient interpretation. Reconcile the active ADR, source-backed audit, and implementation before changing code.
+
+## Evidence discipline
+
+For every reference claim, distinguish:
+
+1. **observed:** proved by the recorded source, manifest, contract, test, or captured external behavior;
+2. **inferred:** a reasoned interpretation that is not directly proved;
+3. **Bunting-added:** a new requirement or design choice;
+4. **unresolved:** missing source, license, units, formulas, ordering, or behavior;
+5. **prohibited to copy:** source or specification material lacking the required authorization/license.
+
+Never infer functionality from a repository name. Never treat `.gitmodules` branch metadata as the checked-out commit. Verify submodule pins with `git ls-tree HEAD` and `git -C ref/<name> rev-parse HEAD`.
 
 ## Engine roles
 
 ### Market engines
 
-A market engine owns venue/simulation authority: run state, time or step advancement, market configuration, order processing, trades, public market data, snapshots, and deterministic recovery.
+A Bunting market-engine implementation owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
 
 - The current default Bunting engine uses released `OrderBook-rs` for CLOB matching.
-- NBC is a complete market engine to be ported to Rust. Do not describe or implement NBC as only scenario JSON, a scheduler helper, or a collection of agent models.
-- NBC may reuse shared packages when behavior remains compatible, but its coherent engine boundary must remain visible.
+- NBC is a complete market-engine port target. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models.
+- The checked-in NBC snapshot proves its packaged application, configuration, scenarios, and observable client protocol, but it does not include the Java implementation or named JAR. Do not claim exact internal matching, scheduler, agent-formula, database, snapshot, or replay equivalence without additional evidence.
+- NBC may reuse shared packages when behavior remains compatible, but its coherent market-engine boundary must remain visible.
 
 ### QUARCC execution engine
 
-The QUARCC trading engine is an optional external participant-side execution engine for users, traders, and strategies. It consumes market data, manages local/venue order state, performs reconciliation and participant-side risk, tracks positions, and routes orders to Bunting or another venue.
+The QUARCC trading engine is an optional external participant-side execution/OMS engine for users, traders, and strategies. Its recorded source includes strategy signals, submit/cancel/replace, order managers, gateway/feed boundaries, participant risk, ID mapping, journal/store abstractions, positions, kill switch, market-data streaming, gRPC and Python clients.
 
 It must never become authoritative market state or directly mutate a market engine. Bunting must run without it. The existing `quarcc.v1` compatibility crate is the first surface of the port, not its final scope.
+
+### Other participant-side references
+
+RITC market making, NautilusTrader, Barter, market-maker-rs, and the NBC student client are participant strategy/execution/client systems. They are not venue matching engines.
 
 ## Repository organization
 
 The repository root remains one Cargo workspace and owns the single `Cargo.lock` and workspace-wide `.cargo/config.toml`.
 
-- `packages/`: reusable Rust packages that compose Bunting. This includes primitives, market engines, execution engines, protocols, clients, simulators, and narrowly scoped algorithm libraries.
+- `packages/`: first-party reusable Rust packages that compose Bunting. This includes primitives, market engines, execution engines, protocol components, clients, simulators, and narrowly scoped algorithm/model libraries.
 - `bunting-rs/`: integrated Bunting product/library that imports packages, selects engines, and exposes the curated public API.
-- `bunting-rs/crates/`: Bunting-private glue only when the code has no reusable package role.
-- `apps/`: deployable Workers, binaries, CLIs, and gateways that depend on `bunting-rs`.
+- `bunting-rs/crates/`: Bunting-private glue only when code has no reusable package role.
+- `apps/`: deployable Workers, binaries, CLIs, and gateways that depend on `bunting-rs` or public package APIs.
 - `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC logic belongs in the NBC market-engine package.
 - `schemas/`: versioned protocol and file schemas.
 - `tests/`: cross-package, cross-engine, protocol, and deployment tests.
 - `tools/`: repository automation and release tooling.
 - `ref/`: read-only source evidence and provenance; never a production path dependency.
-- `vendor/`: approved locally built third-party source with license, upstream revision, and patch log.
+- `vendor/`: approved copied/patched third-party source with license, exact upstream revision, notices, and patch log.
 - `out/`: generated release bundles; ignored and never source of truth.
 
-Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, private Bunting crates, and `apps/*`.
+Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, justified private Bunting crates, and `apps/*`.
 
 ## Package discipline
 
-- Reusable code belongs under `packages/`, not under product-private directories.
+- Reusable first-party code belongs under `packages/`, not product-private directories.
 - A package must have one clear responsibility, explicit dependency direction, workspace metadata/lints, tests, and scoped instructions when needed.
 - Packages must not depend on `bunting-rs` or `apps/`; dependency flow is packages -> `bunting-rs` -> apps.
-- Avoid generic `common`, `utils`, or catch-all `algorithms` packages. Name packages after a specific behavior or model family.
+- Avoid generic `common`, `utils`, `algorithms`, `fix`, or `protocols` dumping grounds. Name packages after a concrete responsibility such as `fix-tagvalue`, `fix-session`, `execution-reconciliation`, or `market-making-models` when implementation justifies them.
 - Keep mechanical moves separate from semantic renames and feature work.
 - Use `git mv`, preserve package names during repository reorganization, and repair Cargo, CI, Wrangler, migrations, docs, scripts, and scoped instructions atomically.
+- Do not create empty package directories to represent future ideas.
 
 ## Binding architecture decisions
 
 - `orderbook-rs = 0.10.3` remains the production matching dependency for the current default market engine.
-- Do not create another Bunting-owned generic CLOB when the upstream API provides the required behavior.
-- NBC may define engine-specific behavior, but any separate matching implementation requires a documented compatibility need and tests.
-- An OrderBook-rs fork requires a dedicated ADR. It may be maintained as a Bunting package or patched vendor source only with complete MIT attribution, an upstream pin, `PATCHES.md`, synchronization policy, and native/Wasm compatibility tests.
+- Do not create another generic Bunting-owned CLOB when the upstream API provides the required behavior.
+- NBC may require engine-specific behavior, but a separate matching implementation needs a documented compatibility requirement, evidence, and differential tests.
+- `packages/orderbook` is the first-party Bunting adapter, not a location for copied upstream source.
+- Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
 - The deployment target is a plain Cloudflare Worker. Do not add a Durable Object requirement without a user-approved ADR.
 - Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
@@ -70,16 +93,18 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 Bunting market engines own venue-side identities, matching results, canonical events, authoritative ledger projections, scenario/run state, and market-data publication.
 
-Participant-side packages such as the QUARCC execution engine own local order intent, venue reconciliation, strategy state, participant risk, and client/gateway connectivity. They submit ordinary commands and consume committed reports.
+Participant-side packages own local order intent, venue reconciliation, strategy state, participant risk, and client/gateway connectivity. They submit ordinary commands and consume committed reports.
 
 No client, strategy, execution engine, adapter, or agent may mutate a market engine through an internal reference.
 
 ## Source and license rules
 
-- Production manifests use packages or released dependencies, never paths under `ref/`.
+- Production manifests use first-party packages or approved dependencies, never paths under `ref/`.
 - Preserve exact repositories, commits, paths, and licenses for copied/adapted material.
 - Prefer stable upstream APIs over copied implementation.
+- Update `docs/reference-functionality-audit.md` before changing a reference’s role or adoption disposition.
 - Unlicensed NBC and QUARCC sources may be used only according to documented ownership/license and clean-room rules; do not mechanically translate implementation text without authorization.
+- Specification-derived protocol files can have obligations different from the implementation code; review both.
 - Worker-bound packages must compile for `wasm32-unknown-unknown` unless explicitly native-only and excluded from the Worker dependency graph.
 - Keep fixed-point and checked arithmetic at market, protocol, execution, and ledger boundaries.
 - Keep all request, event, snapshot, queue, subscription, and recovery buffers bounded.
@@ -98,5 +123,7 @@ cargo tree --locked -p bunting-orderbook | grep -F 'orderbook-rs v0.10.3'
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```
+
+For reference changes, also verify gitlink pins, licenses, manifests/features, and the audit/adoption documents.
 
 For path changes, also verify Worker build output, migration discovery, release assembly under ignored `out/`, stale-path searches, dependency direction, and active documentation of NBC/QUARCC roles.
