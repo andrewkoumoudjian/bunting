@@ -189,6 +189,8 @@ Each transcribed scenario must include:
 
 - Source files inventoried: complete for five scenario families.
 - Duplicate hashes verified: complete for the five listed files.
+- External evidence manifest: complete in `docs/ports/nbc-evidence-manifest.v1.json`.
+- External contract fixture manifest: complete for documentation-derived and client-corroborated cases; no black-box traces are recorded.
 - License/ownership resolution: pending.
 - Unit semantics: pending.
 - Canonical schema: not implemented.

@@ -1,0 +1,331 @@
+{
+  "schema_version": "bunting.nbc-external-contract-manifest.v1",
+  "profile_id": "nbc-external-documentation-v1",
+  "status": "documentation_only_no_black_box_traces",
+  "evidence_manifest": "docs/ports/nbc-evidence-manifest.v1.json",
+  "classifications": {
+    "documented": "Stated by the pinned API reference.",
+    "client_corroborated": "Encoded by at least one pinned client or adapter as well as the API reference.",
+    "client_variant": "Encoded by a pinned client but not corroborated by the API reference.",
+    "observed_trace": "Captured from an authorized running reference deployment."
+  },
+  "observed_trace_count": 0,
+  "contracts": [
+    {
+      "id": "scenario-list",
+      "transport": "http",
+      "direction": "client_to_server",
+      "request": {
+        "method": "GET",
+        "path": "/api/replays"
+      },
+      "response_fields": [
+        "scenario_id",
+        "name",
+        "description",
+        "seed",
+        "duration_sec",
+        "your_runs",
+        "your_best_pnl"
+      ],
+      "classification": "documented",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#list-all-scenarios"
+      ]
+    },
+    {
+      "id": "scenario-start",
+      "transport": "http",
+      "direction": "client_to_server",
+      "request": {
+        "method": "GET",
+        "path_template": "/api/replays/{scenario_id}/start",
+        "headers": [
+          "Authorization: Bearer {team_id}",
+          "X-Team-Password: {team_password}"
+        ]
+      },
+      "response_fields": [
+        "run_id",
+        "token",
+        "seed",
+        "duration_sec"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#start-a-scenario",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader.register",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#try_start_replay"
+      ],
+      "notes": [
+        "The student client requires run_id and token.",
+        "The RIT adapter consumes run_id, token, and duration_sec.",
+        "No captured response proves that every documented field is emitted by the selected binary."
+      ]
+    },
+    {
+      "id": "run-history-and-results",
+      "transport": "http",
+      "direction": "client_to_server",
+      "requests": [
+        "GET /api/replays/{scenario_id}/my-runs",
+        "GET /api/replays/{scenario_id}/leaderboard",
+        "GET /api/replays/{scenario_id}/student/{student_id}"
+      ],
+      "result_fields": [
+        "run_id",
+        "started_at",
+        "completed_at",
+        "final_pnl",
+        "final_inventory",
+        "rank",
+        "runs",
+        "notional",
+        "trade_count",
+        "max_inventory",
+        "aggressive_trade_qty",
+        "blowup",
+        "blowup_reason",
+        "total_decision_time_ms"
+      ],
+      "classification": "documented",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#list-your-runs",
+        "ref/nbc-hft-simulation/API_REFERENCE.md#get-leaderboard",
+        "ref/nbc-hft-simulation/API_REFERENCE.md#get-student-history"
+      ],
+      "notes": [
+        "The RIT adapter corroborates my-runs for active-run discovery only.",
+        "Scoring equations and authoritative units remain unresolved."
+      ]
+    },
+    {
+      "id": "market-stream-connect",
+      "transport": "websocket",
+      "direction": "client_to_server",
+      "path_template": "/api/ws/market?run_id={run_id}",
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#market-data-websocket",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader.connect",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#spawn_market_socket"
+      ]
+    },
+    {
+      "id": "market-snapshot",
+      "transport": "websocket",
+      "direction": "server_to_client",
+      "discriminator": {
+        "field": "type",
+        "value": "MARKET_DATA"
+      },
+      "required_for_minimum_profile": [
+        "step",
+        "bid",
+        "ask"
+      ],
+      "documented_optional_profile_fields": [
+        "timestamp",
+        "bid_size",
+        "ask_size",
+        "spread",
+        "bids",
+        "asks",
+        "trades",
+        "last_trade"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#market-snapshot",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._on_market_data",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#MarketEnvelope"
+      ],
+      "notes": [
+        "The manual client also accepts SNAPSHOT, but that discriminator is a client variant without API-reference corroboration.",
+        "The RIT adapter accepts last_trade as either a number or a trade object; the exact server variants remain unverified."
+      ]
+    },
+    {
+      "id": "order-stream-connect",
+      "transport": "websocket",
+      "direction": "client_to_server",
+      "path_template": "/api/ws/orders?token={token}&run_id={run_id}",
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#order-entry-websocket",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader.connect",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#spawn_order_socket"
+      ]
+    },
+    {
+      "id": "order-stream-authenticated",
+      "transport": "websocket",
+      "direction": "server_to_client",
+      "discriminator": {
+        "field": "type",
+        "value": "AUTHENTICATED"
+      },
+      "documented_fields": [
+        "student_id",
+        "run_id",
+        "message"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#authentication-confirmation",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._on_order_response"
+      ]
+    },
+    {
+      "id": "submit-limit",
+      "transport": "websocket",
+      "direction": "client_to_server",
+      "fields": [
+        "order_id",
+        "side",
+        "price",
+        "qty"
+      ],
+      "side_values": [
+        "BUY",
+        "SELL"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#new-order",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._send_order",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#create_order"
+      ],
+      "notes": [
+        "The API reference and student client omit an action discriminator.",
+        "The RIT adapter sends action=NEW, so discriminator acceptance remains version-specific and unresolved.",
+        "Price is a JSON number in the legacy evidence; the exact tick conversion contract remains unresolved."
+      ]
+    },
+    {
+      "id": "cancel",
+      "transport": "websocket",
+      "direction": "client_to_server",
+      "fields": [
+        "action",
+        "order_id"
+      ],
+      "discriminator": {
+        "field": "action",
+        "value": "CANCEL"
+      },
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#cancel-order",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#cancel_order"
+      ],
+      "notes": [
+        "The manual client sends type=CANCEL_ORDER; that variant is not part of this profile without a captured trace."
+      ]
+    },
+    {
+      "id": "done-step-advance",
+      "transport": "websocket",
+      "direction": "client_to_server",
+      "fields": [
+        "action"
+      ],
+      "discriminator": {
+        "field": "action",
+        "value": "DONE"
+      },
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#signal-done-advance-step",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._send_done",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#spawn_stepper"
+      ],
+      "notes": [
+        "The clients associate DONE with advancing after a market snapshot.",
+        "Barrier membership, timeout, duplicate handling, and exact scheduler ordering remain unresolved."
+      ]
+    },
+    {
+      "id": "fill",
+      "transport": "websocket",
+      "direction": "server_to_client",
+      "discriminator": {
+        "field": "type",
+        "value": "FILL"
+      },
+      "fields": [
+        "order_id",
+        "side",
+        "price",
+        "qty",
+        "remaining",
+        "is_maker"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#fill-notification",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._on_order_response",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#FillEnvelope"
+      ],
+      "notes": [
+        "The student client consumes only order_id, side, price, and qty.",
+        "The adapter declares remaining and is_maker, but defaults missing values; field presence is not trace-proven."
+      ]
+    },
+    {
+      "id": "error",
+      "transport": "websocket",
+      "direction": "server_to_client",
+      "discriminator": {
+        "field": "type",
+        "value": "ERROR"
+      },
+      "fields": [
+        "message"
+      ],
+      "classification": "client_corroborated",
+      "evidence": [
+        "ref/nbc-hft-simulation/API_REFERENCE.md#error-message",
+        "ref/nbc-hft-simulation/student_algorithm.py#ReplayTrader._on_order_response",
+        "ref/ritc_mm/src/bin/rit_sim_adapter.rs#ErrorEnvelope"
+      ]
+    }
+  ],
+  "documented_limits": [
+    {
+      "id": "quantity-lot",
+      "value": 100,
+      "unit": "quantity_units",
+      "rule": "positive_quantity_is_a_multiple",
+      "classification": "documented",
+      "trace_verified": false
+    },
+    {
+      "id": "open-orders",
+      "value": 50,
+      "unit": "orders",
+      "consequence": "run_termination_is_documented",
+      "classification": "documented",
+      "trace_verified": false
+    },
+    {
+      "id": "runs-per-hour",
+      "value": 10,
+      "unit": "runs_per_team_per_hour",
+      "classification": "documented",
+      "trace_verified": false,
+      "conflict": "ref/nbc_engine/app/application.yml configures 1000; the selected binary and effective override are unresolved"
+    }
+  ],
+  "explicitly_unsupported_or_unverified": [
+    "replace_order",
+    "market_order",
+    "stop_order",
+    "mass_cancel",
+    "internal_priority_rules",
+    "partial_fill_cancel_races",
+    "done_barrier_timeout_and_membership",
+    "scoring_equations"
+  ],
+  "captured_traces": []
+}

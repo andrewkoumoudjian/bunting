@@ -37,7 +37,9 @@ Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algori
 
 ## P1: NBC evidence and market-engine foundation
 
-The checked-in NBC snapshot proves a packaged exchange simulator, configuration/scenarios and an observable REST/WebSocket/DONE protocol, but it does not contain the Java implementation or named JAR.
+The direct checked-in `ref/nbc_engine` snapshot proves a packaged exchange simulator, configuration/scenarios and an observable REST/WebSocket/DONE protocol, but it does not contain the Java implementation or named JAR. A separate pinned client tree contains an opaque named JAR whose license, source and relationship to that snapshot are unresolved.
+
+The P1 evidence baseline now records exact tree/file hashes and a versioned external-contract fixture manifest. The manifest has no authorized black-box traces, and ownership/license, unit semantics and internal behavior remain unresolved; package implementation stays gated on those boundaries.
 
 ### Evidence work
 

@@ -1,0 +1,180 @@
+{
+  "schema_version": "bunting.nbc-evidence-manifest.v1",
+  "recorded_at": "2026-07-12",
+  "workspace_baseline": {
+    "commit": "ce0faa0fcd1b6ae08623f68e10a8110622704f4d",
+    "note": "This is the main commit at which the evidence was inventoried."
+  },
+  "authority": {
+    "status": "unresolved",
+    "license_files_found": false,
+    "copying_policy": "prohibited_without_documented_authority",
+    "allowed_use": [
+      "observable_interfaces",
+      "independently_written_contracts",
+      "captured_traces_from_an_authorized_deployment",
+      "hash_and_provenance_records"
+    ],
+    "prohibited_use": [
+      "decompiling_the_recorded_jar",
+      "mechanically_translating_unlicensed_implementation_text",
+      "claiming_unobserved_internal_equivalence"
+    ]
+  },
+  "reference_trees": [
+    {
+      "id": "nbc-engine-direct-snapshot",
+      "path": "ref/nbc_engine",
+      "kind": "embedded_git_tree",
+      "tree": "4f004c2527714ef1b5bc6f8a48b01b895892b198",
+      "upstream_repository": null,
+      "upstream_revision": null,
+      "license": "unresolved",
+      "limitations": [
+        "No upstream repository or revision is recorded for this embedded tree.",
+        "The tree contains neither Java source nor the JAR named by its README.",
+        "The SQLite database is opaque evidence and was not inspected for this manifest."
+      ],
+      "files": [
+        {
+          "path": "app/.DS_Store",
+          "git_blob": "50b6c26eed7ed6c384fcf3f5ae67c7606db535f6",
+          "sha256": "170cacab6e90347a4098bf657abcadaffd5dbdc0373fc185c30d4a9941b3adcc",
+          "role": "incidental_metadata"
+        },
+        {
+          "path": "app/README.md",
+          "git_blob": "0b8b4752b4fecf7e47c1e95a77ae3e175231d635",
+          "sha256": "ddd7aa480525a7696a20c110b2b4ac321d78b2dd8a8482cb0761f50fdeeaed50",
+          "role": "packaged_application_documentation"
+        },
+        {
+          "path": "app/application.yml",
+          "git_blob": "a4bfd996979451f4b275fa97caa9f5ac6aa57195",
+          "sha256": "392ae503d51118b7ec14ba26c4d448f10c4ddd4cedee21f1f7fa722684277357",
+          "role": "packaged_application_configuration"
+        },
+        {
+          "path": "app/simulator.db",
+          "git_blob": "590ac840ece6bfb192081613ff63c89dad9e90d6",
+          "sha256": "6088ca5668d06d79dcbd679616480fd3fbce13e06c8ae817cee582a0d56538b7",
+          "role": "opaque_runtime_artifact"
+        },
+        {
+          "path": "app/src/.DS_Store",
+          "git_blob": "d74a55ebb15209274332b6202dee397171bf5ce3",
+          "sha256": "300f7cff86e26dce59ecc57655440f05ed19b23fd1645ac5e959bb4592f83788",
+          "role": "incidental_metadata"
+        },
+        {
+          "path": "app/src/main/resources/scenarios/flash.json",
+          "git_blob": "3514de6212931ab62a8ede4d4d7fb58800cfdded",
+          "sha256": "161f4d072883dbd6231abb98728ed6a356adfc9f31a86d75d925a0f26b21abb6",
+          "role": "unlicensed_scenario_configuration"
+        },
+        {
+          "path": "app/src/main/resources/scenarios/hft_dominated.json",
+          "git_blob": "a2ca2f52f75e02c8e14c28ea110de73614cb4e45",
+          "sha256": "96e74be40ec0460304b9172f74c15699365893880297e190e940392ddfd92c3c",
+          "role": "unlicensed_scenario_configuration"
+        },
+        {
+          "path": "app/src/main/resources/scenarios/mini_flash_crash.json",
+          "git_blob": "114da4e279c4d7c39631995b031d3675325ec3f8",
+          "sha256": "dd1b9cea1fa99d79e550da3dd713b83fbf311f90ad8b0d2a79f3dbe5d5d90b83",
+          "role": "unlicensed_scenario_configuration"
+        },
+        {
+          "path": "app/src/main/resources/scenarios/normal_market.json",
+          "git_blob": "900d45268ff311784bdc27d43b25dd0b4a1c52d4",
+          "sha256": "ca8770206ac4bebe0a05ccd7dd118b4132e18e090116dccb719f8b80abbb1846",
+          "role": "unlicensed_scenario_configuration"
+        },
+        {
+          "path": "app/src/main/resources/scenarios/stressed_market.json",
+          "git_blob": "3e3a7bc42fcf6084a0cc92027421b0b1078a2a1c",
+          "sha256": "b2907178fa6f4993658645a4daaa68360ccf2105abfbfaab5a2fc2a6669f0692",
+          "role": "unlicensed_scenario_configuration"
+        }
+      ]
+    },
+    {
+      "id": "nbc-student-client",
+      "path": "ref/nbc-hft-simulation",
+      "kind": "gitlink",
+      "repository": "https://github.com/carterj-c/NBC_HFT_Simulation.git",
+      "commit": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+      "license": "unresolved",
+      "limitations": [
+        "The pinned tree contains a named JAR, but its source, license, build provenance, and relationship to the direct NBC snapshot are unresolved.",
+        "The JAR is recorded as opaque evidence and must not be decompiled without authority.",
+        "Client behavior proves what the client sends or accepts, not what every simulator revision implements."
+      ],
+      "selected_files": [
+        {
+          "path": "API_REFERENCE.md",
+          "git_blob": "3f582994ad6ea719f1678b54c130895d8e846c67",
+          "sha256": "4454a90ca8ad3449d7d69a1eaa5a3cc842e14f0b2324144c68ac0ed8c026a685",
+          "role": "documentation_derived_protocol_evidence"
+        },
+        {
+          "path": "README.md",
+          "git_blob": "892042fb1a2f81256575ae8e019b9ec419e65d22",
+          "sha256": "db6630e9101ee52c097aec6f33dcd14d0c575cda76639364bde64a64c807aa29",
+          "role": "client_usage_documentation"
+        },
+        {
+          "path": "student_algorithm.py",
+          "git_blob": "e5f075db138592592798ad4dbb51991faa3b2d85",
+          "sha256": "192c8f769e74b43b953fb7d1dba44132c08741412b2ef813209edcd729a252a0",
+          "role": "client_protocol_evidence"
+        },
+        {
+          "path": "manual_trader.py",
+          "git_blob": "d19203adf5cb47ff1e989126e7d54d45b8756ef8",
+          "sha256": "5e54be661d3f57ed373fa9bbcc184f741ea8c6e4f9f19aace51ee2e146ba91e1",
+          "role": "client_protocol_evidence"
+        },
+        {
+          "path": "app/exchange-simulator-0.0.1-SNAPSHOT.jar",
+          "git_blob": "9fb0b2f6dc594e69f070a974f88203a72310c764",
+          "sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+          "size_bytes": 69956114,
+          "role": "opaque_unlicensed_binary"
+        }
+      ]
+    },
+    {
+      "id": "ritc-nbc-adapter",
+      "path": "ref/ritc_mm",
+      "kind": "embedded_git_tree",
+      "tree": "2d52013aa5c13c1305c1d1d1fe7b9e65b20cab0a",
+      "upstream_repository": null,
+      "upstream_revision": null,
+      "license": "unresolved",
+      "selected_files": [
+        {
+          "path": "API_REFERENCE.md",
+          "git_blob": "3f582994ad6ea719f1678b54c130895d8e846c67",
+          "sha256": "4454a90ca8ad3449d7d69a1eaa5a3cc842e14f0b2324144c68ac0ed8c026a685",
+          "role": "documentation_derived_protocol_evidence"
+        },
+        {
+          "path": "src/bin/rit_sim_adapter.rs",
+          "git_blob": "7d4593095aee9bcea075c6bcf6a324f46d766a95",
+          "sha256": "b48a0bc73c8a65c57c4aec2f7b17d54416f0bbb2a52ff856ed68841bf31ca266",
+          "role": "client_adapter_protocol_evidence"
+        }
+      ]
+    }
+  ],
+  "captured_black_box_traces": [],
+  "unresolved": [
+    "ownership_and_license_authority",
+    "selected_reference_binary_revision",
+    "relationship_between_the_direct_snapshot_and_the_client_submodule_jar",
+    "internal_matching_and_scheduler_semantics",
+    "agent_formulas_units_and_random_distributions",
+    "persistence_recovery_and_scoring_semantics"
+  ]
+}
