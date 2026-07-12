@@ -94,10 +94,7 @@ impl KernelBook {
 
     /// Cancels an order through the upstream order-location index.
     pub fn cancel(&self, order_id: u64) -> Result<bool, OrderBookError> {
-        Ok(self
-            .inner
-            .cancel_order(Id::from_u64(order_id))?
-            .is_some())
+        Ok(self.inner.cancel_order(Id::from_u64(order_id))?.is_some())
     }
 
     /// Engages the upstream operational kill switch.
