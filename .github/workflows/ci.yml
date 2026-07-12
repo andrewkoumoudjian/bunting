@@ -83,5 +83,24 @@ jobs:
       - name: Verify upstream dependency
         run: cargo tree -p bunting-orderbook | grep -F 'orderbook-rs v0.10.3'
 
-      - name: Check Wasm target
-        run: cargo check --workspace --target wasm32-unknown-unknown
+      - name: Collect Wasm diagnostics
+        run: |
+          set +e
+          cargo check --workspace --target wasm32-unknown-unknown --message-format=short > wasm.log 2>&1
+          echo "$?" > wasm.status
+          exit 0
+
+      - name: Upload Wasm diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-diagnostics
+          path: |
+            wasm.log
+            wasm.status
+          if-no-files-found: error
+
+      - name: Check Wasm result
+        run: |
+          cat wasm.log
+          test "$(cat wasm.status)" = "0"
