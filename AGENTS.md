@@ -2,75 +2,92 @@
 
 ## Mission
 
-Build a stock-market simulation and exchange-testing platform whose runtime is a plain Rust Cloudflare Worker and whose matching core is the released `OrderBook-rs` crate.
+Build a Rust market-simulation and exchange-testing platform composed from reusable packages, with a plain Cloudflare Worker deployment target.
 
 ## Instruction precedence
 
 - Read this file before changing the repository.
-- Read the nearest scoped `AGENTS.md` for every path touched; scoped instructions add to or narrow these rules.
-- Accepted ADRs and `docs/architecture.md` are binding. When documentation conflicts, stop and reconcile the active decision instead of silently choosing one.
-- Before any path reorganization, read `docs/repository-reorganization.md` and follow its Codex execution contract.
+- Read the nearest scoped `AGENTS.md` for every path touched.
+- Accepted ADRs and `docs/architecture.md` are binding.
+- ADR 0014 defines the distinction between market engines and participant-side execution engines.
+- Before reorganizing paths, read `docs/repository-reorganization.md` and follow its Codex execution contract.
+
+## Engine roles
+
+### Market engines
+
+A market engine owns venue/simulation authority: run state, time or step advancement, market configuration, order processing, trades, public market data, snapshots, and deterministic recovery.
+
+- The current default Bunting engine uses released `OrderBook-rs` for CLOB matching.
+- NBC is a complete market engine to be ported to Rust. Do not describe or implement NBC as only scenario JSON, a scheduler helper, or a collection of agent models.
+- NBC may reuse shared packages when behavior remains compatible, but its coherent engine boundary must remain visible.
+
+### QUARCC execution engine
+
+The QUARCC trading engine is an optional external participant-side execution engine for users, traders, and strategies. It consumes market data, manages local/venue order state, performs reconciliation and participant-side risk, tracks positions, and routes orders to Bunting or another venue.
+
+It must never become authoritative market state or directly mutate a market engine. Bunting must run without it. The existing `quarcc.v1` compatibility crate is the first surface of the port, not its final scope.
 
 ## Repository organization
 
-The repository root remains the Cargo workspace root and owns the single `Cargo.lock` and workspace-wide `.cargo/config.toml`.
+The repository root remains one Cargo workspace and owns the single `Cargo.lock` and workspace-wide `.cargo/config.toml`.
 
-- `bunting-rs/`: public Rust facade package only. Keep `src/lib.rs` small and limited to curated stable re-exports.
-- `crates/`: internal reusable Rust libraries and domain boundaries.
-- `apps/`: deployable binaries and services. The current `workers/edge-api` path is planned to move atomically to `apps/edge-api`.
-- `packages/`: independently released user-facing packages outside the internal Rust crate graph, such as Python or JavaScript SDKs. Do not move internal Rust crates here.
-- `scenarios/`: canonical scenario documents, fixtures, and provenance; executable scenario behavior belongs in crates.
-- `schemas/`: versioned protocol and file schemas when they exist.
-- `tests/`: cross-package conformance and black-box tests; crate unit tests stay with their crate.
-- `tools/`: repository automation or a future `xtask`.
-- `ref/`: read-only evidence and provenance; never a production path dependency.
-- `vendor/`: approved locally built third-party source only, with license, upstream revision, and patch log.
-- `dist/`: generated release bundles; never source of truth and never committed.
+- `packages/`: reusable Rust packages that compose Bunting. This includes primitives, market engines, execution engines, protocols, clients, simulators, and narrowly scoped algorithm libraries.
+- `bunting-rs/`: integrated Bunting product/library that imports packages, selects engines, and exposes the curated public API.
+- `bunting-rs/crates/`: Bunting-private glue only when the code has no reusable package role.
+- `apps/`: deployable Workers, binaries, CLIs, and gateways that depend on `bunting-rs`.
+- `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC logic belongs in the NBC market-engine package.
+- `schemas/`: versioned protocol and file schemas.
+- `tests/`: cross-package, cross-engine, protocol, and deployment tests.
+- `tools/`: repository automation and release tooling.
+- `ref/`: read-only source evidence and provenance; never a production path dependency.
+- `vendor/`: approved locally built third-party source with license, upstream revision, and patch log.
+- `out/`: generated release bundles; ignored and never source of truth.
 
-Do not create empty directories for a hypothetical future. Do not maintain both old and new active paths during a move. Use `git mv`, preserve Cargo package names in the mechanical reorganization, and repair manifests, CI, Wrangler commands, documentation, migrations, scoped instructions, and scripts in the same pull request. Crate or API renames belong in later focused changes.
+Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, private Bunting crates, and `apps/*`.
+
+## Package discipline
+
+- Reusable code belongs under `packages/`, not under product-private directories.
+- A package must have one clear responsibility, explicit dependency direction, workspace metadata/lints, tests, and scoped instructions when needed.
+- Packages must not depend on `bunting-rs` or `apps/`; dependency flow is packages -> `bunting-rs` -> apps.
+- Avoid generic `common`, `utils`, or catch-all `algorithms` packages. Name packages after a specific behavior or model family.
+- Keep mechanical moves separate from semantic renames and feature work.
+- Use `git mv`, preserve package names during repository reorganization, and repair Cargo, CI, Wrangler, migrations, docs, scripts, and scoped instructions atomically.
 
 ## Binding architecture decisions
 
-- `orderbook-rs = 0.10.3` is the production matching and order-book dependency.
-- Do not create a second Bunting-owned limit-order book, price-level queue, matching loop, snapshot format, replay engine, kill switch, or market-depth analytics layer when the upstream API already provides it.
-- A minimal attributed fork is permitted only when an upstream Wasm incompatibility cannot be fixed through features or an upstream contribution. Preserve the MIT license, API shape, tests, and an exact divergence log. An approved local fork belongs under `vendor/`, not `packages/`.
-- The deployment target is a plain Cloudflare Worker. Do not introduce a Durable Object requirement without a new user-approved ADR.
-- The Cloudflare Workers Cache API is mandatory for immutable, checksum-addressed `OrderBook-rs` snapshot packages.
-- Worker global memory may cache reconstructed books during one warm isolate lifetime, but it is never the only recoverable copy.
-- Canonical accepted-command history and optimistic stream versions remain in an origin store. Workers Cache is an acceleration and distribution layer, not a transaction coordinator.
-- Commit authoritative state before acknowledgement, cache publication, or streaming publication.
+- `orderbook-rs = 0.10.3` remains the production matching dependency for the current default market engine.
+- Do not create another Bunting-owned generic CLOB when the upstream API provides the required behavior.
+- NBC may define engine-specific behavior, but any separate matching implementation requires a documented compatibility need and tests.
+- An OrderBook-rs fork requires a dedicated ADR. It may be maintained as a Bunting package or patched vendor source only with complete MIT attribution, an upstream pin, `PATCHES.md`, synchronization policy, and native/Wasm compatibility tests.
+- The deployment target is a plain Cloudflare Worker. Do not add a Durable Object requirement without a user-approved ADR.
+- Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
+- Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
+- Commit authoritative state before acknowledgement, cache publication, or stream publication.
 
-## Bunting-owned responsibilities
+## Authority boundaries
 
-Bunting owns authentication, authorization, run and participant identifiers, canonical event envelopes, idempotency, participant cash and position accounting, scenario scheduling, protocol translation, Worker routes, persistence orchestration, streaming recovery, and Dynamic Worker strategy isolation.
+Bunting market engines own venue-side identities, matching results, canonical events, authoritative ledger projections, scenario/run state, and market-data publication.
 
-## Upstream responsibilities
+Participant-side packages such as the QUARCC execution engine own local order intent, venue reconciliation, strategy state, participant risk, and client/gateway connectivity. They submit ordinary commands and consume committed reports.
 
-Use `OrderBook-rs` directly for order types, price levels, price-time matching, trade generation, snapshots and restore, engine sequencing, market depth, metrics, market-impact simulation, self-trade prevention, fees, risk hooks, order lifecycle tracking, mass cancel, expiry sweeps, and the operational kill switch.
+No client, strategy, execution engine, adapter, or agent may mutate a market engine through an internal reference.
 
-## Source and dependency rules
+## Source and license rules
 
-- Production manifests use released packages rather than paths under `ref/`.
-- Preserve upstream licenses and exact source paths for any copied example or test.
-- Prefer calling a stable upstream API over copying its implementation.
-- Copy MIT-licensed examples or tests only when adaptation creates a Bunting-specific fixture or boundary test, and record the upstream repository, commit, path, license, and divergence.
-- Worker-bound packages must compile for `wasm32-unknown-unknown`.
-- Keep fixed-point and checked arithmetic at Bunting protocol and ledger boundaries.
-- Keep request, response, snapshot, subscription, event-batch, and recovery buffers bounded.
-- Do not commit generated `target/`, Worker `build/`, `dist/`, coverage, database, or secret files.
-
-## Change discipline
-
-- Keep mechanical moves separate from semantic behavior changes.
-- Preserve public package names and Rust paths during repository moves.
-- Add new crates only with one clear owner, a narrow dependency direction, package metadata, lints inherited from the workspace, tests, and a scoped `AGENTS.md` when special constraints exist.
-- Do not add catch-all crates named `common`, `utils`, or `algorithms`; name packages after one responsibility.
-- Update active documentation and commands whenever paths, APIs, deployment configuration, or ownership change.
-- Use checked conversions and explicit typed errors; do not add `unwrap`, `expect`, panic-driven control flow, or unsafe code.
+- Production manifests use packages or released dependencies, never paths under `ref/`.
+- Preserve exact repositories, commits, paths, and licenses for copied/adapted material.
+- Prefer stable upstream APIs over copied implementation.
+- Unlicensed NBC and QUARCC sources may be used only according to documented ownership/license and clean-room rules; do not mechanically translate implementation text without authorization.
+- Worker-bound packages must compile for `wasm32-unknown-unknown` unless explicitly native-only and excluded from the Worker dependency graph.
+- Keep fixed-point and checked arithmetic at market, protocol, execution, and ledger boundaries.
+- Keep all request, event, snapshot, queue, subscription, and recovery buffers bounded.
+- Do not commit `target/`, Worker `build/`, `out/`, database, credential, or secret files.
 
 ## Required checks
 
-Run from the repository root before marking work complete:
+Run from repository root before marking work complete:
 
 ```bash
 cargo metadata --locked --format-version 1 --no-deps
@@ -82,4 +99,4 @@ cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```
 
-For path changes, also search the full tracked tree for stale paths and verify the Worker build, migration discovery, deployment commands, and CI workflow from the new location.
+For path changes, also verify Worker build output, migration discovery, release assembly under ignored `out/`, stale-path searches, dependency direction, and active documentation of NBC/QUARCC roles.
