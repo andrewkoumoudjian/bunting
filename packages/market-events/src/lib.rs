@@ -82,6 +82,7 @@ pub enum RejectCode {
     PositionLimit,
     InsufficientCash,
     InsufficientInventory,
+    InsufficientLiquidity,
     LogicalTimeRegression,
     SequenceConflict,
     ArithmeticOverflow,

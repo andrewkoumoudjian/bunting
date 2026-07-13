@@ -226,14 +226,17 @@ dependencies = [
 name = "bunting-tui"
 version = "0.1.0"
 dependencies = [
+ "bunting-agents",
  "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
  "bunting-risk-engine",
  "clap",
  "crossterm",
+ "quarcc-bunting-adapter",
  "quarcc-execution-engine",
  "ratatui",
+ "serde_json",
  "simfix-mapping",
  "simfix-session",
  "simfix-wire",

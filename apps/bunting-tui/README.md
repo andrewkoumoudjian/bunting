@@ -7,8 +7,24 @@ over TCP. The market, orders and FIX-session tabs expose the engine book,
 execution reports and bounded raw protocol traffic; overlays provide help,
 order entry and the FIX console.
 
+The embedded server also starts a deterministic local agent population. Each
+policy wake emits bounded intent into its own QUARCC execution engine, then the
+QUARCC adapter maps the resulting action to the same canonical market-command
+boundary used by a remote server. The human remains an independent FIX
+participant alongside those agents.
+
 ```bash
 cargo run --locked -p bunting-tui
+```
+
+Select any built-in policies by repeating or comma-separating `--agent`; the
+default population is a static liquidity provider, a zero-intelligence noise
+trader and a long-momentum trader. `--agent-tick-ms` controls wall-clock pacing
+without changing deterministic logical wake times:
+
+```bash
+cargo run --locked -p bunting-tui -- \
+  --agent avellaneda_stoikov,poisson_noise --agent-tick-ms 250
 ```
 
 Use `--address 127.0.0.1:9880` to change the endpoint. Use `--remote` to skip

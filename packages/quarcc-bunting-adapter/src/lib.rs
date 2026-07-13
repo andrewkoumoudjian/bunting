@@ -33,6 +33,7 @@ pub enum AdapterError {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuntingExecutionAdapter {
     cumulative_fills: BTreeMap<LocalOrderId, QuantityLots>,
+    order_quantities: BTreeMap<LocalOrderId, QuantityLots>,
     owned_orders: BTreeSet<LocalOrderId>,
 }
 
@@ -99,6 +100,10 @@ impl BuntingExecutionAdapter {
     ///
     /// # Errors
     /// Returns an error when cumulative fill arithmetic overflows.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive canonical-event mapping keeps ownership and fill accounting atomic"
+    )]
     pub fn normalize_committed_events(
         &mut self,
         actor: ParticipantId,
@@ -108,22 +113,33 @@ impl BuntingExecutionAdapter {
         for event in events {
             let (local, kind) = match &event.payload {
                 EventPayload::OrderReceived { order } if order.participant_id == actor => {
-                    self.owned_orders
-                        .insert(LocalOrderId::new(order.order_id.get()));
+                    let local = LocalOrderId::new(order.order_id.get());
+                    self.owned_orders.insert(local);
+                    self.order_quantities.insert(local, order.quantity);
                     continue;
                 }
                 EventPayload::OrderAccepted { order_id } => {
-                    (LocalOrderId::new(order_id.get()), VenueReportKind::Accepted)
+                    let local = LocalOrderId::new(order_id.get());
+                    if !self.owned_orders.contains(&local) {
+                        continue;
+                    }
+                    (local, VenueReportKind::Accepted)
                 }
                 EventPayload::OrderRejected {
                     order_id: Some(order_id),
                     code,
-                } => (
-                    LocalOrderId::new(order_id.get()),
-                    VenueReportKind::Rejected {
-                        reason: format!("{code:?}"),
-                    },
-                ),
+                } => {
+                    let local = LocalOrderId::new(order_id.get());
+                    if !self.owned_orders.contains(&local) {
+                        continue;
+                    }
+                    (
+                        local,
+                        VenueReportKind::Rejected {
+                            reason: format!("{code:?}"),
+                        },
+                    )
+                }
                 EventPayload::OrderCanceled {
                     order_id,
                     participant_id,
@@ -170,13 +186,28 @@ impl BuntingExecutionAdapter {
                 }
                 _ => continue,
             };
+            let leaves_quantity = match &kind {
+                VenueReportKind::Fill {
+                    cumulative_quantity,
+                    ..
+                } => Some(
+                    self.order_quantities
+                        .get(&local)
+                        .copied()
+                        .ok_or(AdapterError::ArithmeticOverflow)?
+                        .checked_sub(*cumulative_quantity)
+                        .ok_or(AdapterError::ArithmeticOverflow)?,
+                ),
+                VenueReportKind::Cancelled => Some(QuantityLots::new(0)),
+                _ => None,
+            };
             reports.push(NormalizedVenueReport {
                 report_id: ReportId::new(event.event_id.get()),
                 source_sequence: Some(event.sequence.get()),
                 client_order_id: None,
                 local_order_id: Some(local),
                 venue_order_id: Some(VenueOrderId::new(local.get().to_string())),
-                leaves_quantity: None,
+                leaves_quantity,
                 kind,
             });
         }
@@ -187,8 +218,8 @@ impl BuntingExecutionAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bunting_market_events::{OrderKind, Side};
-    use bunting_market_types::{InstrumentId, PriceTicks};
+    use bunting_market_events::{EVENT_SCHEMA_VERSION, OrderKind, Side};
+    use bunting_market_types::{EventId, InstrumentId, PriceTicks};
     use quarcc_execution_engine::ids::{ActionId, ClientOrderId};
     use quarcc_execution_engine::order::DesiredOrder;
 
@@ -220,6 +251,75 @@ mod tests {
         )?;
         assert_eq!(command.command_id, CommandId::new(91));
         assert_eq!(command.expected_sequence, EventSequence::new(44));
+        Ok(())
+    }
+
+    #[test]
+    fn reports_are_isolated_to_the_owning_participant() -> Result<(), AdapterError> {
+        let first = ParticipantId::new(10);
+        let second = ParticipantId::new(11);
+        let envelope = |sequence: u64, payload| EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            run_id: RunId::new(1),
+            event_id: EventId::new(u128::from(sequence)),
+            sequence: EventSequence::new(sequence),
+            logical_time: LogicalTimeNs::new(sequence),
+            actor: first,
+            command_id: CommandId::new(u128::from(sequence)),
+            correlation_id: CorrelationId::new(u128::from(sequence)),
+            causation_sequence: None,
+            payload,
+        };
+        let order = |order_id, participant_id| SubmitOrder {
+            order_id: OrderId::new(order_id),
+            instrument_id: InstrumentId::new(1),
+            participant_id,
+            side: Side::Buy,
+            quantity: QuantityLots::new(1),
+            kind: OrderKind::Limit {
+                price: PriceTicks::new(99),
+            },
+        };
+        let events = vec![
+            envelope(
+                1,
+                EventPayload::OrderReceived {
+                    order: order(100, first),
+                },
+            ),
+            envelope(
+                2,
+                EventPayload::OrderAccepted {
+                    order_id: OrderId::new(100),
+                },
+            ),
+            envelope(
+                3,
+                EventPayload::OrderReceived {
+                    order: order(200, second),
+                },
+            ),
+            envelope(
+                4,
+                EventPayload::OrderAccepted {
+                    order_id: OrderId::new(200),
+                },
+            ),
+        ];
+        let mut first_adapter = BuntingExecutionAdapter::default();
+        let mut second_adapter = BuntingExecutionAdapter::default();
+        let first_reports = first_adapter.normalize_committed_events(first, &events)?;
+        let second_reports = second_adapter.normalize_committed_events(second, &events)?;
+        assert_eq!(first_reports.len(), 1);
+        assert_eq!(
+            first_reports[0].local_order_id,
+            Some(LocalOrderId::new(100))
+        );
+        assert_eq!(second_reports.len(), 1);
+        assert_eq!(
+            second_reports[0].local_order_id,
+            Some(LocalOrderId::new(200))
+        );
         Ok(())
     }
 }

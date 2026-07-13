@@ -601,6 +601,12 @@ impl RunState {
         let (accepted, reject_code, order_id) = match &command.payload {
             CommandPayload::SubmitOrder(order) => {
                 let listing_key = self.listing_key_for_instrument(order.instrument_id)?;
+                let price_bounds = self
+                    .listings
+                    .get(&listing_key)
+                    .ok_or(EngineError::UnknownListing)?
+                    .definition
+                    .price_bounds;
                 let book = self.restore_book(listing_key, cached, command)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
@@ -608,6 +614,7 @@ impl RunState {
                 let outcome = prepare_submit(
                     order,
                     listing_key,
+                    price_bounds,
                     &book,
                     &mut ledger,
                     &risk,
@@ -1039,9 +1046,15 @@ impl From<SnapshotError> for EngineError {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "submission stages risk, OrderBook-rs matching, ledger effects, and canonical events atomically"
+)]
 fn prepare_submit(
     order: &bunting_market_events::SubmitOrder,
     listing_key: ListingKey,
+    price_bounds: PriceBounds,
     book: &KernelBook,
     ledger: &mut Ledger,
     risk: &RiskState,
@@ -1054,17 +1067,29 @@ fn prepare_submit(
     if ownership.len() >= MAX_ORDERS {
         return Ok(Err(RejectCode::MaxOpenOrderQuantity));
     }
-    let OrderKind::Limit { price } = order.kind else {
-        return Ok(Err(RejectCode::PriceOutOfBounds));
-    };
     let Ok(upstream_id) = to_upstream_order_id(order.order_id) else {
         return Ok(Err(RejectCode::InvalidOrderId));
     };
-    let Ok(upstream_price) = to_upstream_price(price) else {
-        return Ok(Err(RejectCode::PriceOutOfBounds));
-    };
     let Ok(upstream_quantity) = to_upstream_quantity(order.quantity) else {
         return Ok(Err(RejectCode::InvalidQuantity));
+    };
+    let (reservation_price, upstream_price) = match order.kind {
+        OrderKind::Limit { price } => {
+            let Ok(upstream_price) = to_upstream_price(price) else {
+                return Ok(Err(RejectCode::PriceOutOfBounds));
+            };
+            (price, Some(upstream_price))
+        }
+        OrderKind::Market => {
+            if !book.has_opposite_liquidity(order.side) {
+                return Ok(Err(RejectCode::InsufficientLiquidity));
+            }
+            let price = match order.side {
+                Side::Buy => price_bounds.max,
+                Side::Sell => price_bounds.min,
+            };
+            (price, None)
+        }
     };
     let open_quantity = ownership
         .values()
@@ -1077,7 +1102,12 @@ fn prepare_submit(
             total.checked_add(owned.remaining_quantity)
         })
         .ok_or(EngineError::Accounting)?;
-    let reservation_price = match risk.check(order, open_quantity, ledger, None) {
+    let reservation_price = match risk.check(
+        order,
+        open_quantity,
+        ledger,
+        (order.kind == OrderKind::Market).then_some(reservation_price),
+    ) {
         Ok(value) => value,
         Err(code) => return Ok(Err(code)),
     };
@@ -1096,25 +1126,32 @@ fn prepare_submit(
             participant_id: order.participant_id,
             listing_key,
             side: order.side,
-            limit_price: price,
+            limit_price: reservation_price,
             original_quantity: order.quantity,
             remaining_quantity: order.quantity,
             state: OwnedOrderState::Active,
         },
     );
-    let submission = book
-        .submit_limit(
+    let trade_result = if let Some(price) = upstream_price {
+        book.submit_limit(
             upstream_id,
-            upstream_price,
+            price,
             upstream_quantity,
             to_upstream_side(order.side),
             TimeInForce::Gtc,
         )
-        .map_err(|_| EngineError::Upstream)?;
+        .map_err(|_| EngineError::Upstream)?
+        .trade_result
+    } else {
+        Some(
+            book.submit_market(upstream_id, upstream_quantity, to_upstream_side(order.side))
+                .map_err(|_| EngineError::Upstream)?,
+        )
+    };
     payloads.push(EventPayload::OrderAccepted {
         order_id: order.order_id,
     });
-    if let Some(trade_result) = submission.trade_result {
+    if let Some(trade_result) = trade_result {
         let engine_sequence = trade_result.engine_seq;
         let trade_info = TradeInfo::from_trade_result(&trade_result, None);
         apply_trades(
@@ -1137,7 +1174,7 @@ fn prepare_submit(
         payloads.push(EventPayload::OrderCompleted {
             order_id: order.order_id,
         });
-    } else {
+    } else if let OrderKind::Limit { price } = order.kind {
         payloads.push(EventPayload::OrderRested {
             order_id: order.order_id,
             participant_id: order.participant_id,
@@ -1145,6 +1182,25 @@ fn prepare_submit(
             side: order.side,
             price,
             remaining,
+        });
+    } else {
+        ledger.release(
+            order.participant_id,
+            order.instrument_id,
+            order.side,
+            reservation_price,
+            remaining,
+        )?;
+        if let Some(record) = ownership.get_mut(&order.order_id) {
+            record.state = OwnedOrderState::Canceled;
+            record.remaining_quantity = QuantityLots::new(0);
+        }
+        payloads.push(EventPayload::OrderCanceled {
+            order_id: order.order_id,
+            participant_id: order.participant_id,
+            instrument_id: order.instrument_id,
+            remaining,
+            reason: CancelReason::MarketRemainder,
         });
     }
     Ok(Ok(()))
@@ -1435,6 +1491,33 @@ mod tests {
         }
     }
 
+    fn submit_market(
+        state: &RunState,
+        command_id: u128,
+        participant: u128,
+        order_id: u128,
+        instrument: u128,
+        side: Side,
+        quantity: i64,
+    ) -> Command {
+        Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(command_id),
+            correlation_id: CorrelationId::new(command_id),
+            logical_time: LogicalTimeNs::new(u64::try_from(command_id).unwrap() * 1_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(participant),
+            payload: CommandPayload::SubmitOrder(SubmitOrder {
+                order_id: OrderId::new(order_id),
+                instrument_id: InstrumentId::new(instrument),
+                participant_id: ParticipantId::new(participant),
+                side,
+                quantity: QuantityLots::new(quantity),
+                kind: OrderKind::Market,
+            }),
+        }
+    }
+
     #[test]
     fn two_listings_are_isolated_and_iteration_is_deterministic() {
         let state = run();
@@ -1508,6 +1591,52 @@ mod tests {
             .unwrap()
             .candidate;
         assert_eq!(uninterrupted.state_hash(), replayed.state_hash());
+    }
+
+    #[test]
+    fn market_order_executes_through_orderbook_rs_and_completes() {
+        let state = run();
+        let resting = state
+            .transition(&submit(&state, 1, 1, 1, 1, Side::Sell, 101, 10), None)
+            .unwrap()
+            .candidate;
+        let outcome = resting
+            .transition(&submit_market(&resting, 2, 2, 2, 1, Side::Buy, 4), None)
+            .unwrap();
+
+        assert!(outcome.accepted);
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::TradeExecuted {
+                taker_order_id,
+                price,
+                quantity,
+                ..
+            } if taker_order_id == OrderId::new(2)
+                && price == PriceTicks::new(101)
+                && quantity == QuantityLots::new(4)
+        )));
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCompleted { order_id } if order_id == OrderId::new(2)
+        )));
+        assert_eq!(
+            outcome
+                .candidate
+                .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+                .unwrap()
+                .1,
+            vec![(101, 6)]
+        );
+        assert_eq!(
+            outcome
+                .candidate
+                .ownership()
+                .get(&OrderId::new(2))
+                .unwrap()
+                .state,
+            OwnedOrderState::Filled
+        );
     }
 
     #[test]

@@ -167,7 +167,6 @@ impl KernelBook {
     }
 
     /// Submits a market order and normalizes the upstream match result into a trade result.
-    #[cfg(test)]
     pub fn submit_market(
         &self,
         order_id: u64,
@@ -181,6 +180,15 @@ impl KernelBook {
             self.inner.symbol().to_string(),
             match_result,
         ))
+    }
+
+    /// Returns whether the side can currently reach at least one opposite order.
+    #[must_use]
+    pub fn has_opposite_liquidity(&self, side: BuntingSide) -> bool {
+        match side {
+            BuntingSide::Buy => self.inner.best_ask().is_some(),
+            BuntingSide::Sell => self.inner.best_bid().is_some(),
+        }
     }
 
     /// Cancels an order through the upstream order-location index.
