@@ -10,7 +10,7 @@ Bunting ships one public native Rust Cloudflare Worker whose only application AP
 
 ## Current implementation gaps
 
-- `apps/edge-api` still uses `worker::Router` and REST resources.
+- `apps/trpc-api` still uses `worker::Router` and REST resources after the mechanical path move.
 - `schemas/trpc/bunting.v1.json` is specified but no Rust contract/wire package exists.
 - Caller-supplied `x-bunting-participant-id` is still trusted by the provisional Worker.
 - No tRPC query, mutation, batch, error or subscription differential suite exists.

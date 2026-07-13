@@ -28,7 +28,7 @@ The repository now follows [`repository-reorganization.md`](repository-reorganiz
 
 - implemented reusable crates live under `packages/` with Cargo package names preserved;
 - the thin `bunting-rs` composition crate depends inward on reusable packages;
-- the Worker, its Wrangler config and its migrations live under `apps/edge-api`;
+- the Worker, its Wrangler config and its migrations live under `apps/trpc-api`;
 - one root Cargo workspace and lockfile remain authoritative;
 - ignored `out/` is reserved for generated release bundles;
 - Cargo, CI, deployment commands, documentation and scoped instructions use the active paths.

@@ -6,7 +6,7 @@ Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0016 and ADR 0017 before changing code
 
 - Reusable first-party crates live under `packages/`.
 - The curated portable composition crate is `bunting-rs/`.
-- The current Rust Worker, Wrangler config and D1 migrations live under `apps/edge-api/`; move them mechanically to `apps/trpc-api/` before the native tRPC semantic cutover.
+- The current Rust Worker, Wrangler config and D1 migrations live under `apps/trpc-api/`; the mechanical move is complete and remains separate from the native tRPC semantic cutover.
 - Cargo-less future scaffolds remain under `crates/` until their roadmap phase adds real implementation and tests.
 - Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
 
