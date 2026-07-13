@@ -1,3 +1,5 @@
+// Rust guideline compliant 2026-02-21
+
 use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
 use std::{collections::VecDeque, io};
@@ -5,6 +7,7 @@ use time::{OffsetDateTime, macros::format_description};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const MAX_FIX_LOGS: usize = 256;
+pub const MAX_EXECUTIONS: usize = 128;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Book {
@@ -12,13 +15,23 @@ pub struct Book {
     pub asks: Vec<(i64, i64)>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Execution {
+    pub order_id: String,
+    pub kind: String,
+    pub order_status: String,
+    pub reason: String,
+}
+
 pub struct FixClient {
     stream: TcpStream,
     session: FixSession,
     decoder: Decoder,
     pub logs: VecDeque<String>,
+    pub executions: VecDeque<Execution>,
     pub book: Book,
     pub status: String,
+    pub book_sequence: String,
 }
 
 impl FixClient {
@@ -31,8 +44,10 @@ impl FixClient {
             session,
             decoder: Decoder::new(WireLimits::default()),
             logs: VecDeque::new(),
+            executions: VecDeque::new(),
             book: Book::default(),
             status: "logging on".to_owned(),
+            book_sequence: "-".to_owned(),
         };
         let actions = client
             .session
@@ -120,9 +135,22 @@ impl FixClient {
         match message.msg_type.as_str() {
             "W" => {
                 self.book = parse_book(message);
-                self.status = format!("book sequence {}", message.value(34).unwrap_or("?"));
+                message
+                    .value(34)
+                    .unwrap_or("?")
+                    .clone_into(&mut self.book_sequence);
+                self.status = format!("book sequence {}", self.book_sequence);
             }
             "8" => {
+                if self.executions.len() == MAX_EXECUTIONS {
+                    self.executions.pop_front();
+                }
+                self.executions.push_back(Execution {
+                    order_id: message.value(37).unwrap_or("?").to_owned(),
+                    kind: message.value(150).unwrap_or("?").to_owned(),
+                    order_status: message.value(39).unwrap_or("?").to_owned(),
+                    reason: message.value(58).unwrap_or("").to_owned(),
+                });
                 self.status = format!(
                     "execution order={} status={} {}",
                     message.value(37).unwrap_or("?"),

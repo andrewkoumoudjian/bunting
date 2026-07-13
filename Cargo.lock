@@ -138,25 +138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bunting-cli"
-version = "0.1.0"
-dependencies = [
- "bunting-engine",
- "bunting-market-events",
- "bunting-market-types",
- "bunting-risk-engine",
- "clap",
- "crossterm",
- "quarcc-execution-engine",
- "ratatui",
- "simfix-mapping",
- "simfix-session",
- "simfix-wire",
- "time",
- "tokio",
-]
-
-[[package]]
 name = "bunting-command-transaction"
 version = "0.1.0"
 dependencies = [
@@ -239,6 +220,25 @@ dependencies = [
  "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
+]
+
+[[package]]
+name = "bunting-tui"
+version = "0.1.0"
+dependencies = [
+ "bunting-engine",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-risk-engine",
+ "clap",
+ "crossterm",
+ "quarcc-execution-engine",
+ "ratatui",
+ "simfix-mapping",
+ "simfix-session",
+ "simfix-wire",
+ "time",
+ "tokio",
 ]
 
 [[package]]

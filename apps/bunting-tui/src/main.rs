@@ -1,15 +1,12 @@
 #![forbid(unsafe_code)]
+// Rust guideline compliant 2026-02-21
 
-#[cfg(not(target_arch = "wasm32"))]
-mod keymap;
 #[cfg(not(target_arch = "wasm32"))]
 mod local_market;
 #[cfg(not(target_arch = "wasm32"))]
 mod protocol;
 #[cfg(not(target_arch = "wasm32"))]
-mod theme;
-#[cfg(not(target_arch = "wasm32"))]
-mod ui;
+mod tui;
 
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
@@ -35,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Some(local_market::spawn(&arguments.address).await?)
     };
-    let result = Box::pin(ui::run(&arguments.address)).await;
+    let result = Box::pin(tui::run(&arguments.address)).await;
     if let Some(server) = server {
         server.abort();
     }
