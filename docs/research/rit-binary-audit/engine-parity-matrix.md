@@ -44,6 +44,6 @@ The target is one `bunting-engine`. Compatibility profiles may alter validation,
 
 ## Current architectural mismatch
 
-Accepted ADR 0014 currently selects `orderbook-v1` or `nbc-v1` as durable alternative market engines, and `packages/nbc-market-engine` now contains a separate matching loop. The requested unified architecture conflicts with that accepted decision. ADR 0018 must explicitly supersede the engine-selection portions of ADR 0014 while preserving ADR 0014's market-versus-participant authority boundary and ADR 0017's NBC provenance rules.
+ADR 0018 supersedes ADR 0014's durable `orderbook-v1`/`nbc-v1` selection, and ADR 0019 makes the OrderBook-rs adapter integral to the central engine package. The current `packages/orderbook` and separate NBC matching loop are transitional implementation state. ADR 0014's market-versus-participant authority boundary and ADR 0017's NBC provenance rules remain binding.
 
 The current code is therefore plumbing for several rows, not parity: it has an OrderBook-rs adapter, a basic ledger/risk/origin transaction path, a partial NBC config/run/matching port, and QUARCC compatibility records. It lacks the unified kernel, broad RIT state model, agents, tenders/news/assets, complete valuation, full-state recovery, and feature-to-test coverage gate.

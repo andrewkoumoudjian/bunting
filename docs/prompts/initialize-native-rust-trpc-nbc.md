@@ -1,5 +1,7 @@
 # Initialization prompt: native Rust tRPC and authorized NBC port
 
+Status: historical prompt superseded for new work by [`implement-unified-bunting-engine-foundation.md`](implement-unified-bunting-engine-foundation.md), ADR 0018 and ADR 0019
+
 Use this prompt in a fresh implementation session:
 
 ```text

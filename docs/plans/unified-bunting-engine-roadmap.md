@@ -2,7 +2,7 @@
 
 Status: active evidence-gated implementation plan
 
-This roadmap implements ADR 0018 and is derived from the RIT binary audit, the current NBC translation ledger, the RITC and QUARCC port audits, the OrderBook-rs 0.10.3 surface, and the current Bunting vertical slice. It replaces any plan that completes `nbc-v1` as a separately selectable production kernel.
+This roadmap implements ADR 0018, ADR 0019 and the [`RIT-class feature specification`](../specs/rit-class-market-simulation.md). It is derived from the RIT binary audit, official documented RIT capabilities, the current NBC translation ledger, the RITC and QUARCC port audits, the OrderBook-rs 0.10.3 surface, and the current Bunting vertical slice. It replaces any plan that completes `nbc-v1` as a separately selectable production kernel or leaves matching as an independently consumed peer package.
 
 ## Hard gates
 
@@ -34,7 +34,7 @@ The RIT core precedes NBC migration because the unified state must first represe
 
 ### 1. `feat/unified-bunting-engine-foundation`
 
-Create the first compiling `packages/bunting-engine` slice with engine/config/profile versioning, authoritative state, command application, typed capabilities and transitions. Compose existing market types/events, OrderBook-rs adapter, ledger and risk packages. Remove future run creation from engine-family selection while retaining a migration reader for old records. Tests prove all mutations cross one transition API and no internal mutable book reference escapes.
+Create the first compiling `packages/bunting-engine` slice with engine/config/profile versioning, a bounded multi-listing run aggregate, minimal immutable scenario definitions, authoritative state, command application and one run-level sequence. Move the tested `packages/orderbook` adapter into a private engine module so the central package directly owns OrderBook-rs, migrate production callers, then remove the transitional crate. Compose existing market types/events, ledger and risk packages without absorbing persistence or tRPC. Tests prove all mutations cross one transition API, multi-listing state is deterministic and no internal mutable book reference escapes. Use [`the persisted implementation prompt`](../prompts/implement-unified-bunting-engine-foundation.md).
 
 ### 2. `feat/bunting-engine-orderbook-full-capabilities`
 

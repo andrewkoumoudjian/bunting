@@ -9,7 +9,7 @@ Build a Rust market-simulation and exchange-testing platform composed from reusa
 - Read this file before changing the repository.
 - Read the nearest scoped `AGENTS.md` for every path touched.
 - Accepted ADRs and `docs/architecture.md` are binding.
-- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`.
+- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`, and ADR 0019 makes that package the direct owner of the OrderBook-rs integration.
 - Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
 - Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
 - Before reorganizing paths, read `docs/repository-reorganization.md` and follow its execution contract.
@@ -34,7 +34,7 @@ Never infer functionality from a repository name. Never treat `.gitmodules` bran
 
 A single production `bunting-engine` owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
 
-- The engine uses released `OrderBook-rs` for CLOB matching.
+- The engine package directly integrates released `OrderBook-rs` for CLOB matching; applications and orchestration packages must not consume the matcher as a peer authority.
 - NBC is a complete compatibility input to the unified engine. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models, and do not create a second selectable venue kernel.
 - The direct NBC snapshot lacks the Java implementation and named JAR; the separately pinned JAR is authorized under ADR 0017 for bytecode inspection, Rust translation and redistribution. Cite bytecode or differential evidence before claiming exact internal equivalence.
 - NBC-specific scenario, scheduler, agent, scoring and protocol behavior remains visibly provenance-linked inside the unified engine; any incompatibility with OrderBook-rs is an explicit unresolved gap or reviewed extension, not an implicit second matcher.
@@ -79,10 +79,10 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 ## Binding architecture decisions
 
-- `orderbook-rs = 0.10.3` remains the production matching dependency for the unified market engine.
+- `orderbook-rs = 0.10.3` remains the production matching dependency internal to the unified `bunting-engine` package.
 - Do not create another generic Bunting-owned CLOB when the upstream API provides the required behavior.
 - NBC may require compatibility behavior around the shared matcher, but a separate production matching implementation is prohibited unless a later ADR changes ADR 0018 with documented evidence and differential tests.
-- `packages/orderbook` is the first-party Bunting adapter, not a location for copied upstream source.
+- `packages/orderbook` is the current transitional first-party adapter. Move its behavior and tests into a private `bunting-engine` module during the foundation migration, then remove the crate; it is never a location for copied upstream source.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
 - The deployment target is one native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. ADR 0016 authorizes an optional Rust stream-coordination Durable Object only after its gate; it never owns market commands or origin truth.
 - Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.

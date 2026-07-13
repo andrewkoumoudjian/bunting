@@ -1,6 +1,6 @@
 # Implementation pathway
 
-This pathway implements ADR 0013, ADR 0014, ADR 0016, ADR 0017 and ADR 0018. ADR 0018 supersedes the earlier selectable-market-engine plan: production converges on one `bunting-engine`, with NBC retained as a provenance-linked compatibility input. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
+This pathway implements ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019. ADR 0018 supersedes the earlier selectable-market-engine plan: production converges on one `bunting-engine`, with NBC retained as a provenance-linked compatibility input. ADR 0019 makes the OrderBook-rs adapter integral to that central package; `packages/orderbook` remains current implementation state, not the target boundary. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation
 

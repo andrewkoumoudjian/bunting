@@ -2,7 +2,7 @@
 
 Status: superseded for engine selection by ADR 0018 and [`unified-bunting-engine-roadmap.md`](unified-bunting-engine-roadmap.md); retained for completed tRPC/NBC evidence history
 
-Canonical decisions: ADR 0013, ADR 0014, ADR 0016, ADR 0017 and ADR 0018
+Canonical decisions: ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019
 
 ## Outcome
 

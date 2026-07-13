@@ -6,7 +6,7 @@ NBC is a venue-side market/exchange simulator. It is not merely a scenario catal
 
 The Rust port covers the full NBC venue behavior as a compatibility input to the single production `bunting-engine`. The existing NBC package is a transitional evidence and differential-testing boundary, not a separately selectable production engine. This document separates the recorded reference evidence from new Bunting requirements and unresolved internals.
 
-See ADR 0014, ADR 0017, ADR 0018 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
+See ADR 0014, ADR 0017, ADR 0018, ADR 0019 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
 
 ## Evidence baseline
 
@@ -203,8 +203,9 @@ are Bunting-added divergences. Cancel remains silent for an unknown ID and does
 not perform an ownership check because that is the bytecode-observed behavior;
 authorization belongs at the future Bunting command boundary.
 
-`packages/orderbook` is not reused for this slice. OrderBook-rs remains the
-default Bunting matcher, but its self-trade-prevention modes cannot represent
+The current `packages/orderbook` crate is not reused for this historical slice.
+OrderBook-rs remains the production matcher and moves inside `bunting-engine`
+under ADR 0019, but its self-trade-prevention modes cannot represent
 the selected JAR's one-check-per-level behavior, and its trade result does not
 directly reproduce the paired NBC participant fill sequence. The minimum
 translated matcher therefore remains a transitional differential oracle inside
@@ -257,7 +258,7 @@ The NBC compatibility implementation reuses:
 
 - `packages/market-types` for checked IDs and units;
 - `packages/market-events` for common envelopes;
-- `packages/orderbook` when its behavior can satisfy a verified NBC matching contract;
+- the private `bunting-engine` OrderBook-rs module when its behavior can satisfy a verified NBC matching contract;
 - shared ledger/risk components when semantics match;
 - a selected deterministic RNG/distribution package under an explicit versioned stream specification.
 

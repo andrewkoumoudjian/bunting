@@ -126,7 +126,7 @@ The crate depends on `pricelevel` for the price-level/order substrate and expose
 
 ### Bunting disposition
 
-Approved production matching dependency through the Bunting adapter. Prefer the released crate and upstream contributions. `packages/orderbook` should remain a first-party adapter/boundary, not an undisclosed fork.
+Approved production matching dependency through the Bunting adapter. Prefer the released crate and upstream contributions. ADR 0019 moves the current `packages/orderbook` first-party adapter into a private `packages/bunting-engine` module; neither boundary may contain an undisclosed fork.
 
 Evidence: upstream `README.md`, `Cargo.toml`, `src/lib.rs`; Bunting ADR 0013.
 

@@ -1,6 +1,6 @@
 # Reference adoption, dependency, and source-copy policy
 
-ADR 0013 defines the Worker/OrderBook-rs market path. ADR 0014 defines market-engine versus participant execution-engine authority. ADR 0018 supersedes the selectable-engine model and requires one production `bunting-engine`.
+ADR 0013 defines the Worker/OrderBook-rs market path. ADR 0014 defines market-engine versus participant execution-engine authority. ADR 0018 supersedes the selectable-engine model and requires one production `bunting-engine`; ADR 0019 makes the OrderBook-rs adapter internal to that central package.
 
 The authoritative functionality inventory is [`reference-functionality-audit.md`](reference-functionality-audit.md). This document records adoption policy and disposition; it must not redefine a reference’s role without updating the source-backed audit first.
 
@@ -38,7 +38,7 @@ For every reference or vendored component, record:
 | `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
 
-The first-party `packages/orderbook` path is the Bunting adapter around the released dependency. It is not an upstream source copy.
+The current first-party `packages/orderbook` path is a transitional Bunting adapter around the released dependency. ADR 0019 moves that first-party behavior into a private `packages/bunting-engine` module and removes the standalone crate after callers migrate. Neither location is an upstream source copy.
 
 ## Approved development-only conformance oracles
 
@@ -135,7 +135,7 @@ A release-blocking OrderBook-rs issue should be handled in this order:
 4. dedicated pinned fork repository;
 5. narrowly vendored source under `vendor/orderbook-rs` only when repository or build constraints require it.
 
-Do not place copied upstream source under `packages/orderbook`. `packages/` contains first-party Bunting packages; `vendor/` contains approved copied/patched third-party source.
+Do not place copied upstream source under `packages/orderbook` or `packages/bunting-engine`. `packages/` contains first-party Bunting packages and adapters; `vendor/` contains approved copied/patched third-party source.
 
 Any fork or vendored source requires:
 

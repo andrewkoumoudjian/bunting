@@ -24,7 +24,7 @@ The engine owns run state, logical time, authoritative order state, matching res
 
 ### OrderBook-rs remains the matching foundation
 
-Released `orderbook-rs = 0.10.3` with `default-features = false` remains the single production CLOB and order-book foundation through `packages/orderbook`. Bunting preserves the useful upstream surface: limit/market orders, IOC, FOK, post-only, iceberg/reserve, pegged, trailing-stop, market-to-limit, partial fills, cancellation, mass cancellation, price-time priority, STP, fees, book risk, kill switch, halt/drain, host-driven GTD/DAY expiry, lifecycle, snapshots/restore, replay helpers, depth, metrics, iterators, analytics and market impact.
+Released `orderbook-rs = 0.10.3` with `default-features = false` remains the single production CLOB and order-book foundation. ADR 0019 places its first-party adapter inside `packages/bunting-engine`; the current `packages/orderbook` crate is transitional until that migration. Bunting preserves the useful upstream surface: limit/market orders, IOC, FOK, post-only, iceberg/reserve, pegged, trailing-stop, market-to-limit, partial fills, cancellation, mass cancellation, price-time priority, STP, fees, book risk, kill switch, halt/drain, host-driven GTD/DAY expiry, lifecycle, snapshots/restore, replay helpers, depth, metrics, iterators, analytics and market impact.
 
 Compatibility behavior may validate, transform or schedule a command before matching and may transform results after matching. A narrowly scoped upstream contribution or documented fork remains possible under ADR 0013. A second generic or profile-specific production matching loop is not allowed.
 
@@ -50,7 +50,7 @@ ADR 0013's origin commit-before-acknowledgement rule remains binding. Workers Ca
 
 ### Package boundaries
 
-Reusable capabilities remain focused packages below the engine when they already have clear roles: market types/events, OrderBook-rs adapter, ledger, risk, origin store, command transaction, market-making models and participant reconciliation. `bunting-engine` composes them and owns the authoritative transition. It does not absorb platform bindings or turn into a generic utilities package.
+Reusable capabilities remain focused packages around the engine when they already have clear roles: market types/events, ledger, risk, origin store, command transaction, market-making models and participant reconciliation. The OrderBook-rs adapter is the exception because it is integral to `bunting-engine` and cannot remain an independently consumed production authority. The engine owns the authoritative transition but does not absorb persistence or platform bindings or turn into a generic utilities package.
 
 No empty target directory or placeholder module is created. Each module appears only with compiling behavior, tests and the scoped instructions required by the repository.
 
@@ -116,6 +116,8 @@ One authority path reduces bypass risk: every user, adapter and agent crosses th
 - [`0013-worker-orderbook-rs-kernel.md`](0013-worker-orderbook-rs-kernel.md)
 - [`0014-market-and-execution-engine-boundaries.md`](0014-market-and-execution-engine-boundaries.md)
 - [`0017-authorized-nbc-jar-port.md`](0017-authorized-nbc-jar-port.md)
+- [`0019-bunting-engine-package-owns-orderbook-rs.md`](0019-bunting-engine-package-owns-orderbook-rs.md)
+- [`../specs/rit-class-market-simulation.md`](../specs/rit-class-market-simulation.md)
 - [`../ports/nbc-simulation.md`](../ports/nbc-simulation.md)
 - [`../ports/ritc-market-making.md`](../ports/ritc-market-making.md)
 - [`../ports/quarcc-trading-engine.md`](../ports/quarcc-trading-engine.md)
