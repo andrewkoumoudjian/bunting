@@ -1,5 +1,5 @@
 [package]
-name = "bunting-cli"
+name = "bunting-tui"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "bunting-cli"
+name = "bunting-tui"
 path = "src/main.rs"
 
 [dependencies]

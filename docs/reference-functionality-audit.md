@@ -715,11 +715,13 @@ Evidence classification: dependency versions and public roles are **observed** f
 
 ## `makeev/alphai-tui`
 
-At commit `f814697c6159d76b2dfb503ba5201b8c3fb702ad`, the MIT-licensed Rust application separates application state, semantic key mapping and market-oriented table/chart/feed renderers. Bunting adapts `src/theme.rs`, `src/keymap.rs`, and the header/body/footer layout in `src/ui/mod.rs` for the local FIX terminal. The local files replace AlphaAI feeds/views with the Bunting order book, command entry and FIX session state, while retaining the upstream copyright and MIT license in the app notices.
+At commit `f814697c6159d76b2dfb503ba5201b8c3fb702ad`, the MIT-licensed Rust application separates application state, semantic key mapping and market-oriented table/chart/feed renderers. The superseded first CLI adapted `src/theme.rs`, `src/keymap.rs`, and the header/body/footer layout in `src/ui/mod.rs`. Those files are removed by the Longbridge-first `bunting-tui` rewrite; the retained license and provenance record the historical adaptation, but no AlphaAI source remains active.
 
 ## `longbridge/longbridge-terminal`
 
-At commit `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3`, the Apache-2.0 Rust application separates TUI systems, views, widgets and a log panel around its trading client. Bunting adapts `src/tui/widgets/log_panel.rs` into an in-memory, bounded FIX log panel. The filesystem log discovery is removed, Bunting FIX direction coloring is added, and the modified source carries the required Apache modification and attribution notices.
+At commit `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3`, the Apache-2.0 Rust application separates TUI application state, input, key bindings, navigation, popups, dirty rendering, views, UI helpers and widgets around its trading client. Bunting copies the complete `src/tui` tree as the adaptation input for `apps/bunting-tui/src/tui`, then removes the Longbridge account, quote, watchlist and brokerage systems and modifies the retained component hierarchy for Bunting's FIX/TCP session, engine-owned order book, human order actions, execution reports and bounded raw FIX logs. Changed files carry prominent modification notices; the application retains the Apache-2.0 license and Longbridge attribution notice.
+
+Evidence classification: the upstream tree, dependency versions and commit are **observed** from the fetched source; mapping its presentation and interaction components to Bunting protocol and engine state is **Bunting-added**. Longbridge brokerage behavior is neither copied as Bunting market behavior nor treated as an execution oracle.
 
 ## Required follow-up before the mechanical reorganization
 

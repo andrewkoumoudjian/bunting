@@ -62,7 +62,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
-- `apps/bunting-cli`: native Ratatui local-market terminal and FIX/TCP test harness; run it with `cargo run --locked -p bunting-cli`.
+- `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
 
 ## Native Worker transports
 

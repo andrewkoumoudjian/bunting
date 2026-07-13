@@ -80,7 +80,7 @@ User strategy source
 ### Worker
 
 - `apps/bunting-worker`: the native Rust Worker with browser dispatch and outbound FIX session objects.
-- `apps/bunting-cli`: a native-only Ratatui operator terminal that initiates FIX/TCP sessions. Its optional loopback acceptor invokes `bunting-engine` in-process for local testing and does not change the Worker's outbound-only TCP boundary.
+- `apps/bunting-tui`: a native-only, Longbridge-derived Ratatui operator workstation that initiates FIX/TCP sessions. Its optional loopback acceptor invokes `bunting-engine` in-process for local testing and does not change the Worker's outbound-only TCP boundary.
 - planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
 - `FixSessionObject`: owns outbound FIX/TCP socket and recovery state, never market authority.
 

@@ -108,8 +108,8 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
-| `makeev/alphai-tui` | MIT Rust/Ratatui stock dashboard with split market views, semantic key mapping and isolated application/UI modules at `f814697c6159d76b2dfb503ba5201b8c3fb702ad` | Approved source adaptation for `src/theme.rs`, `src/keymap.rs` and the header/body/footer layout from `src/ui/mod.rs`; retain MIT copyright/license and record Bunting modifications |
-| `longbridge/longbridge-terminal` | Apache-2.0 Rust/Ratatui trading terminal with explicit TUI systems, views, widgets and log-panel separation at `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3` | Approved source adaptation for `src/tui/widgets/log_panel.rs`; retain Apache-2.0 license, Longbridge attribution notice and prominent modification notice |
+| `makeev/alphai-tui` | MIT Rust/Ratatui stock dashboard with split market views, semantic key mapping and isolated application/UI modules at `f814697c6159d76b2dfb503ba5201b8c3fb702ad` | Historical adaptation input for the superseded first CLI; no AlphaAI source remains active after the Longbridge-first `bunting-tui` rewrite, but its retained license and provenance record the removed adaptation |
+| `longbridge/longbridge-terminal` | Apache-2.0 Rust/Ratatui trading terminal with explicit application, input, navigation, popup, rendering, view, UI-helper and widget layers at `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3` | Approved source adaptation of the complete `src/tui` tree into `apps/bunting-tui/src/tui`, followed by removal of Longbridge brokerage/data systems and modification for Bunting FIX/TCP, order-book, order-entry, execution and log workflows; retain Apache-2.0 license, Longbridge attribution notice and prominent modification notices in changed files |
 
 ## Local port-source restrictions
 
