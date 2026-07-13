@@ -45,9 +45,9 @@ ADR 0016 supersedes the TypeScript gateway, public REST resources and raw-FIX-ov
 4. Move the versioned contract to `schemas/trpc/bunting.v1.json` and make generated artifacts verify its hash.
 5. Add `packages/trpc-wire` with a bounded sans-I/O implementation of the selected query, mutation, query-batch, error and HTTP-subscription envelopes.
 6. Differential-test every supported envelope against the pinned official tRPC Fetch adapter and client.
-7. Replace `worker::Router` with one direct Rust fetch handler exposing only `/trpc/<procedure-or-batch>`.
-8. Map `system.health`, `orders.submit`, `orders.cancel` and `market.snapshot` to the current in-process Rust implementation; delete the corresponding REST paths.
-9. Remove caller-supplied participant identity and derive the actor from verified claims.
+7. Replace `worker::Router` with one direct Rust fetch handler exposing only `/trpc/<procedure-or-batch>` (implemented).
+8. Map `system.health`, `orders.submit`, `orders.cancel` and `market.snapshot` to the current in-process Rust implementation; delete the corresponding REST paths (implemented).
+9. Remove caller-supplied participant identity and derive the actor from verified claims (implemented with server-configured token claims).
 10. Add `packages/trpc-client` and the generated TypeScript wrapper only after server conformance passes.
 
 Mutation batching remains rejected. Every mutation must preserve idempotency, expected-version and commit-before-acknowledgement semantics.

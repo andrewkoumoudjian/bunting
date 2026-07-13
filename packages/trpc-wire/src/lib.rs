@@ -43,8 +43,11 @@ pub enum ParsedRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
     BadRequest,
+    InternalServerError,
+    Unauthorized,
     NotFound,
     MethodNotSupported,
+    Conflict,
     UnsupportedMediaType,
     PayloadTooLarge,
 }
@@ -54,8 +57,11 @@ impl ErrorCode {
     pub const fn name(self) -> &'static str {
         match self {
             Self::BadRequest => "BAD_REQUEST",
+            Self::InternalServerError => "INTERNAL_SERVER_ERROR",
+            Self::Unauthorized => "UNAUTHORIZED",
             Self::NotFound => "NOT_FOUND",
             Self::MethodNotSupported => "METHOD_NOT_SUPPORTED",
+            Self::Conflict => "CONFLICT",
             Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
         }
@@ -64,8 +70,11 @@ impl ErrorCode {
     pub const fn numeric(self) -> i32 {
         match self {
             Self::BadRequest => -32600,
+            Self::InternalServerError => -32603,
+            Self::Unauthorized => -32001,
             Self::NotFound => -32004,
             Self::MethodNotSupported => -32005,
+            Self::Conflict => -32009,
             Self::UnsupportedMediaType => -32015,
             Self::PayloadTooLarge => -32013,
         }
@@ -74,8 +83,11 @@ impl ErrorCode {
     pub const fn status(self) -> u16 {
         match self {
             Self::BadRequest => 400,
+            Self::InternalServerError => 500,
+            Self::Unauthorized => 401,
             Self::NotFound => 404,
             Self::MethodNotSupported => 405,
+            Self::Conflict => 409,
             Self::UnsupportedMediaType => 415,
             Self::PayloadTooLarge => 413,
         }
@@ -343,6 +355,24 @@ pub fn error(error: &WireError) -> Response {
         error.code.status(),
         &json!({"error":{"message":error.message,"code":error.code.numeric(),"data":{"code":error.code.name(),"httpStatus":error.code.status(),"path":error.path}}}),
     )
+}
+
+#[must_use]
+pub fn procedure_error(code: ErrorCode, message: &str, path: &str) -> Response {
+    error(&WireError::new(code, message, Some(path)))
+}
+
+#[must_use]
+pub fn batch_responses(items: &[Response]) -> Response {
+    let values: Vec<Value> = items
+        .iter()
+        .map(|item| serde_json::from_slice(&item.body).unwrap_or_else(|_| json!({})))
+        .collect();
+    let status = items
+        .first()
+        .filter(|first| items.iter().all(|item| item.status == first.status))
+        .map_or(207, |item| item.status);
+    json_response(status, &values)
 }
 
 fn json_response<T: Serialize>(status: u16, value: &T) -> Response {
