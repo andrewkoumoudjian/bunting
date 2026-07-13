@@ -25,9 +25,9 @@ For every reference or vendored component, record:
 - Prefer an upstream contribution over a local fork.
 - Copy or adapt source only after file-level license review and when a normal dependency cannot satisfy the requirement.
 - A close adaptation records repository, commit, path, SPDX license, retained behavior, and local divergence.
-- A whole-repository copy requires a dedicated ADR and is not currently approved.
+- A whole-repository copy requires a dedicated ADR; ADR 0017 authorizes only the selected NBC JAR-derived port under its provenance rules.
 - Worker-bound dependencies must pass a minimal-feature `wasm32-unknown-unknown` build and size review.
-- Unlicensed NBC and QUARCC material is not mechanically translated without documented authority.
+- ADR 0017 authorizes NBC JAR translation and redistribution. Other NBC material and QUARCC remain restricted without documented authority.
 - Reference behavior, Bunting-added behavior, and unresolved behavior remain explicitly separated.
 
 ## Approved production dependencies
@@ -40,6 +40,12 @@ For every reference or vendored component, record:
 
 The first-party `packages/orderbook` path is the Bunting adapter around the released dependency. It is not an upstream source copy.
 
+## Pending development conformance intake
+
+| Candidate | Observed version/source | Intended boundary |
+|---|---|---|
+| `@trpc/server` / `@trpc/client` | `11.18.0`, npm git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT | Development-only wire/fixture oracle for ADR 0016; not a production Worker dependency until Sprint 0 completes source, manifest and protocol-entrypoint audit |
+
 ## Audited disposition matrix
 
 ### Market/venue and matching references
@@ -51,7 +57,7 @@ The first-party `packages/orderbook` path is the Bunting adapter around the rele
 | `liquibook` | Embeddable C++ matching kernel with application callbacks and optional depth | Independent matching oracle and focused fixture source |
 | `exchange-core` | Full Java exchange core: matching, risk/accounting, commands/reports, journaling and snapshots | Full-exchange architecture and invariant oracle; no runtime dependency |
 | `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Future options dependency candidate; evaluate API/dependencies/Wasm first |
-| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; Java implementation and named JAR absent from the direct snapshot, with an opaque same-named JAR in a separate pinned client tree | First-class clean-room or authorized market-engine port target; external compatibility only is presently provable |
+| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | First-class authorized Rust market-engine translation target under ADR 0017; compatibility claims require JAR-linked evidence |
 | `abides` | Agent-based discrete-event market simulator with exchange agent, messaging and configurable latency | Market-simulation architecture and experimental oracle |
 | `fauxchange` | Reserved/planned project with no implementation API | No code adoption; roadmap reference only |
 
@@ -101,7 +107,7 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 
 ### NBC
 
-The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. A separate pinned client tree contains an opaque same-named JAR with unresolved source, license, build provenance and relationship to the direct snapshot. Do not decompile it or claim exact internal matching, scheduler, agent, database or replay equivalence from either artifact. See `docs/ports/nbc-simulation.md`.
+The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. A separate pinned client tree contains the selected same-named JAR. ADR 0017 authorizes inspection, decompilation, Rust translation and redistribution; exact internal matching, scheduler, agent, database or replay claims still require cited bytecode or differential evidence. See `docs/ports/nbc-simulation.md`.
 
 ### QUARCC
 

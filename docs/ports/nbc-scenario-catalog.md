@@ -131,19 +131,17 @@ scenarios/nbc/
   hft-dominated.v1.json
 ```
 
-The target files are not added until the schema and licensing gates below pass.
+The target files are not added until the schema and translation-provenance gates below pass.
 
 Parsing and behavior belong in:
 
 ```text
-crates/scenario-schema/       strict scenario and provenance types
-crates/simulation-clock/      logical time units
-crates/scenario-engine/       scheduled-item queue and phase ordering
-crates/agent-models/          one pure implementation per agent family
-crates/protocol-legacy-nbc/   legacy names, routes, messages and DONE barrier
-crates/test-fixtures/         normalized source and compatibility fixtures
-apps/edge-api/                legacy HTTP/WebSocket route surface
-workers/market-run-do/        authoritative schedule sequencing
+packages/nbc-market-engine/   complete translated NBC engine, scenarios, agents and DONE behavior
+packages/market-types/        shared checked units and identities where semantics match
+packages/market-events/       shared canonical envelopes where semantics match
+schemas/nbc/                  versioned translated configuration/protocol schemas
+tests/conformance/nbc/        selected-JAR versus Rust fixtures
+apps/trpc-api/                native Rust tRPC engine-selection boundary
 ```
 
 ## Required provenance fields in canonical scenarios
@@ -163,7 +161,7 @@ Each transcribed scenario must include:
 
 ## Transcription sequence
 
-1. Resolve ownership/license for the imported scenario data.
+1. Verify ADR 0017 authority and record source/JAR provenance for imported scenario data.
 2. Define strict `scenario-schema` types with `deny_unknown_fields` behavior.
 3. Define exact logical-time, tick, lot and probability representations.
 4. Create `source-manifest.json` containing only provenance and hashes.
@@ -191,8 +189,8 @@ Each transcribed scenario must include:
 - Duplicate hashes verified: complete for the five listed files.
 - External evidence manifest: complete in `docs/ports/nbc-evidence-manifest.v1.json`.
 - External contract fixture manifest: complete for documentation-derived and client-corroborated cases; no black-box traces are recorded.
-- License/ownership resolution: pending.
+- Translation/redistribution authority: complete under ADR 0017; original upstream license metadata remains unresolved and recorded.
 - Unit semantics: pending.
 - Canonical schema: not implemented.
-- Canonical scenario JSON: intentionally not copied yet.
+- Canonical scenario JSON: intentionally not translated yet.
 - Agent algorithms: not implemented.

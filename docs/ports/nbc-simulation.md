@@ -24,7 +24,7 @@ The fixture inventory currently contains documentation-derived and client-corrob
 
 The README instructs running `exchange-simulator-0.0.1-SNAPSHOT.jar`, but that JAR and the Java implementation source are not present in the direct `ref/nbc_engine` tree.
 
-The separate pinned `ref/nbc-hft-simulation` client tree does contain a JAR with that name. Its source, license, build provenance and relationship to `ref/nbc_engine` are unresolved, so it is recorded as an opaque artifact and must not be decompiled or treated as the selected compatibility binary without documented authority.
+The separate pinned `ref/nbc-hft-simulation` client tree contains the selected JAR with that name. Its original source, license metadata, build provenance and relationship to `ref/nbc_engine` remain unresolved, but ADR 0017 authorizes its execution, decompilation, Rust translation and redistribution for the Bunting port.
 
 ### External protocol evidence
 
@@ -134,14 +134,17 @@ The repository does not currently prove:
 
 Do not turn field names or API examples into invented implementation claims.
 
-## License and clean-room status
+## License and port authority
 
-No repository-level license or port authorization is recorded for the NBC application/assets. Until authority is documented:
+ADR 0017 records explicit project-owner authority to execute, extract, inspect, decompile, translate into Rust and redistribute the port derived from the pinned JAR. No repository-level license file or original build provenance has been found, so every translated module still records the JAR hash, class/resource path, retained behavior, translation method and divergence.
 
-- do not decompile or inspect the opaque JAR from the separate client tree beyond authorized file-level provenance checks;
-- do not copy or mechanically translate unlicensed implementation text obtained elsewhere;
-- use observable interfaces, authorized configuration/scenario data, captured traces, independently written specifications, and independently licensed literature/reference systems;
-- label every behavior as observed, independently specified, literature-derived, Bunting-added or unresolved;
+Decompiled intermediate text remains evidence rather than production source. Translation work must:
+
+- verify the gitlink and JAR hash before extraction;
+- isolate untrusted execution and decompiler tooling;
+- distinguish bytecode-observed, externally observed, inferred, Bunting-added and unresolved behavior;
+- review translated Rust rather than dropping generated output into production;
+- preserve authorization, provenance and required notices in redistribution bundles;
 - document all intentional divergences.
 
 ## Bunting-added requirements for the Rust port
@@ -205,7 +208,7 @@ The NBC engine may reuse:
 
 Reuse is conditional. Do not alter NBC compatibility to fit the default OrderBook-rs-backed engine silently.
 
-If matching semantics cannot be proven from the current reference, the first implementation should define an explicit `nbc-v1` clean-room matching specification and state that it is Bunting-defined pending stronger evidence. An engine-specific matcher requires an ADR only when it duplicates functionality that could otherwise be shared.
+If matching semantics cannot be proven from bytecode or reproducible JAR behavior, the implementation must define an explicit Bunting-added `nbc-v1` matching specification pending stronger evidence. An engine-specific matcher requires an ADR only when it duplicates functionality that could otherwise be shared.
 
 ## Capability model
 
@@ -230,12 +233,12 @@ For the currently observed NBC profile, submit-limit, cancel, market-data, fills
 
 1. Record the exact reference-tree commit and every source file/hash.
 2. Record the absence of implementation source/JAR as an explicit limitation.
-3. Resolve ownership/license or establish the authorized clean-room process.
+3. Record implementation and redistribution authority for the selected JAR.
 4. Turn the observed REST/WebSocket messages and error cases into a language-neutral external contract.
 5. Capture black-box traces from an authorized reference deployment when available.
 6. Record which API-reference fields are observed in traces versus documented only.
 
-Current status: steps 1, 2, 4 and 6 are complete for the checked-in evidence. Step 3 remains blocked on documented ownership/license or clean-room authority, and step 5 has no authorized reference-deployment traces yet.
+Current status: steps 1, 2, 3, 4 and 6 are complete for the checked-in evidence and ADR 0017 authority. Step 5 has no selected-JAR runtime traces yet.
 
 ### Phase 1: strict configuration and provenance
 
@@ -254,7 +257,7 @@ Current status: steps 1, 2, 4 and 6 are complete for the checked-in evidence. St
 ### Phase 3: minimum executable market
 
 1. Implement the externally observed limit-order/cancel/fill/error contract.
-2. Specify and test a clean-room matching policy.
+2. Translate and test the evidenced matching policy, adding a Bunting-defined policy only where evidence remains unresolved.
 3. Implement market snapshots and `DONE` advancement.
 4. Run one deterministic normal-market scenario with explicitly versioned model behavior.
 
@@ -294,7 +297,7 @@ These prove the Rust port’s contract; they do not prove equivalence to unobser
 ### Market/scenario behavior
 
 - checked unit conversion and strict field validation;
-- clean-room matching invariants;
+- translated or explicitly Bunting-defined matching invariants;
 - market-data and participant execution consistency;
 - agent/model golden and distributional tests with provenance;
 - scoring and termination consistency for rules that are actually specified.

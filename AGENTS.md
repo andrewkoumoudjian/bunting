@@ -36,7 +36,7 @@ A Bunting market-engine implementation owns venue/simulation authority: run stat
 
 - The current default Bunting engine uses released `OrderBook-rs` for CLOB matching.
 - NBC is a complete market-engine port target. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models.
-- The checked-in NBC snapshot proves its packaged application, configuration, scenarios, and observable client protocol, but it does not include the Java implementation or named JAR. Do not claim exact internal matching, scheduler, agent-formula, database, snapshot, or replay equivalence without additional evidence.
+- The direct NBC snapshot lacks the Java implementation and named JAR; the separately pinned JAR is authorized under ADR 0017 for bytecode inspection, Rust translation and redistribution. Cite bytecode or differential evidence before claiming exact internal equivalence.
 - NBC may reuse shared packages when behavior remains compatible, but its coherent market-engine boundary must remain visible.
 
 ### QUARCC execution engine
@@ -84,7 +84,7 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 - NBC may require engine-specific behavior, but a separate matching implementation needs a documented compatibility requirement, evidence, and differential tests.
 - `packages/orderbook` is the first-party Bunting adapter, not a location for copied upstream source.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
-- The deployment target is a plain Cloudflare Worker. Do not add a Durable Object requirement without a user-approved ADR.
+- The deployment target is one native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. ADR 0016 authorizes an optional Rust stream-coordination Durable Object only after its gate; it never owns market commands or origin truth.
 - Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
 - Commit authoritative state before acknowledgement, cache publication, or stream publication.
@@ -103,7 +103,7 @@ No client, strategy, execution engine, adapter, or agent may mutate a market eng
 - Preserve exact repositories, commits, paths, and licenses for copied/adapted material.
 - Prefer stable upstream APIs over copied implementation.
 - Update `docs/reference-functionality-audit.md` before changing a reference’s role or adoption disposition.
-- Unlicensed NBC and QUARCC sources may be used only according to documented ownership/license and clean-room rules; do not mechanically translate implementation text without authorization.
+- NBC JAR translation and redistribution are authorized by ADR 0017 with file-level provenance and divergence records. Other unlicensed NBC material and QUARCC sources remain restricted to their documented authority/license rules.
 - Specification-derived protocol files can have obligations different from the implementation code; review both.
 - Worker-bound packages must compile for `wasm32-unknown-unknown` unless explicitly native-only and excluded from the Worker dependency graph.
 - Keep fixed-point and checked arithmetic at market, protocol, execution, and ledger boundaries.

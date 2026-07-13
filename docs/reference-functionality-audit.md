@@ -186,15 +186,15 @@ The checked-in tree does **not** contain the Java source or the JAR named by its
 
 The scenario values are evidence of configuration, not proof of formula semantics or units beyond their field names.
 
-The separately pinned `ref/nbc-hft-simulation` client tree contains an opaque file named `app/exchange-simulator-0.0.1-SNAPSHOT.jar`. Its SHA-256 and gitlink pin are recorded in `docs/ports/nbc-evidence-manifest.v1.json`, but its source, license, build provenance and relationship to the direct snapshot are unresolved. Its presence does not authorize decompilation or establish it as the selected compatibility binary.
+The separately pinned `ref/nbc-hft-simulation` client tree contains `app/exchange-simulator-0.0.1-SNAPSHOT.jar`. Its SHA-256 and gitlink pin are recorded in `docs/ports/nbc-evidence-manifest.v1.json`; ADR 0017 selects it as the authorized source/reference runtime for the Rust port and records project-owner authority for bytecode inspection, translation and redistribution. Its original source, license metadata, build provenance and relationship to the direct snapshot remain unresolved.
 
 ### It is not
 
-Merely scenario data. The observable package is a venue-side simulator. Conversely, the current snapshot is not sufficient source material for a line-by-line or exact-internal Rust translation.
+Merely scenario data. The observable package and authorized JAR are a venue-side simulator. The direct snapshot alone is insufficient for an exact internal translation; translated claims require JAR bytecode or reproducible runtime evidence.
 
 ### Bunting disposition
 
-First-class clean-room/authorized-port target: `packages/nbc-market-engine`. The port document must label each behavior as observed, independently specified, literature-derived, Bunting-added, or unresolved. Exact compatibility claims are limited to captured external contracts until source/ownership and internal semantics are available.
+First-class authorized translation target: `packages/nbc-market-engine`. The port document must label each behavior as externally observed, bytecode-observed, translated, inferred, Bunting-added or unresolved. Exact compatibility claims require reproducible JAR-versus-Rust evidence.
 
 Evidence: `ref/nbc_engine/app/README.md`, `application.yml`, scenario JSON; `ref/nbc-hft-simulation`; `ref/ritc_mm/API_REFERENCE.md` and adapter.
 

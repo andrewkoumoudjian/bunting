@@ -1,6 +1,6 @@
 # Implementation pathway
 
-This pathway implements ADR 0013, ADR 0014 and ADR 0015. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
+This pathway implements ADR 0013, ADR 0014, ADR 0016 and ADR 0017. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation
 
@@ -10,7 +10,7 @@ This pathway implements ADR 0013, ADR 0014 and ADR 0015. Reference and port deci
 4. Add immutable Workers Cache snapshot operations.
 5. Add a plain Rust Cloudflare Worker without a Durable Object requirement.
 6. Add origin-store and command-transaction boundaries with expected-version commits, idempotency and recovery.
-7. Add authenticated bounded limit-GTC and cancellation routes as the provisional Rust service surface; ADR 0015 makes them private migration handlers rather than the public API.
+7. Add authenticated bounded limit-GTC and cancellation routes as provisional implementation evidence; ADR 0016 requires their replacement by native Rust tRPC procedures and removes the REST router.
 8. Add the initial WASM-safe `quarcc.v1` compatibility contract.
 9. Audit the reference inventory and distinguish market, execution, protocol, simulation and utility roles.
 
@@ -35,46 +35,43 @@ The repository now follows [`repository-reorganization.md`](repository-reorganiz
 
 Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algorithm dumping grounds, fork OrderBook-rs, upgrade dependencies or change runtime behavior in this PR.
 
-## P1A: public tRPC and client-side FIX boundary
+## P1A: native Rust tRPC foundation
 
-ADR 0015 supersedes the earlier public REST/WebSocket and raw-FIX-over-WebSocket transport choices. Implement this boundary before expanding public route coverage:
+ADR 0016 supersedes the TypeScript gateway, public REST resources and raw-FIX-over-WebSocket designs. Implement in this order:
 
-1. Add `apps/trpc-api`, a plain TypeScript Cloudflare Worker exposing the versioned `bunting.v1` tRPC router.
-2. Define runtime schemas and structured Bunting errors with exact decimal strings for wide integers.
-3. Convert the Rust Worker routes into a private, authenticated service-binding contract without moving matching, ledger, idempotency or origin authority.
-4. Export the router-derived TypeScript client from `clients/typescript-sdk` and use it for all first-party public integrations.
-5. Implement committed query/mutation/subscription behavior with bounded batches, payloads, streams and reconnect state.
-6. Replace the raw-WSS FIX design with a local FIX/TCP bridge that owns session state and maps application messages through the typed tRPC client.
-7. Add cross-boundary fixtures for authentication, participant identity, duplicate commands, stale versions, wide integers, committed publication and FIX mappings.
+1. Intake and pin tRPC `11.18.0` source/license as a development-only conformance oracle.
+2. Move `apps/edge-api` mechanically to `apps/trpc-api` while preserving the Cargo package name; update Cargo, Wrangler, migrations, CI, docs and release paths atomically.
+3. Add `packages/bunting-api-contract` with real Rust types, stable procedure names/errors and schema generation.
+4. Move the versioned contract to `schemas/trpc/bunting.v1.json` and make generated artifacts verify its hash.
+5. Add `packages/trpc-wire` with a bounded sans-I/O implementation of the selected query, mutation, query-batch, error and HTTP-subscription envelopes.
+6. Differential-test every supported envelope against the pinned official tRPC Fetch adapter and client.
+7. Replace `worker::Router` with one direct Rust fetch handler exposing only `/trpc/<procedure-or-batch>`.
+8. Map `system.health`, `orders.submit`, `orders.cancel` and `market.snapshot` to the current in-process Rust implementation; delete the corresponding REST paths.
+9. Remove caller-supplied participant identity and derive the actor from verified claims.
+10. Add `packages/trpc-client` and the generated TypeScript wrapper only after server conformance passes.
 
-Do not expose the private Rust routes publicly in production, emulate tRPC wire behavior in Rust, or let the public Worker acknowledge before the Rust origin commit.
+Mutation batching remains rejected. Every mutation must preserve idempotency, expected-version and commit-before-acknowledgement semantics.
 
-The initial procedure, error and FIX-message mapping contract is versioned in `tests/fixtures/api/trpc-fix-contract.v1.json`; its entries distinguish existing private handlers from planned public behavior.
+### Conditional stream coordinator
 
-## P1B: NBC evidence and market-engine foundation
+Implement origin-sequence-based HTTP subscriptions in the plain Worker first. Run the ADR 0016 load/recovery spike before adding a Durable Object. If the gate passes, add one Rust `RunStreamCoordinator` per run in the same Worker deployment for committed fan-out only; it must not own commands, matching, the event log or origin state.
 
-The direct checked-in `ref/nbc_engine` snapshot proves a packaged exchange simulator, configuration/scenarios and an observable REST/WebSocket/DONE protocol, but it does not contain the Java implementation or named JAR. A separate pinned client tree contains an opaque named JAR whose license, source and relationship to that snapshot are unresolved.
+## P1B: authorized NBC JAR translation
 
-The P1 evidence baseline now records exact tree/file hashes and a versioned external-contract fixture manifest. The manifest has no authorized black-box traces, and ownership/license, unit semantics and internal behavior remain unresolved; package implementation stays gated on those boundaries.
+The direct `ref/nbc_engine` tree proves configuration/scenarios and the external protocol but lacks the implementation. ADR 0017 selects and authorizes the pinned JAR in `ref/nbc-hft-simulation` for execution, decompilation, Rust translation and redistribution.
 
-### Evidence work
+1. Verify the gitlink and JAR SHA-256, then create an ignored, bounded extraction workspace.
+2. Inventory every class/resource with original path, hash, role and translation disposition.
+3. Capture baseline external REST/WebSocket/DONE traces from the selected JAR before translation.
+4. Decompile in an isolated tool environment and record tool/version/output hashes.
+5. Produce behavior specifications for run lifecycle, matching, scheduler order, agents, persistence and scoring, labeling bytecode-observed, externally observed, inferred and unresolved facts.
+6. Create `packages/nbc-market-engine` only when the first translated Rust module and tests exist.
+7. Port one coherent vertical slice at a time with file-level provenance and JAR-versus-Rust differential tests.
+8. Reuse shared Rust packages and OrderBook-rs only where the evidence matches; isolate proven NBC-specific behavior behind the engine boundary.
+9. Add checked numerics, bounded state, deterministic replay, snapshots and hashes as explicit Bunting requirements where the JAR lacks equivalents.
+10. Build redistribution manifests containing authorization, JAR/class provenance, translated files, divergences and required notices.
 
-1. Record exact reference commit/file hashes and license/authority status.
-2. Build a fixture manifest separating observed traces from documentation-derived examples.
-3. Specify the externally evidenced profile: scenario/run registration, authentication, market/order streams, limit orders, cancel, fills/errors, limits, result fields and `DONE` advancement.
-4. Mark internal matching, scheduling, agent formulas, persistence, recovery and scoring equations unresolved unless stronger evidence is obtained.
-
-### Initial package work
-
-1. Create `packages/nbc-market-engine` only with real source and tests.
-2. Implement strict configuration/provenance and exact units.
-3. Define typed engine capabilities; do not assume replace or unsupported order types.
-4. Specify a clean-room/versioned `nbc-v1` run/matching/step contract where the reference is silent.
-5. Add Bunting-required deterministic recovery, snapshots/replay and state hashing as explicitly new behavior.
-6. Implement the observed limit/cancel/fill/error/market-data/DONE profile.
-7. Add agent families and scenarios incrementally with formula, unit, RNG and provenance records.
-
-Do not claim internal Java equivalence from scenario field names.
+The NBC port is a complete market engine and becomes an engine selectable at the Bunting kernel boundary. Do not describe it as scenario scaffolding or claim equivalence without a reproducible fixture.
 
 ## P2: QUARCC execution-engine port
 
