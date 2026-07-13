@@ -184,6 +184,40 @@ the bytecode-observed event-before-trader shape. Duplicate run identifiers,
 concurrent advancement, matching exception policy, fill ordering, wall-clock
 decision timing and completed-run persistence remain unresolved.
 
+## Implemented matching slice
+
+Sprint 7.3 implements bytecode-observed limit matching with best-price then
+FIFO priority, resting-price execution, paired taker/maker fill records,
+partial fills, ID-only cancellation, the pre-match maximum of 50 resting orders
+per participant, and the selected JAR's level-head self-match rejection. The
+last behavior is narrower than conventional self-trade prevention: the JAR
+checks only the queue head before consuming a price level, so an order belonging
+to the aggressor later in the same queue can trade. The Rust port preserves
+that behavior rather than silently substituting the OrderBook-rs policy.
+
+The JAR uses `double` prices, signed `int` quantities, wall-clock timestamps and
+nanosecond-derived fill IDs. Rust intentionally uses positive checked integer
+price ticks, positive quantities in externally observed multiples of 100,
+bounded text identifiers, checked arithmetic and no wall-clock authority. These
+are Bunting-added divergences. Cancel remains silent for an unknown ID and does
+not perform an ownership check because that is the bytecode-observed behavior;
+authorization belongs at the future Bunting command boundary.
+
+`packages/orderbook` is not reused for this slice. OrderBook-rs remains the
+default Bunting matcher, but its self-trade-prevention modes cannot represent
+the selected JAR's one-check-per-level behavior, and its trade result does not
+directly reproduce the paired NBC participant fill sequence. The minimum
+compatible matcher therefore remains private to the coherent NBC engine
+package and is not a generic Bunting CLOB.
+
+The market-data slice may assume that successful matching has fully applied
+maker/taker remaining quantities and open-order counts before returning fills,
+that fills are ordered taker then maker for each price-time match, and that
+cancel removes the indexed resting order before the next snapshot. It must not
+assume deterministic JAR fill IDs/timestamps, cancellation ownership,
+duplicate-order-ID safety, transactional rollback after a late self-match,
+market-order remainder behavior, or externally observed runtime equivalence.
+
 ## Target package
 
 ```text

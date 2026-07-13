@@ -1,0 +1,21 @@
+{
+  "fixture_version": 1,
+  "reference": {
+    "classification": "bytecode_observed",
+    "gitlink": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+    "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254"
+  },
+  "cases": {
+    "price_time_partial_fill": {
+      "fill_order_ids": ["take", "make-1", "take", "make-2"],
+      "fill_maker_flags": [false, true, false, true],
+      "fill_quantities": [100, 100, 200, 200],
+      "fill_remaining": [200, 0, 0, 100],
+      "execution_price_ticks": [1000, 1000, 1000, 1000]
+    },
+    "cancel": { "unknown_is_noop": true, "ownership_checked": false },
+    "self_match": { "check_scope": "queue_head_before_each_price_level" },
+    "open_order_limit": { "maximum": 50, "checked_before_matching": true }
+  },
+  "bunting_added": ["checked integer prices", "positive lot-multiple quantities", "bounded identifiers", "checked arithmetic"]
+}
