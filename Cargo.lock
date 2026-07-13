@@ -44,6 +44,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bunting-agents"
+version = "0.1.0"
+dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+ "quarcc-execution-engine",
+ "serde",
+]
+
+[[package]]
 name = "bunting-api-contract"
 version = "0.1.0"
 dependencies = [
@@ -53,13 +63,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bunting-browser-wire"
+version = "0.1.0"
+dependencies = [
+ "bunting-api-contract",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bunting-command-transaction"
 version = "0.1.0"
 dependencies = [
- "bunting-ledger",
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
- "bunting-orderbook",
  "bunting-origin-store",
  "bunting-risk-engine",
  "serde_json",
@@ -67,20 +86,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "bunting-edge-api"
+name = "bunting-engine"
 version = "0.1.0"
 dependencies = [
- "bunting-api-contract",
- "bunting-command-transaction",
+ "bunting-ledger",
  "bunting-market-events",
  "bunting-market-types",
- "bunting-orderbook",
- "bunting-origin-store",
- "bunting-trpc-wire",
- "bunting-worker-cache",
+ "bunting-risk-engine",
+ "getrandom 0.3.4",
+ "orderbook-rs",
+ "pricelevel",
  "serde",
  "serde_json",
- "worker",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -108,33 +127,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bunting-nbc-market-engine"
-version = "0.1.0"
-dependencies = [
- "bunting-market-events",
- "bunting-market-types",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "bunting-orderbook"
-version = "0.1.0"
-dependencies = [
- "bunting-market-events",
- "bunting-market-types",
- "getrandom 0.3.4",
- "orderbook-rs",
- "pricelevel",
- "uuid",
-]
-
-[[package]]
 name = "bunting-origin-store"
 version = "0.1.0"
 dependencies = [
- "bunting-ledger",
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
  "bunting-risk-engine",
@@ -156,18 +152,32 @@ dependencies = [
 name = "bunting-rs"
 version = "0.1.0"
 dependencies = [
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
 ]
 
 [[package]]
-name = "bunting-trpc-wire"
+name = "bunting-worker"
 version = "0.1.0"
 dependencies = [
  "bunting-api-contract",
- "percent-encoding",
+ "bunting-browser-wire",
+ "bunting-command-transaction",
+ "bunting-engine",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-origin-store",
+ "bunting-worker-cache",
+ "quarcc-execution-engine",
  "serde",
  "serde_json",
+ "simfix-mapping",
+ "simfix-session",
+ "simfix-wire",
+ "tokio",
+ "wasm-bindgen",
+ "worker",
 ]
 
 [[package]]
@@ -634,6 +644,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "nbc-matcher-oracle"
+version = "0.1.0"
+dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -768,10 +789,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "quarcc-trading-engine"
+name = "quarcc-bunting-adapter"
 version = "0.1.0"
 dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+ "quarcc-execution-engine",
  "serde",
+]
+
+[[package]]
+name = "quarcc-execution-engine"
+version = "0.1.0"
+dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quarcc-execution-wasm"
+version = "0.1.0"
+dependencies = [
+ "quarcc-execution-engine",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -944,6 +988,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "simfix-mapping"
+version = "0.1.0"
+dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
+ "quarcc-execution-engine",
+ "serde",
+ "simfix-wire",
+]
+
+[[package]]
+name = "simfix-session"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "simfix-wire",
+]
+
+[[package]]
+name = "simfix-wire"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1049,6 +1119,7 @@ version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
+ "bytes",
  "pin-project-lite",
 ]
 

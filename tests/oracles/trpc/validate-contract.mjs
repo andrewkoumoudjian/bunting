@@ -5,13 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
-const schema = JSON.parse(await readFile(resolve(root, 'schemas/trpc/bunting.v1.json')));
+const schema = JSON.parse(await readFile(resolve(root, 'schemas/browser/bunting.v1.json')));
 const fixtureDir = resolve(root, 'tests/fixtures/reference/trpc/11.18.0');
 const manifest = JSON.parse(await readFile(resolve(fixtureDir, 'manifest.json')));
 const expectedCommit = '6aec1578a899df50a17e4e78d5512a099b574c18';
 const fixturesByCase = new Map();
 if (schema.wire_contract.oracle.source_git_head !== expectedCommit || schema.wire_contract.oracle.version !== '11.18.0') throw new Error('contract oracle pin mismatch');
-if (schema.wire_contract.batching.max_query_calls !== 16 || schema.wire_contract.batching.mutation_batching !== 'rejected') throw new Error('batch contract mismatch');
+if (schema.wire_contract.batching.query_batching !== 'unsupported' || schema.wire_contract.batching.mutation_batching !== 'rejected') throw new Error('active browser batch contract mismatch');
 if (!schema.wire_contract.unsupported_features.includes('websocket_transport')) throw new Error('unsupported features incomplete');
 for (const entry of manifest.fixtures) {
   const data = await readFile(resolve(fixtureDir, entry.file));

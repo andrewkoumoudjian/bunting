@@ -1,23 +1,23 @@
 # Codex implementation contract
 
-Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018, ADR 0019 and the nearest scoped instructions before changing code. For the next implementation increment, follow [`prompts/implement-unified-bunting-engine-foundation.md`](prompts/implement-unified-bunting-engine-foundation.md).
+Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0017, ADR 0018, ADR 0019, ADR 0020 and the nearest scoped instructions before changing code. Active sequencing lives in [`plans/corrected-bunting-implementation-plan.md`](plans/corrected-bunting-implementation-plan.md).
 
 ## Repository paths
 
 - Reusable first-party crates live under `packages/`.
 - The curated portable composition crate is `bunting-rs/`.
-- The current Rust Worker, Wrangler config and D1 migrations live under `apps/trpc-api/`; the mechanical move is complete and remains separate from the native tRPC semantic cutover.
+- The current Rust Worker, Wrangler config and D1 migrations live under `apps/bunting-worker/`.
 - Do not create Cargo-less future scaffolds. A package or module appears only with its first compiling implementation and tests.
 - Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
 
 ## Non-negotiable decisions
 
-- One native Rust Cloudflare Worker owns direct tRPC dispatch and market authority; it exposes no REST router.
+- One native Rust Cloudflare Worker owns bounded browser dispatch and outbound FIX sessions; market authority remains in the in-process engine/application transaction.
 - `orderbook-rs = 0.10.3` is the production matching and order-book kernel and becomes a direct private dependency of the central `bunting-engine` package under ADR 0019.
 - `pricelevel = 0.8.4` is pinned for type identity.
 - Workers Cache is mandatory for immutable checksum-addressed upstream snapshot packages.
 - Do not implement a second order book, price-level FIFO, production matching loop, snapshot format, kill switch, STP engine, fee model, depth engine, or market-impact engine. The current NBC matcher is a transitional differential oracle, not production authority.
-- Do not introduce a Durable Object before the ADR 0016 stream-coordination gate; if approved by that gate, keep it Rust-only and non-authoritative.
+- ADR 0020 authorizes FIX-session Durable Objects for outbound TCP and recovery only. A stream coordinator remains conditional on the ADR 0016 evidence gate.
 
 ## Preferred upstream APIs
 
@@ -34,10 +34,10 @@ Implement adapters for:
 - canonical event translation;
 - participant ledger and cross-book risk;
 - Workers Cache keys and recovery;
-- the native Rust tRPC contract, authorized NBC translation and public mappings; FIX, RITC and Nautilus remain client/gateway concerns;
+- the native Rust browser contract, authorized NBC translation and public mappings; FIX, RITC and Nautilus remain protocol/client concerns outside market authority;
 - scenario and Dynamic Worker orchestration.
 
-## Next implementation target
+## Historical implementation target
 
 Create `packages/bunting-engine`, move the tested first-party OrderBook-rs adapter into its private matching module, migrate production callers, and establish the bounded multi-listing run aggregate described by ADR 0019. Preserve the existing committed command path:
 

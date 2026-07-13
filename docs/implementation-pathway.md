@@ -1,6 +1,6 @@
 # Implementation pathway
 
-This pathway implements ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019. ADR 0018 supersedes the earlier selectable-market-engine plan: production converges on one `bunting-engine`, with NBC retained as a provenance-linked compatibility input. ADR 0019 makes the OrderBook-rs adapter integral to that central package; `packages/orderbook` remains current implementation state, not the target boundary. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
+This pathway implements ADR 0013, ADR 0014, ADR 0017, ADR 0018, ADR 0019 and ADR 0020. ADR 0020 supersedes ADR 0016 where it made tRPC the universal application boundary. Production uses one `bunting-engine`, browser-compatible fetch/stream transport, and Worker-initiated outbound FIX/TCP with direct in-process application calls. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation
 
@@ -10,7 +10,7 @@ This pathway implements ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR
 4. Add immutable Workers Cache snapshot operations.
 5. Add a plain Rust Cloudflare Worker without a Durable Object requirement.
 6. Add origin-store and command-transaction boundaries with expected-version commits, idempotency and recovery.
-7. Add authenticated bounded limit-GTC and cancellation routes as provisional implementation evidence; ADR 0016 requires their replacement by native Rust tRPC procedures and removes the REST router.
+7. Add authenticated bounded limit-GTC and cancellation procedures behind a browser-compatible JSON fetch boundary.
 8. Add the initial WASM-safe `quarcc.v1` compatibility contract.
 9. Audit the reference inventory and distinguish market, execution, protocol, simulation and utility roles.
 
@@ -28,27 +28,27 @@ The repository now follows [`repository-reorganization.md`](repository-reorganiz
 
 - implemented reusable crates live under `packages/` with Cargo package names preserved;
 - the thin `bunting-rs` composition crate depends inward on reusable packages;
-- the Worker, its Wrangler config and its migrations live under `apps/trpc-api`;
+- the Worker, its Wrangler config and its migrations live under `apps/bunting-worker`;
 - one root Cargo workspace and lockfile remain authoritative;
 - ignored `out/` is reserved for generated release bundles;
 - Cargo, CI, deployment commands, documentation and scoped instructions use the active paths.
 
 Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algorithm dumping grounds, fork OrderBook-rs, upgrade dependencies or change runtime behavior in this PR.
 
-## P1A: native Rust tRPC foundation
+## Completed P1A: historical tRPC conformance foundation
 
-ADR 0016 supersedes the TypeScript gateway, public REST resources and raw-FIX-over-WebSocket designs. Implement in this order:
+This sequence produced the development-only tRPC oracle and transitional Rust wire implementation. ADR 0020 retains those fixtures as browser-envelope evidence but removes tRPC as an active architecture dependency:
 
 1. Intake and pin tRPC `11.18.0` source/license as a development-only conformance oracle.
-2. Move `apps/edge-api` mechanically to `apps/trpc-api` while preserving the Cargo package name; update Cargo, Wrangler, migrations, CI, docs and release paths atomically.
+2. Record the historical `apps/edge-api` to `apps/trpc-api` move; the active Worker is now `apps/bunting-worker`.
 3. Add `packages/bunting-api-contract` with real Rust types, stable procedure names/errors and schema generation.
-4. Move the versioned contract to `schemas/trpc/bunting.v1.json` and make generated artifacts verify its hash.
-5. Add `packages/trpc-wire` with a bounded sans-I/O implementation of the selected query, mutation, query-batch, error and HTTP-subscription envelopes.
+4. Retain the active versioned contract at `schemas/browser/bunting.v1.json`.
+5. Rename the sans-I/O runtime package to `packages/browser-wire`; tRPC fixtures remain under `tests/oracles` only.
 6. Differential-test every supported envelope against the pinned official tRPC Fetch adapter and client.
-7. Replace `worker::Router` with one direct Rust fetch handler exposing only `/trpc/<procedure-or-batch>` (implemented).
+7. Expose the active browser boundary at `/api/<procedure>` and keep internal Worker calls transport-free.
 8. Map `system.health`, `orders.submit`, `orders.cancel` and `market.snapshot` to the current in-process Rust implementation; delete the corresponding REST paths (implemented).
 9. Remove caller-supplied participant identity and derive the actor from verified claims (implemented with server-configured token claims).
-10. Add `packages/trpc-client` and the generated TypeScript wrapper only after server conformance passes.
+10. Generate future browser clients from the Rust contract without adding a production tRPC dependency.
 
 Mutation batching remains rejected. Every mutation must preserve idempotency, expected-version and commit-before-acknowledgement semantics.
 
@@ -113,7 +113,7 @@ Selecting a market engine is separate from enabling an external participant exec
 
 ### Streaming
 
-- tRPC subscription procedures on the public plain Worker;
+- browser-compatible subscription procedures on the public plain Worker;
 - publish only after origin commit;
 - bounded public/private subscriptions, frames and backlog;
 - committed event-sequence cursors;

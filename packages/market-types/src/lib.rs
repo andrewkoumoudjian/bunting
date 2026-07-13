@@ -13,6 +13,12 @@ pub enum NumericError {
     Overflow,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentifierError {
+    Zero,
+}
+
 impl fmt::Display for NumericError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
@@ -117,6 +123,80 @@ identifier!(OrderId);
 identifier!(CommandId);
 identifier!(EventId);
 identifier!(CorrelationId);
+identifier!(VenueId);
+identifier!(ScenarioId);
+identifier!(ScenarioVersion);
+identifier!(IterationId);
+
+macro_rules! checked_identifier {
+    ($name:ident) => {
+        impl $name {
+            /// Constructs a non-zero domain identifier at an external boundary.
+            ///
+            /// # Errors
+            /// Returns [`IdentifierError::Zero`] when the identifier is zero.
+            pub const fn try_new(value: u128) -> Result<Self, IdentifierError> {
+                if value == 0 {
+                    Err(IdentifierError::Zero)
+                } else {
+                    Ok(Self::new(value))
+                }
+            }
+        }
+    };
+}
+
+checked_identifier!(VenueId);
+checked_identifier!(ScenarioId);
+checked_identifier!(ScenarioVersion);
+checked_identifier!(IterationId);
+
+/// Venue-specific identity of one tradable listing.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ListingKey {
+    pub venue_id: VenueId,
+    pub instrument_id: InstrumentId,
+}
+
+impl Serialize for ListingKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&format!("{}:{}", self.venue_id, self.instrument_id))
+    }
+}
+
+impl<'de> Deserialize<'de> for ListingKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let (venue, instrument) = value
+            .split_once(':')
+            .ok_or_else(|| serde::de::Error::custom("listing key must be venue:instrument"))?;
+        let venue_id = venue
+            .parse::<u128>()
+            .map(VenueId::new)
+            .map_err(serde::de::Error::custom)?;
+        let instrument_id = instrument
+            .parse::<u128>()
+            .map(InstrumentId::new)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self::new(venue_id, instrument_id))
+    }
+}
+
+impl ListingKey {
+    #[must_use]
+    pub const fn new(venue_id: VenueId, instrument_id: InstrumentId) -> Self {
+        Self {
+            venue_id,
+            instrument_id,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PriceBounds {

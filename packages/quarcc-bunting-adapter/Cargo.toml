@@ -1,0 +1,17 @@
+[package]
+name = "quarcc-bunting-adapter"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Canonical Bunting venue adapter for the QUARCC execution engine"
+
+[dependencies]
+serde.workspace = true
+bunting-market-types.workspace = true
+bunting-market-events.workspace = true
+quarcc-execution-engine.workspace = true
+
+[lints]
+workspace = true

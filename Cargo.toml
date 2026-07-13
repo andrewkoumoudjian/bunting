@@ -3,18 +3,24 @@ resolver = "2"
 members = [
   "packages/market-types",
   "packages/market-events",
-  "packages/orderbook",
+  "packages/bunting-engine",
   "packages/ledger",
   "packages/risk-engine",
   "packages/origin-store",
   "packages/command-transaction",
   "packages/worker-cache",
-  "packages/quarcc-trading-engine",
+  "packages/quarcc-execution-engine",
+  "packages/quarcc-bunting-adapter",
+  "packages/quarcc-execution-wasm",
+  "packages/bunting-agents",
+  "packages/simfix-wire",
+  "packages/simfix-session",
+  "packages/simfix-mapping",
   "packages/bunting-api-contract",
-  "packages/trpc-wire",
-  "packages/nbc-market-engine",
+  "packages/browser-wire",
+  "tests/oracles/nbc-matcher",
   "bunting-rs",
-  "apps/trpc-api",
+  "apps/bunting-worker",
 ]
 exclude = ["ref", "vendor", "out"]
 
@@ -28,6 +34,10 @@ repository = "https://github.com/andrewkoumoudjian/bunting"
 bunting-market-events = { path = "packages/market-events" }
 bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
+bunting-engine = { path = "packages/bunting-engine" }
+quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
+simfix-wire = { path = "packages/simfix-wire" }
+simfix-session = { path = "packages/simfix-session" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 percent-encoding = "2"
@@ -35,6 +45,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 worker = "=0.8.5"
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+tokio = { version = "1", features = ["io-util"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

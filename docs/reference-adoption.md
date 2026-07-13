@@ -38,7 +38,7 @@ For every reference or vendored component, record:
 | `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
 
-The current first-party `packages/orderbook` path is a transitional Bunting adapter around the released dependency. ADR 0019 moves that first-party behavior into a private `packages/bunting-engine` module and removes the standalone crate after callers migrate. Neither location is an upstream source copy.
+The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
 
 ## Approved development-only conformance oracles
 

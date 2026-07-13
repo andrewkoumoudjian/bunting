@@ -286,7 +286,7 @@ mod tests {
     fn generated_contract_exactly_matches_hash_pinned_canonical_artifact()
     -> Result<(), Box<dyn std::error::Error>> {
         let canonical: Value =
-            serde_json::from_str(include_str!("../../../schemas/trpc/bunting.v1.json"))?;
+            serde_json::from_str(include_str!("../../../schemas/browser/bunting.v1.json"))?;
         assert_eq!(
             generated_schema(),
             canonical["implemented_rust_contract"]["descriptor"]

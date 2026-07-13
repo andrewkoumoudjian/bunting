@@ -93,7 +93,7 @@ Node tooling stay under `tests/`; they are absent from production Cargo and
 Worker manifests, so they add no Worker/Wasm runtime or transitive dependency.
 The Bunting Rust implementation owns bounds, authentication, domain errors,
 commit-before-acknowledgement, and the deliberately narrower feature set frozen
-in `schemas/trpc/bunting.v1.json`. Committed normalized fixtures can be checked
+in `schemas/browser/bunting.v1.json`. Committed normalized fixtures can be checked
 offline; refreshing them requires the pinned official packages and explicit
 review.
 
@@ -116,7 +116,7 @@ A complete reusable matching and order-book kernel, not a complete Bunting deplo
 - depth, metrics, impact/placement analysis, snapshots, checksum validation, restore, sequencer/journal helpers, and optional wire/journal/NATS/metrics layers;
 - deterministic host-supplied time paths needed for replay-sensitive operations.
 
-The crate depends on `pricelevel` for the price-level/order substrate and exposes optional native/runtime features. Bunting currently uses released `orderbook-rs = 0.10.3` with `default-features = false`; features visible on newer upstream revisions must not be attributed to the pinned release without checking that pin.
+The crate depends on `pricelevel` for the price-level/order substrate and exposes optional native/runtime features. Bunting uses released `orderbook-rs = 0.10.3` with `default-features = false` privately inside `packages/bunting-engine`; features visible on newer upstream revisions must not be attributed to the pinned release without checking that pin.
 
 ### It is not
 
@@ -126,7 +126,7 @@ The crate depends on `pricelevel` for the price-level/order substrate and expose
 
 ### Bunting disposition
 
-Approved production matching dependency through the Bunting adapter. Prefer the released crate and upstream contributions. ADR 0019 moves the current `packages/orderbook` first-party adapter into a private `packages/bunting-engine` module; neither boundary may contain an undisclosed fork.
+Approved production matching dependency through the private `packages/bunting-engine` adapter. The transitional `packages/orderbook` crate has been removed. Prefer the released crate and upstream contributions; the engine boundary may not contain an undisclosed fork.
 
 Evidence: upstream `README.md`, `Cargo.toml`, `src/lib.rs`; Bunting ADR 0013.
 

@@ -1,6 +1,6 @@
 # Unified Bunting engine roadmap
 
-Status: active evidence-gated implementation plan
+Status: superseded for active sequencing by `corrected-bunting-implementation-plan.md`; retained as engine-scope history
 
 This roadmap implements ADR 0018, ADR 0019 and the [`RIT-class feature specification`](../specs/rit-class-market-simulation.md). It is derived from the RIT binary audit, official documented RIT capabilities, the current NBC translation ledger, the RITC and QUARCC port audits, the OrderBook-rs 0.10.3 surface, and the current Bunting vertical slice. It replaces any plan that completes `nbc-v1` as a separately selectable production kernel or leaves matching as an independently consumed peer package.
 
@@ -34,7 +34,9 @@ The RIT core precedes NBC migration because the unified state must first represe
 
 ### 1. `feat/unified-bunting-engine-foundation`
 
-Create the first compiling `packages/bunting-engine` slice with engine/config/profile versioning, a bounded multi-listing run aggregate, minimal immutable scenario definitions, authoritative state, command application and one run-level sequence. Move the tested `packages/orderbook` adapter into a private engine module so the central package directly owns OrderBook-rs, migrate production callers, then remove the transitional crate. Compose existing market types/events, ledger and risk packages without absorbing persistence or tRPC. Tests prove all mutations cross one transition API, multi-listing state is deterministic and no internal mutable book reference escapes. Use [`the persisted implementation prompt`](../prompts/implement-unified-bunting-engine-foundation.md).
+Create the first compiling `packages/bunting-engine` slice with engine/config/profile versioning, a bounded multi-listing run aggregate, minimal immutable scenario definitions, authoritative state, command application and one run-level sequence. Move the tested `packages/orderbook` adapter into a private engine module so the central package directly owns OrderBook-rs, migrate production callers, then remove the transitional crate. Compose existing market types/events, ledger and risk packages without absorbing persistence or transport. Tests prove all mutations cross one transition API, multi-listing state is deterministic and no internal mutable book reference escapes. Use [`the persisted implementation prompt`](../prompts/implement-unified-bunting-engine-foundation.md).
+
+Status: implemented in the foundation PR. The engine owns the private matcher, bounded deterministic listing state, strict minimal scenario inputs, submit-limit/cancel transitions, one-command run sequencing, multi-listing snapshot envelopes and canonical state hashes. Origin, command-transaction, `bunting-rs` and the native Worker consume this boundary, and the transitional `bunting-orderbook` crate is removed.
 
 ### 2. `feat/bunting-engine-orderbook-full-capabilities`
 
@@ -82,7 +84,7 @@ Define one versioned snapshot containing all authoritative and deterministic com
 
 ### 13. `feat/bunting-engine-origin-worker-integration`
 
-Migrate command transactions, origin records, cache packages, tRPC procedures and Worker composition to the unified engine. Preserve optimistic origin versions and commit-before-ack/cache/stream. Build output remains one native Rust Worker with direct tRPC dispatch and no REST router.
+Migrate command transactions, origin records, cache packages, browser procedures and Worker composition to the unified engine. Preserve optimistic origin versions and commit-before-ack/cache/stream. ADR 0020 now governs the transport-neutral Worker boundary.
 
 ### 14. `test/bunting-engine-complete-parity`
 

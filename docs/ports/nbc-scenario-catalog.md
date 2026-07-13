@@ -142,7 +142,7 @@ packages/market-types/        shared checked units and identities where semantic
 packages/market-events/       shared canonical envelopes where semantics match
 schemas/nbc/                  versioned translated configuration/protocol schemas
 tests/conformance/nbc/        selected-JAR versus Rust fixtures
-apps/trpc-api/                native Rust tRPC profile/configuration boundary
+apps/bunting-worker/          browser and outbound FIX/TCP application boundary
 ```
 
 ## Required provenance fields in canonical scenarios
