@@ -21,6 +21,7 @@ members = [
   "tests/oracles/nbc-matcher",
   "bunting-rs",
   "apps/bunting-worker",
+  "apps/bunting-cli",
 ]
 exclude = ["ref", "vendor", "out"]
 

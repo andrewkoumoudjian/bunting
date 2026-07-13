@@ -41,7 +41,7 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the deployable Worker lives under `apps/bunting-worker/`.
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and deployable applications live under `apps/`.
 
 Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
@@ -62,6 +62,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
+- `apps/bunting-cli`: native Ratatui local-market terminal and FIX/TCP test harness; run it with `cargo run --locked -p bunting-cli`.
 
 ## Native Worker transports
 

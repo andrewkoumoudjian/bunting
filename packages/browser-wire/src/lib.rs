@@ -35,6 +35,7 @@ pub struct Call {
 pub enum ParsedRequest {
     Query(Call),
     Mutation(Call),
+    Subscription(Call),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +129,9 @@ pub fn parse(request: &Request<'_>) -> Result<ParsedRequest, WireError> {
         WireError::new(ErrorCode::NotFound, "procedure not found", Some(&decoded))
     })?;
     let input = match (request.method, kind) {
-        (Method::Get, ProcedureKind::Query) => parse_query(request.query)?,
+        (Method::Get, ProcedureKind::Query | ProcedureKind::Subscription) => {
+            parse_query(request.query)?
+        }
         (Method::Post, ProcedureKind::Mutation) => {
             if request.content_type != Some("application/json") {
                 return Err(WireError::new(
@@ -153,10 +156,10 @@ pub fn parse(request: &Request<'_>) -> Result<ParsedRequest, WireError> {
         path: decoded.into_owned(),
         input,
     };
-    Ok(if kind == ProcedureKind::Query {
-        ParsedRequest::Query(call)
-    } else {
-        ParsedRequest::Mutation(call)
+    Ok(match kind {
+        ProcedureKind::Query => ParsedRequest::Query(call),
+        ProcedureKind::Mutation => ParsedRequest::Mutation(call),
+        ProcedureKind::Subscription => ParsedRequest::Subscription(call),
     })
 }
 

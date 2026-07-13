@@ -1,6 +1,7 @@
 //! Cloudflare D1 adapter for atomic expected-version origin commits.
 
 use bunting_engine::{EngineSnapshotEnvelope, RunState};
+use bunting_market_events::EventEnvelope;
 use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError};
 use serde::Deserialize;
 use worker::{D1Database, D1PreparedStatement, D1Type};
@@ -25,6 +26,36 @@ struct CommandRow {
 #[derive(Debug, Deserialize)]
 struct VersionRow {
     version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventRow {
+    event_json: String,
+}
+
+/// Loads a bounded committed event tail in numeric sequence order.
+pub async fn load_event_tail(
+    database: &D1Database,
+    run_id: &str,
+    after_sequence: u64,
+    limit: usize,
+) -> Result<Vec<EventEnvelope>, OriginError> {
+    let limit = u32::try_from(limit).map_err(|_| OriginError::Unavailable)?;
+    let statement = bind(
+        database,
+        "SELECT event_json FROM events WHERE run_id = ? AND CAST(sequence AS INTEGER) > CAST(? AS INTEGER) ORDER BY CAST(sequence AS INTEGER) ASC LIMIT ?",
+        &[run_id.to_owned(), after_sequence.to_string(), limit.to_string()],
+    )
+    .map_err(|_| OriginError::Unavailable)?;
+    statement
+        .all()
+        .await
+        .map_err(|_| OriginError::Unavailable)?
+        .results::<EventRow>()
+        .map_err(|_| OriginError::Unavailable)?
+        .into_iter()
+        .map(|row| serde_json::from_str(&row.event_json).map_err(|_| OriginError::Unavailable))
+        .collect()
 }
 
 fn bind(
