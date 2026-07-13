@@ -40,11 +40,18 @@ pub struct CancelOrder {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NbcDone {
+    pub participant_id: ParticipantId,
+    pub step: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandPayload {
     SubmitOrder(SubmitOrder),
     CancelOrder(CancelOrder),
     ActivateKillSwitch,
+    NbcDone(NbcDone),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -143,6 +150,16 @@ pub enum EventPayload {
         delta: MoneyMinor,
     },
     KillSwitchActivated,
+    NbcParticipantDone {
+        participant_id: ParticipantId,
+        step: u32,
+    },
+    NbcStepAdvanced {
+        executed_step: u32,
+        current_step: u32,
+        triggered_event_ids: Vec<String>,
+        completed: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

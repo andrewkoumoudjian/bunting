@@ -1,0 +1,20 @@
+[package]
+name = "quarcc-execution-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Rust/Wasm bindings for the portable QUARCC execution engine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+wasm-bindgen.workspace = true
+quarcc-execution-engine.workspace = true
+
+[lints]
+workspace = true

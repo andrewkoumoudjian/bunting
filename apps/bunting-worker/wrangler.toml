@@ -1,0 +1,23 @@
+name = "bunting-worker"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-07-12"
+
+[vars]
+BUNTING_FIX_DESTINATIONS = "REPLACE_WITH_FIX_HOST:PORT"
+
+[[d1_databases]]
+binding = "ORIGIN_DB"
+database_name = "bunting-origin"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "FIX_SESSIONS"
+class_name = "FixSessionObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FixSessionObject"]
+
+[build]
+command = "worker-build --release"

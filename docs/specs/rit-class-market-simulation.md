@@ -8,7 +8,7 @@ Bunting is building a RIT-class educational market-simulation platform on its ex
 
 1. **Officially documented:** the Rotman RIT overview describes instructor casefiles, periods/iterations, centralized limit-order books, API/RTD access, AI order flow, institutional workflows, multi-marketplace cases, targeted news, product families, monitoring and reports.
 2. **Binary-observed:** the static MSI audit records exact packaged types, fields, routes, RTD topics and protocol surfaces under [`../research/rit-binary-audit/`](../research/rit-binary-audit/).
-3. **Bunting-added:** state models, package boundaries, deterministic ordering, tRPC procedures, event schemas and implementation policies are independent Bunting decisions.
+3. **Bunting-added:** state models, package boundaries, deterministic ordering, browser/application procedures, event schemas and implementation policies are independent Bunting decisions.
 
 Rotman publishes external behavior and says server casefiles are open and customizable for RIT instructors. That does not establish source access or redistribution rights for the server application or casefile corpus. Bunting therefore implements independently from documented behavior and authorized observations; unresolved formulas remain unresolved.
 
@@ -38,10 +38,10 @@ origin/cache/transaction   bunting-rs composition
        |                      |
        +----------+-----------+
                   v
-       native Rust tRPC Worker
+       native Rust Bunting Worker
 
-FIX initiator -> client-side FIX bridge -> tRPC
-RIT REST/VBA/RTD -> external compatibility adapters -> tRPC
+External FIX acceptor <- outbound Worker FIX/TCP initiator
+RIT REST/VBA/RTD -> external compatibility adapters -> browser/application contract
 ```
 
 There is no second matching engine, server-side FIX endpoint, REST router, Axum service, or transport-owned market state. A Rust stream-coordination Durable Object remains conditional under ADR 0016 and never owns commands or matching.
@@ -76,7 +76,7 @@ The concrete types must use checked IDs and bounded collections. A listing is a 
 The generalized transition remains:
 
 ```text
-authenticate and decode tRPC command
+authenticate and decode a browser or in-process adapter command
   -> recover the complete run candidate
   -> validate role, scenario state and expected sequence
   -> reserve all affected cash, inventory and capacity
@@ -166,22 +166,22 @@ The requirement IDs below supplement the binary-derived `RIT-FEATURE-*` ledger. 
 
 | ID | Requirement | Owner | Evidence and acceptance |
 |---|---|---|---|
-| `SIM-OPS-001` | Keep Rust-owned `bunting.v1` tRPC as the only public application API, including scenarios, runs, markets, orders, accounts, news, tenders, OTC, admin and report procedures as implemented. | API contract/Worker | ADR 0016. No REST fallback in the Worker. |
-| `SIM-OPS-002` | Keep FIX in the native client bridge, with its session sequence distinct from engine event sequence. | `clients/fix-bridge` | ADR 0015 retained by ADR 0016. FIX cannot mutate engine internals. |
-| `SIM-OPS-003` | Implement RIT REST, VBA and RTD/Excel compatibility only in external adapters that authenticate and call tRPC. | clients/adapters | Binary `0048`-`0058`. Windows COM never enters the Worker graph. |
+| `SIM-OPS-001` | Keep the Rust-owned `bunting.v1` procedure contract transport-neutral, with bounded browser fetch/stream handlers and direct in-process Worker calls. | API contract/Worker | ADR 0020. Transport never owns market authority. |
+| `SIM-OPS-002` | Keep FIX in a Worker Durable Object that initiates outbound TCP, owns bounded session recovery, and calls the application transaction in process. | `apps/bunting-worker`, `simfix-*` | ADR 0020. FIX sequence remains distinct from engine event sequence. |
+| `SIM-OPS-003` | Implement RIT REST, VBA and RTD/Excel compatibility only in external adapters that authenticate and call the browser/application contract. | clients/adapters | Binary `0048`-`0058`. Windows COM never enters the Worker graph. |
 | `SIM-OPS-004` | Apply verified role/participant identity, per-participant API throttles and scenario availability without trusting caller-selected participant headers. | auth/gateway/run policy | Official anonymous/credentialed access; binary `0027`; ADR 0016. |
 | `SIM-OPS-005` | Publish authorized public, participant-private and administrator projections with committed sequence, reset, gap and slow-consumer behavior. | projections/streams | Official monitoring; ADR 0011/0016. Private news/account state cannot leak. |
 | `SIM-OPS-006` | Freeze iteration state and generate participant reports, transaction logs, P&L, time-and-sales, OTC activity and leaderboards from committed snapshots/events. | reporting app/package when implemented | Official reports. Heavy CSV/XLSX/Parquet work stays outside the Worker hot path. |
 | `SIM-OPS-007` | Store authoritative commands/events/versions in origin, immutable public snapshots in Workers Cache, and large scenario/report artifacts in R2 only when implemented. | persistence/platform | Existing ADRs plus Bunting-added R2 boundary. Cache/R2 never coordinate transactions. |
 | `SIM-OPS-008` | Snapshot all books, ledger, clock, schedules, tenders, news, facilities, scoring, agents, RNG and compatibility state; replay must reproduce one canonical state hash. | engine recovery | ADR 0018/0019. Native and Wasm golden hashes match. |
 | `SIM-OPS-009` | Support inactive/paused remote-practice runs by persistence and on-demand reconstruction; optional wakeup coordination cannot become market authority. | Worker/platform | Official 24/7 availability reconciled with Cloudflare execution. |
-| `SIM-OPS-010` | Generate the TypeScript client from the Rust contract and build student/instructor web applications as separate consumers of tRPC, not as engine packages. | generated client and web apps | Official student/instructor terminals; ADR 0016 client-generation boundary. |
+| `SIM-OPS-010` | Generate browser clients from the Rust contract and build student/instructor web applications as separate consumers, not as engine packages. | generated client and web apps | Official student/instructor terminals; ADR 0020 browser boundary. |
 
 Cloudflare platform roles remain governed by the existing ADRs and the official [D1](https://developers.cloudflare.com/d1/), [R2](https://developers.cloudflare.com/r2/), [Queues](https://developers.cloudflare.com/queues/) and [Durable Objects](https://developers.cloudflare.com/durable-objects/) documentation. Naming a service here does not approve its use; each binding lands only with a reviewed implementation and recovery contract.
 
 ## Procedure families
 
-The canonical tRPC contract grows only with implemented vertical slices:
+The canonical Rust procedure contract grows only with implemented vertical slices:
 
 ```text
 scenarios.validate | publish | list | get
@@ -196,7 +196,7 @@ admin.publishNews | updateRunParameter | setParticipantLimits | monitor
 reports.generate | status | get
 ```
 
-Procedure names are requirements, not current API claims. Wide integer values remain validated decimal strings at the tRPC boundary, mutation batching remains rejected, and every mutation carries command, correlation and expected-sequence data.
+Procedure names are requirements, not current API claims. Wide integer values remain validated decimal strings at the browser boundary, mutation batching remains rejected, and every mutation carries command, correlation and expected-sequence data.
 
 ## Package and dependency policy
 

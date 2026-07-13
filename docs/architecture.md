@@ -9,7 +9,7 @@ The system is an education, research, and integration environment. It is not a c
 ## 2. Binding principles
 
 1. **Use OrderBook-rs:** matching and book capabilities come from the released upstream crate rather than a parallel implementation.
-2. **Plain Worker:** no Durable Object is required by the current design.
+2. **Plain Worker authority:** Durable Objects may own outbound FIX session state, but no Durable Object owns market authority.
 3. **Workers Cache required:** checksum-protected upstream snapshot packages are cached under immutable content-addressed keys.
 4. **Origin versioning:** accepted commands and canonical events use an origin store with optimistic expected-version checks.
 5. **Warm memory is optional:** an isolate may retain reconstructed books, but recovery cannot depend on isolate affinity.
@@ -23,14 +23,11 @@ The system is an education, research, and integration environment. It is not a c
 ## 3. Topology
 
 ```text
-Browser / SDK / Nautilus adapter
-FIX initiator -> native Rust FIX bridge
-                  |
-          versioned tRPC protocol
-                  |
-                  v
+Rust/WASM browser client -- bounded fetch/stream -->
        Native Rust Cloudflare Worker
-       - direct tRPC fetch dispatch
+       - browser-compatible fetch/stream dispatch
+       - outbound FIX/TCP session Durable Objects
+       - direct in-process Rust application calls
        - auth, schemas and protocol bounds
        - expected-version command handling
        - unified bunting-engine
@@ -50,6 +47,8 @@ FIX initiator -> native Rust FIX bridge
                accepted commands, canonical events,
                idempotency, run metadata, recovery tail
 
+External FIX acceptor <-- bidirectional session -- outbound TCP initiator
+
 User strategy source
        -> TypeScript Worker Loader boundary
        -> isolated Python Dynamic Worker
@@ -68,21 +67,21 @@ User strategy source
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
 - `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
 - `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
-- later `bunting-engine` increments add the remaining scenario clock, compatibility profiles, market data, scoring and recovery families around the implemented foundation. Persistence and tRPC remain outside it.
-- `bunting-api-contract`: implemented Rust-owned tRPC procedure and schema contract.
-- `trpc-wire`: implemented bounded, market-neutral tRPC HTTP/SSE compatibility.
-- future `trpc-client`: native client transport for Rust adapters.
-- transitional `nbc-market-engine`: provenance-linked NBC translation evidence and compatibility oracle to be integrated into `bunting-engine`, not a separately selectable production engine.
-- `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
+- Persistence and transport remain outside `bunting-engine`.
+- `bunting-api-contract` and `browser-wire`: the Rust-owned procedure schema and bounded browser JSON transport.
+- `bunting-engine::compatibility::nbc`: NBC configuration, scheduler, synchronization, and provenance; the old matcher remains only under `tests/oracles`.
+- `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: participant execution and browser bindings.
+- `bunting-agents`: policies composed with mandatory QUARCC execution.
+- `simfix-wire`, `simfix-session`, and `simfix-mapping`: transport-neutral FIX protocol layers.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later engine modules: scenario clock, agents, products, news, tenders, assets, scoring and complete recovery. Extract a focused package only when a second real consumer proves a reusable non-authoritative boundary; FIX and native report/export tooling remain outside the engine.
 - `bunting-rs`: thin portable composition boundary with curated stable re-exports and product metadata.
 
 ### Worker
 
-- `apps/trpc-api`: the native Rust Worker with direct bounded tRPC dispatch and no REST router.
+- `apps/bunting-worker`: the native Rust Worker with browser dispatch and outbound FIX session objects.
 - planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
-- `clients/fix-bridge`: the native Rust FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
+- `FixSessionObject`: owns outbound FIX/TCP socket and recovery state, never market authority.
 
 There is no authoritative `market-run-do` runtime. ADR 0016 permits an optional Rust `RunStreamCoordinator` Durable Object only after its stream-coordination gate; it never owns commands, matching or origin truth.
 
@@ -122,17 +121,17 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 - cross-book and participant-level cash/inventory/position risk;
 - canonical events and participant ledger projections;
 - scenario scheduling, random streams, scoring, and administration;
-- the native tRPC entrypoint, Cache API policy, committed stream content, and recovery behavior;
+- the browser-compatible fetch/stream entrypoint, Cache API policy, committed stream content, and recovery behavior;
 - Dynamic Worker strategy isolation;
-- NBC translation/integration, RIT-derived venue behavior and the Rust tRPC contract; FIX, RITC, QUARCC and Nautilus mappings stay outside the market engine.
+- NBC translation/integration, RIT-derived venue behavior and the Rust browser contract; FIX, RITC, QUARCC and Nautilus mappings stay outside the market engine.
 
 ## 6. Public API boundary
 
-ADR 0016 makes `bunting.v1` tRPC the only public application API. One native Rust Worker directly parses the pinned tRPC wire subset and invokes the in-process Rust command transaction. It exposes no REST resource router or separate internal HTTP service.
+ADR 0020 supersedes the universal RPC boundary. One native Rust Worker parses a bounded browser JSON contract and invokes the in-process Rust command transaction; internal Worker composition never crosses a protocol hop.
 
-The Rust contract generates client schemas and is differentially tested against pinned official tRPC server/client packages. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011. A Rust Durable Object may coordinate committed fan-out only after the explicit ADR 0016 gate.
+The Rust contract generates client schemas. The current browser envelope retains a development-only differential record against pinned tRPC fixtures, but tRPC is no longer an architecture or runtime dependency. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011. A Rust Durable Object may coordinate committed fan-out only after the explicit ADR 0016 gate.
 
-FIX compatibility is implemented by a native Rust client bridge that terminates FIX/TCP and maps application messages through the Rust tRPC client. FIX session sequences remain participant-side state and never replace Bunting event sequences.
+FIX compatibility is implemented by a Worker Durable Object that initiates outbound TCP and owns the bidirectional FIX 4.4 session. It never accepts inbound raw TCP, and FIX sequences never replace Bunting event sequences.
 
 ## 7. Command transaction
 
@@ -196,7 +195,7 @@ Private ledgers, credentials, idempotency results, and accepted-command records 
 
 ## 10. Streaming
 
-The public Worker exposes versioned tRPC subscriptions first. Binary transport may later use IronSBE after Wasm and compatibility review, but it remains behind the same client contract rather than becoming a second public authority path.
+The public Worker exposes versioned browser-compatible streams. Binary transport may later use IronSBE after Wasm and compatibility review, but it remains behind the same client contract rather than becoming a second public authority path.
 
 Book streams are generated from committed upstream snapshots and absolute resulting level quantities. Each message includes:
 

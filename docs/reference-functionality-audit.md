@@ -93,7 +93,7 @@ Node tooling stay under `tests/`; they are absent from production Cargo and
 Worker manifests, so they add no Worker/Wasm runtime or transitive dependency.
 The Bunting Rust implementation owns bounds, authentication, domain errors,
 commit-before-acknowledgement, and the deliberately narrower feature set frozen
-in `schemas/trpc/bunting.v1.json`. Committed normalized fixtures can be checked
+in `schemas/browser/bunting.v1.json`. Committed normalized fixtures can be checked
 offline; refreshing them requires the pinned official packages and explicit
 review.
 
