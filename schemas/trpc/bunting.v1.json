@@ -30,6 +30,132 @@
       "authority": "committed_subscription_fanout_only"
     }
   },
+  "wire_contract": {
+    "classification": "Bunting-added subset differentially observed against the pinned official implementation",
+    "oracle": {
+      "repository": "https://github.com/trpc/trpc.git",
+      "version": "11.18.0",
+      "source_git_head": "6aec1578a899df50a17e4e78d5512a099b574c18",
+      "license": "MIT",
+      "production_dependency": false,
+      "fixture_manifest": "tests/fixtures/reference/trpc/11.18.0/manifest.json"
+    },
+    "endpoint": "/trpc",
+    "path": {
+      "single": "/trpc/{percent-encoded-procedure-name}",
+      "query_batch": "/trpc/{comma-separated-percent-encoded-procedure-names}?batch=1",
+      "decode": "percent-decode the complete procedure-or-batch path once before splitting a batch on commas",
+      "procedure_name_encoding": "UTF-8 percent encoding; canonical Bunting names use ASCII letters, digits, and dots",
+      "trailing_slash": "accepted by the reference adapter but Bunting clients emit none"
+    },
+    "methods": {
+      "query": "GET",
+      "mutation": "POST",
+      "subscription": "GET",
+      "head": "unsupported_by_bunting",
+      "method_override": "disabled",
+      "other": "METHOD_NOT_SUPPORTED"
+    },
+    "requests": {
+      "query": {
+        "content_type": "none_required",
+        "input": "optional input query parameter containing percent-encoded JSON",
+        "body": "forbidden"
+      },
+      "mutation": {
+        "content_type": "application/json",
+        "input": "one JSON request body; Bunting mutation procedures require an input object",
+        "query_input": "forbidden"
+      },
+      "query_batch": {
+        "marker": "batch=1",
+        "input": "optional percent-encoded JSON object keyed by zero-based decimal call index",
+        "missing_index": "undefined input for that call"
+      },
+      "bounds": {
+        "max_request_bytes": 16384,
+        "max_query_calls": 16,
+        "max_procedure_path_bytes": 2048,
+        "max_json_depth": 32
+      }
+    },
+    "batching": {
+      "query_batching": "supported",
+      "max_query_calls": 16,
+      "ordering": "response array index equals request path index",
+      "mixed_procedure_types": "rejected",
+      "mutation_batching": "rejected",
+      "subscription_batching": "rejected",
+      "partial_execution_after_parse_error": "forbidden"
+    },
+    "transformer": {
+      "input": "identity JSON",
+      "output": "identity JSON",
+      "wide_integers": "validated decimal strings",
+      "non_json_values": "unsupported",
+      "superjson": "unsupported",
+      "devalue": "unsupported"
+    },
+    "responses": {
+      "content_type": "application/json",
+      "vary": "trpc-accept, accept",
+      "single_success": { "result": { "data": "procedure output" } },
+      "batch_success": "JSON array of per-call success or error envelopes",
+      "single_error": { "error": { "jsonrpc": "2.0", "code": "numeric tRPC code", "message": "redacted stable message", "data": { "code": "tRPC code name", "httpStatus": "HTTP status", "path": "procedure name" } } },
+      "status": "official tRPC HTTP status mapping for a single response; 207 when batch items have differing statuses",
+      "extra_headers": "security and correlation headers may be added by the Worker without changing the envelope"
+    },
+    "errors": {
+      "malformed_json": "BAD_REQUEST",
+      "malformed_percent_encoding": "BAD_REQUEST",
+      "invalid_batch_shape": "BAD_REQUEST",
+      "batch_too_large": "BAD_REQUEST",
+      "unknown_procedure": "NOT_FOUND",
+      "wrong_method": "METHOD_NOT_SUPPORTED",
+      "unsupported_media_type": "UNSUPPORTED_MEDIA_TYPE",
+      "oversized_request": "PAYLOAD_TOO_LARGE",
+      "redaction": "production responses expose no stack, cause, origin/cache details, or credentials",
+      "bunting_domain_errors": "procedure implementations map canonical Bunting errors into the same structured tRPC envelope"
+    },
+    "subscription": {
+      "transport": "HTTP Server-Sent Events",
+      "method": "GET",
+      "accept": "text/event-stream",
+      "request_input": "percent-encoded JSON input query parameter",
+      "response_content_type": "text/event-stream",
+      "events": {
+        "connected": "event: connected with JSON data",
+        "data": "an SSE message with JSON data; tracked events carry an SSE id",
+        "serialized_error": "event: serialized-error with a structured tRPC error",
+        "ping": "comment or ping frame that carries no application data",
+        "return": "event: return followed by stream completion"
+      },
+      "completion": "server closes the SSE stream after the subscription iterable completes",
+      "cancellation": "client cancellation aborts the fetch/EventSource and server request signal; cancellation is not a market command",
+      "resume_cursor": "Last-Event-ID header is preferred; lastEventId or Last-Event-Id query parameters are accepted and injected into subscription input",
+      "reconnect": "client reconnects with the last tracked event id; origin sequence supplies an event tail or a typed reset plus snapshot",
+      "retry": "bounded client policy; retryable tRPC errors reconnect, non-retryable errors terminate",
+      "ordering": "only committed origin sequence is published; acknowledgement and publication follow origin commit",
+      "backpressure": "bounded backlog; public projections may coalesce, private/trade events do not silently drop, slow consumers disconnect with a recovery cursor"
+    },
+    "required_request_headers": [],
+    "supported_response_headers": ["content-type", "vary", "cache-control", "etag", "last-event-id"],
+    "unsupported_features": [
+      "websocket_transport",
+      "http_batch_stream_jsonl",
+      "multipart_form_data",
+      "octet_stream_input",
+      "method_override",
+      "query_via_post",
+      "mutation_batching",
+      "subscription_batching",
+      "mixed_type_batching",
+      "non_identity_transformers",
+      "jsonrpc_request_envelopes",
+      "client_supplied_participant_identity",
+      "REST_fallback"
+    ]
+  },
   "common_mutation_fields": [
     "commandId",
     "correlationId",

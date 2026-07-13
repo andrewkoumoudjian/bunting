@@ -1,0 +1,28 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "case": "query_with_encoded_input",
+  "request": {
+    "method": "GET",
+    "path": "/trpc/echo.query",
+    "query": "?input=%7B%22runId%22%3A%229007199254740993%22%7D",
+    "headers": {},
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "vary": "trpc-accept, accept"
+    },
+    "body": {
+      "result": {
+        "data": null
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "case": "official_mutation_batch_reference_only",
+  "request": {
+    "method": "POST",
+    "path": "/trpc/orders.submit,orders.submit",
+    "query": "?batch=1",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "0": {
+        "orderId": "1"
+      },
+      "1": {
+        "orderId": "2"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "vary": "trpc-accept, accept"
+    },
+    "body": [
+      {
+        "result": {
+          "data": {
+            "accepted": true
+          }
+        }
+      },
+      {
+        "result": {
+          "data": {
+            "accepted": true
+          }
+        }
+      }
+    ]
+  }
+}

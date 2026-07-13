@@ -40,11 +40,11 @@ For every reference or vendored component, record:
 
 The first-party `packages/orderbook` path is the Bunting adapter around the released dependency. It is not an upstream source copy.
 
-## Pending development conformance intake
+## Approved development-only conformance oracles
 
 | Candidate | Observed version/source | Intended boundary |
 |---|---|---|
-| `@trpc/server` / `@trpc/client` | `11.18.0`, npm git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT | Development-only wire/fixture oracle for ADR 0016; not a production Worker dependency until Sprint 0 completes source, manifest and protocol-entrypoint audit |
+| `@trpc/server` / `@trpc/client` | `11.18.0`, source git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT; selected manifests and transport entrypoints are hashed in the functionality audit | Development-only wire/fixture oracle for ADR 0016. Only `tests/oracles/trpc` may install the TypeScript packages; committed normalized fixtures are the offline input to Rust differential tests, and no production Worker or Cargo manifest may depend on them. |
 
 ## Audited disposition matrix
 
