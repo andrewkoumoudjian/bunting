@@ -2,6 +2,49 @@
   "schema_version": "bunting.trpc-fix-contract.v1",
   "classification": "Bunting-added",
   "status": "initial_rust_contract_and_http_wire_implemented_worker_cutover_pending",
+  "implemented_rust_contract": {
+    "source": "packages/bunting-api-contract/src/lib.rs",
+    "sha256": "3a516b0c67e2e7db8b6dc7c28c4e4b129c7cb7b855c3f1c881b4b0603ce487ea",
+    "descriptor": {
+      "schemaVersion": "bunting.rust-contract.v1",
+      "apiVersion": "bunting.v1",
+      "types": {
+        "id": { "encoding": "unsigned_decimal_string", "rust": "u128", "minimum": "0", "maximum": "340282366920938463463374607431768211455" },
+        "sequence": { "encoding": "unsigned_decimal_string", "rust": "u64", "minimum": "0", "maximum": "18446744073709551615" },
+        "marketUnit": { "encoding": "signed_decimal_string", "rust": "i64", "minimum": "-9223372036854775808", "maximum": "9223372036854775807" },
+        "side": { "encoding": "json_string", "values": ["buy", "sell"] }
+      },
+      "procedures": [
+        {
+          "name": "market.snapshot",
+          "kind": "query",
+          "input": { "runId": "id", "instrumentId": "id" },
+          "output": { "runId": "id", "instrumentId": "id", "sequence": "sequence", "bids": "priceLevel[]", "asks": "priceLevel[]" }
+        },
+        {
+          "name": "orders.cancel",
+          "kind": "mutation",
+          "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id" },
+          "output": { "accepted": "boolean", "sequence": "sequence" }
+        },
+        {
+          "name": "orders.submit",
+          "kind": "mutation",
+          "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id", "side": "side", "priceTicks": "marketUnit", "quantityLots": "marketUnit" },
+          "output": { "accepted": "boolean", "sequence": "sequence" }
+        },
+        {
+          "name": "system.health",
+          "kind": "query",
+          "input": {},
+          "output": { "apiVersion": "string", "serviceVersion": "string", "orderbookVersion": "string", "contractCompatible": "boolean" }
+        }
+      ],
+      "structures": {
+        "priceLevel": { "priceTicks": "marketUnit", "quantityLots": "marketUnit" }
+      }
+    }
+  },
   "public_api": {
     "router": "bunting.v1",
     "transport": "tRPC",
