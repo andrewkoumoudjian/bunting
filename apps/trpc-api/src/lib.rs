@@ -142,7 +142,7 @@ fn command_response(result: &CommandResult, path: &str) -> WireResponse {
     }
 }
 
-const fn map_origin_error(error: OriginError) -> ProcedureError {
+const fn map_origin_error(error: &OriginError) -> ProcedureError {
     match error {
         OriginError::UnknownRun => ProcedureError::NotFound,
         OriginError::IdempotencyConflict => ProcedureError::DuplicateCommandConflict,
@@ -154,7 +154,7 @@ const fn map_origin_error(error: OriginError) -> ProcedureError {
 
 const fn map_transaction_error(error: TransactionError) -> ProcedureError {
     match error {
-        TransactionError::Origin(origin) => map_origin_error(origin),
+        TransactionError::Origin(origin) => map_origin_error(&origin),
         TransactionError::IdempotencyConflict => ProcedureError::DuplicateCommandConflict,
         TransactionError::InvalidOriginSnapshot
         | TransactionError::OwnershipInvariant
@@ -231,7 +231,7 @@ async fn load_run(
         .map_err(|_| ProcedureError::OriginUnavailable)?;
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
-        .map_err(map_origin_error)?;
+        .map_err(|error| map_origin_error(&error))?;
     if state.instrument_id != instrument_id {
         return Err(ProcedureError::NotFound);
     }
@@ -282,7 +282,7 @@ async fn execute_command(
         &command.command_id.to_string(),
     )
     .await
-    .map_err(map_origin_error)?
+    .map_err(|error| map_origin_error(&error))?
     {
         return if stored_fingerprint == fingerprint {
             Ok(result)
@@ -311,7 +311,7 @@ async fn execute_command(
         serde_json::to_string(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;
     let outcome = d1_origin::commit(&database, &prepared.commit, &command_json)
         .await
-        .map_err(map_origin_error)?;
+        .map_err(|error| map_origin_error(&error))?;
     let result = match outcome {
         CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
     };
