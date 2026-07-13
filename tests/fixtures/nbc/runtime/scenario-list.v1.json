@@ -1,0 +1,29 @@
+{
+  "fixture_version": "bunting.nbc.runtime.scenario-list.v1",
+  "classification": "runtime_observed",
+  "captured_at": "2026-07-12",
+  "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+  "gitlink": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+  "java_version": "25.0.2",
+  "request": {
+    "method": "GET",
+    "url": "http://127.0.0.1:18080/api/replays",
+    "credentials_supplied": false
+  },
+  "response": {
+    "status": 200,
+    "scenario_ids_sorted": [
+      "flash_crash",
+      "hft_dominated",
+      "mini_flash_crash",
+      "normal_market",
+      "stressed_market"
+    ],
+    "scenario_count": 5
+  },
+  "reproduce": "tools/nbc-evidence/capture-runtime.sh",
+  "notes": [
+    "The ignored raw response contains scenario metadata; this normalized fixture records the stable assertion.",
+    "This fixture does not observe authenticated run, WebSocket, DONE, matching, scoring, or termination behavior."
+  ]
+}

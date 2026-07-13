@@ -1,7 +1,7 @@
 {
   "schema_version": "bunting.nbc-external-contract-manifest.v1",
   "profile_id": "nbc-external-documentation-v1",
-  "status": "documentation_only_no_black_box_traces",
+  "status": "documentation_and_selected_runtime_observation",
   "evidence_manifest": "docs/ports/nbc-evidence-manifest.v1.json",
   "classifications": {
     "documented": "Stated by the pinned API reference.",
@@ -9,7 +9,7 @@
     "client_variant": "Encoded by a pinned client but not corroborated by the API reference.",
     "observed_trace": "Captured from an authorized running reference deployment."
   },
-  "observed_trace_count": 0,
+  "observed_trace_count": 1,
   "contracts": [
     {
       "id": "scenario-list",
@@ -28,9 +28,14 @@
         "your_runs",
         "your_best_pnl"
       ],
-      "classification": "documented",
+      "classification": "observed_trace",
       "evidence": [
-        "ref/nbc-hft-simulation/API_REFERENCE.md#list-all-scenarios"
+        "ref/nbc-hft-simulation/API_REFERENCE.md#list-all-scenarios",
+        "tests/fixtures/nbc/runtime/scenario-list.v1.json"
+      ],
+      "notes": [
+        "The selected JAR returned HTTP 200 and five scenario records in an isolated credential-free run.",
+        "The response-field list remains documentation-derived except for the normalized scenario IDs and count in the runtime fixture."
       ]
     },
     {

@@ -248,6 +248,8 @@ The scenario values are evidence of configuration, not proof of formula semantic
 
 The separately pinned `ref/nbc-hft-simulation` client tree contains `app/exchange-simulator-0.0.1-SNAPSHOT.jar`. Its SHA-256 and gitlink pin are recorded in `docs/ports/nbc-evidence-manifest.v1.json`; ADR 0017 selects it as the authorized source/reference runtime for the Rust port and records project-owner authority for bytecode inspection, translation and redistribution. Its original source, license metadata, build provenance and relationship to the direct snapshot remain unresolved.
 
+Bounded Sprint 6 inspection records 40 NBC application classes and their exact hashes in `docs/ports/nbc-jar-inventory.v1.tsv`. Bytecode directly establishes configuration, run-context, scheduler, order-book, market-data, agent, metrics and persistence class boundaries, while one isolated credential-free runtime observation establishes that `GET /api/replays` returns HTTP 200 with five scenario identifiers. These observations narrow the implementation evidence; they do not establish authenticated lifecycle, WebSocket/`DONE`, matching edge cases, scoring/termination equivalence, or a complete relationship to the direct snapshot.
+
 ### It is not
 
 Merely scenario data. The observable package and authorized JAR are a venue-side simulator. The direct snapshot alone is insufficient for an exact internal translation; translated claims require JAR bytecode or reproducible runtime evidence.
