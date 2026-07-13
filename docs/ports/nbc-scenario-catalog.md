@@ -136,12 +136,13 @@ The target files are not added until the schema and translation-provenance gates
 Parsing and behavior belong in:
 
 ```text
-packages/nbc-market-engine/   complete translated NBC engine, scenarios, agents and DONE behavior
+packages/bunting-engine/      production scenario, agent, clock, scoring and DONE behavior
+packages/nbc-market-engine/   transitional provenance and differential oracle during integration
 packages/market-types/        shared checked units and identities where semantics match
 packages/market-events/       shared canonical envelopes where semantics match
 schemas/nbc/                  versioned translated configuration/protocol schemas
 tests/conformance/nbc/        selected-JAR versus Rust fixtures
-apps/trpc-api/                native Rust tRPC engine-selection boundary
+apps/trpc-api/                native Rust tRPC profile/configuration boundary
 ```
 
 ## Required provenance fields in canonical scenarios

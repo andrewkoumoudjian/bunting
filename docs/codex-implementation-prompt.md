@@ -1,22 +1,22 @@
 # Codex implementation contract
 
-Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0016 and ADR 0017 before changing code.
+Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018, ADR 0019 and the nearest scoped instructions before changing code. For the next implementation increment, follow [`prompts/implement-unified-bunting-engine-foundation.md`](prompts/implement-unified-bunting-engine-foundation.md).
 
 ## Repository paths
 
 - Reusable first-party crates live under `packages/`.
 - The curated portable composition crate is `bunting-rs/`.
 - The current Rust Worker, Wrangler config and D1 migrations live under `apps/trpc-api/`; the mechanical move is complete and remains separate from the native tRPC semantic cutover.
-- Cargo-less future scaffolds remain under `crates/` until their roadmap phase adds real implementation and tests.
+- Do not create Cargo-less future scaffolds. A package or module appears only with its first compiling implementation and tests.
 - Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
 
 ## Non-negotiable decisions
 
 - One native Rust Cloudflare Worker owns direct tRPC dispatch and market authority; it exposes no REST router.
-- `orderbook-rs = 0.10.3` is the production matching and order-book kernel.
+- `orderbook-rs = 0.10.3` is the production matching and order-book kernel and becomes a direct private dependency of the central `bunting-engine` package under ADR 0019.
 - `pricelevel = 0.8.4` is pinned for type identity.
 - Workers Cache is mandatory for immutable checksum-addressed upstream snapshot packages.
-- Do not implement a second order book, price-level FIFO, matching loop, snapshot format, kill switch, STP engine, fee model, depth engine, or market-impact engine.
+- Do not implement a second order book, price-level FIFO, production matching loop, snapshot format, kill switch, STP engine, fee model, depth engine, or market-impact engine. The current NBC matcher is a transitional differential oracle, not production authority.
 - Do not introduce a Durable Object before the ADR 0016 stream-coordination gate; if approved by that gate, keep it Rust-only and non-authoritative.
 
 ## Preferred upstream APIs
@@ -37,9 +37,9 @@ Implement adapters for:
 - the native Rust tRPC contract, authorized NBC translation and public mappings; FIX, RITC and Nautilus remain client/gateway concerns;
 - scenario and Dynamic Worker orchestration.
 
-## First implementation target
+## Next implementation target
 
-Complete one limit-order command through:
+Create `packages/bunting-engine`, move the tested first-party OrderBook-rs adapter into its private matching module, migrate production callers, and establish the bounded multi-listing run aggregate described by ADR 0019. Preserve the existing committed command path:
 
 ```text
 auth -> expected version -> cache/origin restore -> Bunting risk
@@ -47,7 +47,7 @@ auth -> expected version -> cache/origin restore -> Bunting risk
      -> immutable cache put -> response
 ```
 
-Tests must cover cache hit, miss, corrupt package, duplicate command, version conflict, resting order, crossing trade, rejection, and restart.
+Tests must retain cache hit, miss, corrupt package, duplicate command, version conflict, resting order, crossing trade, rejection and restart coverage, then add multi-listing isolation, atomic candidate failure, deterministic serialization and full engine state-hash recovery.
 
 ## Prohibited work
 

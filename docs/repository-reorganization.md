@@ -4,6 +4,8 @@ Status: source-audited planning baseline for the next focused pull request
 
 Last reviewed: 2026-07-12
 
+Architecture note: this document records the completed mechanical reorganization. ADR 0018 supersedes its later selectable-engine target, and ADR 0019 supersedes its standalone production orderbook-adapter target. Active implementation follows [`plans/unified-bunting-engine-roadmap.md`](plans/unified-bunting-engine-roadmap.md).
+
 This plan starts from `main` after PR #3 and the reference functionality audit. The reorganization pull request is mechanical and behavior-preserving. It does not implement NBC, expand QUARCC, select a FIX stack, fork OrderBook-rs, or change runtime semantics.
 
 Required reading:

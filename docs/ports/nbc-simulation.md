@@ -4,9 +4,9 @@
 
 NBC is a venue-side market/exchange simulator. It is not merely a scenario catalog and it is not the participant client in `ref/nbc-hft-simulation`.
 
-The Rust port is intended to become a first-class Bunting market-engine package. This document separates the recorded reference evidence from new Bunting requirements and unresolved internals.
+The Rust port covers the full NBC venue behavior as a compatibility input to the single production `bunting-engine`. The existing NBC package is a transitional evidence and differential-testing boundary, not a separately selectable production engine. This document separates the recorded reference evidence from new Bunting requirements and unresolved internals.
 
-See ADR 0014 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
+See ADR 0014, ADR 0017, ADR 0018, ADR 0019 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
 
 ## Evidence baseline
 
@@ -203,12 +203,15 @@ are Bunting-added divergences. Cancel remains silent for an unknown ID and does
 not perform an ownership check because that is the bytecode-observed behavior;
 authorization belongs at the future Bunting command boundary.
 
-`packages/orderbook` is not reused for this slice. OrderBook-rs remains the
-default Bunting matcher, but its self-trade-prevention modes cannot represent
+The current `packages/orderbook` crate is not reused for this historical slice.
+OrderBook-rs remains the production matcher and moves inside `bunting-engine`
+under ADR 0019, but its self-trade-prevention modes cannot represent
 the selected JAR's one-check-per-level behavior, and its trade result does not
 directly reproduce the paired NBC participant fill sequence. The minimum
-compatible matcher therefore remains private to the coherent NBC engine
-package and is not a generic Bunting CLOB.
+translated matcher therefore remains a transitional differential oracle inside
+the NBC evidence package. ADR 0018 does not authorize it as a second production
+CLOB; incompatible semantics remain explicit until reconciled with the unified
+engine.
 
 The market-data slice may assume that successful matching has fully applied
 maker/taker remaining quantities and open-order counts before returning fills,
@@ -218,7 +221,7 @@ assume deterministic JAR fill IDs/timestamps, cancellation ownership,
 duplicate-order-ID safety, transactional rollback after a late self-match,
 market-order remainder behavior, or externally observed runtime equivalence.
 
-## Target package
+## Transitional package and production target
 
 ```text
 packages/nbc-market-engine/
@@ -245,23 +248,23 @@ packages/nbc-market-engine/
     scenarios.rs
 ```
 
-This is one coherent market-engine package. Extract a support package only after a second real consumer proves a reusable boundary. Do not split NBC into disconnected packages merely to mirror directory categories.
+This package keeps the coherent NBC translation and its evidence visible while implementation proceeds. Proven configuration, clock, scenario, agent, scoring, market-data and compatibility behavior moves into `packages/bunting-engine`; the transitional package may remain as a differential oracle until its ledger is closed. It must not become a second production matcher or selectable engine.
 
-Scenario documents remain separate under `scenarios/nbc/`; executable behavior belongs in the engine package.
+Scenario documents remain separate under `scenarios/nbc/`; executable production behavior belongs in `packages/bunting-engine`.
 
 ## Relationship to shared packages
 
-The NBC engine may reuse:
+The NBC compatibility implementation reuses:
 
 - `packages/market-types` for checked IDs and units;
 - `packages/market-events` for common envelopes;
-- `packages/orderbook` when its behavior can satisfy a verified NBC matching contract;
+- the private `bunting-engine` OrderBook-rs module when its behavior can satisfy a verified NBC matching contract;
 - shared ledger/risk components when semantics match;
 - a selected deterministic RNG/distribution package under an explicit versioned stream specification.
 
-Reuse is conditional. Do not alter NBC compatibility to fit the default OrderBook-rs-backed engine silently.
+Reuse is evidence-bound. Do not alter NBC compatibility to fit OrderBook-rs silently; record a proven compatible mapping, an explicit Bunting-added extension, or an unresolved gap.
 
-If matching semantics cannot be proven from bytecode or reproducible JAR behavior, the implementation must define an explicit Bunting-added `nbc-v1` matching specification pending stronger evidence. An engine-specific matcher requires an ADR only when it duplicates functionality that could otherwise be shared.
+If matching semantics cannot be proven from bytecode or reproducible JAR behavior, the compatibility profile must record the gap and use an explicit Bunting-added behavior pending stronger evidence. ADR 0018 prohibits a separate production NBC matcher unless a later ADR supersedes that decision.
 
 ## Capability model
 
@@ -332,11 +335,11 @@ Add agent families and remaining scenarios one at a time. Each model needs prove
 
 ### Phase 5: Bunting integration
 
-1. Register `nbc-v1` explicitly per run.
-2. Persist engine identity, version/config and recovery state.
-3. Translate common commands/events while retaining NBC metadata.
+1. Select the versioned NBC compatibility profile on `bunting-engine`; do not select another venue kernel.
+2. Persist the single engine identity plus profile, model, version/config and recovery state.
+3. Translate common commands/events while retaining NBC provenance metadata.
 4. Expose bounded streaming and private reports.
-5. Test the Bunting client and QUARCC execution engine against NBC through public interfaces only.
+5. Test the Bunting client and QUARCC execution engine against the NBC profile through public interfaces only.
 
 ### Phase 6: compatibility profile
 
@@ -371,7 +374,7 @@ These prove the Rust port’s contract; they do not prove equivalence to unobser
 
 The first NBC Rust port is complete when it:
 
-- implements a documented `nbc-v1` market-engine specification;
+- implements a documented NBC compatibility profile within `bunting-engine`;
 - supports the evidenced external compatibility profile;
 - runs versioned scenarios deterministically;
 - recovers through Bunting snapshots/replay;

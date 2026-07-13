@@ -1,10 +1,10 @@
 # Implementation pathway
 
-This pathway implements ADR 0013, ADR 0014, ADR 0016 and ADR 0017. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
+This pathway implements ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019. ADR 0018 supersedes the earlier selectable-market-engine plan: production converges on one `bunting-engine`, with NBC retained as a provenance-linked compatibility input. ADR 0019 makes the OrderBook-rs adapter integral to that central package; `packages/orderbook` remains current implementation state, not the target boundary. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation
 
-1. Pin `OrderBook-rs` `0.10.3` and `PriceLevel` `0.8.4` for the current default market engine.
+1. Pin `OrderBook-rs` `0.10.3` and `PriceLevel` `0.8.4` for the production matching foundation.
 2. Add a thin Bunting adapter around the upstream matcher.
 3. Add checked identifiers, canonical events, participant ledger and risk boundaries.
 4. Add immutable Workers Cache snapshot operations.
@@ -65,13 +65,13 @@ The direct `ref/nbc_engine` tree proves configuration/scenarios and the external
 3. Capture baseline external REST/WebSocket/DONE traces from the selected JAR before translation.
 4. Decompile in an isolated tool environment and record tool/version/output hashes.
 5. Produce behavior specifications for run lifecycle, matching, scheduler order, agents, persistence and scoring, labeling bytecode-observed, externally observed, inferred and unresolved facts.
-6. Create `packages/nbc-market-engine` only when the first translated Rust module and tests exist.
+6. Preserve `packages/nbc-market-engine` as a transitional translation/evidence package only while its proven behavior is integrated into `packages/bunting-engine`.
 7. Port one coherent vertical slice at a time with file-level provenance and JAR-versus-Rust differential tests.
 8. Reuse shared Rust packages and OrderBook-rs only where the evidence matches; isolate proven NBC-specific behavior behind the engine boundary.
 9. Add checked numerics, bounded state, deterministic replay, snapshots and hashes as explicit Bunting requirements where the JAR lacks equivalents.
 10. Build redistribution manifests containing authorization, JAR/class provenance, translated files, divergences and required notices.
 
-The NBC port is a complete market engine and becomes an engine selectable at the Bunting kernel boundary. Do not describe it as scenario scaffolding or claim equivalence without a reproducible fixture.
+The NBC port covers complete venue behavior, but ADR 0018 integrates that behavior into the single Bunting engine instead of registering an alternate kernel. Do not reduce it to scenario scaffolding or claim equivalence without a reproducible fixture.
 
 ## P2: QUARCC execution-engine port
 

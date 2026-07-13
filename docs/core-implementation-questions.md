@@ -1,6 +1,6 @@
 # Core implementation questions and binding answers
 
-ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
+ADR 0013, ADR 0016, ADR 0017, ADR 0018 and ADR 0019 are authoritative when older documents disagree.
 
 ## Decision index
 
@@ -8,7 +8,7 @@ ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
 |---|---|
 | Runtime? | One native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. |
 | Matching kernel? | `orderbook-rs = 0.10.3`, with `pricelevel = 0.8.4`. |
-| Bunting-owned book? | No. `packages/orderbook` is a thin adapter only. |
+| Bunting-owned book? | Bunting does not own another matching implementation. `bunting-engine` directly owns a private adapter around released OrderBook-rs; the current `packages/orderbook` crate is transitional. |
 | Snapshot recovery? | `OrderBookSnapshotPackage` JSON, checksum validation, Workers Cache first, origin fallback. |
 | Workers Cache role? | Mandatory immutable snapshot acceleration; never a lock or accepted-command journal. |
 | Concurrent commands? | Optimistic expected-version commit in the origin store. |
@@ -16,7 +16,7 @@ ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
 | Streaming? | tRPC HTTP subscriptions with committed sequence cursors and snapshot/reset recovery; a Rust stream-only Durable Object is conditional on the ADR 0016 gate. |
 | Dynamic strategies? | Isolated Dynamic Workers; proposed actions re-enter the ordinary command path. |
 | FIX/RITC/Nautilus? | Participant-side client adapters over tRPC. FIX terminates in a native bridge. |
-| NBC? | A complete authorized Rust market engine translated from the pinned JAR under ADR 0017. |
+| NBC? | A complete authorized compatibility translation from the pinned JAR under ADR 0017, integrated into the single production `bunting-engine` under ADR 0018. |
 
 ## 1. Upstream API usage
 

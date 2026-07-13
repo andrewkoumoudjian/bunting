@@ -1,0 +1,4247 @@
+{
+  "schema_version": 1,
+  "generated_from": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713",
+  "static_analysis_only": true,
+  "source_files": [
+    {
+      "name": ".DS_Store",
+      "relative_analysis_path": "originals/.DS_Store",
+      "size": 6148,
+      "mtime_ns": 1783969237008899194,
+      "sha256": "99e474a3ed1fc827f95c0620d070bbe3b95f11fd416819104b6c75adfc1b5012",
+      "sha512": "eee1ef5eeaaba6d044808507512a2d1d3c6961498d9de10108932dec54bac18297d69408bcaa814cb7938b9c07219b15817f803f04b1617052abff0c05b21b22",
+      "file_type": "Apple Desktop Services Store"
+    },
+    {
+      "name": "RIT.User.Application-1.8.456.msi",
+      "relative_analysis_path": "originals/RIT.User.Application-1.8.456.msi",
+      "size": 9030144,
+      "mtime_ns": 1783969167710422311,
+      "sha256": "20fa6853460f6990f4a1491f5e0ffe5077cf5d8792be9df63c0258aabf3d8c67",
+      "sha512": "b631d67f0e1d00805cb9fa9d4a7d38e08ae8ce2291cecf39d436eafca8f45579ef94020ed239d584d601954fb7dc533eeb27f148a9b8eda08a99be5935f370be",
+      "file_type": "Composite Document File V2 Document, Little Endian, Os: Windows, Version 10.0, MSI Installer, Create Time/Date: Mon Jun 21 08:00:00 1999, Name of Creating Application: Windows Installer, Security: 1, Code page: 1252, Template: Intel;1033, Number of Pages: 200, Revision Number: {387A88CD-785C-401D-BE75-3C55A60774EA}, Title: RIT User Application Installation, Author: 306W, Number of Words: 2, Last Saved Time/Date: Mon Jul 28 03:34:42 2025, Last Printed: Mon Jul 28 03:34:42 2025"
+    },
+    {
+      "name": "RIT2.RTD.API.Link.x64-0.0.15.msi",
+      "relative_analysis_path": "originals/RIT2.RTD.API.Link.x64-0.0.15.msi",
+      "size": 650240,
+      "mtime_ns": 1783969128012187361,
+      "sha256": "e9fc53a2ac7842ef0a96d7ec36cf5eb54f25ce49dd83c54c633ccf930111950f",
+      "sha512": "fb8413af3e04ba2a611ed618b1288abc06b32e834c6562575b65788422e35437be268261c99a648581610a002d08a55f0be06912acafd398372f0f29365a2022",
+      "file_type": "Composite Document File V2 Document, Little Endian, Os: Windows, Version 6.1, MSI Installer, Create Time/Date: Mon Jun 21 08:00:00 1999, Name of Creating Application: Windows Installer, Security: 1, Code page: 1252, Template: x64;1033, Number of Pages: 200, Revision Number: {97C10337-3BF2-4A0A-BF4C-487AA648EF00}, Title: RIT 2.0 RTD/API Link Installer (x64), Author: Rotman, Number of Words: 2, Last Saved Time/Date: Sun Mar 14 20:48:54 2021, Last Printed: Sun Mar 14 20:48:54 2021"
+    }
+  ],
+  "installers": [
+    {
+      "name": "RIT.User.Application-1.8.456",
+      "summary_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/summary.txt",
+      "table_names": [
+        "_SummaryInformation",
+        "_ForceCodepage",
+        "_Validation",
+        "ActionText",
+        "AdminExecuteSequence",
+        "Condition",
+        "AdminUISequence",
+        "AdvtExecuteSequence",
+        "AdvtUISequence",
+        "AppId",
+        "AppSearch",
+        "Property",
+        "BBControl",
+        "Billboard",
+        "Feature",
+        "Binary",
+        "BindImage",
+        "File",
+        "CCPSearch",
+        "CheckBox",
+        "Class",
+        "Component",
+        "Icon",
+        "ProgId",
+        "ComboBox",
+        "CompLocator",
+        "Complus",
+        "Directory",
+        "Control",
+        "Dialog",
+        "ControlCondition",
+        "ControlEvent",
+        "CreateFolder",
+        "CustomAction",
+        "DrLocator",
+        "DuplicateFile",
+        "Environment",
+        "Error",
+        "EventMapping",
+        "Extension",
+        "MIME",
+        "FeatureComponents",
+        "FileSFPCatalog",
+        "SFPCatalog",
+        "Font",
+        "IniFile",
+        "IniLocator",
+        "InstallExecuteSequence",
+        "InstallUISequence",
+        "IsolatedComponent",
+        "LaunchCondition",
+        "ListBox",
+        "ListView",
+        "LockPermissions",
+        "Media",
+        "ModuleComponents",
+        "ModuleSignature",
+        "MoveFile",
+        "MsiAssembly",
+        "MsiAssemblyName",
+        "MsiDigitalCertificate",
+        "MsiDigitalSignature",
+        "MsiFileHash",
+        "MsiPatchHeaders",
+        "ODBCAttribute",
+        "ODBCDriver",
+        "ODBCDataSource",
+        "ODBCSourceAttribute",
+        "ODBCTranslator",
+        "Patch",
+        "PatchPackage",
+        "PublishComponent",
+        "RadioButton",
+        "Registry",
+        "RegLocator",
+        "RemoveFile",
+        "RemoveIniFile",
+        "RemoveRegistry",
+        "ReserveCost",
+        "SelfReg",
+        "ServiceControl",
+        "ServiceInstall",
+        "Shortcut",
+        "Signature",
+        "TextStyle",
+        "TypeLib",
+        "UIText",
+        "Upgrade",
+        "Verb",
+        "_VsdLaunchCondition"
+      ],
+      "stream_names": [
+        "Binary.UpFldrBtn",
+        "Binary.VSDNETCFG",
+        "Binary.MSVBDPCADLL",
+        "Binary.NewFldrBtn",
+        "Binary.DefBannerBitmap",
+        "Icon._E4804B722838F0AF4EB939.exe",
+        "Icon._853F67D554F05449430E7E.exe",
+        "Icon._0ABA9A3595612576BFD715.exe",
+        "\u0005DigitalSignature",
+        "_CCE6C4C34566E21FEFAF3FE1EE72F84F",
+        "\u0005SummaryInformation",
+        "\u0005MsiDigitalSignatureEx"
+      ],
+      "feature_component_file_map": [
+        {
+          "component": "C__0CC52E8511BC0C3B04F33D7A3E7980EA",
+          "component_id": "{138CEDF0-0A60-6258-86EC-983801FEAFAF}",
+          "declared_size": 711952,
+          "declared_version": "13.0.3.27908",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Newtonsoft.Json.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_0CC52E8511BC0C3B04F33D7A3E7980EA",
+          "installed_path": "Newtonsoft.Json.dll",
+          "payload_exists": true,
+          "sequence": 1
+        },
+        {
+          "component": "C__0E0DAAD5B7A51B7A51C72F0424B16DC6",
+          "component_id": "{7603A7D5-DC13-4B00-2F45-FC29B474829F}",
+          "declared_size": 7680,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_0E0DAAD5B7A51B7A51C72F0424B16DC6",
+          "installed_path": "NAudio.dll",
+          "payload_exists": true,
+          "sequence": 2
+        },
+        {
+          "component": "C__0FF97FB30EFE966E97293F0B9589F9B8",
+          "component_id": "{597645B4-A722-040C-2F16-1E6B787C4504}",
+          "declared_size": 27552,
+          "declared_version": "4.8.9037.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.IO.Compression.FileSystem.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_0FF97FB30EFE966E97293F0B9589F9B8",
+          "installed_path": "System.IO.Compression.FileSystem.dll",
+          "payload_exists": true,
+          "sequence": 3
+        },
+        {
+          "component": "C__10372CC0EF3966366F2CA13718B0B9AD",
+          "component_id": "{9EA29AC3-C3F8-43E5-CF64-05BB12002F7C}",
+          "declared_size": 98048,
+          "declared_version": "4.8.3761.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/netstandard.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_10372CC0EF3966366F2CA13718B0B9AD",
+          "installed_path": "netstandard.dll",
+          "payload_exists": true,
+          "sequence": 4
+        },
+        {
+          "component": "C__1079173DA1253A28AE0BB2CDEDDA7839",
+          "component_id": "{E8D85DC7-E00F-3CCB-23DB-226C11DA25C2}",
+          "declared_size": 1365232,
+          "declared_version": "1.1.8.456",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Client.exe",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_1079173DA1253A28AE0BB2CDEDDA7839",
+          "installed_path": "Client.exe",
+          "payload_exists": true,
+          "sequence": 5
+        },
+        {
+          "component": "C__1B0565E33CF8CF99F30B548789B4E98E",
+          "component_id": "{D05D83BA-CC0F-1C05-29DE-8A133BA7EB7B}",
+          "declared_size": 40960,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.WinForms.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_1B0565E33CF8CF99F30B548789B4E98E",
+          "installed_path": "NAudio.WinForms.dll",
+          "payload_exists": true,
+          "sequence": 6
+        },
+        {
+          "component": "C__1E8BBF2C707EFE454B65FE33A126ABD9",
+          "component_id": "{06621C4A-C216-F43D-03ED-14DF6FC525A4}",
+          "declared_size": 2343424,
+          "declared_version": "",
+          "directory_id": "_9327250477D9464DA492C4D28748B4C0",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/ts3server_win32.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_1E8BBF2C707EFE454B65FE33A126ABD9",
+          "installed_path": "TS/ts3server_win32.dll",
+          "payload_exists": true,
+          "sequence": 7
+        },
+        {
+          "component": "C__2467F51667187ED52A206E209D1D0BEA",
+          "component_id": "{36AA110B-52BC-70D1-FE2D-94E85399D7FE}",
+          "declared_size": 3027968,
+          "declared_version": "",
+          "directory_id": "_9327250477D9464DA492C4D28748B4C0",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/ts3server_win64.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_2467F51667187ED52A206E209D1D0BEA",
+          "installed_path": "TS/ts3server_win64.dll",
+          "payload_exists": true,
+          "sequence": 8
+        },
+        {
+          "component": "C__27B905C0634669D417C23D2045B20BC6",
+          "component_id": "{1B0917D2-07F7-3E8D-0680-A278F096FEB5}",
+          "declared_size": 46592,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.Midi.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_27B905C0634669D417C23D2045B20BC6",
+          "installed_path": "NAudio.Midi.dll",
+          "payload_exists": true,
+          "sequence": 9
+        },
+        {
+          "component": "C__2BB723B302D5DFAAB529E7093E534DFA",
+          "component_id": "{0819979C-8193-8B74-1984-ED0A3C94DEE5}",
+          "declared_size": 173568,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.Wasapi.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_2BB723B302D5DFAAB529E7093E534DFA",
+          "installed_path": "NAudio.Wasapi.dll",
+          "payload_exists": true,
+          "sequence": 10
+        },
+        {
+          "component": "C__314F939B7D40E09A03652420878F0C2E",
+          "component_id": "{1B52A7B5-38C7-1BBA-A345-345437AC1AC4}",
+          "declared_size": 1449984,
+          "declared_version": "4.0.51.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Janus.Windows.GridEX.v4.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_314F939B7D40E09A03652420878F0C2E",
+          "installed_path": "Janus.Windows.GridEX.v4.dll",
+          "payload_exists": true,
+          "sequence": 11
+        },
+        {
+          "component": "C__385DDC41CD7A4F2287398D2A8B2456FA",
+          "component_id": "{E63D8F83-E798-3F97-5DDF-9C7F5389784A}",
+          "declared_size": 29884,
+          "declared_version": "",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/rotman.ico",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_385DDC41CD7A4F2287398D2A8B2456FA",
+          "installed_path": "rotman.ico",
+          "payload_exists": true,
+          "sequence": 12
+        },
+        {
+          "component": "C__414A22688A465CBED901F7DC6B4414D7",
+          "component_id": "{80B6EF71-B2CA-9683-F952-C7381C0F4EB8}",
+          "declared_size": 225280,
+          "declared_version": "4.0.51.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Janus.Windows.Common.v4.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_414A22688A465CBED901F7DC6B4414D7",
+          "installed_path": "Janus.Windows.Common.v4.dll",
+          "payload_exists": true,
+          "sequence": 13
+        },
+        {
+          "component": "C__45BE808532497F1D0D3DCE0EDDDFFFA1",
+          "component_id": "{6BC61E0A-B41E-54CB-BF37-FF1350CF0640}",
+          "declared_size": 247296,
+          "declared_version": "2.2.1.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/protobuf-net.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_45BE808532497F1D0D3DCE0EDDDFFFA1",
+          "installed_path": "protobuf-net.dll",
+          "payload_exists": true,
+          "sequence": 14
+        },
+        {
+          "component": "C__4A299389872A83B123A27F4B8373D8F7",
+          "component_id": "{BA28DDBF-1887-C78F-D3D0-5C8A49F8ED93}",
+          "declared_size": 199528,
+          "declared_version": "4.8.9037.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.Net.Http.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_4A299389872A83B123A27F4B8373D8F7",
+          "installed_path": "System.Net.Http.dll",
+          "payload_exists": true,
+          "sequence": 15
+        },
+        {
+          "component": "C__4F8B37B1CD36FEF12D3F5382090391A1",
+          "component_id": "{B85F9CE3-6F5F-06E8-9D54-18D2A0E1F358}",
+          "declared_size": 217088,
+          "declared_version": "0.9.26.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Ciloci.Flee.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_4F8B37B1CD36FEF12D3F5382090391A1",
+          "installed_path": "Ciloci.Flee.dll",
+          "payload_exists": true,
+          "sequence": 16
+        },
+        {
+          "component": "C__57DA8DD0315058AEE6E400A27642DF36",
+          "component_id": "{97BF39B0-F163-041D-787E-759C58C5590B}",
+          "declared_size": 45056,
+          "declared_version": "5.9.6627.38153",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/bcParser.NET.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_57DA8DD0315058AEE6E400A27642DF36",
+          "installed_path": "bcParser.NET.dll",
+          "payload_exists": true,
+          "sequence": 17
+        },
+        {
+          "component": "C__583DE4F45086F205AA36E3505A43D8CC",
+          "component_id": "{1B77F85A-B47B-AB8E-E06F-D31E713C5EFB}",
+          "declared_size": 57344,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.WinMM.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_583DE4F45086F205AA36E3505A43D8CC",
+          "installed_path": "NAudio.WinMM.dll",
+          "payload_exists": true,
+          "sequence": 18
+        },
+        {
+          "component": "C__5923F73A9E39A1EBB61E026330DA103B",
+          "component_id": "{D3444053-43E5-1BD2-542D-D11690A18C07}",
+          "declared_size": 352256,
+          "declared_version": "0.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TeamSpeak.Sdk.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_5923F73A9E39A1EBB61E026330DA103B",
+          "installed_path": "TeamSpeak.Sdk.dll",
+          "payload_exists": true,
+          "sequence": 19
+        },
+        {
+          "component": "C__5F7C5F085EA77F7827071F0C41E82F3E",
+          "component_id": "{E0A409B4-91DE-3D9B-714B-E3D7303771CC}",
+          "declared_size": 2697,
+          "declared_version": "",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Client.exe.config",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_5F7C5F085EA77F7827071F0C41E82F3E",
+          "installed_path": "Client.exe.config",
+          "payload_exists": true,
+          "sequence": 20
+        },
+        {
+          "component": "C__6E59D94E5413D5049B850DF7FD50BC66",
+          "component_id": "{ACFB67A5-F23E-7258-6252-D4A3AAC5F726}",
+          "declared_size": 2826240,
+          "declared_version": "",
+          "directory_id": "_9327250477D9464DA492C4D28748B4C0",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/ts3client_win32.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_6E59D94E5413D5049B850DF7FD50BC66",
+          "installed_path": "TS/ts3client_win32.dll",
+          "payload_exists": true,
+          "sequence": 21
+        },
+        {
+          "component": "C__844A88479073A9F72A9E97ACBAA60E5D",
+          "component_id": "{47EB598B-15B4-2AB8-4554-D63248DD34BA}",
+          "declared_size": 3709440,
+          "declared_version": "",
+          "directory_id": "_9327250477D9464DA492C4D28748B4C0",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/ts3client_win64.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_844A88479073A9F72A9E97ACBAA60E5D",
+          "installed_path": "TS/ts3client_win64.dll",
+          "payload_exists": true,
+          "sequence": 22
+        },
+        {
+          "component": "C__8973FF12648F2F4B34F5374977FC1BDA",
+          "component_id": "{84C1D5A1-A680-24E9-C4CC-19092B2BFF72}",
+          "declared_size": 381952,
+          "declared_version": "",
+          "directory_id": "_07F4EDD7EC354D42849B0DF40A8F3F13",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/windowsaudiosession_win64.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_8973FF12648F2F4B34F5374977FC1BDA",
+          "installed_path": "TS/soundbackends/windowsaudiosession_win64.dll",
+          "payload_exists": true,
+          "sequence": 23
+        },
+        {
+          "component": "C__B76D189C395B7DCC239106D926D77F11",
+          "component_id": "{6BA72AD8-8F85-DB1E-6EDA-2B443E7C5793}",
+          "declared_size": 67656,
+          "declared_version": "4.8.9277.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.IO.Compression.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_B76D189C395B7DCC239106D926D77F11",
+          "installed_path": "System.IO.Compression.dll",
+          "payload_exists": true,
+          "sequence": 24
+        },
+        {
+          "component": "C__B878FABFD3F1D9C8E85CEA6A2409D5F3",
+          "component_id": "{A86C14F3-B7C5-502A-3ABF-F1239CD755DC}",
+          "declared_size": 279552,
+          "declared_version": "",
+          "directory_id": "_07F4EDD7EC354D42849B0DF40A8F3F13",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/directsound_win32.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_B878FABFD3F1D9C8E85CEA6A2409D5F3",
+          "installed_path": "TS/soundbackends/directsound_win32.dll",
+          "payload_exists": true,
+          "sequence": 25
+        },
+        {
+          "component": "C__BE82BB785074F2C218F3F5EA28E016A7",
+          "component_id": "{E1C38D96-011D-ABD5-543A-50E1B67EF6D6}",
+          "declared_size": 352768,
+          "declared_version": "",
+          "directory_id": "_07F4EDD7EC354D42849B0DF40A8F3F13",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/directsound_win64.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_BE82BB785074F2C218F3F5EA28E016A7",
+          "installed_path": "TS/soundbackends/directsound_win64.dll",
+          "payload_exists": true,
+          "sequence": 26
+        },
+        {
+          "component": "C__C109178AD62EA7C75CDF43907CDD3AA2",
+          "component_id": "{AF6BBE48-49F1-F5DB-605B-C6FFEFAF5FFF}",
+          "declared_size": 34304,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.Asio.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_C109178AD62EA7C75CDF43907CDD3AA2",
+          "installed_path": "NAudio.Asio.dll",
+          "payload_exists": true,
+          "sequence": 27
+        },
+        {
+          "component": "C__C14AD891B6DE483623C52CB6BDCC95DD",
+          "component_id": "{2F808D1C-5583-A2BF-99F2-6A073E8D0692}",
+          "declared_size": 34656,
+          "declared_version": "4.8.9037.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.Diagnostics.Tracing.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_C14AD891B6DE483623C52CB6BDCC95DD",
+          "installed_path": "System.Diagnostics.Tracing.dll",
+          "payload_exists": true,
+          "sequence": 28
+        },
+        {
+          "component": "C__CC116983BC8AAEC3BB1560A0176B98DA",
+          "component_id": "{4B63C500-EE36-2476-0428-99995CEFABA3}",
+          "declared_size": 229376,
+          "declared_version": "4.0.51.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Janus.Data.v4.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_CC116983BC8AAEC3BB1560A0176B98DA",
+          "installed_path": "Janus.Data.v4.dll",
+          "payload_exists": true,
+          "sequence": 29
+        },
+        {
+          "component": "C__D1998DDA355DE7DAE16460C948EAE482",
+          "component_id": "{CD44E718-75B1-E997-8038-5E28780D3E17}",
+          "declared_size": 301056,
+          "declared_version": "",
+          "directory_id": "_07F4EDD7EC354D42849B0DF40A8F3F13",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/windowsaudiosession_win32.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_D1998DDA355DE7DAE16460C948EAE482",
+          "installed_path": "TS/soundbackends/windowsaudiosession_win32.dll",
+          "payload_exists": true,
+          "sequence": 30
+        },
+        {
+          "component": "C__DDC939841D743C912D85E3B6B83BFDC2",
+          "component_id": "{917D1166-B412-40FD-B0EC-1EF6134718FD}",
+          "declared_size": 188416,
+          "declared_version": "2.1.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/NAudio.Core.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_DDC939841D743C912D85E3B6B83BFDC2",
+          "installed_path": "NAudio.Core.dll",
+          "payload_exists": true,
+          "sequence": 31
+        },
+        {
+          "component": "C__EE2D6FEA61C5D54E1E0263EF3D8FBE3E",
+          "component_id": "{430BB99E-D145-44BF-3516-40DE86D6BC42}",
+          "declared_size": 18312,
+          "declared_version": "5.0.20.51904",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.Security.Principal.Windows.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_EE2D6FEA61C5D54E1E0263EF3D8FBE3E",
+          "installed_path": "System.Security.Principal.Windows.dll",
+          "payload_exists": true,
+          "sequence": 32
+        },
+        {
+          "component": "C__F4A31CDFECFB7B119AD46318D70B157F",
+          "component_id": "{AFBACC47-783D-D367-55C4-9E8E2C9CC178}",
+          "declared_size": 26496,
+          "declared_version": "5.0.20.51904",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/Microsoft.Win32.Registry.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_F4A31CDFECFB7B119AD46318D70B157F",
+          "installed_path": "Microsoft.Win32.Registry.dll",
+          "payload_exists": true,
+          "sequence": 33
+        },
+        {
+          "component": "C__F4D8752B1367B5C010ED2A0088B6DBC4",
+          "component_id": "{80A158D7-AEEC-9B57-32FA-9CEA8E7B36FA}",
+          "declared_size": 37136,
+          "declared_version": "6.0.2924.17105",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/System.Security.AccessControl.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_F4D8752B1367B5C010ED2A0088B6DBC4",
+          "installed_path": "System.Security.AccessControl.dll",
+          "payload_exists": true,
+          "sequence": 34
+        },
+        {
+          "component": "C__FC6CD8D2125792C20749DD3F5B84DCCA",
+          "component_id": "{DB7D3993-BB15-73E2-807C-18CD0BCD1573}",
+          "declared_size": 161280,
+          "declared_version": "1.1.8.456",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT.User.Application-1.8.456/payloads/TTS.Common.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_FC6CD8D2125792C20749DD3F5B84DCCA",
+          "installed_path": "TTS.Common.dll",
+          "payload_exists": true,
+          "sequence": 35
+        }
+      ],
+      "signature": {
+        "stream": "0009-_DigitalSignature.bin",
+        "cms_bytes": 11561,
+        "signer_subject": "C=CA, ST=Ontario, O=306W Inc., CN=306W Inc.",
+        "signer_validity": "2025-02-18T00:00:00Z/2028-02-18T23:59:59Z",
+        "certificate_chain_parse": "success",
+        "full_platform_verification": "not-run"
+      },
+      "payloads": [
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Ciloci.Flee.dll",
+          "size": 217088,
+          "sha256": "37bfe967e51e0ba80ba1423b383c8c59c17673d2ce3402546fd6e0c2a5de45e9",
+          "sha512": "2f2b3671fe50a9f62e69efd4a6c50c58d01f0e699fd818e78a4c42ddd1841391f914d3b0e28960da3c62056f725ffb0467e9535c735285dda83aa2e8c1f0f726",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 4194304,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1245291955,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 2,
+            "version_info": {
+              "Assembly Version": "0.9.26.0",
+              "FileDescription": "Fast Lightweight Expression Evaluator",
+              "FileVersion": "0.9.26.0",
+              "InternalName": "Ciloci.Flee.dll",
+              "LegalCopyright": "Copyright © Eugene Ciloci 2007",
+              "OriginalFilename": "Ciloci.Flee.dll",
+              "ProductName": "Fast Lightweight Expression Evaluator",
+              "ProductVersion": "0.9.26.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Client.exe",
+          "size": 1365232,
+          "sha256": "ec47c4f926427b82181421d26d884abdb59ba1c7aedb352de4c6931efc9cbbd0",
+          "sha512": "10a8198968c90a9e06b592d1263337d75d0c91aacf3da8f3f499c39f0c2a986bc9b6babbaccad68766dcc40fe5163c6aa6005f9b078bf8116c4ec5d74d20db5e",
+          "file_type": "PE32 executable (GUI) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 11504,
+            "exports": [],
+            "image_base": 4194304,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorExeMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1753670045,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 2,
+            "version_info": {
+              "Assembly Version": "1.1.8.456",
+              "Comments": "",
+              "CompanyName": "306W Inc.",
+              "FileDescription": "RIT 2.0 Market Simulator",
+              "FileVersion": "1.1.8.456",
+              "InternalName": "Client.exe",
+              "LegalCopyright": "Copyright © Chan, Mak, McCurdy 2021",
+              "LegalTrademarks": "",
+              "OriginalFilename": "Client.exe",
+              "ProductName": "RIT 2.0 Client",
+              "ProductVersion": "1.1.8.456"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Client.exe.config",
+          "size": 2697,
+          "sha256": "e7895b3ce345ecf1e101dbc5e0bb6b25489bc0c2fe3bfae80e7753c9732d854d",
+          "sha512": "07d6236d5331e934f0b229f3d46fc8011783207c3870740dd2279f2115e75899071c4fe5ddfa158588b3fb5b17aba5b4d623a3bba3b8c05be6d35a7e589a4c1e",
+          "file_type": "XML 1.0 document text, Unicode text, UTF-8 (with BOM) text, with CRLF line terminators",
+          "pe": null
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Janus.Data.v4.dll",
+          "size": 229376,
+          "sha256": "dec02a71ceb11da751addd8a10f9214ad0f7ac669c31b977d6fde9ff38c7f4e3",
+          "sha512": "3cbed0b86ef9dde86f9f265e4b2d74b4060c69c387b6801a204cea018c901c93c06f0735129df5a90af53524554f01991b3eaaecc4aa1a573df62edb046e41dc",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 285212672,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1471876391,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "4.0.51.0",
+              "Comments": "Janus DataSourceManager",
+              "CompanyName": "Janus Systems",
+              "FileDescription": " ",
+              "FileVersion": "4.0.51.0",
+              "InternalName": "Janus.Data.v4.dll",
+              "LegalCopyright": "Copyright © 1998-2011 Janus Systems",
+              "OriginalFilename": "Janus.Data.v4.dll",
+              "ProductName": "Janus DataSourceManager",
+              "ProductVersion": "4.0.51.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Janus.Windows.Common.v4.dll",
+          "size": 225280,
+          "sha256": "0689f551e1a6f6bc0824e33bd5642920d2b15b848e767d6013135d0cc605c95f",
+          "sha512": "a8c79a3712403951b5330f5fd830f13f6e881132a911c807d95f065884548c356d5e9d1976f626c90b54c27cdfa0bdaf282e5535a7f1fc30191501ce976079e0",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 285212672,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1471876439,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "4.0.51.0",
+              "Comments": "Janus Windows Controls Common Functionality",
+              "CompanyName": "Janus Systems",
+              "FileDescription": " ",
+              "FileVersion": "4.0.51.0",
+              "InternalName": "Janus.Windows.Common.v4.dll",
+              "LegalCopyright": "Copyright © 1998-2011 Janus Systems",
+              "OriginalFilename": "Janus.Windows.Common.v4.dll",
+              "ProductName": "Janus.Windows.Common",
+              "ProductVersion": "4.0.51.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Janus.Windows.GridEX.v4.dll",
+          "size": 1449984,
+          "sha256": "1149f2aff569b456a03f7e8279a292e2e8e5101a5121daa8c657af5792cf4832",
+          "sha512": "9cd01cd797e03b9df1799b28ee620ebd324e7182310f53a90976ec21f8da120404052e5fef0c9bfb1ab7f442e7970d715ffcacbfd4ac1de640136d6137458905",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 4194304,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1471876515,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "4.0.51.0",
+              "Comments": "Janus GridEX and MultiColumnCombo Controls V4",
+              "CompanyName": "Janus Systems",
+              "FileDescription": " ",
+              "FileVersion": "4.0.51.0",
+              "InternalName": "Janus.Windows.GridEX.v4.dll",
+              "LegalCopyright": "Copyright © 1998-2011 Janus Systems",
+              "OriginalFilename": "Janus.Windows.GridEX.v4.dll",
+              "ProductName": "Janus GridEX Licensed",
+              "ProductVersion": "4.0.51.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Microsoft.Win32.Registry.dll",
+          "size": 26496,
+          "sha256": "e9a9d281c1a708aaae366f82fd6a1742f65da2918cc4fa5eaaaada0be24277d9",
+          "sha512": "8252abe64c67863d9e4c70e820f0c69c517b8678a4b4c13a436118bc276e5f21e84522b93566c0bc009effcb251ed67bdbc60e4907abea2f33b6be3764e28d1d",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 9088,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 2164026085,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "5.0.0.0",
+              "Comments": "Microsoft.Win32.Registry",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": "Microsoft.Win32.Registry",
+              "FileVersion": "5.0.20.51904",
+              "InternalName": "Microsoft.Win32.Registry.dll",
+              "LegalCopyright": "© Microsoft Corporation. All rights reserved.",
+              "OriginalFilename": "Microsoft.Win32.Registry.dll",
+              "ProductName": "Microsoft® .NET",
+              "ProductVersion": "5.0.0+cf258a14b70ad9069470a108f13765e0e5988f51"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.Asio.dll",
+          "size": 34304,
+          "sha256": "5e87935c813b7f92d358871541636918010b46384cda03a82872d5a7e95af8ad",
+          "sha512": "c0fdf1fbcda213b4c01e9bbf5caac2bca37a9481f1992f2cc2d5a182ceb9e2177d99bd8695583947125fff47f9d2327afe96aaa65bb4b53dd935a8d4774ba819",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3003836991,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "Mark Heath",
+              "FileDescription": "NAudio.Asio",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.Asio.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.Asio.dll",
+              "ProductName": "NAudio.Asio",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.Core.dll",
+          "size": 188416,
+          "sha256": "f297e28c7061e4294fc65a6be1629d951b0496950f0060c919fd9f305f27aa91",
+          "sha512": "b14739f7cffe09b8bad2ba88c531bc3f8e00f9a4e8ab7cf5fd9db8b10bbdca391437e3f02a1d67c315ebb276329755fb8d7bab5d41ed3482d35688be0bc21ce5",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 2662662122,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "Mark Heath",
+              "FileDescription": "NAudio.Core",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.Core.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.Core.dll",
+              "ProductName": "NAudio.Core",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.Midi.dll",
+          "size": 46592,
+          "sha256": "0e2b59a26a3432dcc7105011809ea428d11ae06046c64dcfe4772683ffeeac99",
+          "sha512": "8036eaf59c1cf93e3b9114c8871fb9f04a96a4a90f7f61886b6b30c102590beb6b2115292d472359479f3676c83abfb78bd272213888e838433b017f970acf2d",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3456051138,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "Mark Heath",
+              "FileDescription": "NAudio.Midi",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.Midi.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.Midi.dll",
+              "ProductName": "NAudio.Midi",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.Wasapi.dll",
+          "size": 173568,
+          "sha256": "c25e5c0694dc709c72fe01182db5ccfea9229f65bc7deaa9b0298234c84a8fc8",
+          "sha512": "9cf220b2692209bc5940e895cba5ce4f1521e66d2e116620db022af2689efd41050d2b5df2ed7cf2cddb034ae4615d0243a85c2ab54e835e279053f5fc8b2bed",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 2581524267,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "Mark Heath",
+              "FileDescription": "NAudio.Wasapi",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.Wasapi.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.Wasapi.dll",
+              "ProductName": "NAudio.Wasapi",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.WinForms.dll",
+          "size": 40960,
+          "sha256": "7d990e527ed479f8d2a0c808bd769b7b2e03acd0693ac4e0e8843dc239189adf",
+          "sha512": "eb98cef0fd0dec2bd48158def591e7b387c457c1287a284b9548092bbe2536c849fe1d71db51b4390efdf0a0a6040cd1a72e02deee6e58d053e64553e63f808e",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3434716574,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "Mark Heath",
+              "FileDescription": "NAudio.WinForms",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.WinForms.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.WinForms.dll",
+              "ProductName": "NAudio.WinForms",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.WinMM.dll",
+          "size": 57344,
+          "sha256": "33f702554e65eb282cefd6b185ffffe5da3a366af83ba0315535ab4fcfb3291c",
+          "sha512": "0ea9606f859f75643a99072f3223d08780899ecb25d9583c41f50eef900de0c319c16d5eb9dc9e4c0aa24a2b207e73e5b113c23cc227b4412ac67b31d112a4cb",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 2569212697,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "CompanyName": "NAudio.WinMM",
+              "FileDescription": "NAudio.WinMM",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.WinMM.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.WinMM.dll",
+              "ProductName": "NAudio.WinMM",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/NAudio.dll",
+          "size": 7680,
+          "sha256": "797afeb19ec991ec660dcd20b367156fae63f9e491d5e3e40ae74d77dd5a4bd4",
+          "sha512": "027af0a708f34eacd7e69f7333d46a14d18b31af845fceffe390af6c8d44de690b85d6265b7cd89aa1b9f5a19461722f6685774da57157f3f2aa33beaa1e9d46",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 4256905925,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.1.0.0",
+              "Comments": "NAudio, an audio library for .NET",
+              "CompanyName": "Mark Heath & Contributors",
+              "FileDescription": "NAudio",
+              "FileVersion": "2.1.0.0",
+              "InternalName": "NAudio.dll",
+              "LegalCopyright": "© Mark Heath 2022",
+              "OriginalFilename": "NAudio.dll",
+              "ProductName": "NAudio",
+              "ProductVersion": "2.1.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/Newtonsoft.Json.dll",
+          "size": 711952,
+          "sha256": "e1e27af7b07eeedf5ce71a9255f0422816a6fc5849a483c6714e1b472044fa9d",
+          "sha512": "56eb7f070929b239642dab729537dde2c2287bdb852ad9e80b5358c74b14bc2b2dded910d0e3b6304ea27eb587e5f19db0a92e1cbae6a70fb20b4ef05057e4ac",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 12048,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3074368624,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "13.0.0.0",
+              "Comments": "Json.NET is a popular high-performance JSON framework for .NET",
+              "CompanyName": "Newtonsoft",
+              "FileDescription": "Json.NET .NET 4.5",
+              "FileVersion": "13.0.3.27908",
+              "InternalName": "Newtonsoft.Json.dll",
+              "LegalCopyright": "Copyright © James Newton-King 2008",
+              "LegalTrademarks": "",
+              "OriginalFilename": "Newtonsoft.Json.dll",
+              "ProductName": "Json.NET",
+              "ProductVersion": "13.0.3+0a2e291c0d9c0c7675d445703e51750363a549ef"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.Diagnostics.Tracing.dll",
+          "size": 34656,
+          "sha256": "c9df1cc080a352ba90637c870757583441a68464d5336aa60ae3f8dbe5f7a085",
+          "sha512": "14f06820463627517ae4a6576f659eb98581834b3c07887de671ee8d0030c4eec016b41762c2605eaed5d589402a46509aa9251c0c4c3164792c3b1a43d3b0c6",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 19808,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1656109619,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Comments": "Flavor=Retail",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": ".NET Framework",
+              "FileVersion": "4.8.9037.0 built by: NET481REL1",
+              "InternalName": "System.Diagnostics.Tracing.dll",
+              "LegalCopyright": "© Microsoft Corporation.  All rights reserved.",
+              "OriginalFilename": "System.Diagnostics.Tracing.dll",
+              "PrivateBuild": "DDBLD299C",
+              "ProductName": "Microsoft® .NET Framework",
+              "ProductVersion": "4.8.9037.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.IO.Compression.FileSystem.dll",
+          "size": 27552,
+          "sha256": "1513e86e58c14dde3c3f6e8ba0bd52dc6c257d4974fe5a0983588f6d9d2d4c78",
+          "sha512": "41b78a1b7c904c6ce9f4c7ee4dd60c05a6ca39b69c8cdeddc2fa742e7b3358fe7631a7e8d8fb18ed05c7cabf42a1354cf5f804882cf7db4d2daadf6fc2cd0d79",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 10144,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1656109617,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "4.0.0.0",
+              "Comments": "System.IO.Compression.FileSystem.dll",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": "System.IO.Compression.FileSystem.dll",
+              "FileVersion": "4.8.9037.0",
+              "InternalName": "System.IO.Compression.FileSystem.dll",
+              "LegalCopyright": "© Microsoft Corporation.  All rights reserved.",
+              "OriginalFilename": "System.IO.Compression.FileSystem.dll",
+              "ProductName": "Microsoft® .NET Framework",
+              "ProductVersion": "4.8.9037.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.IO.Compression.dll",
+          "size": 67656,
+          "sha256": "0b1da5a833e512b0eab28e66f440329f04d6034e944a3b1e107b496f44dd8d04",
+          "sha512": "76223b0425e8247af4c0a19e4ba5925baa01b4978310adb74c29c9a069bd8ebe9b9a944912b994bd6adc5021944de7c23ebc3009f53ffc7ecf237c8e5f466240",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 20040,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1724987776,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Comments": "Flavor=Retail",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": ".NET Framework",
+              "FileVersion": "4.8.9277.0 built by: NET481REL1LAST_B",
+              "InternalName": "System.IO.Compression.dll",
+              "LegalCopyright": "© Microsoft Corporation.  All rights reserved.",
+              "OriginalFilename": "System.IO.Compression.dll",
+              "PrivateBuild": "DDBLD358B",
+              "ProductName": "Microsoft® .NET Framework",
+              "ProductVersion": "4.8.9277.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.Net.Http.dll",
+          "size": 199528,
+          "sha256": "d6cd39b6db2fdf65f7051a11e448a04b0efc17f3c8b515f2b546294e1c2dc9b9",
+          "sha512": "58fdb04e433fa02b0dff66b6043fa4af519708b7ae05038a5753ea1399d1bbc7148e9a2591403d0a8dc019240aaf4be88792e0f50d0b6e5d2b20ef83da3b7369",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 19816,
+            "exports": [],
+            "image_base": 1643118592,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1656109465,
+            "resource_types": [
+              "16",
+              "IBC"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Comments": "Flavor=Retail",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": ".NET Framework",
+              "FileVersion": "4.8.9037.0 built by: NET481REL1",
+              "InternalName": "System.Net.Http.dll",
+              "LegalCopyright": "© Microsoft Corporation.  All rights reserved.",
+              "OriginalFilename": "System.Net.Http.dll",
+              "PrivateBuild": "DDBLD299C",
+              "ProductName": "Microsoft® .NET Framework",
+              "ProductVersion": "4.8.9037.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.Security.AccessControl.dll",
+          "size": 37136,
+          "sha256": "8e71e09c1a2706704333d3ad20e286ace441c8b512dd2dbb6dc69540daec54c8",
+          "sha512": "2dcbddb6223b3188b588a5dffec5194da6b704aa4d6da8a43f461d1062e1262f3a8d1f9059c89d02378a481be65b665248092946e203b21b691e16403292073d",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 10512,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3182391007,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "6.0.0.1",
+              "Comments": "Internal implementation package not meant for direct consumption. Please do not reference directly. \nProvides base classes that enable managing access and audit control lists on securable objects.\r\n\r\nCommonly Used Types:\r\nSystem.Security.AccessControl.AccessRule\r\nSystem.Security.AccessControl.AuditRule\r\nSystem.Security.AccessControl.ObjectAccessRule\r\nSystem.Security.AccessControl.ObjectAuditRule\r\nSystem.Security.AccessControl.ObjectSecurity",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": "System.Security.AccessControl",
+              "FileVersion": "6.0.2924.17105",
+              "InternalName": "System.Security.AccessControl.dll",
+              "LegalCopyright": "© Microsoft Corporation. All rights reserved.",
+              "OriginalFilename": "System.Security.AccessControl.dll",
+              "ProductName": "Microsoft® .NET",
+              "ProductVersion": "6.0.29+189fbbd88d97dd6d65515ba2da05b62eab4e5039"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/System.Security.Principal.Windows.dll",
+          "size": 18312,
+          "sha256": "b4d8e15adc235d0e858e39b5133e5d00a4baa8c94f4f39e3b5e791b0f9c0c806",
+          "sha512": "3f7692e94419bffe3465d54c0e25c207330cd1368fcdfad71dbeed1ee842474b5abcb03dba5bc124bd10033263f22dc9f462f12c20f866aebc5c91eb151af2e6",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 9096,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3050271247,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "5.0.0.0",
+              "Comments": "System.Security.Principal.Windows",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": "System.Security.Principal.Windows",
+              "FileVersion": "5.0.20.51904",
+              "InternalName": "System.Security.Principal.Windows.dll",
+              "LegalCopyright": "© Microsoft Corporation. All rights reserved.",
+              "OriginalFilename": "System.Security.Principal.Windows.dll",
+              "ProductName": "Microsoft® .NET",
+              "ProductVersion": "5.0.0+cf258a14b70ad9069470a108f13765e0e5988f51"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/directsound_win32.dll",
+          "size": 279552,
+          "sha256": "8100e325768f3e30116c2859478448a7456e7e0ce54436401aa650fadb43f87f",
+          "sha512": "1cf7e66a85a3712c2fb6cbbd80453462c2407093bf9a44c7bbcedcacdcbd17761bd4c3eb50ce2f75dafd313ed7564cafe0737df9455c4bd0d8af3a63c6176156",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3soundbackend_associateAECDevice",
+              "ts3soundbackend_closeDevice",
+              "ts3soundbackend_enumDevices",
+              "ts3soundbackend_finalize",
+              "ts3soundbackend_getDefaultDevice",
+              "ts3soundbackend_getErrorString",
+              "ts3soundbackend_getInfo",
+              "ts3soundbackend_initialize",
+              "ts3soundbackend_isSupported",
+              "ts3soundbackend_lockDSP",
+              "ts3soundbackend_openDevice",
+              "ts3soundbackend_startDevice",
+              "ts3soundbackend_stopDevice",
+              "ts3soundbackend_unlockDSP",
+              "ts3soundbackend_waitForClosedDevices"
+            ],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "DSOUND.dll",
+                "symbols": [
+                  "ordinal:11",
+                  "ordinal:12",
+                  "ordinal:3",
+                  "ordinal:8",
+                  "ordinal:9"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeBeginPeriod",
+                  "timeEndPeriod",
+                  "timeGetDevCaps",
+                  "timeGetTime",
+                  "waveInGetDevCapsW",
+                  "waveInGetNumDevs",
+                  "waveInMessage",
+                  "waveOutGetDevCapsW",
+                  "waveOutGetNumDevs",
+                  "waveOutMessage"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "CreateWindowExW",
+                  "DestroyWindow"
+                ]
+              },
+              {
+                "dll": "ole32.dll",
+                "symbols": [
+                  "CLSIDFromString",
+                  "CoInitializeEx",
+                  "CoTaskMemFree",
+                  "CoUninitialize",
+                  "StringFromCLSID"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "CloseHandle",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateThread",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindNextFileA",
+                  "FlushFileBuffers",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetEnvironmentStringsW",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetModuleFileNameA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessHeap",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemTimeAsFileTime",
+                  "GetUserDefaultLCID",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSection",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LocalAlloc",
+                  "LocalFree",
+                  "LocalSize",
+                  "MultiByteToWideChar",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "ResetEvent",
+                  "RtlUnwind",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "TerminateProcess",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoW",
+                  "WaitForMultipleObjects",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile",
+                  "lstrlenW"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1506074089,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/directsound_win64.dll",
+          "size": 352768,
+          "sha256": "76284351612008b33e032920945ddf6b6136530f38ad803cea57051ec0d82211",
+          "sha512": "1b0d6783b34571c95dd8722d0a39371eefb373437c9e463b6885678adb0f3f829bc9512bd4d29f6f7fb89c509b670ba853985e15497dfc4cccb6e1b897e87ffa",
+          "file_type": "PE32+ executable (DLL) (GUI) x86-64, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3soundbackend_associateAECDevice",
+              "ts3soundbackend_closeDevice",
+              "ts3soundbackend_enumDevices",
+              "ts3soundbackend_finalize",
+              "ts3soundbackend_getDefaultDevice",
+              "ts3soundbackend_getErrorString",
+              "ts3soundbackend_getInfo",
+              "ts3soundbackend_initialize",
+              "ts3soundbackend_isSupported",
+              "ts3soundbackend_lockDSP",
+              "ts3soundbackend_openDevice",
+              "ts3soundbackend_startDevice",
+              "ts3soundbackend_stopDevice",
+              "ts3soundbackend_unlockDSP",
+              "ts3soundbackend_waitForClosedDevices"
+            ],
+            "image_base": 6442450944,
+            "imports": [
+              {
+                "dll": "DSOUND.dll",
+                "symbols": [
+                  "ordinal:11",
+                  "ordinal:12",
+                  "ordinal:3",
+                  "ordinal:8",
+                  "ordinal:9"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeBeginPeriod",
+                  "timeEndPeriod",
+                  "timeGetDevCaps",
+                  "timeGetTime",
+                  "waveInGetDevCapsW",
+                  "waveInGetNumDevs",
+                  "waveInMessage",
+                  "waveOutGetDevCapsW",
+                  "waveOutGetNumDevs",
+                  "waveOutMessage"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "CreateWindowExW",
+                  "DestroyWindow"
+                ]
+              },
+              {
+                "dll": "ole32.dll",
+                "symbols": [
+                  "CLSIDFromString",
+                  "CoInitializeEx",
+                  "CoTaskMemFree",
+                  "CoUninitialize",
+                  "StringFromCLSID"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "CloseHandle",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateThread",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindNextFileA",
+                  "FlushFileBuffers",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetEnvironmentStringsW",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetModuleFileNameA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessHeap",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemTimeAsFileTime",
+                  "GetUserDefaultLCID",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSection",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LocalAlloc",
+                  "LocalFree",
+                  "LocalSize",
+                  "MultiByteToWideChar",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "ResetEvent",
+                  "RtlCaptureContext",
+                  "RtlLookupFunctionEntry",
+                  "RtlPcToFileHeader",
+                  "RtlUnwindEx",
+                  "RtlVirtualUnwind",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "TerminateProcess",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoW",
+                  "WaitForMultipleObjects",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile",
+                  "lstrlenW"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x8664",
+            "machine_name": "IMAGE_FILE_MACHINE_AMD64",
+            "pe_timestamp": 1506074256,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/windowsaudiosession_win32.dll",
+          "size": 301056,
+          "sha256": "f9952bcc4dd3335605c3bf43ab023b3d1de5bece52843c14ad285bf7cb51d959",
+          "sha512": "22a8abc7d5c481a553dcf320ae931436d3e64d6a6f7320fcf44e8b937ee2c79c4ce746da6f0e558eee3b5febcf1ae45e274db5cd1930b2c1f477441e385d9e83",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3soundbackend_associateAECDevice",
+              "ts3soundbackend_closeDevice",
+              "ts3soundbackend_enumDevices",
+              "ts3soundbackend_finalize",
+              "ts3soundbackend_getDefaultDevice",
+              "ts3soundbackend_getErrorString",
+              "ts3soundbackend_getInfo",
+              "ts3soundbackend_initialize",
+              "ts3soundbackend_isSupported",
+              "ts3soundbackend_lockDSP",
+              "ts3soundbackend_openDevice",
+              "ts3soundbackend_startDevice",
+              "ts3soundbackend_stopDevice",
+              "ts3soundbackend_unlockDSP",
+              "ts3soundbackend_waitForClosedDevices"
+            ],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "AVRT.dll",
+                "symbols": [
+                  "AvSetMmThreadCharacteristicsA"
+                ]
+              },
+              {
+                "dll": "ole32.dll",
+                "symbols": [
+                  "CoCreateInstance",
+                  "CoInitializeEx",
+                  "CoTaskMemFree",
+                  "CoUninitialize",
+                  "PropVariantClear"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "CancelWaitableTimer",
+                  "CloseHandle",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateThread",
+                  "CreateWaitableTimerW",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindNextFileA",
+                  "FlushFileBuffers",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetEnvironmentStringsW",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetModuleFileNameA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessHeap",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemTimeAsFileTime",
+                  "GetUserDefaultLCID",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSection",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LocalAlloc",
+                  "LocalFree",
+                  "LocalSize",
+                  "MultiByteToWideChar",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "ResetEvent",
+                  "RtlUnwind",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "Sleep",
+                  "TerminateProcess",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoW",
+                  "WaitForMultipleObjects",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile",
+                  "lstrlenW"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1506074149,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/soundbackends/windowsaudiosession_win64.dll",
+          "size": 381952,
+          "sha256": "47b1c047552f68ce9f583c4e6ec160bb23684a07f0b6241d849d9e5ceaddddbf",
+          "sha512": "7205b0673b069b7f992b18367d6d54c2de9834b857a6d996feafb24d0aad2dce4f3aae02334dd1a5b2589a12b9fbc93b4598313548104f475e179f651fb84c71",
+          "file_type": "PE32+ executable (DLL) (GUI) x86-64, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3soundbackend_associateAECDevice",
+              "ts3soundbackend_closeDevice",
+              "ts3soundbackend_enumDevices",
+              "ts3soundbackend_finalize",
+              "ts3soundbackend_getDefaultDevice",
+              "ts3soundbackend_getErrorString",
+              "ts3soundbackend_getInfo",
+              "ts3soundbackend_initialize",
+              "ts3soundbackend_isSupported",
+              "ts3soundbackend_lockDSP",
+              "ts3soundbackend_openDevice",
+              "ts3soundbackend_startDevice",
+              "ts3soundbackend_stopDevice",
+              "ts3soundbackend_unlockDSP",
+              "ts3soundbackend_waitForClosedDevices"
+            ],
+            "image_base": 6442450944,
+            "imports": [
+              {
+                "dll": "AVRT.dll",
+                "symbols": [
+                  "AvSetMmThreadCharacteristicsA"
+                ]
+              },
+              {
+                "dll": "ole32.dll",
+                "symbols": [
+                  "CoCreateInstance",
+                  "CoInitializeEx",
+                  "CoTaskMemFree",
+                  "CoUninitialize",
+                  "PropVariantClear"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "CancelWaitableTimer",
+                  "CloseHandle",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateThread",
+                  "CreateWaitableTimerW",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindNextFileA",
+                  "FlushFileBuffers",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetEnvironmentStringsW",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetModuleFileNameA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessHeap",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemTimeAsFileTime",
+                  "GetUserDefaultLCID",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSection",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LocalAlloc",
+                  "LocalFree",
+                  "LocalSize",
+                  "MultiByteToWideChar",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "ResetEvent",
+                  "RtlCaptureContext",
+                  "RtlLookupFunctionEntry",
+                  "RtlPcToFileHeader",
+                  "RtlUnwindEx",
+                  "RtlVirtualUnwind",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "Sleep",
+                  "TerminateProcess",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoW",
+                  "WaitForMultipleObjects",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile",
+                  "lstrlenW"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x8664",
+            "machine_name": "IMAGE_FILE_MACHINE_AMD64",
+            "pe_timestamp": 1506074239,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/ts3client_win32.dll",
+          "size": 2826240,
+          "sha256": "dd996144f4f966c13828587d7711505b21d2f428d5441f9754d8e93f63115eca",
+          "sha512": "74bf1e845fadfd03be1d944257aa0b24d56bb3b5086a823df0e19de58791acbf28d129f05565ad03a3be3fdb5122ee5c62c2569a36dea3b4a4fe93a1fa749a5a",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3client_acquireCustomPlaybackData",
+              "ts3client_activateCaptureDevice",
+              "ts3client_allowWhispersFrom",
+              "ts3client_cancelRequestSlotsFromProvisioningServer",
+              "ts3client_channelset3DAttributes",
+              "ts3client_cleanUpConnectionInfo",
+              "ts3client_closeCaptureDevice",
+              "ts3client_closePlaybackDevice",
+              "ts3client_closeWaveFileHandle",
+              "ts3client_createIdentity",
+              "ts3client_destroyClientLib",
+              "ts3client_destroyServerConnectionHandler",
+              "ts3client_flushChannelCreation",
+              "ts3client_flushChannelUpdates",
+              "ts3client_flushClientSelfUpdates",
+              "ts3client_freeMemory",
+              "ts3client_getAverageTransferSpeed",
+              "ts3client_getCaptureDeviceList",
+              "ts3client_getCaptureModeList",
+              "ts3client_getChannelClientList",
+              "ts3client_getChannelEmptySecs",
+              "ts3client_getChannelIDFromChannelNames",
+              "ts3client_getChannelList",
+              "ts3client_getChannelOfClient",
+              "ts3client_getChannelVariableAsInt",
+              "ts3client_getChannelVariableAsString",
+              "ts3client_getChannelVariableAsUInt64",
+              "ts3client_getClientID",
+              "ts3client_getClientLibVersion",
+              "ts3client_getClientLibVersionNumber",
+              "ts3client_getClientList",
+              "ts3client_getClientSelfVariableAsInt",
+              "ts3client_getClientSelfVariableAsString",
+              "ts3client_getClientVariableAsInt",
+              "ts3client_getClientVariableAsString",
+              "ts3client_getClientVariableAsUInt64",
+              "ts3client_getConnectionStatus",
+              "ts3client_getConnectionVariableAsDouble",
+              "ts3client_getConnectionVariableAsString",
+              "ts3client_getConnectionVariableAsUInt64",
+              "ts3client_getCurrentCaptureDeviceName",
+              "ts3client_getCurrentCaptureMode",
+              "ts3client_getCurrentPlayBackMode",
+              "ts3client_getCurrentPlaybackDeviceName",
+              "ts3client_getCurrentTransferSpeed",
+              "ts3client_getDefaultCaptureDevice",
+              "ts3client_getDefaultCaptureMode",
+              "ts3client_getDefaultPlayBackMode",
+              "ts3client_getDefaultPlaybackDevice",
+              "ts3client_getEncodeConfigValue",
+              "ts3client_getErrorMessage",
+              "ts3client_getInstanceSpeedLimitDown",
+              "ts3client_getInstanceSpeedLimitUp",
+              "ts3client_getParentChannelOfChannel",
+              "ts3client_getPlaybackConfigValueAsFloat",
+              "ts3client_getPlaybackDeviceList",
+              "ts3client_getPlaybackModeList",
+              "ts3client_getPreProcessorConfigValue",
+              "ts3client_getPreProcessorInfoValueFloat",
+              "ts3client_getServerConnectionHandlerList",
+              "ts3client_getServerConnectionHandlerSpeedLimitDown",
+              "ts3client_getServerConnectionHandlerSpeedLimitUp",
+              "ts3client_getServerConnectionVariableAsFloat",
+              "ts3client_getServerConnectionVariableAsUInt64",
+              "ts3client_getServerVariableAsInt",
+              "ts3client_getServerVariableAsString",
+              "ts3client_getServerVariableAsUInt64",
+              "ts3client_getTransferFileName",
+              "ts3client_getTransferFilePath",
+              "ts3client_getTransferFileRemotePath",
+              "ts3client_getTransferFileSize",
+              "ts3client_getTransferFileSizeDone",
+              "ts3client_getTransferRunTime",
+              "ts3client_getTransferSpeedLimit",
+              "ts3client_getTransferStatus",
+              "ts3client_haltTransfer",
+              "ts3client_identityStringToUniqueIdentifier",
+              "ts3client_initClientLib",
+              "ts3client_initiateGracefulPlaybackShutdown",
+              "ts3client_isTransferSender",
+              "ts3client_logMessage",
+              "ts3client_openCaptureDevice",
+              "ts3client_openPlaybackDevice",
+              "ts3client_pauseWaveFileHandle",
+              "ts3client_playWaveFile",
+              "ts3client_playWaveFileHandle",
+              "ts3client_processCustomCaptureData",
+              "ts3client_registerCustomDevice",
+              "ts3client_removeFromAllowedWhispersFrom",
+              "ts3client_requestChannelDelete",
+              "ts3client_requestChannelDescription",
+              "ts3client_requestChannelMove",
+              "ts3client_requestChannelSubscribe",
+              "ts3client_requestChannelSubscribeAll",
+              "ts3client_requestChannelUnsubscribe",
+              "ts3client_requestChannelUnsubscribeAll",
+              "ts3client_requestClientIDs",
+              "ts3client_requestClientKickFromChannel",
+              "ts3client_requestClientKickFromServer",
+              "ts3client_requestClientMove",
+              "ts3client_requestClientSetWhisperList",
+              "ts3client_requestClientVariables",
+              "ts3client_requestConnectionInfo",
+              "ts3client_requestCreateDirectory",
+              "ts3client_requestDeleteFile",
+              "ts3client_requestFile",
+              "ts3client_requestFileInfo",
+              "ts3client_requestFileList",
+              "ts3client_requestMuteClients",
+              "ts3client_requestRenameFile",
+              "ts3client_requestSendChannelTextMsg",
+              "ts3client_requestSendPrivateTextMsg",
+              "ts3client_requestSendServerTextMsg",
+              "ts3client_requestServerConnectionInfo",
+              "ts3client_requestServerVariables",
+              "ts3client_requestSlotsFromProvisioningServer",
+              "ts3client_requestUnmuteClients",
+              "ts3client_sendFile",
+              "ts3client_set3DWaveAttributes",
+              "ts3client_setChannelVariableAsInt",
+              "ts3client_setChannelVariableAsString",
+              "ts3client_setChannelVariableAsUInt64",
+              "ts3client_setClientSelfVariableAsInt",
+              "ts3client_setClientSelfVariableAsString",
+              "ts3client_setClientVolumeModifier",
+              "ts3client_setInstanceSpeedLimitDown",
+              "ts3client_setInstanceSpeedLimitUp",
+              "ts3client_setLocalTestMode",
+              "ts3client_setLogVerbosity",
+              "ts3client_setPlaybackConfigValue",
+              "ts3client_setPreProcessorConfigValue",
+              "ts3client_setServerConnectionHandlerSpeedLimitDown",
+              "ts3client_setServerConnectionHandlerSpeedLimitUp",
+              "ts3client_setTransferSpeedLimit",
+              "ts3client_spawnNewServerConnectionHandler",
+              "ts3client_startConnection",
+              "ts3client_startConnectionWithChannelID",
+              "ts3client_startConnectionWithProvisioningKey",
+              "ts3client_startVoiceRecording",
+              "ts3client_stopConnection",
+              "ts3client_stopVoiceRecording",
+              "ts3client_systemset3DListenerAttributes",
+              "ts3client_systemset3DSettings",
+              "ts3client_unregisterCustomDevice"
+            ],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "WS2_32.dll",
+                "symbols": [
+                  "WSAAddressToStringW",
+                  "WSACleanup",
+                  "WSAEnumProtocolsW",
+                  "WSAGetLastError",
+                  "WSAIoctl",
+                  "WSARecv",
+                  "WSARecvFrom",
+                  "WSASend",
+                  "WSASendTo",
+                  "WSASetLastError",
+                  "WSASocketW",
+                  "WSAStartup",
+                  "WSAStringToAddressW",
+                  "__WSAFDIsSet",
+                  "accept",
+                  "bind",
+                  "closesocket",
+                  "connect",
+                  "freeaddrinfo",
+                  "getaddrinfo",
+                  "getpeername",
+                  "getsockname",
+                  "getsockopt",
+                  "htonl",
+                  "htons",
+                  "ioctlsocket",
+                  "listen",
+                  "ntohl",
+                  "ntohs",
+                  "select",
+                  "setsockopt",
+                  "shutdown"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "AreFileApisANSI",
+                  "CancelIo",
+                  "ChangeTimerQueueTimer",
+                  "CloseHandle",
+                  "CompareStringW",
+                  "CreateDirectoryW",
+                  "CreateEventA",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateIoCompletionPort",
+                  "CreateSemaphoreA",
+                  "CreateThread",
+                  "CreateTimerQueue",
+                  "CreateTimerQueueTimer",
+                  "CreateWaitableTimerA",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "DeleteFileW",
+                  "DeleteTimerQueueTimer",
+                  "DeviceIoControl",
+                  "DuplicateHandle",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindFirstFileW",
+                  "FindNextFileA",
+                  "FindNextFileW",
+                  "FlushFileBuffers",
+                  "FormatMessageA",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetDateFormatW",
+                  "GetEnvironmentStringsW",
+                  "GetExitCodeThread",
+                  "GetFileAttributesExW",
+                  "GetFileAttributesW",
+                  "GetFileSizeEx",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetLogicalProcessorInformation",
+                  "GetModuleFileNameA",
+                  "GetModuleFileNameW",
+                  "GetModuleHandleA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetNativeSystemInfo",
+                  "GetNumaHighestNodeNumber",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessAffinityMask",
+                  "GetProcessHeap",
+                  "GetQueuedCompletionStatus",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemInfo",
+                  "GetSystemTimeAsFileTime",
+                  "GetThreadPriority",
+                  "GetThreadTimes",
+                  "GetTickCount",
+                  "GetTimeFormatW",
+                  "GetTimeZoneInformation",
+                  "GetUserDefaultLCID",
+                  "GetVersionExW",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "InterlockedPopEntrySList",
+                  "InterlockedPushEntrySList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LoadLibraryW",
+                  "LocalFree",
+                  "MultiByteToWideChar",
+                  "OpenEventA",
+                  "PostQueuedCompletionStatus",
+                  "QueryDepthSList",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "QueueUserAPC",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "RegisterWaitForSingleObject",
+                  "ReleaseSemaphore",
+                  "ResetEvent",
+                  "ResumeThread",
+                  "RtlUnwind",
+                  "SetEndOfFile",
+                  "SetEnvironmentVariableA",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadAffinityMask",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "SignalObjectAndWait",
+                  "Sleep",
+                  "SleepEx",
+                  "SwitchToThread",
+                  "SystemTimeToFileTime",
+                  "TerminateProcess",
+                  "TerminateThread",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "UnregisterWait",
+                  "UnregisterWaitEx",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoA",
+                  "VerifyVersionInfoW",
+                  "VirtualAlloc",
+                  "VirtualFree",
+                  "VirtualProtect",
+                  "WaitForMultipleObjects",
+                  "WaitForMultipleObjectsEx",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeGetTime"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "GetSystemMetrics"
+                ]
+              },
+              {
+                "dll": "ADVAPI32.dll",
+                "symbols": [
+                  "CryptAcquireContextA",
+                  "CryptGenRandom",
+                  "CryptReleaseContext"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1527678490,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/ts3client_win64.dll",
+          "size": 3709440,
+          "sha256": "60de4f65da5ad02e139517a5569b82865c0cdea73170b58e822929ef5f86b88b",
+          "sha512": "e231af6ec8986d900ee044859c810f5ee8f950fdfc7a7c78c35e61d0ea9619e19029e28c05e7d15188df21937f806e07e5e55a68daab6e5d9d3cf87b5176f50a",
+          "file_type": "PE32+ executable (DLL) (GUI) x86-64, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3client_acquireCustomPlaybackData",
+              "ts3client_activateCaptureDevice",
+              "ts3client_allowWhispersFrom",
+              "ts3client_cancelRequestSlotsFromProvisioningServer",
+              "ts3client_channelset3DAttributes",
+              "ts3client_cleanUpConnectionInfo",
+              "ts3client_closeCaptureDevice",
+              "ts3client_closePlaybackDevice",
+              "ts3client_closeWaveFileHandle",
+              "ts3client_createIdentity",
+              "ts3client_destroyClientLib",
+              "ts3client_destroyServerConnectionHandler",
+              "ts3client_flushChannelCreation",
+              "ts3client_flushChannelUpdates",
+              "ts3client_flushClientSelfUpdates",
+              "ts3client_freeMemory",
+              "ts3client_getAverageTransferSpeed",
+              "ts3client_getCaptureDeviceList",
+              "ts3client_getCaptureModeList",
+              "ts3client_getChannelClientList",
+              "ts3client_getChannelEmptySecs",
+              "ts3client_getChannelIDFromChannelNames",
+              "ts3client_getChannelList",
+              "ts3client_getChannelOfClient",
+              "ts3client_getChannelVariableAsInt",
+              "ts3client_getChannelVariableAsString",
+              "ts3client_getChannelVariableAsUInt64",
+              "ts3client_getClientID",
+              "ts3client_getClientLibVersion",
+              "ts3client_getClientLibVersionNumber",
+              "ts3client_getClientList",
+              "ts3client_getClientSelfVariableAsInt",
+              "ts3client_getClientSelfVariableAsString",
+              "ts3client_getClientVariableAsInt",
+              "ts3client_getClientVariableAsString",
+              "ts3client_getClientVariableAsUInt64",
+              "ts3client_getConnectionStatus",
+              "ts3client_getConnectionVariableAsDouble",
+              "ts3client_getConnectionVariableAsString",
+              "ts3client_getConnectionVariableAsUInt64",
+              "ts3client_getCurrentCaptureDeviceName",
+              "ts3client_getCurrentCaptureMode",
+              "ts3client_getCurrentPlayBackMode",
+              "ts3client_getCurrentPlaybackDeviceName",
+              "ts3client_getCurrentTransferSpeed",
+              "ts3client_getDefaultCaptureDevice",
+              "ts3client_getDefaultCaptureMode",
+              "ts3client_getDefaultPlayBackMode",
+              "ts3client_getDefaultPlaybackDevice",
+              "ts3client_getEncodeConfigValue",
+              "ts3client_getErrorMessage",
+              "ts3client_getInstanceSpeedLimitDown",
+              "ts3client_getInstanceSpeedLimitUp",
+              "ts3client_getParentChannelOfChannel",
+              "ts3client_getPlaybackConfigValueAsFloat",
+              "ts3client_getPlaybackDeviceList",
+              "ts3client_getPlaybackModeList",
+              "ts3client_getPreProcessorConfigValue",
+              "ts3client_getPreProcessorInfoValueFloat",
+              "ts3client_getServerConnectionHandlerList",
+              "ts3client_getServerConnectionHandlerSpeedLimitDown",
+              "ts3client_getServerConnectionHandlerSpeedLimitUp",
+              "ts3client_getServerConnectionVariableAsFloat",
+              "ts3client_getServerConnectionVariableAsUInt64",
+              "ts3client_getServerVariableAsInt",
+              "ts3client_getServerVariableAsString",
+              "ts3client_getServerVariableAsUInt64",
+              "ts3client_getTransferFileName",
+              "ts3client_getTransferFilePath",
+              "ts3client_getTransferFileRemotePath",
+              "ts3client_getTransferFileSize",
+              "ts3client_getTransferFileSizeDone",
+              "ts3client_getTransferRunTime",
+              "ts3client_getTransferSpeedLimit",
+              "ts3client_getTransferStatus",
+              "ts3client_haltTransfer",
+              "ts3client_identityStringToUniqueIdentifier",
+              "ts3client_initClientLib",
+              "ts3client_initiateGracefulPlaybackShutdown",
+              "ts3client_isTransferSender",
+              "ts3client_logMessage",
+              "ts3client_openCaptureDevice",
+              "ts3client_openPlaybackDevice",
+              "ts3client_pauseWaveFileHandle",
+              "ts3client_playWaveFile",
+              "ts3client_playWaveFileHandle",
+              "ts3client_processCustomCaptureData",
+              "ts3client_registerCustomDevice",
+              "ts3client_removeFromAllowedWhispersFrom",
+              "ts3client_requestChannelDelete",
+              "ts3client_requestChannelDescription",
+              "ts3client_requestChannelMove",
+              "ts3client_requestChannelSubscribe",
+              "ts3client_requestChannelSubscribeAll",
+              "ts3client_requestChannelUnsubscribe",
+              "ts3client_requestChannelUnsubscribeAll",
+              "ts3client_requestClientIDs",
+              "ts3client_requestClientKickFromChannel",
+              "ts3client_requestClientKickFromServer",
+              "ts3client_requestClientMove",
+              "ts3client_requestClientSetWhisperList",
+              "ts3client_requestClientVariables",
+              "ts3client_requestConnectionInfo",
+              "ts3client_requestCreateDirectory",
+              "ts3client_requestDeleteFile",
+              "ts3client_requestFile",
+              "ts3client_requestFileInfo",
+              "ts3client_requestFileList",
+              "ts3client_requestMuteClients",
+              "ts3client_requestRenameFile",
+              "ts3client_requestSendChannelTextMsg",
+              "ts3client_requestSendPrivateTextMsg",
+              "ts3client_requestSendServerTextMsg",
+              "ts3client_requestServerConnectionInfo",
+              "ts3client_requestServerVariables",
+              "ts3client_requestSlotsFromProvisioningServer",
+              "ts3client_requestUnmuteClients",
+              "ts3client_sendFile",
+              "ts3client_set3DWaveAttributes",
+              "ts3client_setChannelVariableAsInt",
+              "ts3client_setChannelVariableAsString",
+              "ts3client_setChannelVariableAsUInt64",
+              "ts3client_setClientSelfVariableAsInt",
+              "ts3client_setClientSelfVariableAsString",
+              "ts3client_setClientVolumeModifier",
+              "ts3client_setInstanceSpeedLimitDown",
+              "ts3client_setInstanceSpeedLimitUp",
+              "ts3client_setLocalTestMode",
+              "ts3client_setLogVerbosity",
+              "ts3client_setPlaybackConfigValue",
+              "ts3client_setPreProcessorConfigValue",
+              "ts3client_setServerConnectionHandlerSpeedLimitDown",
+              "ts3client_setServerConnectionHandlerSpeedLimitUp",
+              "ts3client_setTransferSpeedLimit",
+              "ts3client_spawnNewServerConnectionHandler",
+              "ts3client_startConnection",
+              "ts3client_startConnectionWithChannelID",
+              "ts3client_startConnectionWithProvisioningKey",
+              "ts3client_startVoiceRecording",
+              "ts3client_stopConnection",
+              "ts3client_stopVoiceRecording",
+              "ts3client_systemset3DListenerAttributes",
+              "ts3client_systemset3DSettings",
+              "ts3client_unregisterCustomDevice"
+            ],
+            "image_base": 6442450944,
+            "imports": [
+              {
+                "dll": "WS2_32.dll",
+                "symbols": [
+                  "WSAAddressToStringW",
+                  "WSACleanup",
+                  "WSAEnumProtocolsW",
+                  "WSAGetLastError",
+                  "WSAIoctl",
+                  "WSARecv",
+                  "WSARecvFrom",
+                  "WSASend",
+                  "WSASendTo",
+                  "WSASetLastError",
+                  "WSASocketW",
+                  "WSAStartup",
+                  "WSAStringToAddressW",
+                  "__WSAFDIsSet",
+                  "accept",
+                  "bind",
+                  "closesocket",
+                  "connect",
+                  "freeaddrinfo",
+                  "getaddrinfo",
+                  "getpeername",
+                  "getsockname",
+                  "getsockopt",
+                  "htonl",
+                  "htons",
+                  "ioctlsocket",
+                  "listen",
+                  "ntohl",
+                  "ntohs",
+                  "select",
+                  "setsockopt",
+                  "shutdown"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "AreFileApisANSI",
+                  "CancelIo",
+                  "ChangeTimerQueueTimer",
+                  "CloseHandle",
+                  "CompareStringW",
+                  "CreateDirectoryW",
+                  "CreateEventA",
+                  "CreateEventW",
+                  "CreateFileW",
+                  "CreateIoCompletionPort",
+                  "CreateSemaphoreA",
+                  "CreateThread",
+                  "CreateTimerQueue",
+                  "CreateTimerQueueTimer",
+                  "CreateWaitableTimerA",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "DeleteFileW",
+                  "DeleteTimerQueueTimer",
+                  "DeviceIoControl",
+                  "DuplicateHandle",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileExA",
+                  "FindFirstFileW",
+                  "FindNextFileA",
+                  "FindNextFileW",
+                  "FlushFileBuffers",
+                  "FormatMessageA",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetDateFormatW",
+                  "GetEnvironmentStringsW",
+                  "GetExitCodeThread",
+                  "GetFileAttributesExW",
+                  "GetFileAttributesW",
+                  "GetFileSizeEx",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetLogicalProcessorInformation",
+                  "GetModuleFileNameA",
+                  "GetModuleFileNameW",
+                  "GetModuleHandleA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetNativeSystemInfo",
+                  "GetNumaHighestNodeNumber",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessAffinityMask",
+                  "GetProcessHeap",
+                  "GetQueuedCompletionStatus",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemInfo",
+                  "GetSystemTimeAsFileTime",
+                  "GetThreadPriority",
+                  "GetThreadTimes",
+                  "GetTickCount",
+                  "GetTimeFormatW",
+                  "GetTimeZoneInformation",
+                  "GetUserDefaultLCID",
+                  "GetVersionExW",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "InterlockedPopEntrySList",
+                  "InterlockedPushEntrySList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LoadLibraryW",
+                  "LocalFree",
+                  "MultiByteToWideChar",
+                  "OpenEventA",
+                  "PostQueuedCompletionStatus",
+                  "QueryDepthSList",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "QueueUserAPC",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "RegisterWaitForSingleObject",
+                  "ReleaseSemaphore",
+                  "ResetEvent",
+                  "ResumeThread",
+                  "RtlCaptureContext",
+                  "RtlLookupFunctionEntry",
+                  "RtlPcToFileHeader",
+                  "RtlUnwindEx",
+                  "RtlVirtualUnwind",
+                  "SetEndOfFile",
+                  "SetEnvironmentVariableA",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadAffinityMask",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "SignalObjectAndWait",
+                  "Sleep",
+                  "SleepEx",
+                  "SwitchToThread",
+                  "SystemTimeToFileTime",
+                  "TerminateProcess",
+                  "TerminateThread",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "UnregisterWait",
+                  "UnregisterWaitEx",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoA",
+                  "VerifyVersionInfoW",
+                  "VirtualAlloc",
+                  "VirtualFree",
+                  "VirtualProtect",
+                  "WaitForMultipleObjects",
+                  "WaitForMultipleObjectsEx",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeGetTime"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "GetSystemMetrics"
+                ]
+              },
+              {
+                "dll": "ADVAPI32.dll",
+                "symbols": [
+                  "CryptAcquireContextA",
+                  "CryptGenRandom",
+                  "CryptReleaseContext"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x8664",
+            "machine_name": "IMAGE_FILE_MACHINE_AMD64",
+            "pe_timestamp": 1527678537,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/ts3server_win32.dll",
+          "size": 2343424,
+          "sha256": "fcc27f50e6e6d3728d1ef43883d654bc85a574366af80472326d1ad3cd6a765a",
+          "sha512": "79e56f0996775854efd61b2e99a04242ac3ceb8737498aacf80e72045d5f7ad9c9c04811980b36c541aad5aa73c83e894fc21becabeb1f4400ac302a7dd50ea8",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3server_calculateSecurityHash",
+              "ts3server_channelDelete",
+              "ts3server_channelMove",
+              "ts3server_clientMove",
+              "ts3server_clientsKickFromServer",
+              "ts3server_createChannel",
+              "ts3server_createSecuritySalt",
+              "ts3server_createVirtualServer",
+              "ts3server_createVirtualServer2",
+              "ts3server_destroyServerLib",
+              "ts3server_disableClientCommand",
+              "ts3server_enableFileManager",
+              "ts3server_flushChannelCreation",
+              "ts3server_flushChannelVariable",
+              "ts3server_flushClientVariable",
+              "ts3server_flushVirtualServerVariable",
+              "ts3server_freeMemory",
+              "ts3server_getChannelClientList",
+              "ts3server_getChannelCreationParamsVariables",
+              "ts3server_getChannelList",
+              "ts3server_getChannelOfClient",
+              "ts3server_getChannelVariableAsInt",
+              "ts3server_getChannelVariableAsString",
+              "ts3server_getChannelVariableAsUInt64",
+              "ts3server_getClientIDSfromUIDS",
+              "ts3server_getClientList",
+              "ts3server_getClientVariableAsInt",
+              "ts3server_getClientVariableAsString",
+              "ts3server_getClientVariableAsUInt64",
+              "ts3server_getGlobalErrorMessage",
+              "ts3server_getParentChannelOfChannel",
+              "ts3server_getServerLibVersion",
+              "ts3server_getServerLibVersionNumber",
+              "ts3server_getVariableAsInt",
+              "ts3server_getVariableAsString",
+              "ts3server_getVariableAsUInt64",
+              "ts3server_getVirtualServerConnectionVariableAsDouble",
+              "ts3server_getVirtualServerConnectionVariableAsUInt64",
+              "ts3server_getVirtualServerCreationParamsChannelCreationParams",
+              "ts3server_getVirtualServerCreationParamsVariables",
+              "ts3server_getVirtualServerKeyPair",
+              "ts3server_getVirtualServerList",
+              "ts3server_getVirtualServerVariableAsInt",
+              "ts3server_getVirtualServerVariableAsString",
+              "ts3server_getVirtualServerVariableAsUInt64",
+              "ts3server_initServerLib",
+              "ts3server_makeChannelCreationParams",
+              "ts3server_makeVirtualServerCreationParams",
+              "ts3server_setChannelCreationParams",
+              "ts3server_setChannelVariableAsInt",
+              "ts3server_setChannelVariableAsString",
+              "ts3server_setChannelVariableAsUInt64",
+              "ts3server_setClientVariableAsInt",
+              "ts3server_setClientVariableAsString",
+              "ts3server_setClientVariableAsUInt64",
+              "ts3server_setClientWhisperList",
+              "ts3server_setLogVerbosity",
+              "ts3server_setVariableAsInt",
+              "ts3server_setVariableAsString",
+              "ts3server_setVariableAsUInt64",
+              "ts3server_setVirtualServerCreationParams",
+              "ts3server_setVirtualServerVariableAsInt",
+              "ts3server_setVirtualServerVariableAsString",
+              "ts3server_setVirtualServerVariableAsUInt64",
+              "ts3server_stopVirtualServer"
+            ],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "ADVAPI32.dll",
+                "symbols": [
+                  "CloseEventLog",
+                  "CryptAcquireContextA",
+                  "CryptGenRandom",
+                  "CryptReleaseContext",
+                  "InitializeSecurityDescriptor",
+                  "OpenEventLogA",
+                  "ReadEventLogA",
+                  "RegCloseKey",
+                  "RegOpenKeyExA",
+                  "RegQueryValueExA",
+                  "SetSecurityDescriptorDacl"
+                ]
+              },
+              {
+                "dll": "WS2_32.dll",
+                "symbols": [
+                  "WSAAddressToStringW",
+                  "WSACleanup",
+                  "WSAEnumProtocolsW",
+                  "WSAGetLastError",
+                  "WSAIoctl",
+                  "WSARecv",
+                  "WSARecvFrom",
+                  "WSASend",
+                  "WSASendTo",
+                  "WSASetLastError",
+                  "WSASocketW",
+                  "WSAStartup",
+                  "WSAStringToAddressW",
+                  "bind",
+                  "closesocket",
+                  "connect",
+                  "freeaddrinfo",
+                  "getaddrinfo",
+                  "getpeername",
+                  "getsockname",
+                  "getsockopt",
+                  "htonl",
+                  "htons",
+                  "ioctlsocket",
+                  "listen",
+                  "ntohl",
+                  "ntohs",
+                  "recv",
+                  "select",
+                  "send",
+                  "setsockopt",
+                  "shutdown",
+                  "socket"
+                ]
+              },
+              {
+                "dll": "MSWSOCK.dll",
+                "symbols": [
+                  "AcceptEx",
+                  "GetAcceptExSockaddrs"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "AreFileApisANSI",
+                  "ChangeTimerQueueTimer",
+                  "CloseHandle",
+                  "CompareStringW",
+                  "CreateDirectoryA",
+                  "CreateDirectoryW",
+                  "CreateEventA",
+                  "CreateEventW",
+                  "CreateFileA",
+                  "CreateFileMappingA",
+                  "CreateFileW",
+                  "CreateIoCompletionPort",
+                  "CreateMutexA",
+                  "CreateSemaphoreA",
+                  "CreateThread",
+                  "CreateTimerQueue",
+                  "CreateTimerQueueTimer",
+                  "CreateWaitableTimerA",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "DeleteFileW",
+                  "DeleteTimerQueueTimer",
+                  "DeviceIoControl",
+                  "DuplicateHandle",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileA",
+                  "FindFirstFileExA",
+                  "FindFirstFileW",
+                  "FindNextFileA",
+                  "FindNextFileW",
+                  "FlushFileBuffers",
+                  "FormatMessageA",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetDateFormatW",
+                  "GetEnvironmentStringsW",
+                  "GetExitCodeThread",
+                  "GetFileAttributesExW",
+                  "GetFileAttributesW",
+                  "GetFileSizeEx",
+                  "GetFileTime",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetLogicalProcessorInformation",
+                  "GetModuleFileNameA",
+                  "GetModuleFileNameW",
+                  "GetModuleHandleA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetNativeSystemInfo",
+                  "GetNumaHighestNodeNumber",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessAffinityMask",
+                  "GetProcessHeap",
+                  "GetProcessTimes",
+                  "GetQueuedCompletionStatus",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemInfo",
+                  "GetSystemTimeAsFileTime",
+                  "GetThreadPriority",
+                  "GetThreadTimes",
+                  "GetTickCount",
+                  "GetTimeFormatW",
+                  "GetTimeZoneInformation",
+                  "GetUserDefaultLCID",
+                  "GetVersionExW",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "InterlockedPopEntrySList",
+                  "InterlockedPushEntrySList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LoadLibraryW",
+                  "LocalFree",
+                  "MapViewOfFileEx",
+                  "MoveFileExW",
+                  "MultiByteToWideChar",
+                  "OpenEventA",
+                  "PostQueuedCompletionStatus",
+                  "QueryDepthSList",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "QueueUserAPC",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "RegisterWaitForSingleObject",
+                  "ReleaseMutex",
+                  "ReleaseSemaphore",
+                  "RemoveDirectoryA",
+                  "RemoveDirectoryW",
+                  "ResetEvent",
+                  "ResumeThread",
+                  "RtlUnwind",
+                  "SetEndOfFile",
+                  "SetEnvironmentVariableA",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadAffinityMask",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "SignalObjectAndWait",
+                  "Sleep",
+                  "SleepEx",
+                  "SwitchToThread",
+                  "SystemTimeToFileTime",
+                  "TerminateProcess",
+                  "TerminateThread",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "UnmapViewOfFile",
+                  "UnregisterWait",
+                  "UnregisterWaitEx",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoA",
+                  "VerifyVersionInfoW",
+                  "VirtualAlloc",
+                  "VirtualFree",
+                  "VirtualProtect",
+                  "WaitForMultipleObjects",
+                  "WaitForMultipleObjectsEx",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "GetSystemMetrics"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeGetTime"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1527678486,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TS/ts3server_win64.dll",
+          "size": 3027968,
+          "sha256": "65bfe378c758e4f437b49c0ad1d06ba18fb12408555f4da57009242face32018",
+          "sha512": "7c9ba1ac78e92516697777fd4270bb76a4e7e5de9785fc404c38b7ce47fd35a5d9d59ffb7a581b07bc1a65405c191dbfc6480a337dfc23af9b279ca88a0c914d",
+          "file_type": "PE32+ executable (DLL) (GUI) x86-64, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [
+              "ts3server_calculateSecurityHash",
+              "ts3server_channelDelete",
+              "ts3server_channelMove",
+              "ts3server_clientMove",
+              "ts3server_clientsKickFromServer",
+              "ts3server_createChannel",
+              "ts3server_createSecuritySalt",
+              "ts3server_createVirtualServer",
+              "ts3server_createVirtualServer2",
+              "ts3server_destroyServerLib",
+              "ts3server_disableClientCommand",
+              "ts3server_enableFileManager",
+              "ts3server_flushChannelCreation",
+              "ts3server_flushChannelVariable",
+              "ts3server_flushClientVariable",
+              "ts3server_flushVirtualServerVariable",
+              "ts3server_freeMemory",
+              "ts3server_getChannelClientList",
+              "ts3server_getChannelCreationParamsVariables",
+              "ts3server_getChannelList",
+              "ts3server_getChannelOfClient",
+              "ts3server_getChannelVariableAsInt",
+              "ts3server_getChannelVariableAsString",
+              "ts3server_getChannelVariableAsUInt64",
+              "ts3server_getClientIDSfromUIDS",
+              "ts3server_getClientList",
+              "ts3server_getClientVariableAsInt",
+              "ts3server_getClientVariableAsString",
+              "ts3server_getClientVariableAsUInt64",
+              "ts3server_getGlobalErrorMessage",
+              "ts3server_getParentChannelOfChannel",
+              "ts3server_getServerLibVersion",
+              "ts3server_getServerLibVersionNumber",
+              "ts3server_getVariableAsInt",
+              "ts3server_getVariableAsString",
+              "ts3server_getVariableAsUInt64",
+              "ts3server_getVirtualServerConnectionVariableAsDouble",
+              "ts3server_getVirtualServerConnectionVariableAsUInt64",
+              "ts3server_getVirtualServerCreationParamsChannelCreationParams",
+              "ts3server_getVirtualServerCreationParamsVariables",
+              "ts3server_getVirtualServerKeyPair",
+              "ts3server_getVirtualServerList",
+              "ts3server_getVirtualServerVariableAsInt",
+              "ts3server_getVirtualServerVariableAsString",
+              "ts3server_getVirtualServerVariableAsUInt64",
+              "ts3server_initServerLib",
+              "ts3server_makeChannelCreationParams",
+              "ts3server_makeVirtualServerCreationParams",
+              "ts3server_setChannelCreationParams",
+              "ts3server_setChannelVariableAsInt",
+              "ts3server_setChannelVariableAsString",
+              "ts3server_setChannelVariableAsUInt64",
+              "ts3server_setClientVariableAsInt",
+              "ts3server_setClientVariableAsString",
+              "ts3server_setClientVariableAsUInt64",
+              "ts3server_setClientWhisperList",
+              "ts3server_setLogVerbosity",
+              "ts3server_setVariableAsInt",
+              "ts3server_setVariableAsString",
+              "ts3server_setVariableAsUInt64",
+              "ts3server_setVirtualServerCreationParams",
+              "ts3server_setVirtualServerVariableAsInt",
+              "ts3server_setVirtualServerVariableAsString",
+              "ts3server_setVirtualServerVariableAsUInt64",
+              "ts3server_stopVirtualServer"
+            ],
+            "image_base": 6442450944,
+            "imports": [
+              {
+                "dll": "ADVAPI32.dll",
+                "symbols": [
+                  "CloseEventLog",
+                  "CryptAcquireContextA",
+                  "CryptGenRandom",
+                  "CryptReleaseContext",
+                  "InitializeSecurityDescriptor",
+                  "OpenEventLogA",
+                  "ReadEventLogA",
+                  "RegCloseKey",
+                  "RegOpenKeyExA",
+                  "RegQueryValueExA",
+                  "SetSecurityDescriptorDacl"
+                ]
+              },
+              {
+                "dll": "WS2_32.dll",
+                "symbols": [
+                  "WSAAddressToStringW",
+                  "WSACleanup",
+                  "WSAEnumProtocolsW",
+                  "WSAGetLastError",
+                  "WSAIoctl",
+                  "WSARecv",
+                  "WSARecvFrom",
+                  "WSASend",
+                  "WSASendTo",
+                  "WSASetLastError",
+                  "WSASocketW",
+                  "WSAStartup",
+                  "WSAStringToAddressW",
+                  "bind",
+                  "closesocket",
+                  "connect",
+                  "freeaddrinfo",
+                  "getaddrinfo",
+                  "getpeername",
+                  "getsockname",
+                  "getsockopt",
+                  "htonl",
+                  "htons",
+                  "ioctlsocket",
+                  "listen",
+                  "ntohl",
+                  "ntohs",
+                  "recv",
+                  "select",
+                  "send",
+                  "setsockopt",
+                  "shutdown",
+                  "socket"
+                ]
+              },
+              {
+                "dll": "MSWSOCK.dll",
+                "symbols": [
+                  "AcceptEx",
+                  "GetAcceptExSockaddrs"
+                ]
+              },
+              {
+                "dll": "KERNEL32.dll",
+                "symbols": [
+                  "AreFileApisANSI",
+                  "ChangeTimerQueueTimer",
+                  "CloseHandle",
+                  "CompareStringW",
+                  "CreateDirectoryA",
+                  "CreateDirectoryW",
+                  "CreateEventA",
+                  "CreateEventW",
+                  "CreateFileA",
+                  "CreateFileMappingA",
+                  "CreateFileW",
+                  "CreateIoCompletionPort",
+                  "CreateMutexA",
+                  "CreateSemaphoreA",
+                  "CreateThread",
+                  "CreateTimerQueue",
+                  "CreateTimerQueueTimer",
+                  "CreateWaitableTimerA",
+                  "DecodePointer",
+                  "DeleteCriticalSection",
+                  "DeleteFileW",
+                  "DeleteTimerQueueTimer",
+                  "DeviceIoControl",
+                  "DuplicateHandle",
+                  "EncodePointer",
+                  "EnterCriticalSection",
+                  "EnumSystemLocalesW",
+                  "ExitProcess",
+                  "ExitThread",
+                  "FindClose",
+                  "FindFirstFileA",
+                  "FindFirstFileExA",
+                  "FindFirstFileW",
+                  "FindNextFileA",
+                  "FindNextFileW",
+                  "FlushFileBuffers",
+                  "FormatMessageA",
+                  "FormatMessageW",
+                  "FreeEnvironmentStringsW",
+                  "FreeLibrary",
+                  "FreeLibraryAndExitThread",
+                  "GetACP",
+                  "GetCPInfo",
+                  "GetCommandLineA",
+                  "GetCommandLineW",
+                  "GetConsoleCP",
+                  "GetConsoleMode",
+                  "GetCurrentProcess",
+                  "GetCurrentProcessId",
+                  "GetCurrentThread",
+                  "GetCurrentThreadId",
+                  "GetDateFormatW",
+                  "GetEnvironmentStringsW",
+                  "GetExitCodeThread",
+                  "GetFileAttributesExW",
+                  "GetFileAttributesW",
+                  "GetFileSizeEx",
+                  "GetFileTime",
+                  "GetFileType",
+                  "GetLastError",
+                  "GetLocaleInfoW",
+                  "GetLogicalProcessorInformation",
+                  "GetModuleFileNameA",
+                  "GetModuleFileNameW",
+                  "GetModuleHandleA",
+                  "GetModuleHandleExW",
+                  "GetModuleHandleW",
+                  "GetNativeSystemInfo",
+                  "GetNumaHighestNodeNumber",
+                  "GetOEMCP",
+                  "GetProcAddress",
+                  "GetProcessAffinityMask",
+                  "GetProcessHeap",
+                  "GetProcessTimes",
+                  "GetQueuedCompletionStatus",
+                  "GetStartupInfoW",
+                  "GetStdHandle",
+                  "GetStringTypeW",
+                  "GetSystemInfo",
+                  "GetSystemTimeAsFileTime",
+                  "GetThreadPriority",
+                  "GetThreadTimes",
+                  "GetTickCount",
+                  "GetTimeFormatW",
+                  "GetTimeZoneInformation",
+                  "GetUserDefaultLCID",
+                  "GetVersionExW",
+                  "HeapAlloc",
+                  "HeapFree",
+                  "HeapReAlloc",
+                  "HeapSize",
+                  "InitializeCriticalSectionAndSpinCount",
+                  "InitializeSListHead",
+                  "InterlockedFlushSList",
+                  "InterlockedPopEntrySList",
+                  "InterlockedPushEntrySList",
+                  "IsDebuggerPresent",
+                  "IsProcessorFeaturePresent",
+                  "IsValidCodePage",
+                  "IsValidLocale",
+                  "LCMapStringW",
+                  "LeaveCriticalSection",
+                  "LoadLibraryExW",
+                  "LoadLibraryW",
+                  "LocalFree",
+                  "MapViewOfFileEx",
+                  "MoveFileExW",
+                  "MultiByteToWideChar",
+                  "OpenEventA",
+                  "PostQueuedCompletionStatus",
+                  "QueryDepthSList",
+                  "QueryPerformanceCounter",
+                  "QueryPerformanceFrequency",
+                  "QueueUserAPC",
+                  "RaiseException",
+                  "ReadConsoleW",
+                  "ReadFile",
+                  "RegisterWaitForSingleObject",
+                  "ReleaseMutex",
+                  "ReleaseSemaphore",
+                  "RemoveDirectoryA",
+                  "RemoveDirectoryW",
+                  "ResetEvent",
+                  "ResumeThread",
+                  "RtlCaptureContext",
+                  "RtlLookupFunctionEntry",
+                  "RtlPcToFileHeader",
+                  "RtlUnwindEx",
+                  "RtlVirtualUnwind",
+                  "SetEndOfFile",
+                  "SetEnvironmentVariableA",
+                  "SetEvent",
+                  "SetFilePointerEx",
+                  "SetLastError",
+                  "SetStdHandle",
+                  "SetThreadAffinityMask",
+                  "SetThreadPriority",
+                  "SetUnhandledExceptionFilter",
+                  "SetWaitableTimer",
+                  "SignalObjectAndWait",
+                  "Sleep",
+                  "SleepEx",
+                  "SwitchToThread",
+                  "SystemTimeToFileTime",
+                  "TerminateProcess",
+                  "TerminateThread",
+                  "TlsAlloc",
+                  "TlsFree",
+                  "TlsGetValue",
+                  "TlsSetValue",
+                  "TryEnterCriticalSection",
+                  "UnhandledExceptionFilter",
+                  "UnmapViewOfFile",
+                  "UnregisterWait",
+                  "UnregisterWaitEx",
+                  "VerSetConditionMask",
+                  "VerifyVersionInfoA",
+                  "VerifyVersionInfoW",
+                  "VirtualAlloc",
+                  "VirtualFree",
+                  "VirtualProtect",
+                  "WaitForMultipleObjects",
+                  "WaitForMultipleObjectsEx",
+                  "WaitForSingleObject",
+                  "WaitForSingleObjectEx",
+                  "WideCharToMultiByte",
+                  "WriteConsoleW",
+                  "WriteFile"
+                ]
+              },
+              {
+                "dll": "USER32.dll",
+                "symbols": [
+                  "GetSystemMetrics"
+                ]
+              },
+              {
+                "dll": "WINMM.dll",
+                "symbols": [
+                  "timeGetTime"
+                ]
+              }
+            ],
+            "is_managed": false,
+            "machine": "0x8664",
+            "machine_name": "IMAGE_FILE_MACHINE_AMD64",
+            "pe_timestamp": 1527678530,
+            "resource_types": [
+              "24"
+            ],
+            "subsystem": 2,
+            "version_info": {}
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TTS.Common.dll",
+          "size": 161280,
+          "sha256": "311a384f4c1af43874f1b8270fd8da8997658839e7f100c0483d11000e709940",
+          "sha512": "9d3200e0bc4df3ccf1a7fd82dc6c0a35d6add8391984ff96885a9190018a4884df11964bad54ba70fa6de717170c358d5cb372f350522f2b715849f8e23477a4",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1753669658,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "1.1.8.456",
+              "Comments": "",
+              "CompanyName": "306W",
+              "FileDescription": "306W Trader Training System",
+              "FileVersion": "1.1.8.456",
+              "InternalName": "TTS.Common.dll",
+              "LegalCopyright": "Copyright © Chan, Mak, McCurdy 2016",
+              "LegalTrademarks": "",
+              "OriginalFilename": "TTS.Common.dll",
+              "ProductName": "Trader Training System Shared DLL",
+              "ProductVersion": "1.1.8.456"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/TeamSpeak.Sdk.dll",
+          "size": 352256,
+          "sha256": "18d584ad78377c12f59f661b672e7667a97a7b93df1b712f72dcecba581def31",
+          "sha512": "3ac70ca0796e5b1676e00ef3b8df9ecf1d29baa4d788402bb9ad230c2809079962f03c66dd291e67b4d647ac6d6d535d2968402f608ed84c4b5c35fe049295bd",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1729210659,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "0.1.9056.31128",
+              "Comments": "TeamSpeak SDK for .Net",
+              "CompanyName": "TeamSpeak Systems GmbH",
+              "FileDescription": "TeamSpeak.Sdk",
+              "FileVersion": "0.1.0.0",
+              "InternalName": "TeamSpeak.Sdk.dll",
+              "LegalCopyright": "Copyright ©  2016",
+              "LegalTrademarks": "",
+              "OriginalFilename": "TeamSpeak.Sdk.dll",
+              "ProductName": "TeamSpeak.Sdk",
+              "ProductVersion": "0.1.0.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/bcParser.NET.dll",
+          "size": 45056,
+          "sha256": "797d5dcb310b12ebd6ebceab977fb3efadd663a48e516268fabd0615ddf58b89",
+          "sha512": "3d0c6a8ae0ddad28414ad042ffac3808cea32557db52d058ceb4ba23ea961c652611ee82e87ba7d981ddfe555ec2b57c8c6c0470a714ec2341927109149316c3",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 285212672,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1519362708,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "5.9.6627.38153",
+              "Comments": "Math Expression Parser",
+              "CompanyName": "Bestcode.com",
+              "FileDescription": "bcParser.NET",
+              "FileVersion": "5.9.6627.38153",
+              "InternalName": "bcParser.NET.dll",
+              "LegalCopyright": "Suavi Demir",
+              "LegalTrademarks": "Bestcode",
+              "OriginalFilename": "bcParser.NET.dll",
+              "ProductName": "bcParser.NET",
+              "ProductVersion": "5.9.6627.38153"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/netstandard.dll",
+          "size": 98048,
+          "sha256": "774384e684b4f5d0d6d77668bb615578e682df17de501948c3f53d55220a0d25",
+          "sha512": "04bcfb09fab798765b426a307d7afd1a9b310a1c0a0464183df6d20a500a1d89e14fd1e9feb6e1012ac54430f1cd63232ffe3521735fbc5a44d1efbadf887b7a",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 16128,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1553757077,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.0.0.0",
+              "Comments": "netstandard",
+              "CompanyName": "Microsoft Corporation",
+              "FileDescription": "netstandard",
+              "FileVersion": "4.8.3761.0",
+              "InternalName": "netstandard.dll",
+              "LegalCopyright": "© Microsoft Corporation.  All rights reserved.",
+              "LegalTrademarks": "",
+              "OriginalFilename": "netstandard.dll",
+              "ProductName": "Microsoft® .NET Framework",
+              "ProductVersion": "4.8.3761.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/protobuf-net.dll",
+          "size": 247296,
+          "sha256": "f3abb1045f3c8a900127d4261b0becbc80475f5b18fd5986391ca87cc0b51c67",
+          "sha512": "6a975526b18ce9bfe190b1162fa98384ab25b69569dd4182bdf933cef872860364a29beec95872be6daf73b6edf8775bb40f3d473da07b8a2f241e6da5e01507",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 3904132870,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "2.2.1.0",
+              "Comments": "Provides simple access to fast and efficient \"Protocol Buffers\" serialization from .NET applications",
+              "CompanyName": "Marc Gravell",
+              "FileDescription": "protobuf-net",
+              "FileVersion": "2.2.1.0",
+              "InternalName": "protobuf-net.dll",
+              "LegalCopyright": "See https://github.com/mgravell/protobuf-net",
+              "OriginalFilename": "protobuf-net.dll",
+              "ProductName": "protobuf-net (net40)",
+              "ProductVersion": "2.2.1"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/payloads/rotman.ico",
+          "size": 29884,
+          "sha256": "caedfb5eceac697854487bf8bcdac5e78c7e05c128d8e0e0297558a20ce7662a",
+          "sha512": "4eaff1efbe09de24d02f60ddbb790af7d3c17ef3d22ace793aa9a380556221de90c689c47ad1cde64c7ae16204c58123ac59c62be149ec84f52a892e0b7f994b",
+          "file_type": "MS Windows icon resource - 10 icons, 48x48, 16 colors, 4 bits/pixel, 32x32, 16 colors, 4 bits/pixel",
+          "pe": null
+        }
+      ],
+      "streams": [
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0001-Binary.UpFldrBtn.bin",
+          "size": 318,
+          "sha256": "5f8a207de39e7465242e85a57ceb78c5915bdc5eab5ebb34036b5fd8d90e0474",
+          "sha512": "300a32384cd6cef33b5b95c753683d436e9e63d6718c10bc0ec13b763fe79e48124249795facf0d584deee4220dcb53310a313dc8ecefced1e742e076253fa37",
+          "file_type": "MS Windows icon resource - 1 icon, 16x16, 16 colors"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0002-Binary.VSDNETCFG.bin",
+          "size": 11234,
+          "sha256": "c19650f137092aa1d5e07a426712c2d3e84fe700ad5dbda95a59088da0625e92",
+          "sha512": "4a815df6243fc3732f8bdf2522b4032468a8abb4903263da8f1c0053a1c16dec26959fb80423b7cd5a702d3099bcbb3581f972267fbf2f4fd7a3ed5b38937799",
+          "file_type": "XML 1.0 document text, ASCII text, with CRLF line terminators"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0003-Binary.MSVBDPCADLL.bin",
+          "size": 291840,
+          "sha256": "f74c97b1a53541b059d3bfafe41a79005ce5065f8210d7de9f1b600dc4e28aa0",
+          "sha512": "a8b16bc60f8559c78c64ca9e85cd7fd704bba1f55b362465b7accef1bb853d1c9616995a35f972256c57fbe877ce880398ba1fbceaa658604883aa12dcbc4f57",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0004-Binary.NewFldrBtn.bin",
+          "size": 318,
+          "sha256": "15771bcf9014c22d71c1e0e11a96cdf36942836cc30881032e5be668f1c10405",
+          "sha512": "16f9ec666eb937fd3a6c43d62aaa745aeb9c300de96d9b7fea26283677657eff8c4786e8e50d69df88316a0ce7e155213319569120c993e6146e90aa7c639301",
+          "file_type": "MS Windows icon resource - 1 icon, 16x16, 16 colors"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0005-Binary.DefBannerBitmap.bin",
+          "size": 105056,
+          "sha256": "9acd8bb2e9d29b4a4dbf28521736ce8f54417c23cd58b3cc45fd7f5858f16e2b",
+          "sha512": "43873887b0ccf61b63b209b364302377f21db17de132e174bf84f3c018420d174490b89ba475836a8005cf0ac8f196cf1bc72604e0b41d5f7381061f5ca4df63",
+          "file_type": "PC bitmap, Windows 3.x format, 500 x 70 x 24, image size 105002, resolution 2834 x 2834 px/m, cbSize 105056, bits offset 54"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0006-Icon._E4804B722838F0AF4EB939.exe.bin",
+          "size": 29884,
+          "sha256": "d6664182bd1339b4fb523785614fdd438656784e4fad404f7ef0099c9213ea16",
+          "sha512": "5d78f9d4a6be4c78352e45eee8d509c842ba005394ee8ac857c4b2e8b24f8a0d2f42689a84af3b0c85f44bb292474f5146407069030b3d2984b6d0533da38536",
+          "file_type": "MS Windows icon resource - 10 icons, 48x48, 16 colors, 4 bits/pixel, 32x32, 16 colors, 4 bits/pixel"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0007-Icon._853F67D554F05449430E7E.exe.bin",
+          "size": 29884,
+          "sha256": "d6664182bd1339b4fb523785614fdd438656784e4fad404f7ef0099c9213ea16",
+          "sha512": "5d78f9d4a6be4c78352e45eee8d509c842ba005394ee8ac857c4b2e8b24f8a0d2f42689a84af3b0c85f44bb292474f5146407069030b3d2984b6d0533da38536",
+          "file_type": "MS Windows icon resource - 10 icons, 48x48, 16 colors, 4 bits/pixel, 32x32, 16 colors, 4 bits/pixel"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0008-Icon._0ABA9A3595612576BFD715.exe.bin",
+          "size": 29884,
+          "sha256": "d6664182bd1339b4fb523785614fdd438656784e4fad404f7ef0099c9213ea16",
+          "sha512": "5d78f9d4a6be4c78352e45eee8d509c842ba005394ee8ac857c4b2e8b24f8a0d2f42689a84af3b0c85f44bb292474f5146407069030b3d2984b6d0533da38536",
+          "file_type": "MS Windows icon resource - 10 icons, 48x48, 16 colors, 4 bits/pixel, 32x32, 16 colors, 4 bits/pixel"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0009-_DigitalSignature.bin",
+          "size": 11561,
+          "sha256": "dfab8abd40e86ccb4f4f4aba26b64ba3a37e2441018ce14acb82b0ad7ad37ca8",
+          "sha512": "9addbba9e82ddeefa28aab03a4aa8086489cfb258e9e98af048626b05e097084f3fad78fbef88a285249975e2e5faecf0db84a3184ea8111b5f9d50afb415d69",
+          "file_type": "data"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0010-_CCE6C4C34566E21FEFAF3FE1EE72F84F.bin",
+          "size": 8355273,
+          "sha256": "8d284c45a1d9738772e980d4186e9c507ab7714977f6e2f5e1ccbeec96bbea11",
+          "sha512": "f844f845e0c9872712249e55f2e21ebf9203530868f893e687e016cd9766fa67c47bf38750facbf45080d7d233e032e1e6b610ff695cb3218753f88b58f167d7",
+          "file_type": "Microsoft Cabinet archive data, 8355273 bytes, 35 files, at 0xcc \"_0CC52E8511BC0C3B04F33D7A3E7980EA\", iFolder 0x1 \"_0E0DAAD5B7A51B7A51C72F0424B16DC6\", 21 cffolders, number 1, 22 datablocks, 0x1 compression"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0011-_SummaryInformation.bin",
+          "size": 436,
+          "sha256": "5784dcc675a5a6584295c3952219868365400f99bcc1e35b4f9af161fcbc940f",
+          "sha512": "351fa1707faeb2d4012d657d54aac209eeba1aa2aebb1f1ada33b9e8d485775f6949e3262ecaf3ad0dc11cbb09dcc9d89a3ba07819720eccc6381165a32e86cf",
+          "file_type": "data"
+        },
+        {
+          "relative_analysis_path": "installers/RIT.User.Application-1.8.456/streams/0012-_MsiDigitalSignatureEx.bin",
+          "size": 32,
+          "sha256": "09ad41b1e0f326ce513eb5cbd8ab7c8efd4c357666f3545cf995b752cb712645",
+          "sha512": "aeb670f3fc8e6f4c30cf1f3f3764d219516608171bae09fff6fc451cf448d3aacb23251819ff992a1ce415771b1ea2203183889f98b610b55e0d0235532cf30b",
+          "file_type": "data"
+        }
+      ]
+    },
+    {
+      "name": "RIT2.RTD.API.Link.x64-0.0.15",
+      "summary_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT2.RTD.API.Link.x64-0.0.15/summary.txt",
+      "table_names": [
+        "_SummaryInformation",
+        "_ForceCodepage",
+        "_Validation",
+        "ActionText",
+        "AdminExecuteSequence",
+        "Condition",
+        "AdminUISequence",
+        "AdvtExecuteSequence",
+        "AdvtUISequence",
+        "AppId",
+        "AppSearch",
+        "Property",
+        "BBControl",
+        "Billboard",
+        "Feature",
+        "Binary",
+        "BindImage",
+        "File",
+        "CCPSearch",
+        "CheckBox",
+        "Class",
+        "Component",
+        "Icon",
+        "ProgId",
+        "ComboBox",
+        "CompLocator",
+        "Complus",
+        "Directory",
+        "Control",
+        "Dialog",
+        "ControlCondition",
+        "ControlEvent",
+        "CreateFolder",
+        "CustomAction",
+        "DrLocator",
+        "DuplicateFile",
+        "Environment",
+        "Error",
+        "EventMapping",
+        "Extension",
+        "MIME",
+        "FeatureComponents",
+        "FileSFPCatalog",
+        "SFPCatalog",
+        "Font",
+        "IniFile",
+        "IniLocator",
+        "InstallExecuteSequence",
+        "InstallUISequence",
+        "IsolatedComponent",
+        "LaunchCondition",
+        "ListBox",
+        "ListView",
+        "LockPermissions",
+        "Media",
+        "ModuleComponents",
+        "ModuleSignature",
+        "MoveFile",
+        "MsiAssembly",
+        "MsiAssemblyName",
+        "MsiDigitalCertificate",
+        "MsiDigitalSignature",
+        "MsiFileHash",
+        "MsiPatchHeaders",
+        "ODBCAttribute",
+        "ODBCDriver",
+        "ODBCDataSource",
+        "ODBCSourceAttribute",
+        "ODBCTranslator",
+        "Patch",
+        "PatchPackage",
+        "PublishComponent",
+        "RadioButton",
+        "Registry",
+        "RegLocator",
+        "RemoveFile",
+        "RemoveIniFile",
+        "RemoveRegistry",
+        "ReserveCost",
+        "SelfReg",
+        "ServiceControl",
+        "ServiceInstall",
+        "Shortcut",
+        "Signature",
+        "TextStyle",
+        "TypeLib",
+        "UIText",
+        "Upgrade",
+        "Verb",
+        "_VsdLaunchCondition"
+      ],
+      "stream_names": [
+        "Binary.UpFldrBtn",
+        "Binary.VSDNETCFG",
+        "Binary.InstallUtil",
+        "Binary.MSVBDPCADLL",
+        "Binary.NewFldrBtn",
+        "Binary.DefBannerBitmap",
+        "\u0005DigitalSignature",
+        "_FF0154C159F4136F8EF77F8FEFA08BA5",
+        "\u0005SummaryInformation"
+      ],
+      "feature_component_file_map": [
+        {
+          "component": "C__0CA74377FD2FEA04BB07A446A2B89B8F",
+          "component_id": "{221F8864-6459-1BCD-D573-B1D57EEB6C3C}",
+          "declared_size": 5632,
+          "declared_version": "1.0.0.0",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/RegisterDLL.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_0CA74377FD2FEA04BB07A446A2B89B8F",
+          "installed_path": "RegisterDLL.dll",
+          "payload_exists": true,
+          "sequence": 1
+        },
+        {
+          "component": "C__3FF16369D054D299A2FCE677933B5EB5",
+          "component_id": "{E850EFED-2189-9FCD-B2EC-7EDD751552DB}",
+          "declared_size": 12800,
+          "declared_version": "1.0.0.5",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/RIT2.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_3FF16369D054D299A2FCE677933B5EB5",
+          "installed_path": "RIT2.dll",
+          "payload_exists": true,
+          "sequence": 2
+        },
+        {
+          "component": "C__A4CE61336363E558501EE6530B623FEE",
+          "component_id": "{C24742CA-9D2F-56D6-D9AF-5F1833D1C585}",
+          "declared_size": 9728,
+          "declared_version": "1.0.0.5",
+          "directory_id": "TARGETDIR",
+          "extracted_path": "/Users/andrewkoumoudjian/Documents/QUARCC/bunting-rit-analysis-20260713/installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/TTS.RTD.dll",
+          "features": [
+            "DefaultFeature"
+          ],
+          "file_id": "_A4CE61336363E558501EE6530B623FEE",
+          "installed_path": "TTS.RTD.dll",
+          "payload_exists": true,
+          "sequence": 3
+        }
+      ],
+      "signature": {
+        "stream": "0007-_DigitalSignature.bin",
+        "cms_bytes": 8030,
+        "signer_subject": "C=CA, ST=ON, L=Toronto, O=306W Inc., CN=306W Inc.",
+        "signer_validity": "2017-12-23T00:00:00Z/2021-12-23T23:59:59Z",
+        "timestamp_certificate_present": true,
+        "certificate_chain_parse": "success",
+        "full_platform_verification": "not-run"
+      },
+      "payloads": [
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/RIT2.dll",
+          "size": 12800,
+          "sha256": "bc8fd70e4ac9780dd92f2772ab9857a848c248920ddfaa955d8ec25c5639163a",
+          "sha512": "39b22e45015611c2aa11adcfe3387af703dbeb241c049927e34a011d865babc1f53affdfe95d21ba07510792e5416eb1da7e7c38f0a499d930535dbadd24ee2a",
+          "file_type": "PE32+ executable (DLL) (console) x86-64 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 6442450944,
+            "imports": [],
+            "is_managed": true,
+            "machine": "0x8664",
+            "machine_name": "IMAGE_FILE_MACHINE_AMD64",
+            "pe_timestamp": 1615751332,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "1.0.0.5",
+              "Comments": "Rotman Interactive Trader",
+              "CompanyName": "306W",
+              "FileDescription": "306W Trader Training System",
+              "FileVersion": "1.0.0.5",
+              "InternalName": "RIT2.dll",
+              "LegalCopyright": "Copyright © Chan, Mak, McCurdy 2011",
+              "LegalTrademarks": "",
+              "OriginalFilename": "RIT2.dll",
+              "ProductName": "Trader Training System API",
+              "ProductVersion": "1.0.0.5"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/RegisterDLL.dll",
+          "size": 5632,
+          "sha256": "4e537000e246e2940221673de6d1f9ac29b4d1468a01020976ad136fb0dae59b",
+          "sha512": "2d4d1ade9af8edfd68b7a83d171ce8582205a95d49a745c7e64b08b881ac202e4d0f9c0b4e903218bb5fecb2d807e189a52dad65a9072b2b491ba96caad2590b",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1615749004,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "1.0.0.0",
+              "Comments": "",
+              "CompanyName": "",
+              "FileDescription": "RegisterDLL",
+              "FileVersion": "1.0.0.0",
+              "InternalName": "RegisterDLL.dll",
+              "LegalCopyright": "Copyright ©  2016",
+              "LegalTrademarks": "",
+              "OriginalFilename": "RegisterDLL.dll",
+              "ProductName": "RegisterDLL",
+              "ProductVersion": "1.0.0.0"
+            }
+          }
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/payloads/TTS.RTD.dll",
+          "size": 9728,
+          "sha256": "a820c2439baaef518739f5ea6d671f3b650763e04b065fd774159a595f6457fe",
+          "sha512": "7d186bd5740367872c9c6653ce8d37f1e37c395a53bfac97d401888c7400244eec525870fbe1486dc957d6047ef6d3f345d679335e9e415dbde61a2709ca7bb8",
+          "file_type": "PE32 executable (DLL) (console) Intel 80386 Mono/.Net assembly, for MS Windows",
+          "pe": {
+            "authenticode_directory_size": 0,
+            "exports": [],
+            "image_base": 268435456,
+            "imports": [
+              {
+                "dll": "mscoree.dll",
+                "symbols": [
+                  "_CorDllMain"
+                ]
+              }
+            ],
+            "is_managed": true,
+            "machine": "0x014c",
+            "machine_name": "IMAGE_FILE_MACHINE_I386",
+            "pe_timestamp": 1615746511,
+            "resource_types": [
+              "16"
+            ],
+            "subsystem": 3,
+            "version_info": {
+              "Assembly Version": "1.0.0.5",
+              "Comments": "",
+              "CompanyName": "306W",
+              "FileDescription": "306W Trader Training System",
+              "FileVersion": "1.0.0.5",
+              "InternalName": "TTS.RTD.dll",
+              "LegalCopyright": "Copyright © Chan, Mak, McCurdy 2011",
+              "LegalTrademarks": "",
+              "OriginalFilename": "TTS.RTD.dll",
+              "ProductName": "Trader Training System RTD",
+              "ProductVersion": "1.0.0.5"
+            }
+          }
+        }
+      ],
+      "streams": [
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0001-Binary.UpFldrBtn.bin",
+          "size": 318,
+          "sha256": "5f8a207de39e7465242e85a57ceb78c5915bdc5eab5ebb34036b5fd8d90e0474",
+          "sha512": "300a32384cd6cef33b5b95c753683d436e9e63d6718c10bc0ec13b763fe79e48124249795facf0d584deee4220dcb53310a313dc8ecefced1e742e076253fa37",
+          "file_type": "MS Windows icon resource - 1 icon, 16x16, 16 colors"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0002-Binary.VSDNETCFG.bin",
+          "size": 11247,
+          "sha256": "595d2d60fd2187c0811222571ec441a05d5fb35a0c05d711ee5b026735ac1c5d",
+          "sha512": "f9c8db9cdae27d50f6dbdd890387da5f62ab1a0abc9d21c53f881e0f260cec712bf2401e64a67f4b26dfe114586e1889d8408ff02443828a5dd68ff7a5769687",
+          "file_type": "XML 1.0 document text, ASCII text, with CRLF line terminators"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0003-Binary.InstallUtil.bin",
+          "size": 116272,
+          "sha256": "cdb195012fa5d3cfb80f8ea9fb23348c8749720d7e3a20cb7774cfd717f2df36",
+          "sha512": "1037170aed40aa33a4f983e168ae91247c23768fa502877d0b872a462d04fd5687cc50056add6419e3637306ae15beb1cfd04a51f126109faece09087ec16fb2",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0004-Binary.MSVBDPCADLL.bin",
+          "size": 305152,
+          "sha256": "0357b1185454d1a7d0c72de5af8e82a2185c0f1e52fb2d21b53e149d0a688041",
+          "sha512": "9b83f10f5e1cbe8ff97a5ead0ca02fce5f58e6e573077d2293f5c34e8d894836dd8e2a6b1dcdfa6c98f156704208f85e8595046527adab3fbe831236c71aaef8",
+          "file_type": "PE32 executable (DLL) (GUI) Intel 80386, for MS Windows"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0005-Binary.NewFldrBtn.bin",
+          "size": 318,
+          "sha256": "15771bcf9014c22d71c1e0e11a96cdf36942836cc30881032e5be668f1c10405",
+          "sha512": "16f9ec666eb937fd3a6c43d62aaa745aeb9c300de96d9b7fea26283677657eff8c4786e8e50d69df88316a0ce7e155213319569120c993e6146e90aa7c639301",
+          "file_type": "MS Windows icon resource - 1 icon, 16x16, 16 colors"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0006-Binary.DefBannerBitmap.bin",
+          "size": 105056,
+          "sha256": "9acd8bb2e9d29b4a4dbf28521736ce8f54417c23cd58b3cc45fd7f5858f16e2b",
+          "sha512": "43873887b0ccf61b63b209b364302377f21db17de132e174bf84f3c018420d174490b89ba475836a8005cf0ac8f196cf1bc72604e0b41d5f7381061f5ca4df63",
+          "file_type": "PC bitmap, Windows 3.x format, 500 x 70 x 24, image size 105002, resolution 2834 x 2834 px/m, cbSize 105056, bits offset 54"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0007-_DigitalSignature.bin",
+          "size": 8030,
+          "sha256": "216e4e619c8812eb8da2d04fcdb6f4beaa14eabc9171a48b640c74f50ea96477",
+          "sha512": "20dc60a4a6829c36ea33d5da59b107a45e2a75facd5dc234855345c9e4cb558dc96f3854f5b2fa7d832f919137f9ccce464fba8365592c67661d2135c2e3f18d",
+          "file_type": "data"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0008-_FF0154C159F4136F8EF77F8FEFA08BA5.bin",
+          "size": 9881,
+          "sha256": "7fede5b76e5903710ea7082409e93b585fd5e29b83402e7406a84a935c210622",
+          "sha512": "314ccc95dc97c32ffc5b6d3a018b53d1125ef7cd77d7ff747f5b4d6ead972d10eb9d8f00da3ca490245ddf075ade81d2499c0db219eafc38d2eaecc0cf6d1bde",
+          "file_type": "Microsoft Cabinet archive data, 9881 bytes, 3 files, at 0x2c \"_0CA74377FD2FEA04BB07A446A2B89B8F\" \"_3FF16369D054D299A2FCE677933B5EB5\", number 1, 1 datablock, 0x1 compression"
+        },
+        {
+          "relative_analysis_path": "installers/RIT2.RTD.API.Link.x64-0.0.15/streams/0009-_SummaryInformation.bin",
+          "size": 440,
+          "sha256": "825eb9fd14459715afda318713f59ba96a37a52711cb87db37c9c58f5e396b1e",
+          "sha512": "fb1aae7eb9b34bfd5fe5c757840fec14b7f86d685699f9e116024caf683478accf6b1ab7773597b896e424fb7993c24f90d4342b434b1f72996ef7f15be3ca63",
+          "file_type": "data"
+        }
+      ]
+    }
+  ],
+  "extraction": {
+    "payload_count": 38,
+    "stream_count": 21,
+    "managed_payload_count": 28,
+    "native_payload_count": 8,
+    "analysis_errors": []
+  }
+}

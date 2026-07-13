@@ -18,6 +18,7 @@ The system is an education, research, and integration environment. It is not a c
 8. **Commit before publish:** no acknowledgement, fill, or stream update is public before origin persistence succeeds.
 9. **Least privilege:** user Dynamic Workers receive bounded inputs and no direct market-state mutation capability.
 10. **Upstream-first maintenance:** prefer dependency upgrades and upstream fixes to internal forks.
+11. **One central production engine package:** `bunting-engine` directly owns its private OrderBook-rs integration and composes matching with scenario, NBC compatibility, RIT-derived behavior, ledger, risk, recovery and publication; profiles configure that engine rather than selecting alternate venue kernels.
 
 ## 3. Topology
 
@@ -32,7 +33,9 @@ FIX initiator -> native Rust FIX bridge
        - direct tRPC fetch dispatch
        - auth, schemas and protocol bounds
        - expected-version command handling
-       - OrderBook-rs adapter
+       - unified bunting-engine
+         - private OrderBook-rs matching adapter
+       - scenario and NBC-compatibility profiles
        - Bunting risk/ledger/events
        - snapshot and stream responses
           |                 |
@@ -60,18 +63,19 @@ User strategy source
 
 - `market-types`: Bunting identifiers and checked fixed-point values.
 - `market-events`: commands, event envelopes, rejection codes, correlation, and causation.
-- `orderbook`: thin version-pinned adapter around `OrderBook-rs`.
+- transitional `orderbook`: the current thin version-pinned adapter; its behavior and tests move into the private `bunting-engine` matching module under ADR 0019, then the crate is removed.
 - `ledger`: participant cash, inventory, reservation, position, fee, and P&L projections.
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
 - `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
 - `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
-- future `bunting-api-contract`: Rust-owned tRPC procedure and schema contract.
-- future `trpc-wire`: bounded, market-neutral tRPC HTTP/SSE compatibility.
+- planned `bunting-engine`: the central production venue package, directly owning the pinned OrderBook-rs adapter and composing authoritative run/listing state, scenarios, deterministic clock, compatibility profiles, market data, scoring and recovery. Persistence and tRPC stay outside it.
+- `bunting-api-contract`: implemented Rust-owned tRPC procedure and schema contract.
+- `trpc-wire`: implemented bounded, market-neutral tRPC HTTP/SSE compatibility.
 - future `trpc-client`: native client transport for Rust adapters.
-- future `nbc-market-engine`: complete authorized Rust translation of the selected NBC JAR market engine.
+- transitional `nbc-market-engine`: provenance-linked NBC translation evidence and compatibility oracle to be integrated into `bunting-engine`, not a separately selectable production engine.
 - `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
-- later crates: scenario clock, scenario engine, agent models, protocol-native, FIX, replay exports, and scoring.
+- later engine modules: scenario clock, agents, products, news, tenders, assets, scoring and complete recovery. Extract a focused package only when a second real consumer proves a reusable non-authoritative boundary; FIX and native report/export tooling remain outside the engine.
 - `bunting-rs`: thin portable composition boundary with curated stable re-exports and product metadata.
 
 ### Worker
@@ -84,7 +88,7 @@ There is no authoritative `market-run-do` runtime. ADR 0016 permits an optional 
 
 ## 5. OrderBook-rs boundary
 
-The production dependency is exactly:
+The production dependency, owned directly by `packages/bunting-engine` after the ADR 0019 migration, is exactly:
 
 ```toml
 orderbook-rs = { version = "=0.10.3", default-features = false }
@@ -120,7 +124,7 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 - scenario scheduling, random streams, scoring, and administration;
 - the native tRPC entrypoint, Cache API policy, committed stream content, and recovery behavior;
 - Dynamic Worker strategy isolation;
-- NBC translation/integration and the Rust tRPC contract; FIX, RITC and Nautilus mappings stay outside the market engine.
+- NBC translation/integration, RIT-derived venue behavior and the Rust tRPC contract; FIX, RITC, QUARCC and Nautilus mappings stay outside the market engine.
 
 ## 6. Public API boundary
 

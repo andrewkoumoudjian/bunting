@@ -6,7 +6,7 @@ The QUARCC trading engine is a participant-side execution/OMS service for a user
 
 It is not a venue matching engine and does not own authoritative Bunting market state.
 
-See ADR 0014 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
+See ADR 0014, ADR 0018 and [`../reference-functionality-audit.md`](../reference-functionality-audit.md).
 
 ## Evidence baseline
 
@@ -320,7 +320,7 @@ It may not:
 1. Route through the public Bunting client package.
 2. Consume committed market/private reports.
 3. Handle stream reset, idempotency and expected-version conflicts.
-4. Test against the default market engine and NBC through external interfaces.
+4. Test against the unified engine’s baseline and NBC compatibility profiles through external interfaces.
 
 ### Phase 5: optional native compatibility
 

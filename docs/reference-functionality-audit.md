@@ -126,7 +126,7 @@ The crate depends on `pricelevel` for the price-level/order substrate and expose
 
 ### Bunting disposition
 
-Approved production matching dependency through the Bunting adapter. Prefer the released crate and upstream contributions. `packages/orderbook` should remain a first-party adapter/boundary, not an undisclosed fork.
+Approved production matching dependency through the Bunting adapter. Prefer the released crate and upstream contributions. ADR 0019 moves the current `packages/orderbook` first-party adapter into a private `packages/bunting-engine` module; neither boundary may contain an undisclosed fork.
 
 Evidence: upstream `README.md`, `Cargo.toml`, `src/lib.rs`; Bunting ADR 0013.
 
@@ -263,7 +263,7 @@ Merely scenario data. The observable package and authorized JAR are a venue-side
 
 ### Bunting disposition
 
-First-class authorized translation target: `packages/nbc-market-engine`. The port document must label each behavior as externally observed, bytecode-observed, translated, inferred, Bunting-added or unresolved. Exact compatibility claims require reproducible JAR-versus-Rust evidence.
+Authorized compatibility translation input to the single `packages/bunting-engine` target under ADR 0018. The existing `packages/nbc-market-engine` crate is transitional evidence-bearing code until its proven behavior is integrated. The port document must label each behavior as externally observed, bytecode-observed, translated, inferred, Bunting-added or unresolved. Exact compatibility claims require reproducible JAR-versus-Rust evidence.
 
 Evidence: `ref/nbc_engine/app/README.md`, `application.yml`, scenario JSON; `ref/nbc-hft-simulation`; `ref/ritc_mm/API_REFERENCE.md` and adapter.
 
@@ -352,6 +352,20 @@ A market/venue engine. It does not authoritatively match orders; it sends orders
 Participant strategy, analytics, adapter, and conformance-fixture reference. A future first-party port should be split by real responsibility—for example pure market-making models versus an RIT client/adapter—not represented as an NBC market-engine component.
 
 Evidence: `ref/ritc_mm/Cargo.toml`, `src/main.rs`, `src/bin/rit_sim_adapter.rs`, `API_REFERENCE.md`, calibration scripts.
+
+## Supplied RIT installer corpus — proprietary static evidence
+
+### Observed functionality
+
+Static extraction of the two supplied MSI installers establishes the packaged file, feature, COM registration, managed type/member, import/export, resource, literal, and embedded protocol surfaces recorded in [`research/rit-binary-audit/`](research/rit-binary-audit/). The evidence includes local named-pipe endpoints, the versioned REST route inventory, the Excel RTD ProgID/topic catalog, default ports, and the public API facade shape. The source manifest records exact SHA-256 and SHA-512 identities for the installers; the binaries and extracted payloads remain outside Git.
+
+### It is not
+
+Source authorization, a redistributable dependency, or proof of runtime semantics hidden behind the observed surfaces. Static strings and metadata do not establish matching formulas, scheduler ordering, field units, limit behavior, timing, persistence, or trust status on a current Windows host.
+
+### Bunting disposition
+
+Clean-room external-contract and conformance evidence only. No proprietary byte sequence, decompiled method body, installer, extracted payload, credential, or resource may enter production code or Git. Derived requirements remain linked to stable `RIT-FEATURE-*` entries, and unresolved behavior must be observed independently or implemented as an explicit Bunting addition.
 
 ## `ref/nbc-hft-simulation` — NBC student/client template
 
@@ -681,7 +695,7 @@ Some may be transitive dependencies or previously researched repositories. They 
 
 # H. Corrected architecture implications
 
-1. **NBC and the default Bunting venue are market-engine implementations.** NBC cannot be reduced to scenarios, but its current snapshot does not prove internal matching or agent formulas.
+1. **Bunting has one production market engine.** OrderBook-rs supplies its matching kernel, while NBC contributes complete provenance-linked venue compatibility behavior; NBC cannot be reduced to scenarios or registered as a second production kernel, and its current snapshot does not prove internal matching or agent formulas.
 2. **QUARCC, RITC market making, NautilusTrader, Barter, market-maker-rs, and the NBC student client are participant-side systems.** They belong around the client/execution/strategy boundary.
 3. **OrderBook-rs, PriceLevel, and Liquibook are matching/order-book components of different scope.** exchange-core is a full exchange core.
 4. **FIX and SBE repositories are layered protocol workspaces.** Adoption must be per subcrate/layer.
