@@ -1,7 +1,50 @@
 {
   "schema_version": "bunting.trpc-fix-contract.v1",
   "classification": "Bunting-added",
-  "status": "specified_not_implemented",
+  "status": "initial_rust_contract_and_http_wire_implemented_worker_cutover_pending",
+  "implemented_rust_contract": {
+    "source": "packages/bunting-api-contract/src/lib.rs",
+    "sha256": "3a516b0c67e2e7db8b6dc7c28c4e4b129c7cb7b855c3f1c881b4b0603ce487ea",
+    "descriptor": {
+      "schemaVersion": "bunting.rust-contract.v1",
+      "apiVersion": "bunting.v1",
+      "types": {
+        "id": { "encoding": "unsigned_decimal_string", "rust": "u128", "minimum": "0", "maximum": "340282366920938463463374607431768211455" },
+        "sequence": { "encoding": "unsigned_decimal_string", "rust": "u64", "minimum": "0", "maximum": "18446744073709551615" },
+        "marketUnit": { "encoding": "signed_decimal_string", "rust": "i64", "minimum": "-9223372036854775808", "maximum": "9223372036854775807" },
+        "side": { "encoding": "json_string", "values": ["buy", "sell"] }
+      },
+      "procedures": [
+        {
+          "name": "market.snapshot",
+          "kind": "query",
+          "input": { "runId": "id", "instrumentId": "id" },
+          "output": { "runId": "id", "instrumentId": "id", "sequence": "sequence", "bids": "priceLevel[]", "asks": "priceLevel[]" }
+        },
+        {
+          "name": "orders.cancel",
+          "kind": "mutation",
+          "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id" },
+          "output": { "accepted": "boolean", "sequence": "sequence" }
+        },
+        {
+          "name": "orders.submit",
+          "kind": "mutation",
+          "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id", "side": "side", "priceTicks": "marketUnit", "quantityLots": "marketUnit" },
+          "output": { "accepted": "boolean", "sequence": "sequence" }
+        },
+        {
+          "name": "system.health",
+          "kind": "query",
+          "input": {},
+          "output": { "apiVersion": "string", "serviceVersion": "string", "orderbookVersion": "string", "contractCompatible": "boolean" }
+        }
+      ],
+      "structures": {
+        "priceLevel": { "priceTicks": "marketUnit", "quantityLots": "marketUnit" }
+      }
+    }
+  },
   "public_api": {
     "router": "bunting.v1",
     "transport": "tRPC",
@@ -101,7 +144,7 @@
       "vary": "trpc-accept, accept",
       "single_success": { "result": { "data": "procedure output" } },
       "batch_success": "JSON array of per-call success or error envelopes",
-      "single_error": { "error": { "jsonrpc": "2.0", "code": "numeric tRPC code", "message": "redacted stable message", "data": { "code": "tRPC code name", "httpStatus": "HTTP status", "path": "procedure name" } } },
+      "single_error": { "error": { "code": "numeric tRPC code", "message": "redacted stable message", "data": { "code": "tRPC code name", "httpStatus": "HTTP status", "path": "procedure name" } } },
       "status": "official tRPC HTTP status mapping for a single response; 207 when batch items have differing statuses",
       "extra_headers": "security and correlation headers may be added by the Worker without changing the envelope"
     },
@@ -167,7 +210,7 @@
       "name": "system.health",
       "kind": "query",
       "capability": null,
-      "implementation_state": "rest_handler_to_migrate",
+      "implementation_state": "rust_contract_implemented_worker_handler_to_migrate",
       "result_fields": [
         "apiVersion",
         "serviceVersion",
@@ -203,7 +246,7 @@
       "name": "orders.submit",
       "kind": "mutation",
       "capability": "submit_limit",
-      "implementation_state": "rest_handler_to_migrate",
+      "implementation_state": "rust_contract_implemented_worker_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId",
@@ -221,7 +264,7 @@
       "name": "orders.cancel",
       "kind": "mutation",
       "capability": "cancel",
-      "implementation_state": "rest_handler_to_migrate",
+      "implementation_state": "rust_contract_implemented_worker_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId",
@@ -265,7 +308,7 @@
       "name": "market.snapshot",
       "kind": "query",
       "capability": "market_data",
-      "implementation_state": "rest_cache_handler_to_migrate",
+      "implementation_state": "rust_contract_implemented_worker_cache_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId"
