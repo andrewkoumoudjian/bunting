@@ -37,6 +37,7 @@ For every reference or vendored component, record:
 | `worker` / workers-rs | `0.8.5`; Worker runtime, Router/HTTP, WebSocket, Cache API, D1 and selected bindings | Platform only; no market semantics |
 | `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
+| `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; excluded from the Worker dependency graph and no market semantics |
 
 The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
 
@@ -102,6 +103,13 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 | `rand` | RNG traits, generators, distributions and sampling | Dependency candidate, but simulation algorithms/streams must be explicitly versioned |
 | `postcard` | Compact stable-format Serde serializer/deserializer | Snapshot/wire experiment only after versioning and compatibility design |
 | `proptest` | Property-based generation, shrinking and failure persistence | Development/test dependency |
+
+### Terminal UI references
+
+| Reference | Actual implemented role | Disposition |
+|---|---|---|
+| `makeev/alphai-tui` | MIT Rust/Ratatui stock dashboard with split market views, semantic key mapping and isolated application/UI modules at `f814697c6159d76b2dfb503ba5201b8c3fb702ad` | Approved source adaptation for `src/theme.rs`, `src/keymap.rs` and the header/body/footer layout from `src/ui/mod.rs`; retain MIT copyright/license and record Bunting modifications |
+| `longbridge/longbridge-terminal` | Apache-2.0 Rust/Ratatui trading terminal with explicit TUI systems, views, widgets and log-panel separation at `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3` | Approved source adaptation for `src/tui/widgets/log_panel.rs`; retain Apache-2.0 license, Longbridge attribution notice and prominent modification notice |
 
 ## Local port-source restrictions
 

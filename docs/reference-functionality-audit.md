@@ -703,6 +703,24 @@ Some may be transitive dependencies or previously researched repositories. They 
 6. **No third-party source is currently vendored.** `vendor/` remains the only in-repository location for approved copied/patched upstream source.
 7. **Every port plan must maintain an evidence table:** observed, inferred, Bunting-added, unresolved, and prohibited-to-copy.
 
+---
+
+# I. Native terminal UI references
+
+## Ratatui and Crossterm
+
+Ratatui `0.30.2` provides the native terminal layout, table, paragraph and input-rendering APIs used by the local Bunting CLI. Crossterm `0.29.0` provides raw-mode terminal events and the alternate screen. Both are presentation dependencies of the native app only and do not enter the Worker dependency graph or own market/session semantics.
+
+Evidence classification: dependency versions and public roles are **observed** from the Ratatui tutorial and crate manifests; the bounded native-only boundary is **Bunting-added**.
+
+## `makeev/alphai-tui`
+
+At commit `f814697c6159d76b2dfb503ba5201b8c3fb702ad`, the MIT-licensed Rust application separates application state, semantic key mapping and market-oriented table/chart/feed renderers. Bunting adapts `src/theme.rs`, `src/keymap.rs`, and the header/body/footer layout in `src/ui/mod.rs` for the local FIX terminal. The local files replace AlphaAI feeds/views with the Bunting order book, command entry and FIX session state, while retaining the upstream copyright and MIT license in the app notices.
+
+## `longbridge/longbridge-terminal`
+
+At commit `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3`, the Apache-2.0 Rust application separates TUI systems, views, widgets and a log panel around its trading client. Bunting adapts `src/tui/widgets/log_panel.rs` into an in-memory, bounded FIX log panel. The filesystem log discovery is removed, Bunting FIX direction coloring is added, and the modified source carries the required Apache modification and attribution notices.
+
 ## Required follow-up before the mechanical reorganization
 
 - make this audit required reading in root `AGENTS.md` and the reorganization contract;

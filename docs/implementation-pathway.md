@@ -52,9 +52,9 @@ This sequence produced the development-only tRPC oracle and transitional Rust wi
 
 Mutation batching remains rejected. Every mutation must preserve idempotency, expected-version and commit-before-acknowledgement semantics.
 
-### Conditional stream coordinator
+### Implemented origin-tail subscriptions and conditional stream coordinator
 
-Implement origin-sequence-based HTTP subscriptions in the plain Worker first. Run the ADR 0016 load/recovery spike before adding a Durable Object. If the gate passes, add one Rust `RunStreamCoordinator` per run in the same Worker deployment for committed fan-out only; it must not own commands, matching, the event log or origin state.
+The plain Worker now exposes bounded public market and authenticated private-account SSE catch-up responses over committed origin event sequences, including resume cursors, filtering, and snapshot/reset recovery. These responses close after a bounded tail; run the ADR 0016 load/recovery spike before adding a long-lived coordinator. If the gate passes, add one Rust `RunStreamCoordinator` per run in the same Worker deployment for committed fan-out only; it must not own commands, matching, the event log or origin state.
 
 ## P1B: authorized NBC JAR translation
 
@@ -109,11 +109,11 @@ The current order routes reject unknown runs. Add an authenticated, idempotent a
 
 Selecting a market engine is separate from enabling an external participant execution engine.
 
-## P4: committed streaming and broader default-engine capabilities
+## P4: long-lived committed streaming and broader default-engine capabilities
 
 ### Streaming
 
-- browser-compatible subscription procedures on the public plain Worker;
+- long-lived fan-out behind the implemented browser-compatible bounded subscription procedures;
 - publish only after origin commit;
 - bounded public/private subscriptions, frames and backlog;
 - committed event-sequence cursors;

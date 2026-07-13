@@ -4,7 +4,7 @@
   "status": "browser_json_and_outbound_fix_tcp_implemented",
   "implemented_rust_contract": {
     "source": "packages/bunting-api-contract/src/lib.rs",
-    "sha256": "70acfe69dffcf013b12890bb716088009e46ad4805142ea5bd1fc8dc138c5b68",
+    "sha256": "73f1bdf56e6b32e3e4ce6f1668bb2f6111722240a45fae5c394df7a7b0e964f0",
     "descriptor": {
       "schemaVersion": "bunting.rust-contract.v1",
       "apiVersion": "bunting.v1",
@@ -38,6 +38,18 @@
           "kind": "query",
           "input": {},
           "output": { "apiVersion": "string", "serviceVersion": "string", "orderbookVersion": "string", "contractCompatible": "boolean" }
+        },
+        {
+          "name": "market.subscribe",
+          "kind": "subscription",
+          "input": { "runId": "id", "instrumentId": "id", "afterSequence": "sequence" },
+          "output": { "event": "committedEvent|stream.reset|market.snapshot" }
+        },
+        {
+          "name": "accounts.subscribe",
+          "kind": "subscription",
+          "input": { "runId": "id", "afterSequence": "sequence" },
+          "output": { "event": "committedPrivateEvent|stream.reset" }
         }
       ],
       "structures": {
@@ -157,7 +169,7 @@
       "bunting_domain_errors": "procedure implementations preserve stable browser error codes and add buntingCode; committed rejected commands carry the exact durable CommandOutput in error.data"
     },
     "subscription": {
-      "transport": "planned browser-compatible HTTP Server-Sent Events",
+      "transport": "bounded browser-compatible HTTP Server-Sent Events",
       "method": "GET",
       "accept": "text/event-stream",
       "request_input": "percent-encoded JSON input query parameter",
@@ -323,7 +335,7 @@
       "name": "market.subscribe",
       "kind": "subscription",
       "capability": "market_data",
-      "implementation_state": "planned",
+      "implementation_state": "implemented_plain_worker_origin_tail",
       "required_input": [
         "runId",
         "instrumentId",
@@ -335,7 +347,7 @@
       "name": "accounts.subscribe",
       "kind": "subscription",
       "capability": "private_account_data",
-      "implementation_state": "planned",
+      "implementation_state": "implemented_plain_worker_origin_tail",
       "required_input": [
         "runId",
         "afterSequence"

@@ -1,0 +1,31 @@
+[package]
+name = "bunting-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bunting-cli"
+path = "src/main.rs"
+
+[dependencies]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bunting-engine.workspace = true
+bunting-market-events.workspace = true
+bunting-market-types.workspace = true
+bunting-risk-engine = { path = "../../packages/risk-engine" }
+clap = { version = "4.6.1", features = ["derive"] }
+crossterm = "0.29.0"
+quarcc-execution-engine.workspace = true
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+simfix-mapping = { path = "../../packages/simfix-mapping" }
+simfix-session.workspace = true
+simfix-wire.workspace = true
+time = { version = "0.3.47", features = ["formatting", "macros"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
