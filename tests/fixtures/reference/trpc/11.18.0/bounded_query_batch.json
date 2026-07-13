@@ -30,7 +30,9 @@
       },
       {
         "result": {
-          "data": null
+          "data": {
+            "instrumentId": "7"
+          }
         }
       }
     ]

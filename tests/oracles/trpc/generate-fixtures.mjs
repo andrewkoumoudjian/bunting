@@ -10,10 +10,11 @@ const COMMIT = '6aec1578a899df50a17e4e78d5512a099b574c18';
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(here, '../../fixtures/reference/trpc/11.18.0');
 const t = initTRPC.create();
+const identityInput = { parse: (input) => input };
 const router = t.router({
   'system.health': t.procedure.query(() => ({ apiVersion: 'bunting.v1', contractCompatible: true })),
-  'echo.query': t.procedure.query(({ input }) => input ?? null),
-  'orders.submit': t.procedure.mutation(({ input }) => ({ accepted: true, input })),
+  'echo.query': t.procedure.input(identityInput).query(({ input }) => input ?? null),
+  'orders.submit': t.procedure.input(identityInput).mutation(({ input }) => ({ accepted: true, input })),
   'error.invalid': t.procedure.query(() => { throw new TRPCError({ code: 'BAD_REQUEST', message: 'invalid fixture input' }); }),
   'market.subscribe': t.procedure.subscription(async function* () {
     yield tracked('41', { sequence: '41', kind: 'snapshot' });
@@ -22,6 +23,17 @@ const router = t.router({
 
 function normalizedHeaders(headers) {
   return Object.fromEntries([...headers.entries()].sort(([a], [b]) => a.localeCompare(b)));
+}
+function normalizeBody(value) {
+  if (Array.isArray(value)) return value.map(normalizeBody);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => key !== 'stack')
+        .map(([key, child]) => [key, normalizeBody(child)]),
+    );
+  }
+  return value;
 }
 async function invoke(name, { method = 'GET', path, query = '', body, headers = {} }) {
   const requestHeaders = new Headers(headers);
@@ -32,7 +44,7 @@ async function invoke(name, { method = 'GET', path, query = '', body, headers = 
   const response = await fetchRequestHandler({ endpoint: '/trpc', req, router, maxBatchSize: 16 });
   const text = await response.text();
   let normalizedBody = text;
-  if ((response.headers.get('content-type') ?? '').startsWith('application/json')) normalizedBody = JSON.parse(text);
+  if ((response.headers.get('content-type') ?? '').startsWith('application/json')) normalizedBody = normalizeBody(JSON.parse(text));
   return {
     fixture_version: 1,
     oracle: { package_version: VERSION, source_commit: COMMIT, license: 'MIT' },

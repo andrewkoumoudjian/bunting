@@ -28,7 +28,6 @@
         "data": {
           "code": "METHOD_NOT_SUPPORTED",
           "httpStatus": 405,
-          "stack": "TRPCError: Unsupported POST-request to query procedure at path \"system.health\"\n    at file:///Users/andrewkoumoudjian/Documents/QUARCC/bunting-wt-s0-trpc-reference/tests/oracles/trpc/node_modules/@trpc/server/dist/resolveResponse-CdASWfAV.mjs:1948:67\n    at Array.map (<anonymous>)\n    at resolveResponse (file:///Users/andrewkoumoudjian/Documents/QUARCC/bunting-wt-s0-trpc-reference/tests/oracles/trpc/node_modules/@trpc/server/dist/resolveResponse-CdASWfAV.mjs:1939:31)\n    at async fetchRequestHandler (file:///Users/andrewkoumoudjian/Documents/QUARCC/bunting-wt-s0-trpc-reference/tests/oracles/trpc/node_modules/@trpc/server/dist/adapters/fetch/index.mjs:27:9)\n    at async invoke (file:///Users/andrewkoumoudjian/Documents/QUARCC/bunting-wt-s0-trpc-reference/tests/oracles/trpc/generate-fixtures.mjs:32:20)\n    at async file:///Users/andrewkoumoudjian/Documents/QUARCC/bunting-wt-s0-trpc-reference/tests/oracles/trpc/generate-fixtures.mjs:53:3",
           "path": "system.health"
         }
       }
