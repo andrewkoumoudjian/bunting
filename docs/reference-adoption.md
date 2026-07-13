@@ -107,7 +107,7 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 
 ### NBC
 
-The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. A separate pinned client tree contains the selected same-named JAR. ADR 0017 authorizes inspection, decompilation, Rust translation and redistribution; exact internal matching, scheduler, agent, database or replay claims still require cited bytecode or differential evidence. See `docs/ports/nbc-simulation.md`.
+The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. A separate pinned client tree contains the selected same-named JAR. ADR 0017 authorizes inspection, decompilation, Rust translation and redistribution. The bounded class/resource inventory and selected bytecode observations now live in `docs/ports/nbc-jar-inventory.v1.tsv` and `docs/ports/nbc-behavior-evidence.md`; exact translated behavior still requires the cited class/resource hashes and reproducible JAR-versus-Rust evidence. See `docs/ports/nbc-simulation.md`.
 
 ### QUARCC
 

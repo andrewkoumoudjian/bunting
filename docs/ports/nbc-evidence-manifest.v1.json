@@ -5,6 +5,29 @@
     "commit": "ce0faa0fcd1b6ae08623f68e10a8110622704f4d",
     "note": "This is the main commit at which the evidence was inventoried."
   },
+  "executable_evidence": {
+    "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+    "gitlink": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+    "archive_entry_count": 269,
+    "application_class_count": 40,
+    "bundled_library_count": 77,
+    "jar_manifest": {
+      "start_class": "ca.mc.exchange_simulator.ExchangeSimulatorApplication",
+      "spring_boot_version": "4.0.0",
+      "build_jdk_spec": "25"
+    },
+    "inspection_environment": {
+      "java": "25.0.2",
+      "javap": "25.0.2",
+      "jar": "25.0.2",
+      "decompiler": "not_used_no_decompiler_output_generated"
+    },
+    "inventory": "docs/ports/nbc-jar-inventory.v1.tsv",
+    "behavior_specification": "docs/ports/nbc-behavior-evidence.md",
+    "tooling": "tools/nbc-evidence",
+    "generated_workspace": "out/nbc-evidence",
+    "generated_workspace_committed": false
+  },
   "authority": {
     "status": "authorized_by_project_owner",
     "authorization_recorded_at": "2026-07-12",
@@ -174,12 +197,25 @@
       ]
     }
   ],
-  "captured_black_box_traces": [],
+  "captured_black_box_traces": [
+    {
+      "id": "scenario-list-v1",
+      "classification": "runtime_observed",
+      "request": "GET http://127.0.0.1:18080/api/replays",
+      "response_status": 200,
+      "fixture": "tests/fixtures/nbc/runtime/scenario-list.v1.json",
+      "credentials_supplied": false,
+      "environment": "loopback-only empty inherited environment temporary HOME and SQLite database",
+      "limits": "45 one-second readiness attempts and 64 KiB response/log capture",
+      "observed_scope": "scenario identifiers and count only"
+    }
+  ],
   "unresolved": [
     "original_upstream_license_metadata_and_build_provenance",
     "relationship_between_the_direct_snapshot_and_the_client_submodule_jar",
-    "internal_matching_and_scheduler_semantics",
+    "matching_edge_cases_orderbook_rs_compatibility_and_scheduler_total_ordering",
     "agent_formulas_units_and_random_distributions",
+    "authenticated_rest_websocket_done_lifecycle_and_termination_traces",
     "persistence_recovery_and_scoring_semantics"
   ]
 }

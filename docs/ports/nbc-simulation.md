@@ -238,7 +238,7 @@ For the currently observed NBC profile, submit-limit, cancel, market-data, fills
 5. Capture black-box traces from an authorized reference deployment when available.
 6. Record which API-reference fields are observed in traces versus documented only.
 
-Current status: steps 1, 2, 3, 4 and 6 are complete for the checked-in evidence and ADR 0017 authority. Step 5 has no selected-JAR runtime traces yet.
+Current status: steps 1, 2, 3, 4 and 6 are complete for the checked-in evidence and ADR 0017 authority. Step 5 now has one selected-JAR runtime observation: an isolated credential-free `GET /api/replays` returned HTTP 200 and five scenario IDs. Authenticated run, REST history, WebSocket, `DONE`, matching, scoring and termination traces remain unresolved. The exact class/resource inventory and translation dispositions are recorded in [`nbc-jar-inventory.v1.tsv`](nbc-jar-inventory.v1.tsv), and the evidence classifications and reproduction environment are recorded in [`nbc-behavior-evidence.md`](nbc-behavior-evidence.md).
 
 ### Phase 1: strict configuration and provenance
 
