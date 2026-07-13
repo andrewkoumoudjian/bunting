@@ -37,8 +37,8 @@ jobs:
           test -f Cargo.lock
           grep -Fq 'orderbook-rs = { version = "=0.10.3", default-features = false }' Cargo.toml
           grep -Fq 'worker = "=0.8.5"' Cargo.toml
-          grep -Fq 'getrandom = { version = "=0.3.4", features = ["wasm_js"] }' packages/orderbook/Cargo.toml
-          grep -Fq 'uuid = { version = "=1.23.4", features = ["js"] }' packages/orderbook/Cargo.toml
+          grep -Fq 'getrandom = { version = "=0.3.4", features = ["wasm_js"] }' packages/bunting-engine/Cargo.toml
+          grep -Fq 'uuid = { version = "=1.23.4", features = ["js"] }' packages/bunting-engine/Cargo.toml
           grep -Fq 'getrandom_backend="wasm_js"' .cargo/config.toml
           grep -Fq 'Cache::default()' packages/worker-cache/src/lib.rs
           test ! -e workers/market-run-do/AGENTS.md
@@ -53,7 +53,7 @@ jobs:
         run: cargo test --locked --workspace
 
       - name: Verify upstream dependency
-        run: cargo tree --locked -p bunting-orderbook | grep -F 'orderbook-rs v0.10.3'
+        run: cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
 
       - name: Check Wasm target
         run: cargo check --locked --workspace --target wasm32-unknown-unknown
