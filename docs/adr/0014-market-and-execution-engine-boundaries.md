@@ -9,7 +9,7 @@
 
 Bunting composes systems that use the word “engine” for different authority boundaries. Repository names and planned package names are insufficient evidence; the recorded source and contracts establish two distinct roles.
 
-1. **NBC is a venue-side exchange/market simulator.** The checked-in snapshot proves a packaged Exchange Simulator, scenario/run configuration, team/JWT setup, and an observable REST/WebSocket order/market protocol with explicit step advancement. The snapshot does not include the Java implementation or named JAR, so exact internal matching, scheduler and agent semantics remain unresolved.
+1. **NBC is a venue-side exchange/market simulator.** The direct checked-in snapshot proves a packaged Exchange Simulator, scenario/run configuration, team/JWT setup, and an observable REST/WebSocket order/market protocol with explicit step advancement. That tree does not include the Java implementation or named JAR. A separate pinned client tree contains an opaque same-named JAR whose source, license, build provenance and relationship to the direct snapshot are unresolved, so exact internal matching, scheduler and agent semantics remain unresolved.
 2. **The QUARCC trading engine is a participant-side execution/OMS service.** Its C++ headers and protobuf contracts prove strategy-signal intake, submit/cancel/replace, order managers, execution gateways, market-data feeds, participant risk, ID mapping, journal/store interfaces, positions, kill switch, gRPC and Python clients. It routes to a venue and consumes execution reports; it does not own venue matching.
 
 The current Bunting vertical slice uses released `OrderBook-rs` as the default matching kernel. That does not reduce NBC to scenarios and does not make QUARCC part of the venue kernel.

@@ -173,7 +173,7 @@ The checked-in tree proves the existence and external shape of an NBC **market/e
 - the observed NBC protocol, recorded by its client and RIT adapter, exposes scenario listing/start, per-team runs, history and leaderboards; market-data and order WebSockets; new limit orders, cancellation, fills/errors, and a mandatory `DONE` message that advances the simulation step;
 - observable score/run fields include PnL, inventory, notional, trade count, aggressive quantity, blow-up state, and decision time.
 
-### Missing from the recorded snapshot
+### Missing from the direct recorded snapshot
 
 The checked-in tree does **not** contain the Java source or the JAR named by its README. Therefore the repository cannot currently prove:
 
@@ -185,6 +185,8 @@ The checked-in tree does **not** contain the Java source or the JAR named by its
 - whether every API field in the separately recorded API reference is implemented by the same binary revision.
 
 The scenario values are evidence of configuration, not proof of formula semantics or units beyond their field names.
+
+The separately pinned `ref/nbc-hft-simulation` client tree contains an opaque file named `app/exchange-simulator-0.0.1-SNAPSHOT.jar`. Its SHA-256 and gitlink pin are recorded in `docs/ports/nbc-evidence-manifest.v1.json`, but its source, license, build provenance and relationship to the direct snapshot are unresolved. Its presence does not authorize decompilation or establish it as the selected compatibility binary.
 
 ### It is not
 
