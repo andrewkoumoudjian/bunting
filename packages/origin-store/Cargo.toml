@@ -7,14 +7,14 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-bunting-ledger = { path = "../ledger" }
+bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
-bunting-risk-engine = { path = "../risk-engine" }
 serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+bunting-risk-engine = { path = "../risk-engine" }
 
 [lints]
 workspace = true

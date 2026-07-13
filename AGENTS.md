@@ -82,7 +82,7 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 - `orderbook-rs = 0.10.3` remains the production matching dependency internal to the unified `bunting-engine` package.
 - Do not create another generic Bunting-owned CLOB when the upstream API provides the required behavior.
 - NBC may require compatibility behavior around the shared matcher, but a separate production matching implementation is prohibited unless a later ADR changes ADR 0018 with documented evidence and differential tests.
-- `packages/orderbook` is the current transitional first-party adapter. Move its behavior and tests into a private `bunting-engine` module during the foundation migration, then remove the crate; it is never a location for copied upstream source.
+- The former `packages/orderbook` adapter now lives as a private `bunting-engine` module; the transitional crate is removed and no production caller may bypass the engine.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
 - The deployment target is one native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. ADR 0016 authorizes an optional Rust stream-coordination Durable Object only after its gate; it never owns market commands or origin truth.
 - Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
@@ -119,7 +119,7 @@ cargo metadata --locked --format-version 1 --no-deps
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-cargo tree --locked -p bunting-orderbook | grep -F 'orderbook-rs v0.10.3'
+cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```

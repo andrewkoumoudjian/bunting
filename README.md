@@ -84,7 +84,7 @@ cargo metadata --locked --format-version 1 --no-deps
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-cargo tree --locked -p bunting-orderbook | grep -F 'orderbook-rs v0.10.3'
+cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```

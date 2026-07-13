@@ -3,7 +3,7 @@ resolver = "2"
 members = [
   "packages/market-types",
   "packages/market-events",
-  "packages/orderbook",
+  "packages/bunting-engine",
   "packages/ledger",
   "packages/risk-engine",
   "packages/origin-store",
@@ -28,6 +28,7 @@ repository = "https://github.com/andrewkoumoudjian/bunting"
 bunting-market-events = { path = "packages/market-events" }
 bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
+bunting-engine = { path = "packages/bunting-engine" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 percent-encoding = "2"

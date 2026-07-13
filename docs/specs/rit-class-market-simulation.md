@@ -16,7 +16,7 @@ Official capability source: [Rotman Interactive Trader overview and features](ht
 
 ## Binding architecture
 
-`packages/bunting-engine` is the central market-simulation package. It directly integrates released `orderbook-rs = 0.10.3` as its private production matcher and owns the authoritative run transition. The current `packages/orderbook` crate is transitional until its adapter and tests move into the engine package.
+`packages/bunting-engine` is the central market-simulation package. It directly integrates released `orderbook-rs = 0.10.3` as its private production matcher and owns the authoritative run transition. The adapter and tests have moved into the engine package and the transitional `packages/orderbook` crate is removed.
 
 The production dependency direction is:
 

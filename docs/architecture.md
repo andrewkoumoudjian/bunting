@@ -63,12 +63,12 @@ User strategy source
 
 - `market-types`: Bunting identifiers and checked fixed-point values.
 - `market-events`: commands, event envelopes, rejection codes, correlation, and causation.
-- transitional `orderbook`: the current thin version-pinned adapter; its behavior and tests move into the private `bunting-engine` matching module under ADR 0019, then the crate is removed.
+- `bunting-engine`: the implemented central production venue package. It owns bounded multi-listing run state, the authoritative submit-limit/cancel transition, deterministic scenario and engine versions, complete snapshot envelopes and the private version-pinned OrderBook-rs adapter.
 - `ledger`: participant cash, inventory, reservation, position, fee, and P&L projections.
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
 - `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
 - `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
-- planned `bunting-engine`: the central production venue package, directly owning the pinned OrderBook-rs adapter and composing authoritative run/listing state, scenarios, deterministic clock, compatibility profiles, market data, scoring and recovery. Persistence and tRPC stay outside it.
+- later `bunting-engine` increments add the remaining scenario clock, compatibility profiles, market data, scoring and recovery families around the implemented foundation. Persistence and tRPC remain outside it.
 - `bunting-api-contract`: implemented Rust-owned tRPC procedure and schema contract.
 - `trpc-wire`: implemented bounded, market-neutral tRPC HTTP/SSE compatibility.
 - future `trpc-client`: native client transport for Rust adapters.

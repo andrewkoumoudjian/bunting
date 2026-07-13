@@ -15,13 +15,13 @@ use bunting_api_contract::{
 use bunting_command_transaction::{
     CachedSnapshot, TransactionError, command_fingerprint, prepare_command,
 };
+use bunting_engine::{ORDERBOOK_RS_VERSION, RunState};
 use bunting_market_events::{CancelOrder, Command, CommandPayload, OrderKind, Side, SubmitOrder};
 use bunting_market_types::{
     CommandId, CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId,
     PriceTicks, QuantityLots, RunId,
 };
-use bunting_orderbook::{ORDERBOOK_RS_VERSION, visible_levels_from_snapshot_json};
-use bunting_origin_store::{CommandResult, CommitOutcome, OriginError, RunState};
+use bunting_origin_store::{CommandResult, CommitOutcome, OriginError};
 use bunting_trpc_wire::{
     Call, ErrorCode, Method, ParsedRequest, Request as WireRequest, Response as WireResponse,
 };
@@ -156,12 +156,9 @@ const fn map_transaction_error(error: TransactionError) -> ProcedureError {
     match error {
         TransactionError::Origin(origin) => map_origin_error(&origin),
         TransactionError::IdempotencyConflict => ProcedureError::DuplicateCommandConflict,
-        TransactionError::InvalidOriginSnapshot
-        | TransactionError::OwnershipInvariant
-        | TransactionError::Accounting
-        | TransactionError::EventBatchTooLarge
-        | TransactionError::Serialization
-        | TransactionError::Upstream => ProcedureError::InternalContractMismatch,
+        TransactionError::Engine(_) | TransactionError::Serialization => {
+            ProcedureError::InternalContractMismatch
+        }
     }
 }
 
@@ -232,16 +229,22 @@ async fn load_run(
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
         .map_err(|error| map_origin_error(&error))?;
-    if state.instrument_id != instrument_id {
-        return Err(ProcedureError::NotFound);
-    }
+    state
+        .listing_key_for_instrument(instrument_id)
+        .map_err(|_| ProcedureError::NotFound)?;
     Ok(state)
 }
 
-fn snapshot_output(state: &RunState) -> std::result::Result<MarketSnapshotOutput, ProcedureError> {
-    let (upstream_bids, upstream_asks) =
-        visible_levels_from_snapshot_json(&state.snapshot.package_json)
-            .map_err(|_| ProcedureError::InternalContractMismatch)?;
+fn snapshot_output(
+    state: &RunState,
+    instrument_id: InstrumentId,
+) -> std::result::Result<MarketSnapshotOutput, ProcedureError> {
+    let listing_key = state
+        .listing_key_for_instrument(instrument_id)
+        .map_err(|_| ProcedureError::NotFound)?;
+    let (upstream_bids, upstream_asks) = state
+        .visible_levels(listing_key)
+        .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let levels = |items: Vec<(u128, u64)>| {
         items
             .into_iter()
@@ -258,9 +261,9 @@ fn snapshot_output(state: &RunState) -> std::result::Result<MarketSnapshotOutput
             .collect::<std::result::Result<Vec<_>, ProcedureError>>()
     };
     Ok(MarketSnapshotOutput {
-        run_id: UnsignedDecimalString::new(state.run_id.get()),
-        instrument_id: UnsignedDecimalString::new(state.instrument_id.get()),
-        sequence: SequenceDecimalString::new(state.version.get()),
+        run_id: UnsignedDecimalString::new(state.run_id().get()),
+        instrument_id: UnsignedDecimalString::new(instrument_id.get()),
+        sequence: SequenceDecimalString::new(state.sequence().get()),
         bids: levels(upstream_bids)?,
         asks: levels(upstream_asks)?,
     })
@@ -291,22 +294,30 @@ async fn execute_command(
         };
     }
     let state = load_run(environment, command.run_id, instrument_id).await?;
+    let listing_key = state
+        .listing_key_for_instrument(instrument_id)
+        .map_err(|_| ProcedureError::NotFound)?;
+    let snapshot = state
+        .listing_snapshot(listing_key)
+        .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let cache_key = SnapshotCacheKey::new(
-        state.run_id,
-        state.instrument_id,
-        state.snapshot.represented_sequence,
-        state.snapshot.checksum.clone(),
+        state.run_id(),
+        instrument_id,
+        snapshot.represented_sequence,
+        snapshot.checksum.clone(),
     )
     .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let cached = match cloudflare::get_json(&cache_key).await {
         Ok(Some(package_json)) => Some(CachedSnapshot {
-            represented_sequence: state.snapshot.represented_sequence,
-            checksum: state.snapshot.checksum.clone(),
+            listing_key,
+            represented_sequence: snapshot.represented_sequence,
+            checksum: snapshot.checksum.clone(),
             package_json,
         }),
         Ok(None) | Err(_) => None,
     };
-    let prepared = prepare_command(&command, state, cached).map_err(map_transaction_error)?;
+    let prepared =
+        prepare_command(&command, &state, cached.as_ref()).map_err(map_transaction_error)?;
     let command_json =
         serde_json::to_string(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;
     let outcome = d1_origin::commit(&database, &prepared.commit, &command_json)
@@ -317,13 +328,15 @@ async fn execute_command(
     };
 
     // Origin commit above must succeed before this best-effort cache publication.
-    let snapshot = &prepared.commit.candidate.snapshot;
-    if let Ok(key) = SnapshotCacheKey::new(
-        prepared.commit.run_id,
-        snapshot.instrument_id,
-        snapshot.represented_sequence,
-        snapshot.checksum.clone(),
-    ) {
+    if let Ok(snapshot) = prepared.commit.candidate.listing_snapshot(listing_key)
+        && snapshot.represented_sequence == result.committed_sequence
+        && let Ok(key) = SnapshotCacheKey::new(
+            prepared.commit.run_id,
+            listing_key.instrument_id,
+            snapshot.represented_sequence,
+            snapshot.checksum.clone(),
+        )
+    {
         let _cache_result =
             cloudflare::put_json(&key, snapshot.package_json.clone(), CachePolicy::default()).await;
     }
@@ -344,7 +357,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 InstrumentId::new(input.instrument_id.get()),
             )
             .await
-            .and_then(|state| snapshot_output(&state))
+            .and_then(|state| snapshot_output(&state, InstrumentId::new(input.instrument_id.get())))
             {
                 Ok(output) => bunting_trpc_wire::success(200, &output),
                 Err(error) => wire_error(error, &call.path, "snapshot unavailable"),

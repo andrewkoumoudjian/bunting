@@ -1,5 +1,5 @@
 [package]
-name = "bunting-orderbook"
+name = "bunting-engine"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -9,9 +9,14 @@ repository.workspace = true
 [dependencies]
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+bunting-ledger = { path = "../ledger" }
+bunting-risk-engine = { path = "../risk-engine" }
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 orderbook-rs.workspace = true
 pricelevel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 uuid = { version = "=1.23.4", features = ["js"] }
 
 [lints]

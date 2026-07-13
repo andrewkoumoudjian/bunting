@@ -56,10 +56,9 @@ dependencies = [
 name = "bunting-command-transaction"
 version = "0.1.0"
 dependencies = [
- "bunting-ledger",
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
- "bunting-orderbook",
  "bunting-origin-store",
  "bunting-risk-engine",
  "serde_json",
@@ -72,15 +71,32 @@ version = "0.1.0"
 dependencies = [
  "bunting-api-contract",
  "bunting-command-transaction",
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
- "bunting-orderbook",
  "bunting-origin-store",
  "bunting-trpc-wire",
  "bunting-worker-cache",
  "serde",
  "serde_json",
  "worker",
+]
+
+[[package]]
+name = "bunting-engine"
+version = "0.1.0"
+dependencies = [
+ "bunting-ledger",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-risk-engine",
+ "getrandom 0.3.4",
+ "orderbook-rs",
+ "pricelevel",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -119,22 +135,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bunting-orderbook"
-version = "0.1.0"
-dependencies = [
- "bunting-market-events",
- "bunting-market-types",
- "getrandom 0.3.4",
- "orderbook-rs",
- "pricelevel",
- "uuid",
-]
-
-[[package]]
 name = "bunting-origin-store"
 version = "0.1.0"
 dependencies = [
- "bunting-ledger",
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
  "bunting-risk-engine",
@@ -156,6 +160,7 @@ dependencies = [
 name = "bunting-rs"
 version = "0.1.0"
 dependencies = [
+ "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
 ]

@@ -12,9 +12,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bunting-api-contract = { path = "../../packages/bunting-api-contract" }
 bunting-command-transaction = { path = "../../packages/command-transaction" }
+bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types = { path = "../../packages/market-types" }
-bunting-orderbook = { path = "../../packages/orderbook" }
 bunting-origin-store = { path = "../../packages/origin-store" }
 bunting-trpc-wire = { path = "../../packages/trpc-wire" }
 bunting-worker-cache = { path = "../../packages/worker-cache" }

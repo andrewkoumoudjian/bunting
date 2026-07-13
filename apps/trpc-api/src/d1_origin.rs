@@ -1,13 +1,14 @@
 //! Cloudflare D1 adapter for atomic expected-version origin commits.
 
-use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError, RunState};
+use bunting_engine::{EngineSnapshotEnvelope, RunState};
+use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError};
 use serde::Deserialize;
 use worker::{D1Database, D1PreparedStatement, D1Type};
 
 const INSERT_GUARD: &str = "INSERT INTO command_guards(run_id, command_id, fingerprint, expected_version) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND version = ?)";
 const INSERT_EVENT: &str = "INSERT INTO events(run_id, sequence, command_id, event_json) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
 const INSERT_COMMAND: &str = "INSERT INTO commands(run_id, command_id, fingerprint, payload_json, result_json, committed_version) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
-const INSERT_SNAPSHOT: &str = "INSERT INTO snapshots(run_id, instrument_id, represented_sequence, checksum, package_json) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
+const INSERT_SNAPSHOT: &str = "INSERT INTO snapshots(run_id, venue_id, instrument_id, represented_sequence, checksum, package_json) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
 const UPDATE_RUN: &str = "UPDATE runs SET version = ?, state_json = ? WHERE run_id = ? AND version = ? AND EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +52,9 @@ pub async fn load_run(database: &D1Database, run_id: &str) -> Result<RunState, O
         .await
         .map_err(|_| OriginError::Unavailable)?
         .ok_or(OriginError::UnknownRun)?;
-    serde_json::from_str(&row.state_json).map_err(|_| OriginError::Unavailable)
+    EngineSnapshotEnvelope::from_persisted_json(&row.state_json)
+        .map(|envelope| envelope.state)
+        .map_err(|_| OriginError::Unavailable)
 }
 
 /// Looks up a durable idempotency response.
@@ -106,7 +109,8 @@ pub async fn commit(
     let command_id = request.command_id.to_string();
     let expected = request.expected_version.to_string();
     let fingerprint = request.fingerprint.clone();
-    let mut statements = Vec::with_capacity(request.events.len() + 4);
+    let mut statements =
+        Vec::with_capacity(request.events.len() + request.candidate.listings().len() + 3);
     statements.push(
         bind(
             database,
@@ -161,32 +165,41 @@ pub async fn commit(
         )
         .map_err(|_| OriginError::Unavailable)?,
     );
-    let snapshot = &request.candidate.snapshot;
-    statements.push(
-        bind(
-            database,
-            INSERT_SNAPSHOT,
-            &[
-                run_id.clone(),
-                snapshot.instrument_id.to_string(),
-                snapshot.represented_sequence.to_string(),
-                snapshot.checksum.clone(),
-                snapshot.package_json.clone(),
-                run_id.clone(),
-                command_id.clone(),
-                fingerprint.clone(),
-            ],
-        )
-        .map_err(|_| OriginError::Unavailable)?,
-    );
-    let state_json =
-        serde_json::to_string(&request.candidate).map_err(|_| OriginError::InvalidCommit)?;
+    for (listing_key, listing) in request.candidate.listings() {
+        let snapshot = listing.snapshot();
+        if snapshot.represented_sequence != request.result.committed_sequence {
+            continue;
+        }
+        statements.push(
+            bind(
+                database,
+                INSERT_SNAPSHOT,
+                &[
+                    run_id.clone(),
+                    listing_key.venue_id.to_string(),
+                    listing_key.instrument_id.to_string(),
+                    snapshot.represented_sequence.to_string(),
+                    snapshot.checksum.clone(),
+                    snapshot.package_json.clone(),
+                    run_id.clone(),
+                    command_id.clone(),
+                    fingerprint.clone(),
+                ],
+            )
+            .map_err(|_| OriginError::Unavailable)?,
+        );
+    }
+    let state_json = request
+        .candidate
+        .snapshot_envelope()
+        .and_then(|envelope| envelope.to_json())
+        .map_err(|_| OriginError::InvalidCommit)?;
     statements.push(
         bind(
             database,
             UPDATE_RUN,
             &[
-                request.candidate.version.to_string(),
+                request.candidate.sequence().to_string(),
                 state_json,
                 run_id.clone(),
                 expected,
