@@ -9,28 +9,34 @@ use crate::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
 };
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
     let [levels_area, detail_area] =
-        Layout::horizontal([Constraint::Percentage(31), Constraint::Percentage(69)]).areas(area);
+        Layout::horizontal([Constraint::Percentage(27), Constraint::Percentage(73)]).areas(area);
     render_levels(frame, levels_area, app, client);
 
-    let [summary_area, lower_area] =
-        Layout::vertical([Constraint::Length(9), Constraint::Min(10)]).areas(detail_area);
+    let [summary_area, lower_area, actions_area] = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Min(8),
+        Constraint::Length(3),
+    ])
+    .areas(detail_area);
     let [instrument_area, depth_area] =
         Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
             .areas(summary_area);
     render_instrument(frame, instrument_area, client);
     render_depth(frame, depth_area, client);
 
-    let [ladder_area, reports_area] =
-        Layout::horizontal([Constraint::Percentage(72), Constraint::Percentage(28)])
+    let [chart_area, reports_area] =
+        Layout::horizontal([Constraint::Percentage(75), Constraint::Percentage(25)])
             .areas(lower_area);
-    render_ladder(frame, ladder_area, client);
+    render_price_chart(frame, chart_area, client);
     render_reports(frame, reports_area, client);
+    render_actions(frame, actions_area);
 }
 
 fn render_levels(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
@@ -168,46 +174,114 @@ fn render_depth(frame: &mut Frame, area: Rect, client: &FixClient) {
     );
 }
 
-fn render_ladder(frame: &mut Frame, area: Rect, client: &FixClient) {
-    let max_quantity = client
-        .book
-        .bids
+#[expect(
+    clippy::float_arithmetic,
+    reason = "Ratatui chart coordinates and padded display bounds require f64 arithmetic"
+)]
+fn render_price_chart(frame: &mut Frame, area: Rect, client: &FixClient) {
+    let bids = chart_points(client.prices.iter().map(|sample| sample.bid));
+    let asks = chart_points(client.prices.iter().map(|sample| sample.ask));
+    let mids = bids
         .iter()
-        .chain(&client.book.asks)
-        .map(|level| level.1)
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let max_bar = usize::from(area.width.saturating_sub(24).min(48));
-    let lines = client
-        .book
-        .asks
-        .iter()
-        .rev()
-        .map(|level| ("ASK", *level, styles::ask()))
-        .chain(
-            client
-                .book
-                .bids
-                .iter()
-                .map(|level| ("BID", *level, styles::bid())),
-        )
-        .map(|(side, (price, quantity), style)| {
-            let scaled =
-                quantity.saturating_mul(i64::try_from(max_bar).unwrap_or(i64::MAX)) / max_quantity;
-            let bar = "█".repeat(usize::try_from(scaled).unwrap_or(max_bar).min(max_bar));
-            Line::from(vec![
-                Span::styled(format!("{side:>3} {price:>8} {quantity:>8} "), style),
-                Span::styled(bar, style),
-            ])
-        })
+        .zip(&asks)
+        .map(|(bid, ask)| (bid.0, bid.1.midpoint(ask.1)))
         .collect::<Vec<_>>();
-    frame.render_widget(
-        Paragraph::new(lines).block(
+    if mids.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Waiting for the first FIX market-data snapshot...").block(
+                Block::new()
+                    .title(" LIVE PRICE · FIX SNAPSHOTS ")
+                    .borders(Borders::ALL)
+                    .border_style(styles::border()),
+            ),
+            area,
+        );
+        return;
+    }
+    let min_price = bids
+        .iter()
+        .chain(&asks)
+        .map(|point| point.1)
+        .fold(f64::INFINITY, f64::min);
+    let max_price = bids
+        .iter()
+        .chain(&asks)
+        .map(|point| point.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let padding = ((max_price - min_price) * 0.12).max(1.0);
+    let x_max = mids.last().map_or(1.0, |point| point.0.max(1.0));
+    let datasets = vec![
+        Dataset::default()
+            .name("bid")
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(styles::bid())
+            .data(&bids),
+        Dataset::default()
+            .name("mid")
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(styles::accent())
+            .data(&mids),
+        Dataset::default()
+            .name("ask")
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(styles::ask())
+            .data(&asks),
+    ];
+    let chart = Chart::new(datasets)
+        .block(
             Block::new()
-                .title(" ENGINE DEPTH LADDER ")
+                .title(" LIVE PRICE · OBSERVED BID / MID / ASK ")
+                .title_bottom(Line::from(format!(
+                    " {} FIX snapshots · latest mid {:.1} ",
+                    mids.len(),
+                    mids.last().map_or(0.0, |point| point.1)
+                )))
                 .borders(Borders::ALL)
                 .border_style(styles::border()),
+        )
+        .x_axis(
+            Axis::default()
+                .bounds([0.0, x_max])
+                .labels(["oldest", "latest"]),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([min_price - padding, max_price + padding])
+                .labels([
+                    Line::from(format!("{:.1}", min_price - padding)),
+                    Line::from(format!("{:.1}", max_price + padding)),
+                ]),
+        );
+    frame.render_widget(chart, area);
+}
+
+fn chart_points(values: impl Iterator<Item = i64>) -> Vec<(f64, f64)> {
+    values
+        .enumerate()
+        .filter_map(|(index, value)| {
+            let index = u32::try_from(index).ok().map(f64::from)?;
+            let value = i32::try_from(value).ok().map(f64::from)?;
+            Some((index, value))
+        })
+        .collect()
+}
+
+fn render_actions(frame: &mut Frame, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [B] BUY ", styles::bid()),
+            Span::raw("  "),
+            Span::styled(" [S] SELL ", styles::ask()),
+            Span::raw("  [C] CANCEL   [M] REPLACE   [/] ADVANCED COMMAND "),
+        ]))
+        .block(
+            Block::new()
+                .title(" TRADE ACTIONS ")
+                .borders(Borders::ALL)
+                .border_style(styles::active_border()),
         ),
         area,
     );

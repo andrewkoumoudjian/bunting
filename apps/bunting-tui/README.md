@@ -3,9 +3,11 @@
 This native Ratatui workstation adapts the Longbridge Terminal component
 hierarchy and interaction model to Bunting. It starts a loopback FIX 4.4
 acceptor backed by the real `bunting-engine`, then connects as a FIX initiator
-over TCP. The market, orders and FIX-session tabs expose the engine book,
-execution reports and bounded raw protocol traffic; overlays provide help,
-order entry and the FIX console.
+over TCP. The Longbridge-style market layout keeps the engine book on the
+left, observed FIX bid/mid/ask prices in the center, and execution reports on
+the right. The market, orders and FIX-session tabs expose bounded protocol
+state; `B` and `S` open a validated order ticket for limit or market orders,
+while overlays provide help, advanced commands and the raw FIX console.
 
 ```bash
 cargo run --locked -p bunting-tui

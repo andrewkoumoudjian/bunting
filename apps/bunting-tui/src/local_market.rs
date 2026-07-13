@@ -444,6 +444,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(client.book.bids.first(), Some(&(100, 5)));
+        assert_eq!(client.executions.len(), 1);
+        assert_eq!(client.prices.len(), 2);
         server.abort();
         Ok(())
     }

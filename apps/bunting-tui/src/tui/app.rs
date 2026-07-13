@@ -23,6 +23,107 @@ pub enum Tab {
     Fix,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+impl OrderSide {
+    pub const fn as_fix_name(self) -> &'static str {
+        match self {
+            Self::Buy => "buy",
+            Self::Sell => "sell",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrderType {
+    #[default]
+    Limit,
+    Market,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TicketField {
+    Type,
+    #[default]
+    Price,
+    Quantity,
+    Submit,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct OrderTicket {
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub price: String,
+    pub quantity: String,
+    pub focused: TicketField,
+}
+
+impl OrderTicket {
+    pub fn new(side: OrderSide) -> Self {
+        Self {
+            side,
+            order_type: OrderType::Limit,
+            price: String::new(),
+            quantity: String::new(),
+            focused: TicketField::Price,
+        }
+    }
+
+    pub fn next_field(&mut self) {
+        self.focused = match self.focused {
+            TicketField::Type => TicketField::Price,
+            TicketField::Price if self.order_type == OrderType::Market => TicketField::Quantity,
+            TicketField::Price => TicketField::Quantity,
+            TicketField::Quantity => TicketField::Submit,
+            TicketField::Submit => TicketField::Type,
+        };
+    }
+
+    pub fn previous_field(&mut self) {
+        self.focused = match self.focused {
+            TicketField::Type => TicketField::Submit,
+            TicketField::Price => TicketField::Type,
+            TicketField::Quantity if self.order_type == OrderType::Market => TicketField::Type,
+            TicketField::Quantity => TicketField::Price,
+            TicketField::Submit => TicketField::Quantity,
+        };
+    }
+
+    pub fn toggle_type(&mut self) {
+        self.order_type = match self.order_type {
+            OrderType::Limit => OrderType::Market,
+            OrderType::Market => OrderType::Limit,
+        };
+        if self.order_type == OrderType::Market && self.focused == TicketField::Price {
+            self.focused = TicketField::Quantity;
+        }
+    }
+
+    pub fn values(&self) -> Result<(&'static str, i64, Option<i64>), String> {
+        let quantity = positive_number(&self.quantity, "quantity")?;
+        let price = match self.order_type {
+            OrderType::Limit => Some(positive_number(&self.price, "price")?),
+            OrderType::Market => None,
+        };
+        Ok((self.side.as_fix_name(), quantity, price))
+    }
+}
+
+fn positive_number(value: &str, name: &str) -> Result<i64, String> {
+    let value = value
+        .parse::<i64>()
+        .map_err(|_| format!("enter a valid {name}"))?;
+    if value <= 0 {
+        return Err(format!("{name} must be greater than zero"));
+    }
+    Ok(value)
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     pub tab: Tab,
@@ -30,6 +131,7 @@ pub struct App {
     pub input: String,
     pub status: String,
     pub selected_level: usize,
+    pub order_ticket: Option<OrderTicket>,
     next_id: u128,
     book_requested: bool,
 }
@@ -45,9 +147,15 @@ impl App {
         self.popup = PopupKind::Command;
     }
 
+    pub fn begin_order(&mut self, side: OrderSide) {
+        self.order_ticket = Some(OrderTicket::new(side));
+        self.popup = PopupKind::OrderTicket;
+    }
+
     pub fn close_popup(&mut self) {
         self.popup = PopupKind::None;
         self.input.clear();
+        self.order_ticket = None;
     }
 }
 
@@ -71,7 +179,10 @@ pub async fn run(address: &str) -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(FRAME_INTERVAL)?
             && let Event::Key(key) = event::read()?
         {
-            let action = keys::resolve(key, app.popup == PopupKind::Command);
+            let action = keys::resolve(
+                key,
+                matches!(app.popup, PopupKind::Command | PopupKind::OrderTicket),
+            );
             if nav::handle(action, &mut app, &mut client).await? {
                 break;
             }
@@ -100,5 +211,33 @@ impl Drop for TerminalSession {
         let _ = disable_raw_mode();
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_ticket_requires_positive_price_and_quantity() {
+        let mut ticket = OrderTicket::new(OrderSide::Buy);
+        ticket.price = "101".to_owned();
+        ticket.quantity = "5".to_owned();
+        assert_eq!(ticket.values(), Ok(("buy", 5, Some(101))));
+
+        ticket.quantity = "0".to_owned();
+        assert_eq!(
+            ticket.values(),
+            Err("quantity must be greater than zero".to_owned())
+        );
+    }
+
+    #[test]
+    fn market_ticket_skips_price() {
+        let mut ticket = OrderTicket::new(OrderSide::Sell);
+        ticket.toggle_type();
+        ticket.quantity = "3".to_owned();
+        assert_eq!(ticket.values(), Ok(("sell", 3, None)));
+        assert_eq!(ticket.focused, TicketField::Quantity);
     }
 }

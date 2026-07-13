@@ -4,14 +4,19 @@
 
 use crate::protocol::{FixClient, book_request, cancel, new_order, replace, status};
 use crate::tui::{
-    app::{App, Tab},
+    app::{App, OrderSide, OrderType, Tab, TicketField},
     keys::Action,
     popup::PopupKind,
 };
 use std::io;
 
 const MAX_COMMAND_BYTES: usize = 256;
+const MAX_ORDER_NUMBER_BYTES: usize = 20;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the navigation reducer keeps every key action in one exhaustive match"
+)]
 pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io::Result<bool> {
     match action {
         Action::Quit => return Ok(true),
@@ -43,8 +48,8 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             app.tab = Tab::Fix;
         }
         Action::BeginCommand => app.begin_command(""),
-        Action::BeginBuy => app.begin_command("buy "),
-        Action::BeginSell => app.begin_command("sell "),
+        Action::BeginBuy => app.begin_order(OrderSide::Buy),
+        Action::BeginSell => app.begin_order(OrderSide::Sell),
         Action::BeginCancel => app.begin_command("cancel "),
         Action::BeginReplace => app.begin_command("replace "),
         Action::Refresh => {
@@ -63,6 +68,47 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                 .saturating_sub(1);
             app.selected_level = app.selected_level.saturating_add(1).min(last);
         }
+        Action::NextField if app.popup == PopupKind::OrderTicket => {
+            if let Some(ticket) = &mut app.order_ticket {
+                ticket.next_field();
+            }
+        }
+        Action::PreviousField if app.popup == PopupKind::OrderTicket => {
+            if let Some(ticket) = &mut app.order_ticket {
+                ticket.previous_field();
+            }
+        }
+        Action::Left | Action::Right if app.popup == PopupKind::OrderTicket => {
+            if let Some(ticket) = &mut app.order_ticket
+                && ticket.focused == TicketField::Type
+            {
+                ticket.toggle_type();
+            }
+        }
+        Action::Submit if app.popup == PopupKind::OrderTicket => {
+            let should_submit = app
+                .order_ticket
+                .as_ref()
+                .is_some_and(|ticket| ticket.focused == TicketField::Submit);
+            if should_submit {
+                let Some(ticket) = app.order_ticket.take() else {
+                    return Ok(false);
+                };
+                match ticket.values() {
+                    Ok((side, quantity, price)) => {
+                        let id = app.allocate_id();
+                        app.popup = PopupKind::None;
+                        Box::pin(client.send(new_order(id, side, quantity, price))).await?;
+                    }
+                    Err(error) => {
+                        app.status = error;
+                        app.order_ticket = Some(ticket);
+                    }
+                }
+            } else if let Some(ticket) = &mut app.order_ticket {
+                ticket.next_field();
+            }
+        }
         Action::Submit if app.popup == PopupKind::Command => {
             let input = std::mem::take(&mut app.input);
             app.popup = PopupKind::None;
@@ -77,12 +123,53 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
         Action::Backspace if app.popup == PopupKind::Command => {
             app.input.pop();
         }
+        Action::Backspace if app.popup == PopupKind::OrderTicket => {
+            if let Some(ticket) = &mut app.order_ticket {
+                match ticket.focused {
+                    TicketField::Price => {
+                        ticket.price.pop();
+                    }
+                    TicketField::Quantity => {
+                        ticket.quantity.pop();
+                    }
+                    TicketField::Type | TicketField::Submit => {}
+                }
+            }
+        }
         Action::Character(character)
             if app.popup == PopupKind::Command && app.input.len() < MAX_COMMAND_BYTES =>
         {
             app.input.push(character);
         }
-        Action::None | Action::Submit | Action::Backspace | Action::Character(_) => {}
+        Action::Character(character) if app.popup == PopupKind::OrderTicket => {
+            if let Some(ticket) = &mut app.order_ticket {
+                match (ticket.focused, character) {
+                    (TicketField::Price, digit)
+                        if digit.is_ascii_digit()
+                            && ticket.price.len() < MAX_ORDER_NUMBER_BYTES =>
+                    {
+                        ticket.price.push(digit);
+                    }
+                    (TicketField::Quantity, digit)
+                        if digit.is_ascii_digit()
+                            && ticket.quantity.len() < MAX_ORDER_NUMBER_BYTES =>
+                    {
+                        ticket.quantity.push(digit);
+                    }
+                    (TicketField::Type, 'l' | 'L') => ticket.order_type = OrderType::Limit,
+                    (TicketField::Type, 'm' | 'M') => ticket.order_type = OrderType::Market,
+                    _ => {}
+                }
+            }
+        }
+        Action::None
+        | Action::Submit
+        | Action::Backspace
+        | Action::Character(_)
+        | Action::NextField
+        | Action::PreviousField
+        | Action::Left
+        | Action::Right => {}
     }
     Ok(false)
 }
