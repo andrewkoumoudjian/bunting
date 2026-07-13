@@ -1,13 +1,14 @@
 // Rust guideline compliant 2026-02-21
 
 use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
-use simfix_wire::{Decoder, FixMessage, WireLimits};
+use simfix_wire::{FixMessage, WireLimits};
 use std::{collections::VecDeque, io};
 use time::{OffsetDateTime, macros::format_description};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 pub const MAX_FIX_LOGS: usize = 256;
 pub const MAX_EXECUTIONS: usize = 128;
+pub const MAX_PRICE_SAMPLES: usize = 240;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Book {
@@ -23,12 +24,18 @@ pub struct Execution {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PriceSample {
+    pub bid: i64,
+    pub ask: i64,
+}
+
 pub struct FixClient {
     stream: TcpStream,
     session: FixSession,
-    decoder: Decoder,
     pub logs: VecDeque<String>,
     pub executions: VecDeque<Execution>,
+    pub prices: VecDeque<PriceSample>,
     pub book: Book,
     pub status: String,
     pub book_sequence: String,
@@ -42,9 +49,9 @@ impl FixClient {
         let mut client = Self {
             stream,
             session,
-            decoder: Decoder::new(WireLimits::default()),
             logs: VecDeque::new(),
             executions: VecDeque::new(),
+            prices: VecDeque::new(),
             book: Book::default(),
             status: "logging on".to_owned(),
             book_sequence: "-".to_owned(),
@@ -87,13 +94,6 @@ impl FixClient {
                 }
                 Ok(read) => {
                     self.log("IN ", &bytes[..read]);
-                    let decoded = self
-                        .decoder
-                        .push(&bytes[..read])
-                        .map_err(|error| io::Error::other(format!("{error:?}")))?;
-                    for message in &decoded {
-                        self.observe(message);
-                    }
                     let actions = self
                         .session
                         .receive_bytes_at(&bytes[..read], &timestamp(), now_millis())
@@ -135,6 +135,17 @@ impl FixClient {
         match message.msg_type.as_str() {
             "W" => {
                 self.book = parse_book(message);
+                if let (Some((bid, _)), Some((ask, _))) =
+                    (self.book.bids.first(), self.book.asks.first())
+                {
+                    if self.prices.len() == MAX_PRICE_SAMPLES {
+                        self.prices.pop_front();
+                    }
+                    self.prices.push_back(PriceSample {
+                        bid: *bid,
+                        ask: *ask,
+                    });
+                }
                 message
                     .value(34)
                     .unwrap_or("?")
@@ -304,5 +315,21 @@ mod tests {
                 asks: vec![(101, 7)]
             }
         );
+    }
+
+    #[test]
+    fn price_history_is_bounded() {
+        let mut prices = VecDeque::new();
+        for price in 0..=MAX_PRICE_SAMPLES {
+            if prices.len() == MAX_PRICE_SAMPLES {
+                prices.pop_front();
+            }
+            prices.push_back(PriceSample {
+                bid: i64::try_from(price).unwrap_or(i64::MAX),
+                ask: i64::try_from(price.saturating_add(2)).unwrap_or(i64::MAX),
+            });
+        }
+        assert_eq!(prices.len(), MAX_PRICE_SAMPLES);
+        assert_eq!(prices.front().map(|sample| sample.bid), Some(1));
     }
 }

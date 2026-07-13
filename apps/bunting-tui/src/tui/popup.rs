@@ -8,5 +8,6 @@ pub enum PopupKind {
     None,
     Help,
     Command,
+    OrderTicket,
     FixLog,
 }
