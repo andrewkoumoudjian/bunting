@@ -22,7 +22,7 @@ The fixture inventory currently contains documentation-derived and client-corrob
 - `app/application.yml`;
 - five scenario JSON files under `app/src/main/resources/scenarios/`.
 
-The README instructs running `exchange-simulator-0.0.1-SNAPSHOT.jar`, but that JAR and the Java implementation source are not present in the recorded tree.
+The README instructs running `exchange-simulator-0.0.1-SNAPSHOT.jar`, but that JAR and the Java implementation source are not present in the direct `ref/nbc_engine` tree.
 
 The separate pinned `ref/nbc-hft-simulation` client tree does contain a JAR with that name. Its source, license, build provenance and relationship to `ref/nbc_engine` are unresolved, so it is recorded as an opaque artifact and must not be decompiled or treated as the selected compatibility binary without documented authority.
 
@@ -138,7 +138,7 @@ Do not turn field names or API examples into invented implementation claims.
 
 No repository-level license or port authorization is recorded for the NBC application/assets. Until authority is documented:
 
-- do not decompile the missing JAR;
+- do not decompile or inspect the opaque JAR from the separate client tree beyond authorized file-level provenance checks;
 - do not copy or mechanically translate unlicensed implementation text obtained elsewhere;
 - use observable interfaces, authorized configuration/scenario data, captured traces, independently written specifications, and independently licensed literature/reference systems;
 - label every behavior as observed, independently specified, literature-derived, Bunting-added or unresolved;

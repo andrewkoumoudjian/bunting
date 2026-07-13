@@ -51,7 +51,7 @@ The first-party `packages/orderbook` path is the Bunting adapter around the rele
 | `liquibook` | Embeddable C++ matching kernel with application callbacks and optional depth | Independent matching oracle and focused fixture source |
 | `exchange-core` | Full Java exchange core: matching, risk/accounting, commands/reports, journaling and snapshots | Full-exchange architecture and invariant oracle; no runtime dependency |
 | `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Future options dependency candidate; evaluate API/dependencies/Wasm first |
-| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; Java implementation/JAR absent from snapshot | First-class clean-room or authorized market-engine port target; external compatibility only is presently provable |
+| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; Java implementation and named JAR absent from the direct snapshot, with an opaque same-named JAR in a separate pinned client tree | First-class clean-room or authorized market-engine port target; external compatibility only is presently provable |
 | `abides` | Agent-based discrete-event market simulator with exchange agent, messaging and configurable latency | Market-simulation architecture and experimental oracle |
 | `fauxchange` | Reserved/planned project with no implementation API | No code adoption; roadmap reference only |
 
@@ -101,7 +101,7 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 
 ### NBC
 
-The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. Do not claim exact internal matching, scheduler, agent, database or replay equivalence from the scenario/config files. See `docs/ports/nbc-simulation.md`.
+The current `ref/nbc_engine` snapshot proves the packaged application and observable interface but does not include its Java source or named JAR. A separate pinned client tree contains an opaque same-named JAR with unresolved source, license, build provenance and relationship to the direct snapshot. Do not decompile it or claim exact internal matching, scheduler, agent, database or replay equivalence from either artifact. See `docs/ports/nbc-simulation.md`.
 
 ### QUARCC
 
