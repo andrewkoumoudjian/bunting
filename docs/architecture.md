@@ -76,7 +76,7 @@ User strategy source
 
 ### Worker
 
-- `apps/edge-api`: the current Rust Worker path; it moves mechanically to `apps/trpc-api` and replaces its REST router with direct native Rust tRPC dispatch under ADR 0016.
+- `apps/trpc-api`: the current Rust Worker path; its REST router is replaced with direct native Rust tRPC dispatch under ADR 0016 in a separate semantic sprint.
 - planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
 - `clients/fix-bridge`: the native Rust FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
 

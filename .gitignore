@@ -5,7 +5,7 @@
 
 # Cloudflare
 .wrangler/
-apps/edge-api/build/
+apps/trpc-api/build/
 .dev.vars
 .dev.vars.*
 

@@ -40,7 +40,7 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the current deployable Worker lives under `apps/edge-api/` pending its mechanical move to `apps/trpc-api/`. The move and native tRPC cutover remain separate sprints.
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the current deployable Worker lives under `apps/trpc-api/`. The mechanical path move and native tRPC cutover remain separate sprints.
 
 Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
@@ -58,7 +58,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `quarcc-trading-engine`: current WASM-safe `quarcc.v1` compatibility-contract seed, not the complete execution engine;
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
-- `apps/edge-api`: current plain Rust Cloudflare Worker entrypoint.
+- `apps/trpc-api`: current plain Rust Cloudflare Worker entrypoint.
 
 ## Provisional REST implementation to remove
 
@@ -71,12 +71,12 @@ POST /v1/runs/:run_id/instruments/:instrument_id/orders/:order_id/cancel
 
 The cutover also removes caller-selected participant identity. Actor identity comes from verified authentication claims.
 
-Deployment and migration commands use the Worker config at `apps/edge-api/wrangler.toml`:
+Deployment and migration commands use the Worker config at `apps/trpc-api/wrangler.toml`:
 
 ```bash
 npx wrangler d1 create bunting-origin
-npx wrangler d1 migrations apply bunting-origin --config apps/edge-api/wrangler.toml --remote
-npx wrangler secret put BUNTING_API_TOKEN --config apps/edge-api/wrangler.toml
+npx wrangler d1 migrations apply bunting-origin --config apps/trpc-api/wrangler.toml --remote
+npx wrangler secret put BUNTING_API_TOKEN --config apps/trpc-api/wrangler.toml
 ```
 
 Scenario/orchestration code provisions runs before order entry. The command endpoint returns `unknown_run` instead of creating authoritative state implicitly.

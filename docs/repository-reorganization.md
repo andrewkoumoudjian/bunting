@@ -84,7 +84,7 @@ Do not create a nested workspace inside `bunting-rs`.
 │   └── src/
 │       └── lib.rs
 ├── apps/
-│   └── edge-api/
+│   └── trpc-api/
 ├── scenarios/
 │   └── nbc/
 ├── tests/
@@ -165,7 +165,7 @@ Do not copy upstream source under `packages/orderbook`.
 | `workers/edge-api` | `apps/edge-api` | `git mv`; update Cargo, Wrangler, migrations, docs and CI |
 | none | `bunting-rs` | Add one thin composition crate with no duplicated logic |
 | `scenarios/nbc` | `scenarios/nbc` | Keep |
-| generated Worker output | `out/edge-api/<version>/` | Generate, ignore and upload through release tooling |
+| generated Worker output | `out/trpc-api/<version>/` | Generate, ignore and upload through release tooling |
 
 Do not move stub-only directories into the active package set. Review each scaffold separately after the mechanical PR; delete or retain instructions according to the audited roadmap.
 
@@ -282,9 +282,9 @@ Do not use global blind replacement inside `ref/`, historical diffs or archived 
 
 A repository tool may be added to:
 
-1. run the existing Worker release build from `apps/edge-api`;
+1. run the existing Worker release build from `apps/trpc-api`;
 2. collect the generated JavaScript shim, Wasm module and required metadata;
-3. write `out/edge-api/<version>/`;
+3. write `out/trpc-api/<version>/`;
 4. emit SHA-256 checksums and a manifest with commit, toolchain, target and package versions;
 5. leave `out/` ignored.
 
@@ -311,7 +311,7 @@ Verify additionally:
 - no production manifest references `ref/`;
 - no package depends on `bunting-rs` or `apps/`;
 - `bunting-rs` depends inward only on first-party packages;
-- Worker build and D1 migration discovery work from `apps/edge-api`;
+- Worker build and D1 migration discovery work from `apps/trpc-api`;
 - no generated artifact is tracked;
 - no copied upstream source entered `packages/`;
 - `docs/reference-functionality-audit.md` and reference pins are unchanged unless the PR explicitly explains an evidence-only correction;
