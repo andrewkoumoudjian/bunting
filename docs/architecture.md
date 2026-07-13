@@ -18,6 +18,7 @@ The system is an education, research, and integration environment. It is not a c
 8. **Commit before publish:** no acknowledgement, fill, or stream update is public before origin persistence succeeds.
 9. **Least privilege:** user Dynamic Workers receive bounded inputs and no direct market-state mutation capability.
 10. **Upstream-first maintenance:** prefer dependency upgrades and upstream fixes to internal forks.
+11. **One production engine:** `bunting-engine` composes OrderBook-rs matching with scenario, NBC-compatibility, RIT-derived surface, ledger, risk, recovery, and publication behavior; profiles configure that engine rather than selecting alternate venue kernels.
 
 ## 3. Topology
 
@@ -32,7 +33,9 @@ FIX initiator -> native Rust FIX bridge
        - direct tRPC fetch dispatch
        - auth, schemas and protocol bounds
        - expected-version command handling
-       - OrderBook-rs adapter
+       - unified bunting-engine
+       - OrderBook-rs matching adapter
+       - scenario and NBC-compatibility profiles
        - Bunting risk/ledger/events
        - snapshot and stream responses
           |                 |
@@ -65,10 +68,11 @@ User strategy source
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
 - `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
 - `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
+- future `bunting-engine`: the single production venue engine, composing the matching adapter, command transaction, scenarios, deterministic clock, compatibility profiles, market data, scoring and recovery.
 - future `bunting-api-contract`: Rust-owned tRPC procedure and schema contract.
 - future `trpc-wire`: bounded, market-neutral tRPC HTTP/SSE compatibility.
 - future `trpc-client`: native client transport for Rust adapters.
-- future `nbc-market-engine`: complete authorized Rust translation of the selected NBC JAR market engine.
+- transitional `nbc-market-engine`: provenance-linked NBC translation evidence and compatibility oracle to be integrated into `bunting-engine`, not a separately selectable production engine.
 - `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later crates: scenario clock, scenario engine, agent models, protocol-native, FIX, replay exports, and scoring.
@@ -120,7 +124,7 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 - scenario scheduling, random streams, scoring, and administration;
 - the native tRPC entrypoint, Cache API policy, committed stream content, and recovery behavior;
 - Dynamic Worker strategy isolation;
-- NBC translation/integration and the Rust tRPC contract; FIX, RITC and Nautilus mappings stay outside the market engine.
+- NBC translation/integration, RIT-derived venue behavior and the Rust tRPC contract; FIX, RITC, QUARCC and Nautilus mappings stay outside the market engine.
 
 ## 6. Public API boundary
 

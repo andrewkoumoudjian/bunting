@@ -9,7 +9,7 @@ Build a Rust market-simulation and exchange-testing platform composed from reusa
 - Read this file before changing the repository.
 - Read the nearest scoped `AGENTS.md` for every path touched.
 - Accepted ADRs and `docs/architecture.md` are binding.
-- ADR 0014 defines market-engine versus participant execution-engine authority.
+- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`.
 - Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
 - Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
 - Before reorganizing paths, read `docs/repository-reorganization.md` and follow its execution contract.
@@ -30,14 +30,14 @@ Never infer functionality from a repository name. Never treat `.gitmodules` bran
 
 ## Engine roles
 
-### Market engines
+### Market engine
 
-A Bunting market-engine implementation owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
+A single production `bunting-engine` owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
 
-- The current default Bunting engine uses released `OrderBook-rs` for CLOB matching.
-- NBC is a complete market-engine port target. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models.
+- The engine uses released `OrderBook-rs` for CLOB matching.
+- NBC is a complete compatibility input to the unified engine. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models, and do not create a second selectable venue kernel.
 - The direct NBC snapshot lacks the Java implementation and named JAR; the separately pinned JAR is authorized under ADR 0017 for bytecode inspection, Rust translation and redistribution. Cite bytecode or differential evidence before claiming exact internal equivalence.
-- NBC may reuse shared packages when behavior remains compatible, but its coherent market-engine boundary must remain visible.
+- NBC-specific scenario, scheduler, agent, scoring and protocol behavior remains visibly provenance-linked inside the unified engine; any incompatibility with OrderBook-rs is an explicit unresolved gap or reviewed extension, not an implicit second matcher.
 
 ### QUARCC execution engine
 
@@ -53,11 +53,11 @@ RITC market making, NautilusTrader, Barter, market-maker-rs, and the NBC student
 
 The repository root remains one Cargo workspace and owns the single `Cargo.lock` and workspace-wide `.cargo/config.toml`.
 
-- `packages/`: first-party reusable Rust packages that compose Bunting. This includes primitives, market engines, execution engines, protocol components, clients, simulators, and narrowly scoped algorithm/model libraries.
-- `bunting-rs/`: integrated Bunting product/library that imports packages, selects engines, and exposes the curated public API.
+- `packages/`: first-party reusable Rust packages that compose Bunting. This includes primitives, the unified market engine, execution engines, protocol components, clients, simulators, and narrowly scoped algorithm/model libraries.
+- `bunting-rs/`: integrated Bunting product/library that imports packages, configures the unified engine, and exposes the curated public API.
 - `bunting-rs/crates/`: Bunting-private glue only when code has no reusable package role.
 - `apps/`: deployable Workers, binaries, CLIs, and gateways that depend on `bunting-rs` or public package APIs.
-- `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC logic belongs in the NBC market-engine package.
+- `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC-compatible logic belongs in `packages/bunting-engine`.
 - `schemas/`: versioned protocol and file schemas.
 - `tests/`: cross-package, cross-engine, protocol, and deployment tests.
 - `tools/`: repository automation and release tooling.
@@ -79,9 +79,9 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 ## Binding architecture decisions
 
-- `orderbook-rs = 0.10.3` remains the production matching dependency for the current default market engine.
+- `orderbook-rs = 0.10.3` remains the production matching dependency for the unified market engine.
 - Do not create another generic Bunting-owned CLOB when the upstream API provides the required behavior.
-- NBC may require engine-specific behavior, but a separate matching implementation needs a documented compatibility requirement, evidence, and differential tests.
+- NBC may require compatibility behavior around the shared matcher, but a separate production matching implementation is prohibited unless a later ADR changes ADR 0018 with documented evidence and differential tests.
 - `packages/orderbook` is the first-party Bunting adapter, not a location for copied upstream source.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
 - The deployment target is one native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. ADR 0016 authorizes an optional Rust stream-coordination Durable Object only after its gate; it never owns market commands or origin truth.
@@ -91,7 +91,7 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 ## Authority boundaries
 
-Bunting market engines own venue-side identities, matching results, canonical events, authoritative ledger projections, scenario/run state, and market-data publication.
+The Bunting engine owns venue-side identities, matching results, canonical events, authoritative ledger projections, scenario/run state, and market-data publication.
 
 Participant-side packages own local order intent, venue reconciliation, strategy state, participant risk, and client/gateway connectivity. They submit ordinary commands and consume committed reports.
 

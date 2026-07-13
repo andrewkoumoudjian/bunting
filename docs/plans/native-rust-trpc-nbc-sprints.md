@@ -1,12 +1,12 @@
 # Native Rust tRPC and NBC implementation sprints
 
-Status: implementation-ready plan
+Status: superseded for engine selection by ADR 0018 and [`unified-bunting-engine-roadmap.md`](unified-bunting-engine-roadmap.md); retained for completed tRPC/NBC evidence history
 
-Canonical decisions: ADR 0013, ADR 0014, ADR 0016 and ADR 0017
+Canonical decisions: ADR 0013, ADR 0014, ADR 0016, ADR 0017 and ADR 0018
 
 ## Outcome
 
-Bunting ships one public native Rust Cloudflare Worker whose only application API is the versioned tRPC contract. The Worker invokes Rust market engines in process, commits origin truth before acknowledgement, and exposes committed recovery-aware subscriptions. A native Rust FIX bridge maps FIX/TCP to the Rust tRPC client. The authorized NBC JAR is translated into a complete selectable Rust market engine with JAR-linked provenance and differential tests.
+Bunting ships one public native Rust Cloudflare Worker whose only application API is the versioned tRPC contract. The Worker invokes the unified Rust market engine in process, commits origin truth before acknowledgement, and exposes committed recovery-aware subscriptions. A native Rust FIX bridge maps FIX/TCP to the Rust tRPC client. The authorized NBC JAR is translated into a complete provenance-linked compatibility profile within that engine, with JAR-linked differential tests.
 
 ## Current implementation gaps
 
@@ -159,9 +159,9 @@ Use one branch/PR per coherent slice:
 
 Each PR updates the translation ledger, cites JAR class/resource paths, adds JAR-versus-Rust fixtures and labels intentional Bunting additions. An NBC-specific matcher is permitted only when the evidence disproves shared OrderBook-rs compatibility.
 
-## Sprint 8: engine selection, staging and release
+## Sprint 8: unified profile staging and release
 
-Persist engine ID/version/capabilities/configuration with every run. Exercise the default `orderbook-v1` and translated `nbc-v1` engines through the same tRPC and FIX client boundaries. Validate recovery, deployment, migrations, artifact checksums, redistribution manifests, scenario provenance and rollback before release.
+Persist the unified engine ID/version plus profile, capabilities and configuration with every run. Exercise baseline and NBC compatibility profiles through the same tRPC and FIX client boundaries. Validate recovery, deployment, migrations, artifact checksums, redistribution manifests, scenario provenance and rollback before release.
 
 ## Program rules
 

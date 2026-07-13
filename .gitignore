@@ -33,3 +33,6 @@ __pycache__/
 # Generated diagnostics
 coverage/
 artifacts/local/
+
+# Local proprietary analysis inputs
+/temp/

@@ -1,6 +1,6 @@
 # Reference adoption, dependency, and source-copy policy
 
-ADR 0013 defines the current default Worker/OrderBook-rs market path. ADR 0014 defines market-engine versus participant execution-engine authority.
+ADR 0013 defines the Worker/OrderBook-rs market path. ADR 0014 defines market-engine versus participant execution-engine authority. ADR 0018 supersedes the selectable-engine model and requires one production `bunting-engine`.
 
 The authoritative functionality inventory is [`reference-functionality-audit.md`](reference-functionality-audit.md). This document records adoption policy and disposition; it must not redefine a reference’s role without updating the source-backed audit first.
 
@@ -35,7 +35,7 @@ For every reference or vendored component, record:
 | Dependency | Approved version/use | Boundary |
 |---|---|---|
 | `worker` / workers-rs | `0.8.5`; Worker runtime, Router/HTTP, WebSocket, Cache API, D1 and selected bindings | Platform only; no market semantics |
-| `orderbook-rs` | `0.10.3`, `default-features = false`; current default market engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
+| `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
 
 The first-party `packages/orderbook` path is the Bunting adapter around the released dependency. It is not an upstream source copy.
@@ -52,12 +52,12 @@ The first-party `packages/orderbook` path is the Bunting adapter around the rele
 
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
-| `orderbook-rs` | Complete reusable matching/order-book kernel with lifecycle, risk hooks, fees, snapshots/replay helpers, depth/analytics and optional native layers | Production dependency for the default engine |
+| `orderbook-rs` | Complete reusable matching/order-book kernel with lifecycle, risk hooks, fees, snapshots/replay helpers, depth/analytics and optional native layers | Production matching dependency for the unified engine |
 | `pricelevel` | Order-domain and per-price concurrent queue/matching substrate | Approved transitive dependency |
 | `liquibook` | Embeddable C++ matching kernel with application callbacks and optional depth | Independent matching oracle and focused fixture source |
 | `exchange-core` | Full Java exchange core: matching, risk/accounting, commands/reports, journaling and snapshots | Full-exchange architecture and invariant oracle; no runtime dependency |
 | `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Future options dependency candidate; evaluate API/dependencies/Wasm first |
-| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | First-class authorized Rust market-engine translation target under ADR 0017; compatibility claims require JAR-linked evidence |
+| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | Authorized compatibility translation input to the unified engine under ADR 0017 and ADR 0018; compatibility claims require JAR-linked evidence |
 | `abides` | Agent-based discrete-event market simulator with exchange agent, messaging and configurable latency | Market-simulation architecture and experimental oracle |
 | `fauxchange` | Reserved/planned project with no implementation API | No code adoption; roadmap reference only |
 
@@ -104,6 +104,10 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 | `proptest` | Property-based generation, shrinking and failure persistence | Development/test dependency |
 
 ## Local port-source restrictions
+
+### RIT installer corpus
+
+The supplied RIT MSI files are proprietary binary evidence, not dependencies or redistributable source. Static extraction may inform clean-room external contracts and conformance fixtures, but no installer, payload, resource, decompiled body, credential, or proprietary byte sequence may enter Git or a production manifest. Exact hashes, static methods, derived protocol inventories, feature coverage, and unresolved evidence are recorded in [`research/rit-binary-audit/`](research/rit-binary-audit/); any behavior beyond that evidence remains unresolved or Bunting-added.
 
 ### NBC
 

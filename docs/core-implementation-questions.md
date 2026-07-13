@@ -1,6 +1,6 @@
 # Core implementation questions and binding answers
 
-ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
+ADR 0013, ADR 0016, ADR 0017 and ADR 0018 are authoritative when older documents disagree.
 
 ## Decision index
 
@@ -16,7 +16,7 @@ ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
 | Streaming? | tRPC HTTP subscriptions with committed sequence cursors and snapshot/reset recovery; a Rust stream-only Durable Object is conditional on the ADR 0016 gate. |
 | Dynamic strategies? | Isolated Dynamic Workers; proposed actions re-enter the ordinary command path. |
 | FIX/RITC/Nautilus? | Participant-side client adapters over tRPC. FIX terminates in a native bridge. |
-| NBC? | A complete authorized Rust market engine translated from the pinned JAR under ADR 0017. |
+| NBC? | A complete authorized compatibility translation from the pinned JAR under ADR 0017, integrated into the single production `bunting-engine` under ADR 0018. |
 
 ## 1. Upstream API usage
 
