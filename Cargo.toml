@@ -12,6 +12,7 @@ members = [
   "packages/quarcc-trading-engine",
   "packages/bunting-api-contract",
   "packages/trpc-wire",
+  "packages/nbc-market-engine",
   "bunting-rs",
   "apps/trpc-api",
 ]

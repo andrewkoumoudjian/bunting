@@ -210,6 +210,27 @@
       "observed_scope": "scenario identifiers and count only"
     }
   ],
+  "translated_slices": [
+    {
+      "id": "sprint-7.1-strict-configuration",
+      "rust_module": "packages/nbc-market-engine/src/config.rs",
+      "translation_ledger": "docs/ports/nbc-translation-ledger.v1.tsv",
+      "fixture": "tests/conformance/nbc/config/normal-market.expected.v1.json",
+      "source_classes": [
+        "BOOT-INF/classes/ca/mc/exchange_simulator/scenario/ScenarioConfig.class",
+        "BOOT-INF/classes/ca/mc/exchange_simulator/service/ScenarioService.class"
+      ],
+      "source_resource": "BOOT-INF/classes/scenarios/normal_market.json",
+      "bunting_added": [
+        "strict_unknown_field_rejection",
+        "exact_decimal_strings",
+        "explicit_unit_mappings",
+        "bounded_configuration",
+        "configuration_and_provenance_hashes",
+        "inert_unresolved_parameters"
+      ]
+    }
+  ],
   "unresolved": [
     "original_upstream_license_metadata_and_build_provenance",
     "relationship_between_the_direct_snapshot_and_the_client_submodule_jar",

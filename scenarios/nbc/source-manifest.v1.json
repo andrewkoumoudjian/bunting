@@ -1,0 +1,18 @@
+{
+  "manifest_version": "bunting.nbc.source-manifest.v1",
+  "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+  "jar_gitlink": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+  "configuration_classes": [
+    { "path": "BOOT-INF/classes/ca/mc/exchange_simulator/scenario/ScenarioConfig.class", "sha256": "c3132cefbd6792e4fb95fae96bb50bcc987c4d62c51c4db226454de03ee3475e" },
+    { "path": "BOOT-INF/classes/ca/mc/exchange_simulator/service/ScenarioService.class", "sha256": "63c1ca37373bd69900efeee0fdb5f9dc579bd1244f1da38c3a347fcae7ad2bc5" }
+  ],
+  "scenario_resources": [
+    { "id": "flash_crash", "path": "BOOT-INF/classes/scenarios/flash.json", "sha256": "161f4d072883dbd6231abb98728ed6a356adfc9f31a86d75d925a0f26b21abb6" },
+    { "id": "hft_dominated", "path": "BOOT-INF/classes/scenarios/hft_dominated.json", "sha256": "96e74be40ec0460304b9172f74c15699365893880297e190e940392ddfd92c3c" },
+    { "id": "mini_flash_crash", "path": "BOOT-INF/classes/scenarios/mini_flash_crash.json", "sha256": "dd1b9cea1fa99d79e550da3dd713b83fbf311f90ad8b0d2a79f3dbe5d5d90b83" },
+    { "id": "normal_market", "path": "BOOT-INF/classes/scenarios/normal_market.json", "sha256": "ca8770206ac4bebe0a05ccd7dd118b4132e18e090116dccb719f8b80abbb1846" },
+    { "id": "stressed_market", "path": "BOOT-INF/classes/scenarios/stressed_market.json", "sha256": "b2907178fa6f4993658645a4daaa68360ccf2105abfbfaab5a2fc2a6669f0692" }
+  ],
+  "implemented_fixture": "tests/conformance/nbc/config/normal-market.input.v1.json",
+  "unresolved_semantics": ["agent_parameters", "drift_horizon", "volatility_horizon", "legacy_price_unit_economic_meaning", "special_events"]
+}
