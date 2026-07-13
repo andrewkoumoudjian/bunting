@@ -1,0 +1,64 @@
+{
+  "schema_version": "bunting.nbc.config.v1",
+  "engine_version": "nbc-v1-config-1",
+  "scenario_id": "normal_market",
+  "scenario_name": "Normal Market",
+  "seed": 12345,
+  "duration_steps": 36000,
+  "step_interval_ms": 100,
+  "market": {
+    "price_unit": "legacy_nbc_price_unit",
+    "initial_fundamental_value": "1000",
+    "tick_size": "0.25",
+    "initial_spread": "0.5"
+  },
+  "legacy_parameters": {
+    "fundamentalDrift": "0.00001",
+    "fundamentalVolatility": "0.001",
+    "specialEvents": [],
+    "traders": {
+      "fundamental": { "count": 30, "interval": 100, "kappa1": "0.5", "kappa2": "0.05" },
+      "marketMaker": { "count": 5, "delta": "0.3", "gamma": "0.8", "inventoryLimit": 5000, "maxEdge": "2", "restPeriod": 600, "safeInventory": 2000 },
+      "momentumLongTerm": { "cancelRate": "0.05", "chi": "50", "count": 15, "decayRate": "0.01", "psi": "15" },
+      "momentumShortTerm": { "cancelRate": "0.05", "chi": "80", "count": 15, "decayRate": "0.9", "psi": "25" },
+      "noise": { "cancelRate": "0.05", "count": 30, "eta": "5", "kappa": "0.25" }
+    }
+  },
+  "provenance": {
+    "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+    "jar_gitlink": "35b8050546679547dc737198ea13aa0ec8ed7db8",
+    "source_scenario_id": "normal_market",
+    "artifacts": [
+      {
+        "path": "BOOT-INF/classes/ca/mc/exchange_simulator/scenario/ScenarioConfig.class",
+        "sha256": "c3132cefbd6792e4fb95fae96bb50bcc987c4d62c51c4db226454de03ee3475e",
+        "classification": "bytecode_observed"
+      },
+      {
+        "path": "BOOT-INF/classes/ca/mc/exchange_simulator/service/ScenarioService.class",
+        "sha256": "63c1ca37373bd69900efeee0fdb5f9dc579bd1244f1da38c3a347fcae7ad2bc5",
+        "classification": "bytecode_observed"
+      },
+      {
+        "path": "BOOT-INF/classes/scenarios/normal_market.json",
+        "sha256": "ca8770206ac4bebe0a05ccd7dd118b4132e18e090116dccb719f8b80abbb1846",
+        "classification": "jar_resource_observed"
+      }
+    ],
+    "unit_mappings": {
+      "durationSteps": "logical_steps",
+      "initialFundamentalValue": "legacy_nbc_price_unit",
+      "initialSpread": "legacy_nbc_price_unit",
+      "seed": "unsigned_64_bit_seed",
+      "stepIntervalMs": "milliseconds",
+      "tickSize": "legacy_nbc_price_unit"
+    },
+    "unresolved_fields": [
+      "legacy_parameters.fundamentalDrift",
+      "legacy_parameters.fundamentalVolatility",
+      "legacy_parameters.specialEvents",
+      "legacy_parameters.traders"
+    ],
+    "translation_disposition": "translated_input_shape_with_bunting_strictness_and_inert_unresolved_parameters"
+  }
+}

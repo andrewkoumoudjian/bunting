@@ -250,6 +250,13 @@ The separately pinned `ref/nbc-hft-simulation` client tree contains `app/exchang
 
 Bounded Sprint 6 inspection records 40 NBC application classes and their exact hashes in `docs/ports/nbc-jar-inventory.v1.tsv`. Bytecode directly establishes configuration, run-context, scheduler, order-book, market-data, agent, metrics and persistence class boundaries, while one isolated credential-free runtime observation establishes that `GET /api/replays` returns HTTP 200 with five scenario identifiers. These observations narrow the implementation evidence; they do not establish authenticated lifecycle, WebSocket/`DONE`, matching edge cases, scoring/termination equivalence, or a complete relationship to the direct snapshot.
 
+Sprint 7.1 translates the bytecode-observed `ScenarioConfig`/`ScenarioService`
+input boundary and the JAR-embedded normal-market resource into the first real
+`packages/nbc-market-engine` slice. The translation ledger and differential
+fixture preserve exact class/resource hashes. Strict rejection, explicit units,
+bounded input, inert unresolved parameters, and deterministic configuration and
+provenance hashes are Bunting-added; they are not attributed to the JAR.
+
 ### It is not
 
 Merely scenario data. The observable package and authorized JAR are a venue-side simulator. The direct snapshot alone is insufficient for an exact internal translation; translated claims require JAR bytecode or reproducible runtime evidence.

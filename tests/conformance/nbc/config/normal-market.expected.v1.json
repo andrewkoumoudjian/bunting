@@ -1,0 +1,18 @@
+{
+  "fixture_version": "bunting.nbc.config-conformance.v1",
+  "classification": {
+    "input_shape": "bytecode_observed",
+    "scenario_values": "jar_resource_observed",
+    "strictness_units_and_hash": "Bunting-added"
+  },
+  "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+  "scenario_config_class_sha256": "c3132cefbd6792e4fb95fae96bb50bcc987c4d62c51c4db226454de03ee3475e",
+  "scenario_service_class_sha256": "63c1ca37373bd69900efeee0fdb5f9dc579bd1244f1da38c3a347fcae7ad2bc5",
+  "scenario_resource_sha256": "ca8770206ac4bebe0a05ccd7dd118b4132e18e090116dccb719f8b80abbb1846",
+  "scenario_id": "normal_market",
+  "duration_steps": 36000,
+  "step_interval_ms": 100,
+  "tick_size": "0.25",
+  "deterministic_config_sha256": "7991d76c85b45150dae1c0d5f5be926a68e4be0057f2615a3ba8e5549f587ba7",
+  "deterministic_provenance_sha256": "c2cb2b4679d3e688c74092703ebd398452d66ba357c9027d18830c1f9aa9c228"
+}

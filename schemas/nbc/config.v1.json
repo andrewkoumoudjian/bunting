@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bunting.example/schemas/nbc/config.v1.json",
+  "title": "Bunting NBC configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "engine_version", "scenario_id", "scenario_name", "seed", "duration_steps", "step_interval_ms", "market", "legacy_parameters", "provenance"],
+  "properties": {
+    "schema_version": { "const": "bunting.nbc.config.v1" },
+    "engine_version": { "const": "nbc-v1-config-1" },
+    "scenario_id": { "type": "string", "minLength": 1 },
+    "scenario_name": { "type": "string", "minLength": 1 },
+    "seed": { "type": "integer", "minimum": 0 },
+    "duration_steps": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "step_interval_ms": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "market": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["price_unit", "initial_fundamental_value", "tick_size", "initial_spread"],
+      "properties": {
+        "price_unit": { "type": "string", "minLength": 1 },
+        "initial_fundamental_value": { "$ref": "#/$defs/exactDecimal" },
+        "tick_size": { "$ref": "#/$defs/exactDecimal" },
+        "initial_spread": { "oneOf": [{ "$ref": "#/$defs/exactDecimal" }, { "type": "null" }] }
+      }
+    },
+    "legacy_parameters": {
+      "type": "object",
+      "description": "Inert unresolved reference values; no Sprint 7.1 runtime behavior may read them."
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jar_sha256", "jar_gitlink", "source_scenario_id", "artifacts", "unit_mappings", "unresolved_fields", "translation_disposition"],
+      "properties": {
+        "jar_sha256": { "$ref": "#/$defs/sha256" },
+        "jar_gitlink": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_scenario_id": { "type": "string", "minLength": 1 },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" }, "minItems": 1, "maxItems": 32 },
+        "unit_mappings": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+        "unresolved_fields": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "maxItems": 128 },
+        "translation_disposition": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "exactDecimal": { "type": "string", "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "classification"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "classification": { "enum": ["bytecode_observed", "jar_resource_observed", "runtime_observed", "Bunting-added", "unresolved"] }
+      }
+    }
+  }
+}

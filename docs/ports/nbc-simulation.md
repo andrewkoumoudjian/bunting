@@ -247,6 +247,18 @@ Current status: steps 1, 2, 3, 4 and 6 are complete for the checked-in evidence 
 3. Add a source manifest containing file hashes and unresolved semantic fields.
 4. Do not execute an unresolved parameter.
 
+Current status: the first vertical slice is implemented in
+`packages/nbc-market-engine`. The strict canonical schema is
+`schemas/nbc/config.v1.json`; `ScenarioConfig.class`, `ScenarioService.class`
+and the normal-market JAR resource are linked file-by-file in
+`nbc-translation-ledger.v1.tsv`. Logical duration is measured in steps and the
+step interval in milliseconds. Reference price values use exact decimal strings
+and the explicit `legacy_nbc_price_unit` label because their economic unit is
+unresolved. Agent, drift, volatility and special-event parameters are preserved
+under `legacy_parameters` and cannot drive behavior in this slice. Strictness,
+unit wrappers, canonical serialization and SHA-256 configuration hashing are
+Bunting-added, not claimed JAR behavior.
+
 ### Phase 2: Bunting-defined deterministic run kernel
 
 1. Define total ordering for external commands, agent wakeups, matching consequences, publication and scoring.
