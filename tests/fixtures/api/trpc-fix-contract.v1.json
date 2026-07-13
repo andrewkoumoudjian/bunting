@@ -1,0 +1,281 @@
+{
+  "schema_version": "bunting.trpc-fix-contract.v1",
+  "classification": "Bunting-added",
+  "status": "specified_not_implemented",
+  "public_api": {
+    "router": "bunting.v1",
+    "transport": "tRPC",
+    "worker": "apps/trpc-api",
+    "typed_client": "clients/typescript-sdk",
+    "authoritative_service": "apps/edge-api",
+    "authoritative_service_visibility": "private_service_binding_only",
+    "wide_integer_encoding": "validated_decimal_string",
+    "mutation_batching": "disabled",
+    "max_query_batch_calls": 16,
+    "max_request_bytes": 16384
+  },
+  "common_mutation_fields": [
+    "commandId",
+    "correlationId",
+    "expectedSequence",
+    "logicalTimeNs"
+  ],
+  "procedures": [
+    {
+      "name": "system.health",
+      "kind": "query",
+      "capability": null,
+      "implementation_state": "private_handler_exists",
+      "result_fields": [
+        "apiVersion",
+        "serviceVersion",
+        "orderbookVersion",
+        "contractCompatible"
+      ]
+    },
+    {
+      "name": "runs.create",
+      "kind": "mutation",
+      "capability": "run_provisioning",
+      "implementation_state": "planned",
+      "required_input": [
+        "commandId",
+        "correlationId",
+        "expectedSequence",
+        "logicalTimeNs",
+        "marketEngineId",
+        "marketEngineVersion",
+        "configuration"
+      ]
+    },
+    {
+      "name": "runs.get",
+      "kind": "query",
+      "capability": "run_discovery",
+      "implementation_state": "planned",
+      "required_input": [
+        "runId"
+      ]
+    },
+    {
+      "name": "orders.submit",
+      "kind": "mutation",
+      "capability": "submit_limit",
+      "implementation_state": "private_handler_exists",
+      "required_input": [
+        "runId",
+        "instrumentId",
+        "commandId",
+        "correlationId",
+        "expectedSequence",
+        "logicalTimeNs",
+        "orderId",
+        "side",
+        "priceTicks",
+        "quantityLots"
+      ]
+    },
+    {
+      "name": "orders.cancel",
+      "kind": "mutation",
+      "capability": "cancel",
+      "implementation_state": "private_handler_exists",
+      "required_input": [
+        "runId",
+        "instrumentId",
+        "commandId",
+        "correlationId",
+        "expectedSequence",
+        "logicalTimeNs",
+        "orderId"
+      ]
+    },
+    {
+      "name": "orders.replace",
+      "kind": "mutation",
+      "capability": "replace",
+      "implementation_state": "planned_capability_gated",
+      "required_input": [
+        "runId",
+        "instrumentId",
+        "commandId",
+        "correlationId",
+        "expectedSequence",
+        "logicalTimeNs",
+        "orderId",
+        "replacementOrderId",
+        "priceTicks",
+        "quantityLots"
+      ]
+    },
+    {
+      "name": "orders.get",
+      "kind": "query",
+      "capability": "order_status",
+      "implementation_state": "planned",
+      "required_input": [
+        "runId",
+        "instrumentId",
+        "orderId"
+      ]
+    },
+    {
+      "name": "market.snapshot",
+      "kind": "query",
+      "capability": "market_data",
+      "implementation_state": "private_cache_handler_exists",
+      "required_input": [
+        "runId",
+        "instrumentId"
+      ]
+    },
+    {
+      "name": "accounts.snapshot",
+      "kind": "query",
+      "capability": "private_account_data",
+      "implementation_state": "planned",
+      "required_input": [
+        "runId"
+      ]
+    },
+    {
+      "name": "market.subscribe",
+      "kind": "subscription",
+      "capability": "market_data",
+      "implementation_state": "planned",
+      "required_input": [
+        "runId",
+        "instrumentId",
+        "afterSequence"
+      ],
+      "recovery": "event_tail_or_typed_reset_and_snapshot"
+    },
+    {
+      "name": "accounts.subscribe",
+      "kind": "subscription",
+      "capability": "private_account_data",
+      "implementation_state": "planned",
+      "required_input": [
+        "runId",
+        "afterSequence"
+      ],
+      "recovery": "event_tail_or_typed_reset_and_snapshot"
+    }
+  ],
+  "errors": [
+    {
+      "code": "UNAUTHENTICATED",
+      "retry": "after_credentials_change"
+    },
+    {
+      "code": "FORBIDDEN",
+      "retry": "never_unchanged"
+    },
+    {
+      "code": "INVALID_INPUT",
+      "retry": "after_input_change"
+    },
+    {
+      "code": "PAYLOAD_TOO_LARGE",
+      "retry": "after_input_change"
+    },
+    {
+      "code": "UNSUPPORTED_CAPABILITY",
+      "retry": "after_engine_or_operation_change"
+    },
+    {
+      "code": "NOT_FOUND",
+      "retry": "after_resource_change"
+    },
+    {
+      "code": "DUPLICATE_COMMAND_CONFLICT",
+      "retry": "with_new_command_id"
+    },
+    {
+      "code": "VERSION_CONFLICT",
+      "retry": "after_reload"
+    },
+    {
+      "code": "RISK_REJECTED",
+      "retry": "after_order_or_account_change"
+    },
+    {
+      "code": "ORIGIN_UNAVAILABLE",
+      "retry": "bounded_backoff"
+    },
+    {
+      "code": "INTERNAL_CONTRACT_MISMATCH",
+      "retry": "never_same_deployment"
+    }
+  ],
+  "fix_bridge": {
+    "path": "clients/fix-bridge",
+    "listener_default": "127.0.0.1",
+    "transport_to_bunting": "typed_trpc_client",
+    "session_messages_owned_locally": [
+      "A",
+      "5",
+      "0",
+      "1",
+      "2",
+      "4"
+    ],
+    "application_mappings": [
+      {
+        "fix_msg_type": "D",
+        "direction": "inbound",
+        "procedure": "orders.submit"
+      },
+      {
+        "fix_msg_type": "F",
+        "direction": "inbound",
+        "procedure": "orders.cancel"
+      },
+      {
+        "fix_msg_type": "G",
+        "direction": "inbound",
+        "procedure": "orders.replace",
+        "capability_gated": true
+      },
+      {
+        "fix_msg_type": "H",
+        "direction": "inbound",
+        "procedure": "orders.get"
+      },
+      {
+        "fix_msg_type": "V",
+        "direction": "inbound",
+        "procedures": [
+          "market.snapshot",
+          "market.subscribe"
+        ]
+      },
+      {
+        "fix_msg_type": "8",
+        "direction": "outbound",
+        "source": "committed_order_result_or_accounts_subscription"
+      },
+      {
+        "fix_msg_type": "9",
+        "direction": "outbound",
+        "source": "cancel_rejection"
+      },
+      {
+        "fix_msg_type": "j",
+        "direction": "outbound",
+        "source": "typed_business_rejection"
+      },
+      {
+        "fix_msg_type": "W",
+        "direction": "outbound",
+        "source": "market_snapshot"
+      },
+      {
+        "fix_msg_type": "X",
+        "direction": "outbound",
+        "source": "market_subscription"
+      }
+    ],
+    "sequence_rule": "FIX MsgSeqNum is local session state and never equals or replaces Bunting event sequence"
+  }
+}

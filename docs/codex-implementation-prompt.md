@@ -1,18 +1,18 @@
 # Codex implementation contract
 
-Read `AGENTS.md` and ADR 0013 before changing code.
+Read `AGENTS.md`, ADR 0013 and ADR 0015 before changing code.
 
 ## Repository paths
 
 - Reusable first-party crates live under `packages/`.
 - The curated portable composition crate is `bunting-rs/`.
-- The plain Worker, Wrangler config and D1 migrations live together under `apps/edge-api/`.
+- The authoritative Rust Worker, Wrangler config and D1 migrations live together under `apps/edge-api/`; ADR 0015 adds the public tRPC Worker under `apps/trpc-api/`.
 - Cargo-less future scaffolds remain under `crates/` until their roadmap phase adds real implementation and tests.
 - Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
 
 ## Non-negotiable decisions
 
-- The runtime is a plain Rust Cloudflare Worker.
+- Market authority runs in a plain Rust Cloudflare Worker behind a public plain TypeScript tRPC Worker; neither uses a Durable Object.
 - `orderbook-rs = 0.10.3` is the production matching and order-book kernel.
 - `pricelevel = 0.8.4` is pinned for type identity.
 - Workers Cache is mandatory for immutable checksum-addressed upstream snapshot packages.
@@ -34,7 +34,7 @@ Implement adapters for:
 - canonical event translation;
 - participant ledger and cross-book risk;
 - Workers Cache keys and recovery;
-- HTTP/WebSocket/FIX/NBC/RITC/Nautilus protocols;
+- the private service contract and NBC mappings; public tRPC, FIX, RITC and Nautilus mappings remain client/gateway concerns under ADR 0015;
 - scenario and Dynamic Worker orchestration.
 
 ## First implementation target
