@@ -132,7 +132,39 @@ pub struct MarketSnapshotInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandOutput {
     pub accepted: bool,
-    pub sequence: SequenceDecimalString,
+    pub reject_code: Option<String>,
+    pub committed_sequence: SequenceDecimalString,
+    pub order_id: Option<UnsignedDecimalString>,
+    pub snapshot_checksum: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BuntingErrorCode {
+    Unauthenticated,
+    InvalidInput,
+    NotFound,
+    DuplicateCommandConflict,
+    VersionConflict,
+    RiskRejected,
+    OriginUnavailable,
+    InternalContractMismatch,
+}
+
+impl BuntingErrorCode {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unauthenticated => "UNAUTHENTICATED",
+            Self::InvalidInput => "INVALID_INPUT",
+            Self::NotFound => "NOT_FOUND",
+            Self::DuplicateCommandConflict => "DUPLICATE_COMMAND_CONFLICT",
+            Self::VersionConflict => "VERSION_CONFLICT",
+            Self::RiskRejected => "RISK_REJECTED",
+            Self::OriginUnavailable => "ORIGIN_UNAVAILABLE",
+            Self::InternalContractMismatch => "INTERNAL_CONTRACT_MISMATCH",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -181,8 +213,8 @@ pub fn generated_schema() -> Value {
         },
         "procedures": [
             {"name":"market.snapshot","kind":"query","input":{"runId":"id","instrumentId":"id"},"output":{"runId":"id","instrumentId":"id","sequence":"sequence","bids":"priceLevel[]","asks":"priceLevel[]"}},
-            {"name":"orders.cancel","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id"},"output":{"accepted":"boolean","sequence":"sequence"}},
-            {"name":"orders.submit","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id","side":"side","priceTicks":"marketUnit","quantityLots":"marketUnit"},"output":{"accepted":"boolean","sequence":"sequence"}},
+            {"name":"orders.cancel","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
+            {"name":"orders.submit","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id","side":"side","priceTicks":"marketUnit","quantityLots":"marketUnit"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
             {"name":"system.health","kind":"query","input":{},"output":{"apiVersion":"string","serviceVersion":"string","orderbookVersion":"string","contractCompatible":"boolean"}}
         ],
         "structures": {"priceLevel":{"priceTicks":"marketUnit","quantityLots":"marketUnit"}}

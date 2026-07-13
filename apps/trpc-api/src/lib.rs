@@ -8,9 +8,9 @@
 mod d1_origin;
 
 use bunting_api_contract::{
-    API_VERSION, CancelOrderInput, CommandOutput, HealthOutput, MarketSnapshotInput,
-    MarketSnapshotOutput, PriceLevel, SequenceDecimalString, Side as ContractSide,
-    SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
+    API_VERSION, BuntingErrorCode, CancelOrderInput, CommandOutput, HealthOutput,
+    MarketSnapshotInput, MarketSnapshotOutput, PriceLevel, SequenceDecimalString,
+    Side as ContractSide, SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
 };
 use bunting_command_transaction::{
     CachedSnapshot, TransactionError, command_fingerprint, prepare_command,
@@ -42,8 +42,10 @@ enum ProcedureError {
     Unauthorized,
     BadRequest,
     NotFound,
-    Conflict,
-    Internal,
+    DuplicateCommandConflict,
+    VersionConflict,
+    OriginUnavailable,
+    InternalContractMismatch,
 }
 
 impl ProcedureError {
@@ -52,8 +54,22 @@ impl ProcedureError {
             Self::Unauthorized => ErrorCode::Unauthorized,
             Self::BadRequest => ErrorCode::BadRequest,
             Self::NotFound => ErrorCode::NotFound,
-            Self::Conflict => ErrorCode::Conflict,
-            Self::Internal => ErrorCode::InternalServerError,
+            Self::DuplicateCommandConflict | Self::VersionConflict => ErrorCode::Conflict,
+            Self::OriginUnavailable | Self::InternalContractMismatch => {
+                ErrorCode::InternalServerError
+            }
+        }
+    }
+
+    const fn bunting_code(self) -> BuntingErrorCode {
+        match self {
+            Self::Unauthorized => BuntingErrorCode::Unauthenticated,
+            Self::BadRequest => BuntingErrorCode::InvalidInput,
+            Self::NotFound => BuntingErrorCode::NotFound,
+            Self::DuplicateCommandConflict => BuntingErrorCode::DuplicateCommandConflict,
+            Self::VersionConflict => BuntingErrorCode::VersionConflict,
+            Self::OriginUnavailable => BuntingErrorCode::OriginUnavailable,
+            Self::InternalContractMismatch => BuntingErrorCode::InternalContractMismatch,
         }
     }
 }
@@ -96,7 +112,57 @@ fn decode_input<T: DeserializeOwned>(call: &Call) -> std::result::Result<T, Proc
 }
 
 fn wire_error(error: ProcedureError, path: &str, message: &str) -> WireResponse {
-    bunting_trpc_wire::procedure_error(error.code(), message, path)
+    bunting_trpc_wire::procedure_error(error.code(), error.bunting_code(), message, path)
+}
+
+fn command_output(result: &CommandResult) -> CommandOutput {
+    CommandOutput {
+        accepted: result.accepted,
+        reject_code: result.reject_code.clone(),
+        committed_sequence: SequenceDecimalString::new(result.committed_sequence.get()),
+        order_id: result
+            .order_id
+            .map(|order_id| UnsignedDecimalString::new(order_id.get())),
+        snapshot_checksum: result.snapshot_checksum.clone(),
+    }
+}
+
+fn command_response(result: &CommandResult, path: &str) -> WireResponse {
+    let output = command_output(result);
+    if result.accepted {
+        bunting_trpc_wire::success(200, &output)
+    } else {
+        bunting_trpc_wire::procedure_error_with_data(
+            ErrorCode::UnprocessableContent,
+            BuntingErrorCode::RiskRejected,
+            "command rejected by market or participant controls",
+            path,
+            Some(&output),
+        )
+    }
+}
+
+const fn map_origin_error(error: OriginError) -> ProcedureError {
+    match error {
+        OriginError::UnknownRun => ProcedureError::NotFound,
+        OriginError::IdempotencyConflict => ProcedureError::DuplicateCommandConflict,
+        OriginError::VersionConflict { .. } => ProcedureError::VersionConflict,
+        OriginError::Unavailable => ProcedureError::OriginUnavailable,
+        OriginError::InvalidCommit => ProcedureError::InternalContractMismatch,
+    }
+}
+
+const fn map_transaction_error(error: TransactionError) -> ProcedureError {
+    match error {
+        TransactionError::Origin(origin) => map_origin_error(origin),
+        TransactionError::IdempotencyConflict => ProcedureError::DuplicateCommandConflict,
+        TransactionError::InvalidOriginSnapshot
+        | TransactionError::OwnershipInvariant
+        | TransactionError::Accounting
+        | TransactionError::EventBatchTooLarge
+        | TransactionError::Serialization
+        | TransactionError::Upstream => ProcedureError::InternalContractMismatch,
+    }
 }
 
 fn worker_response(response: WireResponse) -> Result<Response> {
@@ -162,13 +228,10 @@ async fn load_run(
 ) -> std::result::Result<RunState, ProcedureError> {
     let database = environment
         .d1("ORIGIN_DB")
-        .map_err(|_| ProcedureError::Internal)?;
+        .map_err(|_| ProcedureError::OriginUnavailable)?;
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
-        .map_err(|error| match error {
-            OriginError::UnknownRun => ProcedureError::NotFound,
-            _ => ProcedureError::Internal,
-        })?;
+        .map_err(map_origin_error)?;
     if state.instrument_id != instrument_id {
         return Err(ProcedureError::NotFound);
     }
@@ -178,13 +241,15 @@ async fn load_run(
 fn snapshot_output(state: &RunState) -> std::result::Result<MarketSnapshotOutput, ProcedureError> {
     let (upstream_bids, upstream_asks) =
         visible_levels_from_snapshot_json(&state.snapshot.package_json)
-            .map_err(|_| ProcedureError::Internal)?;
+            .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let levels = |items: Vec<(u128, u64)>| {
         items
             .into_iter()
             .map(|(price, quantity)| {
-                let price = i64::try_from(price).map_err(|_| ProcedureError::Internal)?;
-                let quantity = i64::try_from(quantity).map_err(|_| ProcedureError::Internal)?;
+                let price =
+                    i64::try_from(price).map_err(|_| ProcedureError::InternalContractMismatch)?;
+                let quantity = i64::try_from(quantity)
+                    .map_err(|_| ProcedureError::InternalContractMismatch)?;
                 Ok(PriceLevel {
                     price_ticks: SignedDecimalString::new(price),
                     quantity_lots: SignedDecimalString::new(quantity),
@@ -208,20 +273,21 @@ async fn execute_command(
 ) -> std::result::Result<CommandResult, ProcedureError> {
     let database = environment
         .d1("ORIGIN_DB")
-        .map_err(|_| ProcedureError::Internal)?;
-    let fingerprint = command_fingerprint(&command).map_err(|_| ProcedureError::Internal)?;
+        .map_err(|_| ProcedureError::OriginUnavailable)?;
+    let fingerprint =
+        command_fingerprint(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;
     if let Some((stored_fingerprint, result)) = d1_origin::find_command(
         &database,
         &command.run_id.to_string(),
         &command.command_id.to_string(),
     )
     .await
-    .map_err(|_| ProcedureError::Internal)?
+    .map_err(map_origin_error)?
     {
         return if stored_fingerprint == fingerprint {
             Ok(result)
         } else {
-            Err(ProcedureError::Conflict)
+            Err(ProcedureError::DuplicateCommandConflict)
         };
     }
     let state = load_run(environment, command.run_id, instrument_id).await?;
@@ -231,7 +297,7 @@ async fn execute_command(
         state.snapshot.represented_sequence,
         state.snapshot.checksum.clone(),
     )
-    .map_err(|_| ProcedureError::Internal)?;
+    .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let cached = match cloudflare::get_json(&cache_key).await {
         Ok(Some(package_json)) => Some(CachedSnapshot {
             represented_sequence: state.snapshot.represented_sequence,
@@ -240,20 +306,12 @@ async fn execute_command(
         }),
         Ok(None) | Err(_) => None,
     };
-    let prepared = prepare_command(&command, state, cached).map_err(|error| match error {
-        TransactionError::Origin(OriginError::VersionConflict { .. }) => ProcedureError::Conflict,
-        _ => ProcedureError::Internal,
-    })?;
-    let command_json = serde_json::to_string(&command).map_err(|_| ProcedureError::Internal)?;
+    let prepared = prepare_command(&command, state, cached).map_err(map_transaction_error)?;
+    let command_json =
+        serde_json::to_string(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;
     let outcome = d1_origin::commit(&database, &prepared.commit, &command_json)
         .await
-        .map_err(|error| match error {
-            OriginError::VersionConflict { .. } | OriginError::IdempotencyConflict => {
-                ProcedureError::Conflict
-            }
-            OriginError::UnknownRun => ProcedureError::NotFound,
-            _ => ProcedureError::Internal,
-        })?;
+        .map_err(map_origin_error)?;
     let result = match outcome {
         CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
     };
@@ -312,13 +370,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
             )
             .await
             {
-                Ok(result) => bunting_trpc_wire::success(
-                    200,
-                    &CommandOutput {
-                        accepted: result.accepted,
-                        sequence: SequenceDecimalString::new(result.committed_sequence.get()),
-                    },
-                ),
+                Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }
         }
@@ -342,13 +394,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
             )
             .await
             {
-                Ok(result) => bunting_trpc_wire::success(
-                    200,
-                    &CommandOutput {
-                        accepted: result.accepted,
-                        sequence: SequenceDecimalString::new(result.committed_sequence.get()),
-                    },
-                ),
+                Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }
         }
@@ -462,6 +508,93 @@ mod tests {
             });
         };
         assert_eq!(cancel.participant_id, ParticipantId::new(91));
+        Ok(())
+    }
+
+    fn result(accepted: bool, reject_code: Option<&str>) -> CommandResult {
+        CommandResult {
+            accepted,
+            reject_code: reject_code.map(str::to_string),
+            committed_sequence: EventSequence::new(18_446_744_073_709_551_615),
+            order_id: Some(OrderId::new(
+                340_282_366_920_938_463_463_374_607_431_768_211_455,
+            )),
+            snapshot_checksum: Some("a".repeat(64)),
+        }
+    }
+
+    #[test]
+    fn complete_command_output_is_exact_and_duplicate_stable()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let committed = result(true, None);
+        let first = command_response(&committed, "orders.submit");
+        let duplicate = command_response(&committed, "orders.submit");
+        assert_eq!(first, duplicate);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&first.body)?,
+            serde_json::json!({"result":{"data":{
+                "accepted":true,
+                "rejectCode":null,
+                "committedSequence":"18446744073709551615",
+                "orderId":"340282366920938463463374607431768211455",
+                "snapshotChecksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }}})
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn version_duplicate_origin_and_input_failures_keep_stable_codes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            (
+                ProcedureError::VersionConflict,
+                ErrorCode::Conflict,
+                "VERSION_CONFLICT",
+            ),
+            (
+                ProcedureError::DuplicateCommandConflict,
+                ErrorCode::Conflict,
+                "DUPLICATE_COMMAND_CONFLICT",
+            ),
+            (
+                ProcedureError::OriginUnavailable,
+                ErrorCode::InternalServerError,
+                "ORIGIN_UNAVAILABLE",
+            ),
+            (
+                ProcedureError::BadRequest,
+                ErrorCode::BadRequest,
+                "INVALID_INPUT",
+            ),
+        ];
+        for (error, code, bunting_code) in cases {
+            let response = wire_error(error, "orders.submit", "stable message");
+            let body: serde_json::Value = serde_json::from_slice(&response.body)?;
+            assert_eq!(response.status, code.status());
+            assert_eq!(body["error"]["data"]["code"], code.name());
+            assert_eq!(body["error"]["data"]["buntingCode"], bunting_code);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_result_is_a_typed_risk_error_with_complete_durable_outcome()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let response = command_response(&result(false, Some("InsufficientCash")), "orders.submit");
+        let body: serde_json::Value = serde_json::from_slice(&response.body)?;
+        assert_eq!(response.status, 422);
+        assert_eq!(body["error"]["data"]["code"], "UNPROCESSABLE_CONTENT");
+        assert_eq!(body["error"]["data"]["buntingCode"], "RISK_REJECTED");
+        assert_eq!(body["error"]["data"]["buntingData"]["accepted"], false);
+        assert_eq!(
+            body["error"]["data"]["buntingData"]["rejectCode"],
+            "InsufficientCash"
+        );
+        assert_eq!(
+            body["error"]["data"]["buntingData"]["committedSequence"],
+            "18446744073709551615"
+        );
         Ok(())
     }
 }
