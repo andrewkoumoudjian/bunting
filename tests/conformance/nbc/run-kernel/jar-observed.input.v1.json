@@ -1,0 +1,9 @@
+{
+  "run_id": "run-kernel-fixture",
+  "duration_steps": 3,
+  "events": [
+    { "id": "first-at-one", "trigger_step": 1 },
+    { "id": "only-at-zero", "trigger_step": 0 },
+    { "id": "second-at-one", "trigger_step": 1 }
+  ]
+}

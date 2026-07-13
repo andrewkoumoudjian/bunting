@@ -229,12 +229,41 @@
         "configuration_and_provenance_hashes",
         "inert_unresolved_parameters"
       ]
+    },
+    {
+      "id": "sprint-7.2-run-kernel",
+      "rust_module": "packages/nbc-market-engine/src/engine.rs",
+      "translation_ledger": "docs/ports/nbc-translation-ledger.v1.tsv",
+      "fixture": "tests/conformance/nbc/run-kernel/jar-observed.expected.v1.json",
+      "source_classes": [
+        "BOOT-INF/classes/ca/mc/exchange_simulator/simulator/SimulationEngine.class",
+        "BOOT-INF/classes/ca/mc/exchange_simulator/simulator/SimulationContext.class",
+        "BOOT-INF/classes/ca/mc/exchange_simulator/simulator/EventManager.class",
+        "BOOT-INF/classes/ca/mc/exchange_simulator/simulator/SimulationEvent.class"
+      ],
+      "translated": [
+        "step_zero_initialization",
+        "active_run_lifecycle",
+        "exact_step_event_selection",
+        "source_list_event_order",
+        "logical_step_increment",
+        "duration_completion",
+        "explicit_termination"
+      ],
+      "bunting_added": [
+        "bounded_run_event_and_reason_text",
+        "bounded_event_count",
+        "unreachable_event_rejection",
+        "checked_logical_clock",
+        "typed_inactive_run_errors",
+        "retained_terminal_status"
+      ]
     }
   ],
   "unresolved": [
     "original_upstream_license_metadata_and_build_provenance",
     "relationship_between_the_direct_snapshot_and_the_client_submodule_jar",
-    "matching_edge_cases_orderbook_rs_compatibility_and_scheduler_total_ordering",
+    "matching_edge_cases_orderbook_rs_compatibility_and_command_trader_scheduler_ordering",
     "agent_formulas_units_and_random_distributions",
     "authenticated_rest_websocket_done_lifecycle_and_termination_traces",
     "persistence_recovery_and_scoring_semantics"

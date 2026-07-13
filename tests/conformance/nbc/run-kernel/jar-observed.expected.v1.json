@@ -1,0 +1,20 @@
+{
+  "fixture_version": "bunting.nbc.run-kernel-conformance.v1",
+  "classification": {
+    "initial_step_and_lifecycle": "bytecode_observed",
+    "exact_step_event_selection": "bytecode_observed",
+    "same_step_source_order": "bytecode_observed",
+    "bounds_and_typed_errors": "Bunting-added"
+  },
+  "jar_sha256": "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254",
+  "simulation_engine_class_sha256": "e6e68ac1bcf1783889584ce363d78219d58076b0fca91c19dcead8b3b8591e20",
+  "simulation_context_class_sha256": "97f1b240e0e4619549b3578de222e14bfad393b2fcbcb2e771e211faab82f6b7",
+  "event_manager_class_sha256": "7f939a69a057690e46b72c9d402860a8936422e7da4409371614ca47d384a88e",
+  "simulation_event_class_sha256": "ea9f07e6ca73ce86570eab3b12c7ddf46e02fb4773b82c0c1981eb688a89b6c8",
+  "initial_step": 0,
+  "advances": [
+    { "executed_step": 0, "current_step": 1, "triggered_event_ids": ["only-at-zero"], "status": "active" },
+    { "executed_step": 1, "current_step": 2, "triggered_event_ids": ["first-at-one", "second-at-one"], "status": "active" },
+    { "executed_step": 2, "current_step": 3, "triggered_event_ids": [], "status": "completed" }
+  ]
+}

@@ -165,6 +165,25 @@ The following are requirements of the new Bunting implementation. They are not c
 
 These additions can intentionally improve recoverability and auditability while preserving the externally specified NBC compatibility profile.
 
+## Implemented run-kernel slice
+
+Sprint 7.2 implements one bounded run with a logical clock starting at zero,
+exact-step event selection in source-list order, checked one-step advancement,
+duration completion and explicit termination. The behavior is linked to the
+four simulator classes in `nbc-translation-ledger.v1.tsv` and normalized by the
+run-kernel conformance fixture. Event effects are identifiers only, so this
+slice does not implement special-event market effects.
+
+The matching slice may assume that an active advance supplies one immutable
+`executed_step`, with all same-step scheduler identifiers already selected in
+source order, and that the clock advances only after that step's work succeeds.
+It may also assume that step zero is the first executable step and that steps
+range from zero through `duration_steps - 1`. It must not assume an ordering
+between participant commands, generated trader orders and event effects beyond
+the bytecode-observed event-before-trader shape. Duplicate run identifiers,
+concurrent advancement, matching exception policy, fill ordering, wall-clock
+decision timing and completed-run persistence remain unresolved.
+
 ## Target package
 
 ```text
