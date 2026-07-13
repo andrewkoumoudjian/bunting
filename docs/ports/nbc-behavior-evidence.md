@@ -51,8 +51,11 @@ draws. `MetricsCalculator` exposes notional and aggregate trading-metric
 calculations. These are implementation-shape observations, not Rust-equivalence
 claims.
 
-**Translated.** Nothing is translated in Sprint 6. No
-`packages/nbc-market-engine` directory is created.
+**Translated.** Sprint 7.1 translates strict configuration and provenance.
+Sprint 7.2 translates step-zero initialization, active run lifecycle,
+exact-step event selection, source-list ordering, logical increment, completion
+and explicit termination. Event effects, matching, traders, market publication,
+scoring and persistence remain outside this slice.
 
 **Inferred.** The class relationships strongly suggest one coherent venue
 engine boundary spanning configuration, run context, scheduler, matching,
@@ -67,7 +70,9 @@ They are not attributed to this JAR.
 
 **Unresolved.** Original source/license/build provenance; the complete
 relationship to `ref/nbc_engine`; exact configuration units and validation;
-matching edge cases and OrderBook-rs compatibility; scheduler total ordering;
+matching edge cases and OrderBook-rs compatibility; ordering between scheduler
+events, participant commands and traders beyond the observed event-before-trader
+shape; repeated or late events outside normal sequential advancement;
 authenticated REST/WebSocket/`DONE` behavior; scoring formulas and units;
 termination policy; persistence/recovery semantics; and agent formulas/random
 stream compatibility require later bytecode review and JAR-versus-Rust tests.
@@ -82,3 +87,22 @@ configuration hashing as Bunting-added. Later slices must use the inventory
 dispositions for run kernel, matching, market data/`DONE`, agents, scoring and
 recovery, and each translated Rust module must cite the exact class/resource
 hash plus a reproducible JAR-versus-Rust fixture.
+
+## Sprint 7.2 run-kernel evidence
+
+`SimulationContext.class` initializes `currentStep` to zero.
+`SimulationEngine.startRun` installs the context and calls `processStep` without
+incrementing it. `advanceStep` reads the current step, invokes
+`EventManager.triggerAtStep(currentStep)`, performs later-slice trader and market
+work, increments the step by one, and finishes when it reaches the configured
+duration. `EventManager` scans its Java `List` and executes every event whose
+trigger step equals the current step, so same-step events retain source-list
+order. Explicit termination marks the context and removes it from active runs.
+
+The fixture under `tests/conformance/nbc/run-kernel/` normalizes those
+bytecode-observed transitions. Bounded identifiers and event counts, rejection
+of unreachable events, checked clock arithmetic, typed inactive-run errors and
+retained terminal status are Bunting-added. Event payload effects are inert in
+this slice. Wall-clock decision timing is omitted because it is not logical
+simulation authority. Duplicate run-ID behavior, concurrent advancement and
+post-completion persistence remain unresolved or deferred.
