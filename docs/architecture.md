@@ -76,7 +76,7 @@ User strategy source
 
 ### Worker
 
-- `apps/trpc-api`: the current Rust Worker path; its REST router is replaced with direct native Rust tRPC dispatch under ADR 0016 in a separate semantic sprint.
+- `apps/trpc-api`: the native Rust Worker with direct bounded tRPC dispatch and no REST router.
 - planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
 - `clients/fix-bridge`: the native Rust FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
 

@@ -26,7 +26,7 @@ See:
 - `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.
 - The origin event/version store remains authoritative for accepted commands, canonical events, idempotency, projections and optimistic concurrency.
 - Cache misses or evictions are normal recovery events.
-- The only planned public application API is tRPC, dispatched directly by one native Rust Worker without a REST router.
+- The only public application API is tRPC, dispatched directly by one native Rust Worker without a REST router.
 - No Durable Object is required for commands; ADR 0016 permits a Rust stream coordinator only if its measured gate passes.
 - User strategy outputs enter through the normal authenticated command/risk/persistence path.
 
@@ -40,7 +40,7 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the current deployable Worker lives under `apps/trpc-api/`. The mechanical path move and native tRPC cutover remain separate sprints.
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the deployable Worker lives under `apps/trpc-api/`.
 
 Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
@@ -60,16 +60,11 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/trpc-api`: current plain Rust Cloudflare Worker entrypoint.
 
-## Provisional REST implementation to remove
+## Native tRPC Worker
 
-The current Worker code still exposes authenticated JSON routes for limit GTC submission and cancellation. ADR 0016 supersedes this surface: it is not the target public API, must not expand, and is deleted when the equivalent native Rust tRPC procedures pass conformance.
+The Worker exposes only `GET|POST /trpc/<procedure-or-batch>`. The initial procedures are `system.health`, `market.snapshot`, `orders.submit`, and `orders.cancel`; mutation batching and every REST resource are rejected.
 
-```text
-POST /v1/runs/:run_id/instruments/:instrument_id/orders
-POST /v1/runs/:run_id/instruments/:instrument_id/orders/:order_id/cancel
-```
-
-The cutover also removes caller-selected participant identity. Actor identity comes from verified authentication claims.
+Actor identity comes from the server-configured participant claim associated with the verified bearer token. No request header or procedure input can select a participant.
 
 Deployment and migration commands use the Worker config at `apps/trpc-api/wrangler.toml`:
 
@@ -77,9 +72,10 @@ Deployment and migration commands use the Worker config at `apps/trpc-api/wrangl
 npx wrangler d1 create bunting-origin
 npx wrangler d1 migrations apply bunting-origin --config apps/trpc-api/wrangler.toml --remote
 npx wrangler secret put BUNTING_API_TOKEN --config apps/trpc-api/wrangler.toml
+npx wrangler secret put BUNTING_API_PARTICIPANT_ID --config apps/trpc-api/wrangler.toml
 ```
 
-Scenario/orchestration code provisions runs before order entry. The command endpoint returns `unknown_run` instead of creating authoritative state implicitly.
+Scenario/orchestration code provisions runs before order entry. Command procedures return a typed `NOT_FOUND` error instead of creating authoritative state implicitly.
 
 ## Checks
 

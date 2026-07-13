@@ -1,10 +1,10 @@
 {
   "schema_version": "bunting.trpc-fix-contract.v1",
   "classification": "Bunting-added",
-  "status": "initial_rust_contract_and_http_wire_implemented_worker_cutover_pending",
+  "status": "native_rust_worker_cutover_implemented",
   "implemented_rust_contract": {
     "source": "packages/bunting-api-contract/src/lib.rs",
-    "sha256": "3a516b0c67e2e7db8b6dc7c28c4e4b129c7cb7b855c3f1c881b4b0603ce487ea",
+    "sha256": "70acfe69dffcf013b12890bb716088009e46ad4805142ea5bd1fc8dc138c5b68",
     "descriptor": {
       "schemaVersion": "bunting.rust-contract.v1",
       "apiVersion": "bunting.v1",
@@ -25,13 +25,13 @@
           "name": "orders.cancel",
           "kind": "mutation",
           "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id" },
-          "output": { "accepted": "boolean", "sequence": "sequence" }
+          "output": { "accepted": "boolean", "rejectCode": "string?", "committedSequence": "sequence", "orderId": "id?", "snapshotChecksum": "string?" }
         },
         {
           "name": "orders.submit",
           "kind": "mutation",
           "input": { "runId": "id", "instrumentId": "id", "commandId": "id", "correlationId": "id", "expectedSequence": "sequence", "logicalTimeNs": "sequence", "orderId": "id", "side": "side", "priceTicks": "marketUnit", "quantityLots": "marketUnit" },
-          "output": { "accepted": "boolean", "sequence": "sequence" }
+          "output": { "accepted": "boolean", "rejectCode": "string?", "committedSequence": "sequence", "orderId": "id?", "snapshotChecksum": "string?" }
         },
         {
           "name": "system.health",
@@ -158,7 +158,7 @@
       "unsupported_media_type": "UNSUPPORTED_MEDIA_TYPE",
       "oversized_request": "PAYLOAD_TOO_LARGE",
       "redaction": "production responses expose no stack, cause, origin/cache details, or credentials",
-      "bunting_domain_errors": "procedure implementations map canonical Bunting errors into the same structured tRPC envelope"
+      "bunting_domain_errors": "procedure implementations preserve standard tRPC data.code and add data.buntingCode; committed rejected commands also carry the exact durable CommandOutput in data.buntingData"
     },
     "subscription": {
       "transport": "HTTP Server-Sent Events",

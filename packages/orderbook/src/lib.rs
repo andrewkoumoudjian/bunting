@@ -26,6 +26,30 @@ pub const ORDERBOOK_RS_VERSION: &str = "0.10.3";
 /// Audited upstream source revision corresponding to the adopted implementation pass.
 pub const ORDERBOOK_RS_AUDIT_COMMIT: &str = "575de34260b0fce346372074b6b938df058693a8";
 
+/// Visible `(price, quantity)` pairs for one snapshot side.
+pub type VisibleLevels = Vec<(u128, u64)>;
+
+/// Decodes validated visible levels from an upstream snapshot package.
+///
+/// # Errors
+/// Returns [`OrderBookError`] when JSON decoding, version, or checksum validation fails.
+pub fn visible_levels_from_snapshot_json(
+    json: &str,
+) -> Result<(VisibleLevels, VisibleLevels), OrderBookError> {
+    let package = OrderBookSnapshotPackage::from_json(json)?;
+    package.validate()?;
+    let levels = |items: &[pricelevel::PriceLevelSnapshot]| {
+        items
+            .iter()
+            .map(|level| (level.price().as_u128(), level.visible_quantity().as_u64()))
+            .collect()
+    };
+    Ok((
+        levels(&package.snapshot.bids),
+        levels(&package.snapshot.asks),
+    ))
+}
+
 /// Result of one limit-order submission through the upstream engine.
 #[derive(Debug)]
 pub struct LimitSubmission {

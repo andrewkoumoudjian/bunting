@@ -70,11 +70,13 @@ dependencies = [
 name = "bunting-edge-api"
 version = "0.1.0"
 dependencies = [
+ "bunting-api-contract",
  "bunting-command-transaction",
  "bunting-market-events",
  "bunting-market-types",
  "bunting-orderbook",
  "bunting-origin-store",
+ "bunting-trpc-wire",
  "bunting-worker-cache",
  "serde",
  "serde_json",
