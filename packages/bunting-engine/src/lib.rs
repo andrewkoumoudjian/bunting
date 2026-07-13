@@ -2,6 +2,7 @@
 #![allow(clippy::missing_errors_doc)]
 //! Authoritative sans-I/O Bunting market-simulation engine.
 
+pub mod compatibility;
 mod matching;
 
 use bunting_ledger::{
@@ -17,6 +18,10 @@ use bunting_market_types::{
     VenueId,
 };
 use bunting_risk_engine::{RiskLimits, RiskState};
+use compatibility::nbc::{
+    NBC_TRANSLATION_VERSION, NbcCompatibilityState, RunStatus as NbcRunStatus,
+    ScenarioConfig as NbcScenarioConfig, ScheduledEvent as NbcScheduledEvent,
+};
 use matching::{
     KernelBook, SnapshotPackage, TimeInForce, TradeInfo, sequential_id_from_text,
     to_upstream_order_id, to_upstream_price, to_upstream_quantity, to_upstream_side,
@@ -366,6 +371,8 @@ pub struct RunState {
     accounts: AccountProjection,
     holdings: HoldingProjection,
     ownership: BTreeMap<OrderId, OwnedOrder>,
+    #[serde(default)]
+    nbc_compatibility: Option<NbcCompatibilityState>,
 }
 
 impl RunState {
@@ -442,6 +449,7 @@ impl RunState {
             accounts,
             holdings,
             ownership: BTreeMap::new(),
+            nbc_compatibility: None,
         })
     }
 
@@ -485,6 +493,28 @@ impl RunState {
         &self.ownership
     }
 
+    #[must_use]
+    pub const fn nbc_compatibility(&self) -> Option<&NbcCompatibilityState> {
+        self.nbc_compatibility.as_ref()
+    }
+
+    pub fn with_nbc_compatibility(
+        mut self,
+        config: NbcScenarioConfig,
+        events: Vec<NbcScheduledEvent>,
+    ) -> Result<Self, EngineError> {
+        self.nbc_compatibility = Some(
+            NbcCompatibilityState::new(
+                self.run_id.to_string(),
+                config,
+                events,
+                self.participants.keys().copied(),
+            )
+            .map_err(|_| EngineError::NbcCompatibility)?,
+        );
+        Ok(self)
+    }
+
     pub fn listing_key_for_instrument(
         &self,
         instrument_id: InstrumentId,
@@ -525,6 +555,12 @@ impl RunState {
             || self.listings.len() > usize::from(self.config.max_listings)
             || self.participants.len() > MAX_PARTICIPANTS
             || self.ownership.len() > MAX_ORDERS
+            || self
+                .nbc_compatibility
+                .as_ref()
+                .is_some_and(|compatibility| {
+                    compatibility.profile_version != NBC_TRANSLATION_VERSION
+                })
             || self
                 .listings
                 .values()
@@ -637,6 +673,31 @@ impl RunState {
                     changed_listings.insert(listing_key);
                 }
                 payloads.push(EventPayload::KillSwitchActivated);
+                (true, None, None)
+            }
+            CommandPayload::NbcDone(done) => {
+                if done.participant_id != command.actor {
+                    return Err(EngineError::OwnershipInvariant);
+                }
+                let compatibility = candidate
+                    .nbc_compatibility
+                    .as_mut()
+                    .ok_or(EngineError::NbcCompatibility)?;
+                let advance = compatibility
+                    .acknowledge_and_advance(done.participant_id, done.step)
+                    .map_err(|_| EngineError::NbcCompatibility)?;
+                payloads.push(EventPayload::NbcParticipantDone {
+                    participant_id: done.participant_id,
+                    step: done.step,
+                });
+                if let Some(advance) = advance {
+                    payloads.push(EventPayload::NbcStepAdvanced {
+                        executed_step: advance.executed_step(),
+                        current_step: advance.current_step(),
+                        triggered_event_ids: advance.triggered_event_ids().to_vec(),
+                        completed: matches!(advance.status(), NbcRunStatus::Completed),
+                    });
+                }
                 (true, None, None)
             }
         };
@@ -873,6 +934,7 @@ impl EngineSnapshotEnvelope {
                 )
             })
             .collect();
+        state.nbc_compatibility = None;
         let listing = state
             .listings
             .get_mut(&listing_key)
@@ -953,6 +1015,7 @@ pub enum EngineError {
     Accounting,
     EventBatchTooLarge,
     Upstream,
+    NbcCompatibility,
     Snapshot(SnapshotError),
 }
 
@@ -1294,7 +1357,7 @@ fn hash_serializable<T: Serialize>(value: &T) -> Result<String, SnapshotError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use bunting_market_events::SubmitOrder;
+    use bunting_market_events::{NbcDone, SubmitOrder};
     use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs};
 
     fn participant(id: u128) -> ParticipantDefinition {
@@ -1546,5 +1609,62 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.state.listings().len(), 1);
         assert_eq!(first.state.sequence(), EventSequence::new(0));
+    }
+
+    #[test]
+    fn nbc_done_barrier_advances_only_after_every_participant() {
+        let config = NbcScenarioConfig::from_json(include_bytes!(
+            "../../../tests/conformance/nbc/config/normal-market.input.v1.json"
+        ))
+        .unwrap();
+        let state = run()
+            .with_nbc_compatibility(
+                config,
+                vec![NbcScheduledEvent::new("event-before-traders", 0).unwrap()],
+            )
+            .unwrap();
+        let done = |state: &RunState, command_id: u128, participant_id: u128| Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(command_id),
+            correlation_id: CorrelationId::new(command_id),
+            logical_time: LogicalTimeNs::new(u64::try_from(command_id).unwrap()),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(participant_id),
+            payload: CommandPayload::NbcDone(NbcDone {
+                participant_id: ParticipantId::new(participant_id),
+                step: 0,
+            }),
+        };
+
+        let first = state.transition(&done(&state, 800, 1), None).unwrap();
+        assert_eq!(first.events.len(), 1);
+        assert_eq!(
+            first
+                .candidate
+                .nbc_compatibility()
+                .unwrap()
+                .scheduler
+                .current_step(),
+            0
+        );
+        let second = first
+            .candidate
+            .transition(&done(&first.candidate, 801, 2), None)
+            .unwrap();
+        assert_eq!(second.events.len(), 2);
+        assert!(matches!(
+            &second.events[1].payload,
+            EventPayload::NbcStepAdvanced {
+                executed_step: 0,
+                current_step: 1,
+                triggered_event_ids,
+                completed: false,
+            } if triggered_event_ids == &["event-before-traders"]
+        ));
+        let envelope = second.candidate.snapshot_envelope().unwrap();
+        assert_eq!(
+            EngineSnapshotEnvelope::from_json(&envelope.to_json().unwrap()).unwrap(),
+            envelope
+        );
     }
 }

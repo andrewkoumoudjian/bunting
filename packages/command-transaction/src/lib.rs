@@ -303,7 +303,7 @@ fn command_listing_key(
             .ownership()
             .get(&cancel.order_id)
             .map(|owned| owned.listing_key)),
-        CommandPayload::ActivateKillSwitch => Ok(None),
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => Ok(None),
     }
 }
 

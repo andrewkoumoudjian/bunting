@@ -7,9 +7,9 @@ Bunting is a Rust market-simulation and exchange-testing platform designed to ru
 Bunting distinguishes venue-side market engines from participant-side execution engines.
 
 - The current default market path uses released [`OrderBook-rs`](https://github.com/joaquinbejar/OrderBook-rs) `0.10.3` for matching and order-book behavior.
-- Bunting adds venue identity, canonical events, participant ledger/risk, origin persistence, recovery, protocols and native Rust tRPC dispatch around that kernel.
-- NBC is a separate venue-side market-engine port target. It is not merely scenario data. ADR 0017 authorizes the pinned JAR for bytecode inspection, Rust translation and redistribution as a complete Bunting market engine.
-- The QUARCC trading engine is an optional external participant execution/OMS port. It consumes market data, manages/routs orders, applies participant controls and projects positions; it does not own venue matching or Bunting origin state.
+- Bunting adds venue identity, canonical events, participant ledger/risk, origin persistence, recovery, browser transport, and outbound FIX/TCP around that kernel.
+- NBC configuration, scheduling, synchronization, and provenance live inside `bunting-engine`; its translated matcher is retained only as a differential test oracle.
+- QUARCC is a portable Rust participant execution engine with Bunting and Rust/WASM adapters. Humans and FIX sessions may bypass it, while built-in agents always use it.
 
 See:
 
@@ -17,6 +17,7 @@ See:
 - [`docs/adr/0014-market-and-execution-engine-boundaries.md`](docs/adr/0014-market-and-execution-engine-boundaries.md)
 - [`docs/adr/0016-native-rust-trpc-worker.md`](docs/adr/0016-native-rust-trpc-worker.md)
 - [`docs/adr/0017-authorized-nbc-jar-port.md`](docs/adr/0017-authorized-nbc-jar-port.md)
+- [`docs/adr/0020-transport-neutral-engine-and-outbound-fix-tcp.md`](docs/adr/0020-transport-neutral-engine-and-outbound-fix-tcp.md)
 - [`docs/reference-functionality-audit.md`](docs/reference-functionality-audit.md)
 - [`docs/reference-adoption.md`](docs/reference-adoption.md)
 - [`docs/architecture.md`](docs/architecture.md)
@@ -26,8 +27,8 @@ See:
 - `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.
 - The origin event/version store remains authoritative for accepted commands, canonical events, idempotency, projections and optimistic concurrency.
 - Cache misses or evictions are normal recovery events.
-- The only public application API is tRPC, dispatched directly by one native Rust Worker without a REST router.
-- No Durable Object is required for commands; ADR 0016 permits a Rust stream coordinator only if its measured gate passes.
+- Browser clients use the bounded `/api` fetch/stream contract; internal Worker components call Rust application functions directly.
+- FIX session Durable Objects initiate outbound raw TCP and persist session state, but never own market authority or accept inbound raw TCP.
 - User strategy outputs enter through the normal authenticated command/risk/persistence path.
 
 ## Reference policy
@@ -40,7 +41,7 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the deployable Worker lives under `apps/trpc-api/`.
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and the deployable Worker lives under `apps/bunting-worker/`.
 
 Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
@@ -55,25 +56,29 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `risk-engine`: participant/account controls not supplied by the upstream book;
 - `origin-store`: authoritative projections, idempotency, expected-version commits and recovery metadata;
 - `command-transaction`: recovery, risk, matching, accounting and commit orchestration;
-- `quarcc-trading-engine`: current WASM-safe `quarcc.v1` compatibility-contract seed, not the complete execution engine;
+- `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: portable participant execution, venue mapping, and browser bindings;
+- `bunting-agents`: deterministic built-in policies composed with mandatory QUARCC execution;
+- `simfix-wire`, `simfix-session`, and `simfix-mapping`: FIX framing, session recovery, and application mapping;
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
-- `apps/trpc-api`: current plain Rust Cloudflare Worker entrypoint.
+- `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
 
-## Native tRPC Worker
+## Native Worker transports
 
-The Worker exposes only `GET|POST /trpc/<procedure-or-batch>`. The initial procedures are `system.health`, `market.snapshot`, `orders.submit`, and `orders.cancel`; mutation batching and every REST resource are rejected.
+The Worker exposes bounded `GET|POST /api/<procedure>` handlers for browser clients. Authenticated FIX-session control requests address `/fix-sessions/<id>/...`; each object opens outbound TCP to an external acceptor.
 
 Actor identity comes from the server-configured participant claim associated with the verified bearer token. No request header or procedure input can select a participant.
 
-Deployment and migration commands use the Worker config at `apps/trpc-api/wrangler.toml`:
+Deployment and migration commands use the Worker config at `apps/bunting-worker/wrangler.toml`:
 
 ```bash
 npx wrangler d1 create bunting-origin
-npx wrangler d1 migrations apply bunting-origin --config apps/trpc-api/wrangler.toml --remote
-npx wrangler secret put BUNTING_API_TOKEN --config apps/trpc-api/wrangler.toml
-npx wrangler secret put BUNTING_API_PARTICIPANT_ID --config apps/trpc-api/wrangler.toml
+npx wrangler d1 migrations apply bunting-origin --config apps/bunting-worker/wrangler.toml --remote
+npx wrangler secret put BUNTING_API_TOKEN --config apps/bunting-worker/wrangler.toml
+npx wrangler secret put BUNTING_API_PARTICIPANT_ID --config apps/bunting-worker/wrangler.toml
 ```
+
+Set `BUNTING_FIX_DESTINATIONS` in the environment-specific Wrangler configuration to a comma-separated allowlist of exact `host:port` acceptor destinations before enabling FIX sessions.
 
 Scenario/orchestration code provisions runs before order entry. Command procedures return a typed `NOT_FOUND` error instead of creating authoritative state implicitly.
 

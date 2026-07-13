@@ -1,21 +1,21 @@
 # Core implementation questions and binding answers
 
-ADR 0013, ADR 0016, ADR 0017, ADR 0018 and ADR 0019 are authoritative when older documents disagree.
+ADR 0013, ADR 0017, ADR 0018, ADR 0019 and ADR 0020 are authoritative when older documents disagree. ADR 0020 supersedes ADR 0016's universal-tRPC boundary.
 
 ## Decision index
 
 | Question | Binding answer |
 |---|---|
-| Runtime? | One native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. |
+| Runtime? | One native Rust Cloudflare Worker with bounded browser fetch/stream dispatch, direct in-process application calls, and outbound FIX/TCP session objects. |
 | Matching kernel? | `orderbook-rs = 0.10.3`, with `pricelevel = 0.8.4`. |
 | Bunting-owned book? | Bunting does not own another matching implementation. `bunting-engine` directly owns a private adapter around released OrderBook-rs; the transitional `packages/orderbook` crate has been removed. |
 | Snapshot recovery? | `OrderBookSnapshotPackage` JSON, checksum validation, Workers Cache first, origin fallback. |
 | Workers Cache role? | Mandatory immutable snapshot acceleration; never a lock or accepted-command journal. |
 | Concurrent commands? | Optimistic expected-version commit in the origin store. |
 | Warm isolate state? | Optional cache only. Never required for recovery or ordering. |
-| Streaming? | tRPC HTTP subscriptions with committed sequence cursors and snapshot/reset recovery; a Rust stream-only Durable Object is conditional on the ADR 0016 gate. |
+| Streaming? | Browser-compatible HTTP streams with committed sequence cursors and snapshot/reset recovery; a Rust stream-only Durable Object is conditional on the ADR 0016 gate. |
 | Dynamic strategies? | Isolated Dynamic Workers; proposed actions re-enter the ordinary command path. |
-| FIX/RITC/Nautilus? | Participant-side client adapters over tRPC. FIX terminates in a native bridge. |
+| FIX/RITC/Nautilus? | Protocol adapters remain outside market authority. FIX is a Worker-owned outbound TCP initiator and invokes the application transaction in process. |
 | NBC? | A complete authorized compatibility translation from the pinned JAR under ADR 0017, integrated into the single production `bunting-engine` under ADR 0018. |
 
 ## 1. Upstream API usage
@@ -44,7 +44,7 @@ Do not duplicate these implementations inside Bunting.
 ## 2. Plain Worker request path
 
 ```text
-tRPC procedure
+browser procedure or in-process FIX mapping
   -> auth and exact unit conversion
   -> idempotency + expected origin version
   -> Workers Cache snapshot lookup
@@ -104,7 +104,7 @@ The participant ledger consumes canonical trade and cancellation events. It does
 
 ## 6. Streaming
 
-The native Worker exposes the pinned tRPC HTTP-subscription subset. Stream recovery is sequence-based rather than isolate-based.
+The native Worker exposes a bounded browser-compatible HTTP stream. Stream recovery is sequence-based rather than isolate-based.
 
 - Snapshot first, then committed updates.
 - L2 updates carry absolute resulting quantity; zero removes a level.

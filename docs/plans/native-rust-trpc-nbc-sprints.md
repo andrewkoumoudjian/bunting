@@ -1,10 +1,10 @@
 # Native Rust tRPC and NBC implementation sprints
 
-Status: superseded for engine selection by ADR 0018 and [`unified-bunting-engine-roadmap.md`](unified-bunting-engine-roadmap.md); retained for completed tRPC/NBC evidence history
+Status: fully superseded for active sequencing by ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); retained for completed tRPC/NBC evidence history
 
-Canonical decisions: ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019
+Historical decision set: ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019. ADR 0020 supersedes the universal-tRPC and client-side-FIX outcome below.
 
-## Outcome
+## Historical outcome (superseded by ADR 0020)
 
 Bunting ships one public native Rust Cloudflare Worker whose only application API is the versioned tRPC contract. The Worker invokes the unified Rust market engine in process, commits origin truth before acknowledgement, and exposes committed recovery-aware subscriptions. A native Rust FIX bridge maps FIX/TCP to the Rust tRPC client. The authorized NBC JAR is translated into a complete provenance-linked compatibility profile within that engine, with JAR-linked differential tests.
 
