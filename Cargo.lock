@@ -111,6 +111,8 @@ dependencies = [
 name = "bunting-nbc-market-engine"
 version = "0.1.0"
 dependencies = [
+ "bunting-market-events",
+ "bunting-market-types",
  "serde",
  "serde_json",
  "sha2",

@@ -54,8 +54,10 @@ claims.
 **Translated.** Sprint 7.1 translates strict configuration and provenance.
 Sprint 7.2 translates step-zero initialization, active run lifecycle,
 exact-step event selection, source-list ordering, logical increment, completion
-and explicit termination. Event effects, matching, traders, market publication,
-scoring and persistence remain outside this slice.
+and explicit termination. Sprint 7.3 translates the limit-order book, paired
+fill reports, partial fills, cancellation, level-head self-match rejection and
+the pre-match 50-resting-order limit. Event effects, market publication,
+traders, scoring and persistence remain outside these slices.
 
 **Inferred.** The class relationships strongly suggest one coherent venue
 engine boundary spanning configuration, run context, scheduler, matching,
