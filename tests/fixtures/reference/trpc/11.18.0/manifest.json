@@ -1,0 +1,46 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "fixtures": [
+    {
+      "file": "single_query.json",
+      "sha256": "91679d30f17f6e0d3c6e2208ba46bc1774d8a7557525f068ddf8ded31d695e83"
+    },
+    {
+      "file": "query_with_encoded_input.json",
+      "sha256": "12a1e3d2b65fedc8ef248cf7068cae286b85f42b2c6469c3281e5a33bf7ad37a"
+    },
+    {
+      "file": "single_mutation.json",
+      "sha256": "832aa5b7941cbe1c1228f2a69f92f8bd82c1245a4489bafd9a56bfc5ff0ba4d9"
+    },
+    {
+      "file": "bounded_query_batch.json",
+      "sha256": "a95d96d4a99896ecbcb0116d8e6edd20e0f283045b2c4f80adaef56ffe5be5f0"
+    },
+    {
+      "file": "official_mutation_batch_reference_only.json",
+      "sha256": "9b7fbd3301adad6a553aaa32ea7a2e955bac866d5b262cf2fc17ebe1ece74c62"
+    },
+    {
+      "file": "structured_bad_request.json",
+      "sha256": "e46f59ff275c06b188fae8681f556e0d7a0a5ef6fb841cab87c4bdbc2761237a"
+    },
+    {
+      "file": "unknown_procedure.json",
+      "sha256": "b7e0085694c39d04c7638e8f39d289628cc00b33f96618eba4b2c2358ddcb658"
+    },
+    {
+      "file": "method_not_supported.json",
+      "sha256": "d7451ee94ece91c26cfd8f8a6640fcc926814b2a525ff71244da2134ad446dba"
+    },
+    {
+      "file": "http_subscription_sse.json",
+      "sha256": "643e5ebd7aeaf82287567ae1b8fa75b7e740295c63c17b066699d0eb0d9644b6"
+    }
+  ]
+}

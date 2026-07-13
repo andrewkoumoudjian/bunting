@@ -1,0 +1,36 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "case": "method_not_supported",
+  "request": {
+    "method": "POST",
+    "path": "/trpc/system.health",
+    "query": "",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 405,
+    "headers": {
+      "content-type": "application/json",
+      "vary": "trpc-accept, accept"
+    },
+    "body": {
+      "error": {
+        "message": "Unsupported POST-request to query procedure at path \"system.health\"",
+        "code": -32005,
+        "data": {
+          "code": "METHOD_NOT_SUPPORTED",
+          "httpStatus": 405,
+          "path": "system.health"
+        }
+      }
+    }
+  }
+}

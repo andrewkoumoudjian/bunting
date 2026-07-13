@@ -42,6 +42,66 @@ The two values must agree. Record the pin in the relevant audit or port document
 
 ---
 
+# Development-only protocol conformance references
+
+## `@trpc/server` and `@trpc/client` 11.18.0
+
+### Pin, license, and selected source
+
+The official repository is `https://github.com/trpc/trpc.git`; version `11.18.0`
+is source commit `6aec1578a899df50a17e4e78d5512a099b574c18` and is MIT licensed. The
+license file has Git blob `f9ff685d4b60f34316f8ea28eb300351d3741725` and SHA-256
+`e714dd84c8fa242600844b05d317a31003423723178c1f1603dbfad1bc68d906`.
+The selected `packages/server/package.json` and `packages/client/package.json`
+manifests declare version `11.18.0`, MIT, ESM/CJS exports, and TypeScript peer
+requirements; their SHA-256 values are respectively
+`a0a75b49ef3c231cdbc2c59c0763ceb33a5132572fb520039f8b2e88bcc620f8` and
+`2bb0cfcd277781d2a2748a34b1fb0cea200ed04d472717334ae380c8aaf67453`.
+
+Selected source entrypoints and SHA-256 evidence:
+
+- Fetch adapter `packages/server/src/adapters/fetch/fetchRequestHandler.ts`: `f0f2922f81440e2519cdb58419c62a5d29a495f894f6828e35121748059d00c7`;
+- HTTP resolver and parser `resolveResponse.ts` / `contentType.ts`: `5dd1ca29642e31f37881929cc4679e53b0b7ef08fc09459dacff02d343dd0f25` / `1566670a72baca4a37608f0342444fba519ad48ef362700aa9543d4a7683f685`;
+- error shape and transformer `getErrorShape.ts` / `transformer.ts`: `a0ce73abd3b7fe5387157b4e9ddbf68fd79eb8a84ab3a201282934c540ad84c0` / `95458dc9a904d72418e74cc8133d3b9e4ec2f8e3872eccbef57f890cb7088a35`;
+- SSE producer `packages/server/src/unstable-core-do-not-import/stream/sse.ts`: `849d984eafe8454bb59ba43af8a2912940c4c1461b97b758c5d68fba4980b880`;
+- HTTP batch and subscription clients `httpBatchLink.ts` / `httpSubscriptionLink.ts`: `42ec21255034dc7ec5a56d8c84b75e1236541aa8468930fc3e083a387078ef97` / `e8a9b21b0c8d6804c4865460dacb282b004f069a85a750d91853ab3a7648dd1a`;
+- shared client URL/body encoding `links/internals/httpUtils.ts`: `8f959d6c0216dd551c1622f475060df035116c6ac8219e34aafa8bdde4bd15c5`.
+
+### Observed functionality
+
+The Fetch adapter trims endpoint slashes, extracts the procedure path, and
+delegates to the HTTP resolver. The resolver accepts GET queries/subscriptions
+and POST mutations by default, rejects wrong methods, supports comma-separated
+`batch=1` calls, emits structured result/error envelopes, maps error codes to
+HTTP statuses, and advertises `vary: trpc-accept, accept`. Its JSON parser reads
+GET input from the percent-encoded `input` parameter and POST input from a JSON
+body; batch input is an object keyed by call index and mixed procedure types are
+rejected. The selected client batch link constructs the same paths and inputs.
+
+The HTTP subscription client uses EventSource/SSE, maintains tracked event IDs,
+reports connecting/pending/idle states, reconnects retryable errors, and aborts
+on cancellation. The server SSE producer emits connected, data, serialized-error
+and ping lifecycle frames. Default transformer behavior is identity JSON;
+SuperJSON, devalue, JSONL streaming, multipart, octet input, WebSockets, and
+method override exist in the broader upstream surface but are outside Bunting's
+selected subset.
+
+### Worker/Wasm impact and Bunting disposition
+
+This is a development-only differential oracle. Its TypeScript packages and
+Node tooling stay under `tests/`; they are absent from production Cargo and
+Worker manifests, so they add no Worker/Wasm runtime or transitive dependency.
+The Bunting Rust implementation owns bounds, authentication, domain errors,
+commit-before-acknowledgement, and the deliberately narrower feature set frozen
+in `schemas/trpc/bunting.v1.json`. Committed normalized fixtures can be checked
+offline; refreshing them requires the pinned official packages and explicit
+review.
+
+Evidence classification: the transport behavior above is **observed** from the
+pinned selected source and generated fixtures; request bounds, mutation-batch
+rejection, identity-only transformation, recovery semantics, and unsupported
+feature policy are **Bunting-added** restrictions.
+
 # A. Market engines, matching kernels, and market simulation
 
 ## `ref/orderbook-rs` — OrderBook-rs

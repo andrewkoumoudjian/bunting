@@ -1,0 +1,13 @@
+{
+  "name": "bunting-trpc-conformance-oracle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fixtures:refresh": "node generate-fixtures.mjs",
+    "validate": "node validate-contract.mjs"
+  },
+  "dependencies": {
+    "@trpc/client": "11.18.0",
+    "@trpc/server": "11.18.0"
+  }
+}

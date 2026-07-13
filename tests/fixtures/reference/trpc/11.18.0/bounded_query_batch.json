@@ -1,0 +1,40 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "case": "bounded_query_batch",
+  "request": {
+    "method": "GET",
+    "path": "/trpc/system.health,echo.query",
+    "query": "?batch=1&input=%7B%221%22%3A%7B%22instrumentId%22%3A%227%22%7D%7D",
+    "headers": {},
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "vary": "trpc-accept, accept"
+    },
+    "body": [
+      {
+        "result": {
+          "data": {
+            "apiVersion": "bunting.v1",
+            "contractCompatible": true
+          }
+        }
+      },
+      {
+        "result": {
+          "data": {
+            "instrumentId": "7"
+          }
+        }
+      }
+    ]
+  }
+}

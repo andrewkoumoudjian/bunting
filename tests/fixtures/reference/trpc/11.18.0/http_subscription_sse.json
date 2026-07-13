@@ -1,0 +1,29 @@
+{
+  "fixture_version": 1,
+  "oracle": {
+    "package_version": "11.18.0",
+    "source_commit": "6aec1578a899df50a17e4e78d5512a099b574c18",
+    "license": "MIT"
+  },
+  "case": "http_subscription_sse",
+  "request": {
+    "method": "GET",
+    "path": "/trpc/market.subscribe",
+    "query": "",
+    "headers": {
+      "accept": "text/event-stream"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "cache-control": "no-cache, no-transform",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream",
+      "vary": "trpc-accept, accept",
+      "x-accel-buffering": "no"
+    },
+    "body": "event: connected\ndata: {}\n\n\ndata: {\"sequence\":\"41\",\"kind\":\"snapshot\"}\nid: 41\n\n\nevent: return\ndata: \n\n\n"
+  }
+}
