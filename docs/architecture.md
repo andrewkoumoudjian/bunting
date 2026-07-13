@@ -22,13 +22,21 @@ The system is an education, research, and integration environment. It is not a c
 ## 3. Topology
 
 ```text
-Browser / SDK / FIX bridge / Nautilus adapter
+Browser / SDK / Nautilus adapter
+FIX initiator -> local FIX bridge
                   |
-              HTTPS/WSS
+             typed tRPC client
                   |
                   v
-       Rust Cloudflare Edge Worker
-       - auth and protocol mapping
+       Public TypeScript tRPC Worker
+       - public auth and schemas
+       - bounded query/mutation/subscription routing
+                  |
+          private Service Binding
+                  |
+                  v
+       Authoritative Rust Cloudflare Worker
+       - protected actor identity
        - expected-version command handling
        - OrderBook-rs adapter
        - Bunting risk/ledger/events
@@ -67,7 +75,10 @@ User strategy source
 
 ### Worker
 
-- `apps/edge-api`: the plain Worker entrypoint and route boundary.
+- `apps/edge-api`: the current Rust Worker entrypoint; its command handlers become the private authoritative service behind the public tRPC Worker.
+- planned `apps/trpc-api`: the plain TypeScript tRPC Worker defined by ADR 0015.
+- planned `clients/typescript-sdk`: the router-derived public client used directly and by protocol adapters.
+- `clients/fix-bridge`: the local FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
 
 There is no `market-run-do` runtime in the accepted architecture. Historical directories or instructions referring to it are superseded by ADR 0013 and should be removed as implementation proceeds.
 
@@ -107,11 +118,19 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 - cross-book and participant-level cash/inventory/position risk;
 - canonical events and participant ledger projections;
 - scenario scheduling, random streams, scoring, and administration;
-- Worker routes, Cache API policy, streaming protocol, and reconnect behavior;
+- the private authoritative service, Cache API policy, committed stream content, and recovery behavior;
 - Dynamic Worker strategy isolation;
-- FIX, NBC, RITC, and Nautilus mappings.
+- NBC mappings and the internal service contract; public tRPC, FIX, RITC, and Nautilus mappings stay outside the market engine.
 
-## 6. Command transaction
+## 6. Public API boundary
+
+ADR 0015 makes `bunting.v1` tRPC the only public application API. The TypeScript Worker owns public authentication, runtime schemas, bounded transport and router-derived client types, but it owns no market state. It delegates mutations through a private service binding and returns only committed Rust transaction results.
+
+The current Rust REST routes are provisional migration handlers for that private binding, not a supported public REST API. Public streams are tRPC subscriptions retaining the committed-sequence, reset, coalescing and backpressure rules in ADR 0011.
+
+FIX compatibility is implemented by a local client bridge that terminates FIX/TCP and maps application messages through the typed tRPC client. FIX session sequences remain participant-side state and never replace Bunting event sequences.
+
+## 7. Command transaction
 
 For one mutating command:
 
@@ -132,7 +151,7 @@ For one mutating command:
 
 A cache write failure does not roll back an origin commit. The next request rebuilds and repopulates the cache.
 
-## 7. Concurrency without a Durable Object
+## 8. Concurrency without a Durable Object
 
 A plain Worker does not provide request affinity. The origin store therefore enforces optimistic concurrency:
 
@@ -148,7 +167,7 @@ The D1 adapter stores `u128` identifiers and `u64` sequences as decimal `TEXT`, 
 
 The initial slice writes an authoritative upstream package and complete private projection after every command. Its event tail is empty without making Workers Cache authoritative; canonical events are still appended for audit and later bounded-tail replay.
 
-## 8. Snapshot and Cache API
+## 9. Snapshot and Cache API
 
 The cache key is:
 
@@ -171,9 +190,9 @@ Properties:
 
 Private ledgers, credentials, idempotency results, and accepted-command records are never cached as public responses.
 
-## 9. Streaming
+## 10. Streaming
 
-The Worker exposes versioned JSON WebSockets first. Binary frames may later use the upstream wire feature or IronSBE after Wasm and compatibility review.
+The public Worker exposes versioned tRPC subscriptions first. Binary transport may later use IronSBE after Wasm and compatibility review, but it remains behind the same client contract rather than becoming a second public authority path.
 
 Book streams are generated from committed upstream snapshots and absolute resulting level quantities. Each message includes:
 
@@ -188,7 +207,7 @@ A reconnect presents its last committed sequence. The Worker either supplies an 
 
 Public book state may coalesce. Trades and private execution/account records cannot be silently discarded. Slow consumers are disconnected with a recovery cursor.
 
-## 10. Numerics and identity
+## 11. Numerics and identity
 
 Bunting protocol and ledger types include:
 
@@ -208,7 +227,7 @@ The OrderBook-rs adapter performs checked conversion to the upstream `u128` pric
 
 Floating analytics from upstream metrics are derived only. They never determine canonical money, quantity, priority, or ledger equality.
 
-## 11. Risk and ledger
+## 12. Risk and ledger
 
 OrderBook-rs book-level risk is enabled where it matches the requirement: open-order counts, notional, price bands, kill switch, STP, fees, and validation.
 
@@ -223,13 +242,13 @@ Bunting retains separate participant-level controls for:
 
 The ledger projects canonical trades and cancellations. It never infers fills from snapshots.
 
-## 12. Strategies and scenarios
+## 13. Strategies and scenarios
 
 Dynamic Worker strategy execution remains asynchronous and capability-limited. A strategy proposes commands; it never receives a direct reference to the upstream book or cache.
 
 Built-in agents use explicit scenario time and named seeded random streams. Host-driven upstream clock/expiry APIs receive recorded logical or scheduled cutoffs.
 
-## 13. Reference policy
+## 14. Reference policy
 
 - `OrderBook-rs` and `PriceLevel` are production dependencies.
 - `workers-rs` is the Worker/Cache production dependency.
@@ -241,7 +260,7 @@ Built-in agents use explicit scenario time and named seeded random streams. Host
 
 Any copied MIT source retains its notice, exact path, commit, and divergence record. Prefer upstream APIs and normal dependencies over copied source.
 
-## 14. Validation gates
+## 15. Validation gates
 
 Every change to the kernel boundary runs:
 

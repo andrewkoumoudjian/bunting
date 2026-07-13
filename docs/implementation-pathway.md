@@ -1,6 +1,6 @@
 # Implementation pathway
 
-This pathway implements ADR 0013 and ADR 0014. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
+This pathway implements ADR 0013, ADR 0014 and ADR 0015. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation
 
@@ -10,7 +10,7 @@ This pathway implements ADR 0013 and ADR 0014. Reference and port decisions are 
 4. Add immutable Workers Cache snapshot operations.
 5. Add a plain Rust Cloudflare Worker without a Durable Object requirement.
 6. Add origin-store and command-transaction boundaries with expected-version commits, idempotency and recovery.
-7. Add authenticated bounded limit-GTC and cancellation routes.
+7. Add authenticated bounded limit-GTC and cancellation routes as the provisional Rust service surface; ADR 0015 makes them private migration handlers rather than the public API.
 8. Add the initial WASM-safe `quarcc.v1` compatibility contract.
 9. Audit the reference inventory and distinguish market, execution, protocol, simulation and utility roles.
 
@@ -35,7 +35,23 @@ The repository now follows [`repository-reorganization.md`](repository-reorganiz
 
 Do not implement NBC, expand QUARCC, select a FIX/SBE stack, create model/algorithm dumping grounds, fork OrderBook-rs, upgrade dependencies or change runtime behavior in this PR.
 
-## P1: NBC evidence and market-engine foundation
+## P1A: public tRPC and client-side FIX boundary
+
+ADR 0015 supersedes the earlier public REST/WebSocket and raw-FIX-over-WebSocket transport choices. Implement this boundary before expanding public route coverage:
+
+1. Add `apps/trpc-api`, a plain TypeScript Cloudflare Worker exposing the versioned `bunting.v1` tRPC router.
+2. Define runtime schemas and structured Bunting errors with exact decimal strings for wide integers.
+3. Convert the Rust Worker routes into a private, authenticated service-binding contract without moving matching, ledger, idempotency or origin authority.
+4. Export the router-derived TypeScript client from `clients/typescript-sdk` and use it for all first-party public integrations.
+5. Implement committed query/mutation/subscription behavior with bounded batches, payloads, streams and reconnect state.
+6. Replace the raw-WSS FIX design with a local FIX/TCP bridge that owns session state and maps application messages through the typed tRPC client.
+7. Add cross-boundary fixtures for authentication, participant identity, duplicate commands, stale versions, wide integers, committed publication and FIX mappings.
+
+Do not expose the private Rust routes publicly in production, emulate tRPC wire behavior in Rust, or let the public Worker acknowledge before the Rust origin commit.
+
+The initial procedure, error and FIX-message mapping contract is versioned in `tests/fixtures/api/trpc-fix-contract.v1.json`; its entries distinguish existing private handlers from planned public behavior.
+
+## P1B: NBC evidence and market-engine foundation
 
 The direct checked-in `ref/nbc_engine` snapshot proves a packaged exchange simulator, configuration/scenarios and an observable REST/WebSocket/DONE protocol, but it does not contain the Java implementation or named JAR. A separate pinned client tree contains an opaque named JAR whose license, source and relationship to that snapshot are unresolved.
 
@@ -100,7 +116,7 @@ Selecting a market engine is separate from enabling an external participant exec
 
 ### Streaming
 
-- plain Worker WebSocket endpoint;
+- tRPC subscription procedures on the public plain Worker;
 - publish only after origin commit;
 - bounded public/private subscriptions, frames and backlog;
 - committed event-sequence cursors;

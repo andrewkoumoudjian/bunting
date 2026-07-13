@@ -1,6 +1,6 @@
 # ADR 0005: Adapt a pinned, transport-neutral subset of IronFix
 
-- Status: Accepted with mandatory spike gates
+- Status: Superseded in Worker scope by ADR 0015; native FIX bridge gates retained
 - Date: 2026-07-11
 
 ## Context

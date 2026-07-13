@@ -1,6 +1,6 @@
 # ADR 0004: FIX 4.4 session semantics over WebSocket with a native TCP bridge
 
-- Status: Accepted
+- Status: Superseded by ADR 0015
 - Date: 2026-07-11
 
 ## Context
