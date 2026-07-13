@@ -22,7 +22,7 @@ Required reading:
 
 - The current default Bunting market engine uses released `OrderBook-rs = 0.10.3` through a first-party adapter.
 - NBC is a complete venue-side market-engine port target.
-- The current NBC snapshot proves its packaged application/config/scenarios and observable external protocol, but not its missing Java internals. The package plan must preserve that evidence boundary.
+- The direct NBC snapshot proves its packaged application/config/scenarios and observable external protocol. ADR 0017 separately authorizes the pinned JAR as the source/reference runtime for the Rust market-engine translation, with provenance and differential evidence required.
 
 ### Participant execution and strategy packages
 
@@ -340,7 +340,7 @@ The PR includes:
 ## P1: NBC evidence and market-engine foundation
 
 - finish the external-contract fixture manifest;
-- resolve ownership/license or formalize clean-room authority;
+- apply ADR 0017 authorization and preserve translation/redistribution provenance;
 - create `packages/nbc-market-engine` with strict config/provenance only when real source/tests are added;
 - specify `nbc-v1` matching/order/step capabilities without claiming hidden Java equivalence;
 - implement deterministic Bunting-added recovery and state hashing;

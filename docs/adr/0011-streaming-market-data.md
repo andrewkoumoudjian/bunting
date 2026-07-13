@@ -1,6 +1,6 @@
 # ADR 0011: Streaming market-data protocol
 
-- Status: Superseded in ownership details by ADR 0013 and transport details by ADR 0015; protocol semantics retained
+- Status: Superseded in ownership details by ADR 0013 and transport details by ADR 0016; protocol semantics retained
 - Date: 2026-07-11
 - Updated: 2026-07-12
 

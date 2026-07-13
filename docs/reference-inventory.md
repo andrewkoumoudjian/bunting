@@ -29,6 +29,14 @@ References are commit-pinned research and provenance. Production manifests use r
 - `ref/barter-rs`: OMS/risk/audit architecture.
 - `ref/nexosim`, `ref/abides`, NBC assets: scheduler, agents, and scenarios.
 
+## Authorized translation source
+
+- `ref/nbc-hft-simulation` at `35b8050546679547dc737198ea13aa0ec8ed7db8`: contains the selected NBC JAR authorized by ADR 0017 for inspection, Rust translation and redistribution; exact JAR hash and authority are recorded in `docs/ports/nbc-evidence-manifest.v1.json`.
+
+## Pending protocol conformance intake
+
+- tRPC `11.18.0`, source git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT: planned development-only wire oracle under ADR 0016; Sprint 0 must complete the source/manifests/entrypoint audit before adoption.
+
 ## Historical implementation candidates
 
 `slotmap` and `intrusive-rs` were added for a planned custom book. ADR 0013 makes that implementation obsolete; retain them only as general data-structure references.

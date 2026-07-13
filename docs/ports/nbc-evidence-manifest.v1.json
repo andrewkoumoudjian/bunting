@@ -6,19 +6,25 @@
     "note": "This is the main commit at which the evidence was inventoried."
   },
   "authority": {
-    "status": "unresolved",
+    "status": "authorized_by_project_owner",
+    "authorization_recorded_at": "2026-07-12",
+    "authorization_scope": "bytecode inspection, decompilation, Rust translation, and redistribution for the Bunting NBC market-engine port",
     "license_files_found": false,
-    "copying_policy": "prohibited_without_documented_authority",
+    "copying_policy": "authorized_with_file_level_provenance_and_divergence_records",
     "allowed_use": [
       "observable_interfaces",
       "independently_written_contracts",
-      "captured_traces_from_an_authorized_deployment",
-      "hash_and_provenance_records"
+      "captured_traces_from_the_recorded_jar",
+      "hash_and_provenance_records",
+      "jar_execution_and_archive_extraction",
+      "bytecode_inspection_and_decompilation",
+      "mechanical_or_behavioral_translation_to_rust",
+      "redistribution_of_the_authorized_jar_derived_port"
     ],
     "prohibited_use": [
-      "decompiling_the_recorded_jar",
-      "mechanically_translating_unlicensed_implementation_text",
-      "claiming_unobserved_internal_equivalence"
+      "claiming_equivalence_without_reproducible_evidence",
+      "dropping_generated_decompiler_output_into_production_without_review",
+      "discarding_source_artifact_provenance"
     ]
   },
   "reference_trees": [
@@ -107,7 +113,7 @@
       "license": "unresolved",
       "limitations": [
         "The pinned tree contains a named JAR, but its source, license, build provenance, and relationship to the direct NBC snapshot are unresolved.",
-        "The JAR is recorded as opaque evidence and must not be decompiled without authority.",
+        "ADR 0017 records project-owner authority to inspect, decompile, translate, and redistribute the JAR-derived Bunting port.",
         "Client behavior proves what the client sends or accepts, not what every simulator revision implements."
       ],
       "selected_files": [
@@ -170,8 +176,7 @@
   ],
   "captured_black_box_traces": [],
   "unresolved": [
-    "ownership_and_license_authority",
-    "selected_reference_binary_revision",
+    "original_upstream_license_metadata_and_build_provenance",
     "relationship_between_the_direct_snapshot_and_the_client_submodule_jar",
     "internal_matching_and_scheduler_semantics",
     "agent_formulas_units_and_random_distributions",

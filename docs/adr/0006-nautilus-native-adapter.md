@@ -1,6 +1,6 @@
 # ADR 0006: Native REST/WebSocket NautilusTrader adapter
 
-- Status: Superseded in transport details by ADR 0015; dedicated adapter role retained
+- Status: Superseded in transport details by ADR 0016; dedicated adapter role retained
 - Date: 2026-07-11
 
 ## Context

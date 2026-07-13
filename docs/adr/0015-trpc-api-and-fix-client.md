@@ -1,6 +1,6 @@
 # ADR 0015: Public tRPC API with client-side FIX compatibility
 
-- Status: Accepted
+- Status: Superseded by ADR 0016
 - Date: 2026-07-12
 - Supersedes: ADR 0004; the REST/WebSocket transport selections in ADR 0006 and ADR 0011
 - Retains: ADR 0011 committed-sequence, reset, coalescing and backpressure semantics
@@ -113,7 +113,7 @@ The local FIX listener defaults to loopback, requires explicit configuration for
 ## References
 
 - `docs/architecture.md`
-- `tests/fixtures/api/trpc-fix-contract.v1.json`
+- `schemas/trpc/bunting.v1.json`
 - ADR 0011, streaming market-data protocol semantics
 - ADR 0013, Worker and OrderBook-rs authority
 - ADR 0014, market-engine and execution-engine boundaries

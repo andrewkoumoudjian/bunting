@@ -1,6 +1,6 @@
 # ADR 0003: Event-sourced authoritative run state
 
-- Status: Accepted
+- Status: Accepted for event sourcing; Durable Object and FIX ownership superseded by ADR 0013 and ADR 0016
 - Date: 2026-07-11
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 0014: Market-engine and execution-engine boundaries
 
-- Status: accepted
+- Status: Accepted; NBC source/translation authority amended by ADR 0017
 - Date: 2026-07-12
 - Evidence baseline: `docs/reference-functionality-audit.md`
 - Supersedes: documentation that describes NBC only as scenario data or describes the QUARCC trading engine only as compatibility DTOs
@@ -13,6 +13,8 @@ Bunting composes systems that use the word “engine” for different authority 
 2. **The QUARCC trading engine is a participant-side execution/OMS service.** Its C++ headers and protobuf contracts prove strategy-signal intake, submit/cancel/replace, order managers, execution gateways, market-data feeds, participant risk, ID mapping, journal/store interfaces, positions, kill switch, gRPC and Python clients. It routes to a venue and consumes execution reports; it does not own venue matching.
 
 The current Bunting vertical slice uses released `OrderBook-rs` as the default matching kernel. That does not reduce NBC to scenarios and does not make QUARCC part of the venue kernel.
+
+ADR 0017 later selects the pinned NBC JAR and authorizes bytecode inspection, Rust translation and redistribution. Its evidence/provenance rules replace this ADR's clean-room-only language without changing the market-engine authority boundary.
 
 ## Evidence rule
 

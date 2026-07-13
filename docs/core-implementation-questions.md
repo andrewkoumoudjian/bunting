@@ -1,21 +1,22 @@
 # Core implementation questions and binding answers
 
-ADR 0013 is authoritative when older documents disagree.
+ADR 0013, ADR 0016 and ADR 0017 are authoritative when older documents disagree.
 
 ## Decision index
 
 | Question | Binding answer |
 |---|---|
-| Runtime? | A plain Rust Cloudflare Worker. No Durable Object requirement. |
+| Runtime? | One native Rust Cloudflare Worker with direct tRPC dispatch and no REST router. |
 | Matching kernel? | `orderbook-rs = 0.10.3`, with `pricelevel = 0.8.4`. |
 | Bunting-owned book? | No. `packages/orderbook` is a thin adapter only. |
 | Snapshot recovery? | `OrderBookSnapshotPackage` JSON, checksum validation, Workers Cache first, origin fallback. |
 | Workers Cache role? | Mandatory immutable snapshot acceleration; never a lock or accepted-command journal. |
 | Concurrent commands? | Optimistic expected-version commit in the origin store. |
 | Warm isolate state? | Optional cache only. Never required for recovery or ordering. |
-| Streaming? | Plain Worker WebSocket, committed sequence cursors, snapshot/reset recovery. |
+| Streaming? | tRPC HTTP subscriptions with committed sequence cursors and snapshot/reset recovery; a Rust stream-only Durable Object is conditional on the ADR 0016 gate. |
 | Dynamic strategies? | Isolated Dynamic Workers; proposed actions re-enter the ordinary command path. |
-| FIX/NBC/RITC/Nautilus? | Protocol and client adapters only; all use the same OrderBook-rs-backed command path. |
+| FIX/RITC/Nautilus? | Participant-side client adapters over tRPC. FIX terminates in a native bridge. |
+| NBC? | A complete authorized Rust market engine translated from the pinned JAR under ADR 0017. |
 
 ## 1. Upstream API usage
 
@@ -43,7 +44,7 @@ Do not duplicate these implementations inside Bunting.
 ## 2. Plain Worker request path
 
 ```text
-request
+tRPC procedure
   -> auth and exact unit conversion
   -> idempotency + expected origin version
   -> Workers Cache snapshot lookup
@@ -57,13 +58,13 @@ request
 
 A failed cache put does not change the accepted command. A failed origin commit produces no accepted response or fill publication.
 
-## 3. Cache key and response contract
+## 3. Internal cache key and package contract
 
 ```text
 /v1/orderbooks/{run_id}/{instrument_id}/{event_sequence}/{sha256_checksum}
 ```
 
-Required response headers:
+The URL-shaped key is internal Workers Cache identity, not a public REST route. Required cache metadata:
 
 - `Cache-Control: public, s-maxage=<ttl>, immutable`;
 - `ETag: <snapshot checksum>`;
@@ -103,7 +104,7 @@ The participant ledger consumes canonical trade and cancellation events. It does
 
 ## 6. Streaming
 
-The plain Worker can accept WebSockets, but stream recovery is sequence-based rather than isolate-based.
+The native Worker exposes the pinned tRPC HTTP-subscription subset. Stream recovery is sequence-based rather than isolate-based.
 
 - Snapshot first, then committed updates.
 - L2 updates carry absolute resulting quantity; zero removes a level.
@@ -111,6 +112,7 @@ The plain Worker can accept WebSockets, but stream recovery is sequence-based ra
 - OrderBook-rs `engine_seq` may be included for cross-stream book diagnostics.
 - A reconnect requests an event tail or receives `stream.reset` and a current snapshot.
 - Public state may coalesce; trades and private execution/account records cannot silently disappear.
+- Add the Rust `RunStreamCoordinator` Durable Object only if the ADR 0016 evidence gate fails in the plain Worker; it coordinates committed fan-out and owns no market state.
 
 ## 7. Dynamic Worker strategies
 

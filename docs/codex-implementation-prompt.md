@@ -1,23 +1,23 @@
 # Codex implementation contract
 
-Read `AGENTS.md`, ADR 0013 and ADR 0015 before changing code.
+Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0016 and ADR 0017 before changing code.
 
 ## Repository paths
 
 - Reusable first-party crates live under `packages/`.
 - The curated portable composition crate is `bunting-rs/`.
-- The authoritative Rust Worker, Wrangler config and D1 migrations live together under `apps/edge-api/`; ADR 0015 adds the public tRPC Worker under `apps/trpc-api/`.
+- The current Rust Worker, Wrangler config and D1 migrations live under `apps/edge-api/`; move them mechanically to `apps/trpc-api/` before the native tRPC semantic cutover.
 - Cargo-less future scaffolds remain under `crates/` until their roadmap phase adds real implementation and tests.
 - Generated release assembly belongs under ignored `out/`; never commit Worker `build/`, Wasm or release artifacts.
 
 ## Non-negotiable decisions
 
-- Market authority runs in a plain Rust Cloudflare Worker behind a public plain TypeScript tRPC Worker; neither uses a Durable Object.
+- One native Rust Cloudflare Worker owns direct tRPC dispatch and market authority; it exposes no REST router.
 - `orderbook-rs = 0.10.3` is the production matching and order-book kernel.
 - `pricelevel = 0.8.4` is pinned for type identity.
 - Workers Cache is mandatory for immutable checksum-addressed upstream snapshot packages.
 - Do not implement a second order book, price-level FIFO, matching loop, snapshot format, kill switch, STP engine, fee model, depth engine, or market-impact engine.
-- Do not introduce a Durable Object binding or architecture assumption.
+- Do not introduce a Durable Object before the ADR 0016 stream-coordination gate; if approved by that gate, keep it Rust-only and non-authoritative.
 
 ## Preferred upstream APIs
 
@@ -34,7 +34,7 @@ Implement adapters for:
 - canonical event translation;
 - participant ledger and cross-book risk;
 - Workers Cache keys and recovery;
-- the private service contract and NBC mappings; public tRPC, FIX, RITC and Nautilus mappings remain client/gateway concerns under ADR 0015;
+- the native Rust tRPC contract, authorized NBC translation and public mappings; FIX, RITC and Nautilus remain client/gateway concerns;
 - scenario and Dynamic Worker orchestration.
 
 ## First implementation target

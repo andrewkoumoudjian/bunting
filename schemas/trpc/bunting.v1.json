@@ -6,13 +6,29 @@
     "router": "bunting.v1",
     "transport": "tRPC",
     "worker": "apps/trpc-api",
-    "typed_client": "clients/typescript-sdk",
-    "authoritative_service": "apps/edge-api",
-    "authoritative_service_visibility": "private_service_binding_only",
+    "worker_implementation": "native_rust_workers_rs",
+    "dispatch": "direct_fetch_without_rest_router",
+    "rust_contract": "packages/bunting-api-contract",
+    "rust_wire": "packages/trpc-wire",
+    "native_client": "packages/trpc-client",
+    "typescript_client": "generated_from_rust_contract",
+    "authoritative_service": "same_rust_worker_process",
+    "public_routes": "trpc_only",
     "wide_integer_encoding": "validated_decimal_string",
     "mutation_batching": "disabled",
     "max_query_batch_calls": 16,
-    "max_request_bytes": 16384
+    "max_request_bytes": 16384,
+    "trpc_conformance_oracle": {
+      "version": "11.18.0",
+      "source_git_head": "6aec1578a899df50a17e4e78d5512a099b574c18",
+      "production_dependency": false
+    },
+    "durable_object": {
+      "status": "conditional_after_adr_0016_gate",
+      "class": "RunStreamCoordinator",
+      "implementation": "rust_workers_rs",
+      "authority": "committed_subscription_fanout_only"
+    }
   },
   "common_mutation_fields": [
     "commandId",
@@ -25,7 +41,7 @@
       "name": "system.health",
       "kind": "query",
       "capability": null,
-      "implementation_state": "private_handler_exists",
+      "implementation_state": "rest_handler_to_migrate",
       "result_fields": [
         "apiVersion",
         "serviceVersion",
@@ -61,7 +77,7 @@
       "name": "orders.submit",
       "kind": "mutation",
       "capability": "submit_limit",
-      "implementation_state": "private_handler_exists",
+      "implementation_state": "rest_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId",
@@ -79,7 +95,7 @@
       "name": "orders.cancel",
       "kind": "mutation",
       "capability": "cancel",
-      "implementation_state": "private_handler_exists",
+      "implementation_state": "rest_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId",
@@ -123,7 +139,7 @@
       "name": "market.snapshot",
       "kind": "query",
       "capability": "market_data",
-      "implementation_state": "private_cache_handler_exists",
+      "implementation_state": "rest_cache_handler_to_migrate",
       "required_input": [
         "runId",
         "instrumentId"

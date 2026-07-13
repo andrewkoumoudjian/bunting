@@ -23,24 +23,21 @@ The system is an education, research, and integration environment. It is not a c
 
 ```text
 Browser / SDK / Nautilus adapter
-FIX initiator -> local FIX bridge
+FIX initiator -> native Rust FIX bridge
                   |
-             typed tRPC client
-                  |
-                  v
-       Public TypeScript tRPC Worker
-       - public auth and schemas
-       - bounded query/mutation/subscription routing
-                  |
-          private Service Binding
+          versioned tRPC protocol
                   |
                   v
-       Authoritative Rust Cloudflare Worker
-       - protected actor identity
+       Native Rust Cloudflare Worker
+       - direct tRPC fetch dispatch
+       - auth, schemas and protocol bounds
        - expected-version command handling
        - OrderBook-rs adapter
        - Bunting risk/ledger/events
        - snapshot and stream responses
+          |                 |
+          |                 +--> optional Rust RunStreamCoordinator DO
+          |                      committed fan-out only after ADR 0016 gate
           |                 |
           |                 +--> Workers Cache
           |                      immutable OrderBook-rs
@@ -68,6 +65,10 @@ User strategy source
 - `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
 - `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
 - `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
+- future `bunting-api-contract`: Rust-owned tRPC procedure and schema contract.
+- future `trpc-wire`: bounded, market-neutral tRPC HTTP/SSE compatibility.
+- future `trpc-client`: native client transport for Rust adapters.
+- future `nbc-market-engine`: complete authorized Rust translation of the selected NBC JAR market engine.
 - `quarcc-trading-engine`: legacy `quarcc.v1` compatibility types and service trait, not a matching engine.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later crates: scenario clock, scenario engine, agent models, protocol-native, FIX, replay exports, and scoring.
@@ -75,12 +76,11 @@ User strategy source
 
 ### Worker
 
-- `apps/edge-api`: the current Rust Worker entrypoint; its command handlers become the private authoritative service behind the public tRPC Worker.
-- planned `apps/trpc-api`: the plain TypeScript tRPC Worker defined by ADR 0015.
-- planned `clients/typescript-sdk`: the router-derived public client used directly and by protocol adapters.
-- `clients/fix-bridge`: the local FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
+- `apps/edge-api`: the current Rust Worker path; it moves mechanically to `apps/trpc-api` and replaces its REST router with direct native Rust tRPC dispatch under ADR 0016.
+- planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
+- `clients/fix-bridge`: the native Rust FIX/TCP compatibility client; it owns participant-side FIX sessions and calls tRPC.
 
-There is no `market-run-do` runtime in the accepted architecture. Historical directories or instructions referring to it are superseded by ADR 0013 and should be removed as implementation proceeds.
+There is no authoritative `market-run-do` runtime. ADR 0016 permits an optional Rust `RunStreamCoordinator` Durable Object only after its stream-coordination gate; it never owns commands, matching or origin truth.
 
 ## 5. OrderBook-rs boundary
 
@@ -118,17 +118,17 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 - cross-book and participant-level cash/inventory/position risk;
 - canonical events and participant ledger projections;
 - scenario scheduling, random streams, scoring, and administration;
-- the private authoritative service, Cache API policy, committed stream content, and recovery behavior;
+- the native tRPC entrypoint, Cache API policy, committed stream content, and recovery behavior;
 - Dynamic Worker strategy isolation;
-- NBC mappings and the internal service contract; public tRPC, FIX, RITC, and Nautilus mappings stay outside the market engine.
+- NBC translation/integration and the Rust tRPC contract; FIX, RITC and Nautilus mappings stay outside the market engine.
 
 ## 6. Public API boundary
 
-ADR 0015 makes `bunting.v1` tRPC the only public application API. The TypeScript Worker owns public authentication, runtime schemas, bounded transport and router-derived client types, but it owns no market state. It delegates mutations through a private service binding and returns only committed Rust transaction results.
+ADR 0016 makes `bunting.v1` tRPC the only public application API. One native Rust Worker directly parses the pinned tRPC wire subset and invokes the in-process Rust command transaction. It exposes no REST resource router or separate internal HTTP service.
 
-The current Rust REST routes are provisional migration handlers for that private binding, not a supported public REST API. Public streams are tRPC subscriptions retaining the committed-sequence, reset, coalescing and backpressure rules in ADR 0011.
+The Rust contract generates client schemas and is differentially tested against pinned official tRPC server/client packages. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011. A Rust Durable Object may coordinate committed fan-out only after the explicit ADR 0016 gate.
 
-FIX compatibility is implemented by a local client bridge that terminates FIX/TCP and maps application messages through the typed tRPC client. FIX session sequences remain participant-side state and never replace Bunting event sequences.
+FIX compatibility is implemented by a native Rust client bridge that terminates FIX/TCP and maps application messages through the Rust tRPC client. FIX session sequences remain participant-side state and never replace Bunting event sequences.
 
 ## 7. Command transaction
 
