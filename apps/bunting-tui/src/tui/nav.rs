@@ -48,6 +48,13 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             app.tab = Tab::Fix;
         }
         Action::BeginCommand => app.begin_command(""),
+        Action::BeginQuantity => app.begin_command("qty "),
+        Action::BeginBuy if app.popup == PopupKind::None && app.tab == Tab::Market => {
+            submit_selected_level(app, client, OrderSide::Buy).await?;
+        }
+        Action::BeginSell if app.popup == PopupKind::None && app.tab == Tab::Market => {
+            submit_selected_level(app, client, OrderSide::Sell).await?;
+        }
         Action::BeginBuy => app.begin_order(OrderSide::Buy),
         Action::BeginSell => app.begin_order(OrderSide::Sell),
         Action::BeginCancel => app.begin_command("cancel "),
@@ -64,9 +71,19 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                 .book
                 .bids
                 .len()
-                .max(client.book.asks.len())
+                .saturating_add(client.book.asks.len())
                 .saturating_sub(1);
             app.selected_level = app.selected_level.saturating_add(1).min(last);
+        }
+        Action::Submit if app.popup == PopupKind::None && app.tab == Tab::Market => {
+            if let Some((book_side, _, _)) = selected_level(app, client) {
+                let side = if book_side == "ASK" {
+                    OrderSide::Buy
+                } else {
+                    OrderSide::Sell
+                };
+                submit_selected_level(app, client, side).await?;
+            }
         }
         Action::NextField if app.popup == PopupKind::OrderTicket => {
             if let Some(ticket) = &mut app.order_ticket {
@@ -114,6 +131,10 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             app.popup = PopupKind::None;
             match parse_command(&input, app) {
                 Ok(Command::Send(message)) => Box::pin(client.send(message)).await?,
+                Ok(Command::SetQuantity(quantity)) => {
+                    app.order_quantity = quantity;
+                    client.status = format!("order quantity set to {quantity}");
+                }
                 Ok(Command::Logout) => Box::pin(client.logout()).await?,
                 Ok(Command::Quit) => return Ok(true),
                 Ok(Command::None) => {}
@@ -174,8 +195,45 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
     Ok(false)
 }
 
+fn selected_level<'a>(app: &App, client: &'a FixClient) -> Option<(&'a str, i64, i64)> {
+    client
+        .book
+        .asks
+        .iter()
+        .rev()
+        .map(|(price, quantity)| ("ASK", *price, *quantity))
+        .chain(
+            client
+                .book
+                .bids
+                .iter()
+                .map(|(price, quantity)| ("BID", *price, *quantity)),
+        )
+        .nth(app.selected_level)
+}
+
+async fn submit_selected_level(
+    app: &mut App,
+    client: &mut FixClient,
+    side: OrderSide,
+) -> io::Result<()> {
+    let Some((_, price, _)) = selected_level(app, client) else {
+        "select a live order-book level first".clone_into(&mut app.status);
+        return Ok(());
+    };
+    let id = app.allocate_id();
+    Box::pin(client.send(new_order(
+        id,
+        side.as_fix_name(),
+        app.order_quantity,
+        Some(price),
+    )))
+    .await
+}
+
 enum Command {
     Send(simfix_wire::FixMessage),
+    SetQuantity(i64),
     Logout,
     Quit,
     None,
@@ -230,6 +288,13 @@ fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
         }
         "status" => Ok(Command::Send(status(identifier(1, "order id")?))),
         "book" | "refresh" => Ok(Command::Send(book_request(app.allocate_id()))),
+        "qty" | "quantity" => {
+            let quantity = number(1, "quantity")?;
+            if quantity <= 0 {
+                return Err("quantity must be greater than zero".to_owned());
+            }
+            Ok(Command::SetQuantity(quantity))
+        }
         "logout" => Ok(Command::Logout),
         "quit" | "exit" => Ok(Command::Quit),
         _ => Err(format!("unknown command: {command}")),
@@ -257,5 +322,9 @@ mod tests {
                 Ok(Command::Send(_))
             ));
         }
+        assert!(matches!(
+            parse_command("qty 25", &mut app),
+            Ok(Command::SetQuantity(25))
+        ));
     }
 }

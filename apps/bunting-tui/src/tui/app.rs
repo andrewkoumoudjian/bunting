@@ -124,16 +124,33 @@ fn positive_number(value: &str, name: &str) -> Result<i64, String> {
     Ok(value)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct App {
     pub tab: Tab,
     pub popup: PopupKind,
     pub input: String,
     pub status: String,
     pub selected_level: usize,
+    pub order_quantity: i64,
     pub order_ticket: Option<OrderTicket>,
     next_id: u128,
     book_requested: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            tab: Tab::default(),
+            popup: PopupKind::default(),
+            input: String::new(),
+            status: String::new(),
+            selected_level: 0,
+            order_quantity: 1,
+            order_ticket: None,
+            next_id: 0,
+            book_requested: false,
+        }
+    }
 }
 
 impl App {

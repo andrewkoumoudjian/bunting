@@ -9,10 +9,16 @@ use crate::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
+    style::Color,
     symbols::Marker,
     text::{Line, Span},
-    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Table,
+        canvas::{Canvas, Line as CanvasLine, Rectangle},
+    },
 };
+
+const SAMPLES_PER_CANDLE: usize = 4;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
     let [levels_area, detail_area] =
@@ -25,18 +31,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
         Constraint::Length(3),
     ])
     .areas(detail_area);
-    let [instrument_area, depth_area] =
+    let [instrument_area, portfolio_area] =
         Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
             .areas(summary_area);
     render_instrument(frame, instrument_area, client);
-    render_depth(frame, depth_area, client);
+    render_portfolio(frame, portfolio_area, client);
 
     let [chart_area, reports_area] =
         Layout::horizontal([Constraint::Percentage(75), Constraint::Percentage(25)])
             .areas(lower_area);
     render_price_chart(frame, chart_area, client);
     render_reports(frame, reports_area, client);
-    render_actions(frame, actions_area);
+    render_actions(frame, actions_area, app);
 }
 
 fn render_levels(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
@@ -80,7 +86,7 @@ fn render_levels(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
     .header(Row::new(["SIDE", "LVL", "PRICE", "QTY"]).style(styles::label()))
     .block(
         Block::new()
-            .title(" BUNTING MARKET [↑↓] ")
+            .title(" LIVE FIX ORDER BOOK [↑↓ · ENTER TAKE · B/S PLACE · X QTY] ")
             .borders(Borders::ALL)
             .border_style(styles::border()),
     )
@@ -139,34 +145,54 @@ fn render_instrument(frame: &mut Frame, area: Rect, client: &FixClient) {
     );
 }
 
-fn render_depth(frame: &mut Frame, area: Rect, client: &FixClient) {
-    let depth = client.book.bids.len().max(client.book.asks.len());
-    let rows = (0..depth).map(|index| {
-        let bid = client.book.bids.get(index).copied();
-        let ask = client.book.asks.get(index).copied();
-        Row::new([
-            Cell::from(bid.map_or_else(String::new, |level| level.1.to_string())),
-            Cell::from(bid.map_or_else(String::new, |level| level.0.to_string()))
-                .style(styles::bid()),
-            Cell::from(ask.map_or_else(String::new, |level| level.0.to_string()))
-                .style(styles::ask()),
-            Cell::from(ask.map_or_else(String::new, |level| level.1.to_string())),
-        ])
-    });
+fn render_portfolio(frame: &mut Frame, area: Rect, client: &FixClient) {
+    let mark = client
+        .book
+        .bids
+        .first()
+        .zip(client.book.asks.first())
+        .map(|(bid, ask)| bid.0.saturating_add(ask.0) / 2);
+    let marked_value = mark.map(|price| client.portfolio.marked_value(price));
     frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Length(7),
-                Constraint::Min(6),
-                Constraint::Min(6),
-                Constraint::Length(7),
-            ],
-        )
-        .header(Row::new(["QTY", "BID", "ASK", "QTY"]).style(styles::label()))
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Position  ", styles::label()),
+                Span::raw(client.portfolio.position.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Cash      ", styles::label()),
+                Span::raw(client.portfolio.cash.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("Mark      ", styles::label()),
+                Span::raw(mark.map_or_else(|| "--".to_owned(), |value| value.to_string())),
+            ]),
+            Line::from(vec![
+                Span::styled("P&L       ", styles::label()),
+                Span::styled(
+                    marked_value.map_or_else(|| "--".to_owned(), |value| value.to_string()),
+                    if marked_value.is_some_and(|value| value < 0) {
+                        styles::ask()
+                    } else {
+                        styles::bid()
+                    },
+                ),
+            ]),
+            Line::from(format!(
+                "Bought {} · Sold {}",
+                client.portfolio.bought, client.portfolio.sold
+            )),
+            Line::from(format!(
+                "Last fill {}",
+                client
+                    .portfolio
+                    .last_fill_price
+                    .map_or_else(|| "--".to_owned(), |value| value.to_string())
+            )),
+        ])
         .block(
             Block::new()
-                .title(" ORDER BOOK ")
+                .title(" PORTFOLIO · FIX FILLS ")
                 .borders(Borders::ALL)
                 .border_style(styles::border()),
         ),
@@ -179,14 +205,8 @@ fn render_depth(frame: &mut Frame, area: Rect, client: &FixClient) {
     reason = "Ratatui chart coordinates and padded display bounds require f64 arithmetic"
 )]
 fn render_price_chart(frame: &mut Frame, area: Rect, client: &FixClient) {
-    let bids = chart_points(client.prices.iter().map(|sample| sample.bid));
-    let asks = chart_points(client.prices.iter().map(|sample| sample.ask));
-    let mids = bids
-        .iter()
-        .zip(&asks)
-        .map(|(bid, ask)| (bid.0, bid.1.midpoint(ask.1)))
-        .collect::<Vec<_>>();
-    if mids.is_empty() {
+    let candles = candles(&client.prices);
+    if candles.is_empty() {
         frame.render_widget(
             Paragraph::new("Waiting for the first FIX market-data snapshot...").block(
                 Block::new()
@@ -198,84 +218,105 @@ fn render_price_chart(frame: &mut Frame, area: Rect, client: &FixClient) {
         );
         return;
     }
-    let min_price = bids
+    let min_price = candles
         .iter()
-        .chain(&asks)
-        .map(|point| point.1)
+        .map(|candle| candle.low)
         .fold(f64::INFINITY, f64::min);
-    let max_price = bids
+    let max_price = candles
         .iter()
-        .chain(&asks)
-        .map(|point| point.1)
+        .map(|candle| candle.high)
         .fold(f64::NEG_INFINITY, f64::max);
     let padding = ((max_price - min_price) * 0.12).max(1.0);
-    let x_max = mids.last().map_or(1.0, |point| point.0.max(1.0));
-    let datasets = vec![
-        Dataset::default()
-            .name("bid")
-            .marker(Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(styles::bid())
-            .data(&bids),
-        Dataset::default()
-            .name("mid")
-            .marker(Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(styles::accent())
-            .data(&mids),
-        Dataset::default()
-            .name("ask")
-            .marker(Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(styles::ask())
-            .data(&asks),
-    ];
-    let chart = Chart::new(datasets)
+    let x_max = f64::from(u32::try_from(candles.len()).unwrap_or(u32::MAX)).max(1.0);
+    let latest = candles.last().map_or(0.0, |candle| candle.close);
+    let chart = Canvas::default()
+        .marker(Marker::Braille)
         .block(
             Block::new()
-                .title(" LIVE PRICE · OBSERVED BID / MID / ASK ")
+                .title(" LIVE MIDPRICE · OHLC CANDLES ")
                 .title_bottom(Line::from(format!(
-                    " {} FIX snapshots · latest mid {:.1} ",
-                    mids.len(),
-                    mids.last().map_or(0.0, |point| point.1)
+                    " {} candles / {} FIX snapshots · {:.1}–{:.1} · latest {:.1} ",
+                    candles.len(),
+                    client.prices.len(),
+                    min_price,
+                    max_price,
+                    latest
                 )))
                 .borders(Borders::ALL)
                 .border_style(styles::border()),
         )
-        .x_axis(
-            Axis::default()
-                .bounds([0.0, x_max])
-                .labels(["oldest", "latest"]),
-        )
-        .y_axis(
-            Axis::default()
-                .bounds([min_price - padding, max_price + padding])
-                .labels([
-                    Line::from(format!("{:.1}", min_price - padding)),
-                    Line::from(format!("{:.1}", max_price + padding)),
-                ]),
-        );
+        .x_bounds([0.0, x_max])
+        .y_bounds([min_price - padding, max_price + padding])
+        .paint(|context| {
+            for (index, candle) in candles.iter().enumerate() {
+                let x = f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5;
+                let color = if candle.close >= candle.open {
+                    Color::LightGreen
+                } else {
+                    Color::LightRed
+                };
+                context.draw(&CanvasLine::new(x, candle.low, x, candle.high, color));
+                let body_low = candle.open.min(candle.close);
+                let body_height = (candle.close - candle.open).abs();
+                if body_height < f64::EPSILON {
+                    context.draw(&CanvasLine::new(
+                        x - 0.3,
+                        candle.open,
+                        x + 0.3,
+                        candle.close,
+                        color,
+                    ));
+                } else {
+                    context.draw(&Rectangle::new(x - 0.3, body_low, 0.6, body_height, color));
+                }
+            }
+        });
     frame.render_widget(chart, area);
 }
 
-fn chart_points(values: impl Iterator<Item = i64>) -> Vec<(f64, f64)> {
-    values
-        .enumerate()
-        .filter_map(|(index, value)| {
-            let index = u32::try_from(index).ok().map(f64::from)?;
-            let value = i32::try_from(value).ok().map(f64::from)?;
-            Some((index, value))
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Candle {
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+}
+
+fn candles(samples: &std::collections::VecDeque<crate::protocol::PriceSample>) -> Vec<Candle> {
+    let mids = samples
+        .iter()
+        .filter_map(|sample| {
+            let bid = i32::try_from(sample.bid).ok().map(f64::from)?;
+            let ask = i32::try_from(sample.ask).ok().map(f64::from)?;
+            Some(bid.midpoint(ask))
+        })
+        .collect::<Vec<_>>();
+    mids.chunks(SAMPLES_PER_CANDLE)
+        .filter_map(|mids| {
+            Some(Candle {
+                open: *mids.first()?,
+                high: mids.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                low: mids.iter().copied().fold(f64::INFINITY, f64::min),
+                close: *mids.last()?,
+            })
         })
         .collect()
 }
 
-fn render_actions(frame: &mut Frame, area: Rect) {
+fn render_actions(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" [X] QTY {} ", app.order_quantity),
+                styles::warning(),
+            ),
+            Span::raw("  "),
+            Span::styled(" [ENTER] TAKE ", styles::accent()),
+            Span::raw("  "),
             Span::styled(" [B] BUY ", styles::bid()),
             Span::raw("  "),
             Span::styled(" [S] SELL ", styles::ask()),
-            Span::raw("  [C] CANCEL   [M] REPLACE   [/] ADVANCED COMMAND "),
+            Span::raw("  [/] COMMAND "),
         ]))
         .block(
             Block::new()
@@ -320,4 +361,30 @@ fn display_level(level: Option<(i64, i64)>) -> String {
         || "--".to_owned(),
         |(price, quantity)| format!("{price} × {quantity}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PriceSample;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn builds_ohlc_candles_from_fix_midpoints() {
+        let samples = VecDeque::from([
+            PriceSample { bid: 99, ask: 101 },
+            PriceSample { bid: 101, ask: 103 },
+            PriceSample { bid: 98, ask: 100 },
+            PriceSample { bid: 100, ask: 102 },
+        ]);
+        assert_eq!(
+            candles(&samples),
+            vec![Candle {
+                open: 100.0,
+                high: 102.0,
+                low: 99.0,
+                close: 101.0,
+            }]
+        );
+    }
 }

@@ -2,7 +2,10 @@
 
 use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
 use simfix_wire::{FixMessage, WireLimits};
-use std::{collections::VecDeque, io};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+};
 use time::{OffsetDateTime, macros::format_description};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
@@ -24,6 +27,36 @@ pub struct Execution {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Portfolio {
+    pub position: i64,
+    pub cash: i128,
+    pub bought: i64,
+    pub sold: i64,
+    pub last_fill_price: Option<i64>,
+}
+
+impl Portfolio {
+    fn apply_fill(&mut self, side: &str, quantity: i64, price: i64) {
+        let notional = i128::from(quantity).saturating_mul(i128::from(price));
+        if side == "1" {
+            self.position = self.position.saturating_add(quantity);
+            self.bought = self.bought.saturating_add(quantity);
+            self.cash = self.cash.saturating_sub(notional);
+        } else if side == "2" {
+            self.position = self.position.saturating_sub(quantity);
+            self.sold = self.sold.saturating_add(quantity);
+            self.cash = self.cash.saturating_add(notional);
+        }
+        self.last_fill_price = Some(price);
+    }
+
+    pub fn marked_value(self, mark: i64) -> i128 {
+        self.cash
+            .saturating_add(i128::from(self.position).saturating_mul(i128::from(mark)))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PriceSample {
     pub bid: i64,
@@ -37,8 +70,10 @@ pub struct FixClient {
     pub executions: VecDeque<Execution>,
     pub prices: VecDeque<PriceSample>,
     pub book: Book,
+    pub portfolio: Portfolio,
     pub status: String,
     pub book_sequence: String,
+    order_sides: BTreeMap<String, String>,
 }
 
 impl FixClient {
@@ -53,8 +88,10 @@ impl FixClient {
             executions: VecDeque::new(),
             prices: VecDeque::new(),
             book: Book::default(),
+            portfolio: Portfolio::default(),
             status: "logging on".to_owned(),
             book_sequence: "-".to_owned(),
+            order_sides: BTreeMap::new(),
         };
         let actions = client
             .session
@@ -73,7 +110,37 @@ impl FixClient {
             .session
             .send_application(message, &timestamp())
             .map_err(|error| session_error(&error))?;
+        self.remember_order(&actions);
         self.apply(actions).await
+    }
+
+    fn remember_order(&mut self, actions: &[SessionAction]) {
+        for action in actions {
+            let SessionAction::Send(frame) = action else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(frame);
+            let fields = text
+                .split('\u{1}')
+                .filter_map(|field| field.split_once('='));
+            let values = fields.collect::<BTreeMap<_, _>>();
+            match values.get("35").copied() {
+                Some("D") => {
+                    if let (Some(id), Some(side)) = (values.get("11"), values.get("54")) {
+                        self.order_sides
+                            .insert((*id).to_owned(), (*side).to_owned());
+                    }
+                }
+                Some("G") => {
+                    if let (Some(new_id), Some(old_id)) = (values.get("11"), values.get("41"))
+                        && let Some(side) = self.order_sides.get(*old_id).cloned()
+                    {
+                        self.order_sides.insert((*new_id).to_owned(), side);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn logout(&mut self) -> io::Result<()> {
@@ -153,6 +220,18 @@ impl FixClient {
                 self.status = format!("book sequence {}", self.book_sequence);
             }
             "8" => {
+                if let (Some(order_id), Some(quantity), Some(price)) = (
+                    message.value(37),
+                    message
+                        .value(32)
+                        .and_then(|value| value.parse::<i64>().ok()),
+                    message
+                        .value(31)
+                        .and_then(|value| value.parse::<i64>().ok()),
+                ) && let Some(side) = self.order_sides.get(order_id)
+                {
+                    self.portfolio.apply_fill(side, quantity, price);
+                }
                 if self.executions.len() == MAX_EXECUTIONS {
                     self.executions.pop_front();
                 }
@@ -331,5 +410,18 @@ mod tests {
         }
         assert_eq!(prices.len(), MAX_PRICE_SAMPLES);
         assert_eq!(prices.front().map(|sample| sample.bid), Some(1));
+    }
+
+    #[test]
+    fn portfolio_projects_buy_and_sell_fills() {
+        let mut portfolio = Portfolio::default();
+        portfolio.apply_fill("1", 5, 100);
+        portfolio.apply_fill("2", 2, 103);
+
+        assert_eq!(portfolio.position, 3);
+        assert_eq!(portfolio.cash, -294);
+        assert_eq!(portfolio.bought, 5);
+        assert_eq!(portfolio.sold, 2);
+        assert_eq!(portfolio.marked_value(101), 9);
     }
 }
