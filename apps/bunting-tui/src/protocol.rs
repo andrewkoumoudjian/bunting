@@ -61,6 +61,8 @@ impl Portfolio {
 pub struct PriceSample {
     pub bid: i64,
     pub ask: i64,
+    pub bid_quantity: i64,
+    pub ask_quantity: i64,
 }
 
 pub struct FixClient {
@@ -202,16 +204,11 @@ impl FixClient {
         match message.msg_type.as_str() {
             "W" => {
                 self.book = parse_book(message);
-                if let (Some((bid, _)), Some((ask, _))) =
-                    (self.book.bids.first(), self.book.asks.first())
-                {
+                if let Some(sample) = price_sample(&self.book) {
                     if self.prices.len() == MAX_PRICE_SAMPLES {
                         self.prices.pop_front();
                     }
-                    self.prices.push_back(PriceSample {
-                        bid: *bid,
-                        ask: *ask,
-                    });
+                    self.prices.push_back(sample);
                 }
                 message
                     .value(34)
@@ -356,6 +353,7 @@ fn parse_book(message: &FixMessage) -> Book {
             271 => {
                 if let (Some(side), Some(price), Ok(quantity)) =
                     (side, price.take(), field.value.parse::<i64>())
+                    && quantity > 0
                 {
                     if side == "0" {
                         book.bids.push((price, quantity));
@@ -367,7 +365,29 @@ fn parse_book(message: &FixMessage) -> Book {
             _ => {}
         }
     }
+    book.bids
+        .sort_unstable_by(|left, right| right.0.cmp(&left.0));
+    book.asks.sort_unstable_by_key(|level| level.0);
     book
+}
+
+fn price_sample(book: &Book) -> Option<PriceSample> {
+    let bid = book.bids.first()?.0;
+    let ask = book.asks.first()?.0;
+    let bid_quantity = book
+        .bids
+        .iter()
+        .try_fold(0_i64, |total, level| total.checked_add(level.1))?;
+    let ask_quantity = book
+        .asks
+        .iter()
+        .try_fold(0_i64, |total, level| total.checked_add(level.1))?;
+    Some(PriceSample {
+        bid,
+        ask,
+        bid_quantity,
+        ask_quantity,
+    })
 }
 
 #[cfg(test)]
@@ -406,10 +426,45 @@ mod tests {
             prices.push_back(PriceSample {
                 bid: i64::try_from(price).unwrap_or(i64::MAX),
                 ask: i64::try_from(price.saturating_add(2)).unwrap_or(i64::MAX),
+                bid_quantity: 1,
+                ask_quantity: 1,
             });
         }
         assert_eq!(prices.len(), MAX_PRICE_SAMPLES);
         assert_eq!(prices.front().map(|sample| sample.bid), Some(1));
+    }
+
+    #[test]
+    fn snapshot_levels_are_sorted_and_sampled_with_bounded_depth() {
+        let mut message = FixMessage::new("W");
+        for (tag, value) in [
+            (269, "0"),
+            (270, "98"),
+            (271, "4"),
+            (269, "1"),
+            (270, "103"),
+            (271, "7"),
+            (269, "0"),
+            (270, "99"),
+            (271, "6"),
+            (269, "1"),
+            (270, "101"),
+            (271, "3"),
+        ] {
+            message.push(tag, value);
+        }
+        let book = parse_book(&message);
+        assert_eq!(book.bids, vec![(99, 6), (98, 4)]);
+        assert_eq!(book.asks, vec![(101, 3), (103, 7)]);
+        assert_eq!(
+            price_sample(&book),
+            Some(PriceSample {
+                bid: 99,
+                ask: 101,
+                bid_quantity: 10,
+                ask_quantity: 10,
+            })
+        );
     }
 
     #[test]

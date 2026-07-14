@@ -19,6 +19,7 @@ bunting-market-events.workspace = true
 bunting-market-types.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 clap = { version = "4.6.1", features = ["derive"] }
+cli-candlestick-chart = { git = "https://github.com/longbridge/longbridge-terminal.git", rev = "05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3", version = "=0.24.0", default-features = false }
 crossterm = "0.29.0"
 quarcc-execution-engine.workspace = true
 quarcc-bunting-adapter = { path = "../../packages/quarcc-bunting-adapter" }
@@ -29,6 +30,7 @@ simfix-session.workspace = true
 simfix-wire.workspace = true
 time = { version = "0.3.47", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+unicode-width = "0.2.2"
 
 [lints]
 workspace = true

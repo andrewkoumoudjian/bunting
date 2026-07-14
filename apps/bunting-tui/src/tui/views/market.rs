@@ -4,18 +4,14 @@
 
 use crate::{
     protocol::FixClient,
-    tui::{app::App, ui::styles},
+    tui::{app::App, ui::styles, widgets::candlestick_chart::AnsiChart},
 };
+use cli_candlestick_chart::{Candle, Chart};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Color,
-    symbols::Marker,
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Paragraph, Row, Table,
-        canvas::{Canvas, Line as CanvasLine, Rectangle},
-    },
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
 const SAMPLES_PER_CANDLE: usize = 4;
@@ -200,10 +196,6 @@ fn render_portfolio(frame: &mut Frame, area: Rect, client: &FixClient) {
     );
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "Ratatui chart coordinates and padded display bounds require f64 arithmetic"
-)]
 fn render_price_chart(frame: &mut Frame, area: Rect, client: &FixClient) {
     let candles = candles(&client.prices);
     if candles.is_empty() {
@@ -218,87 +210,55 @@ fn render_price_chart(frame: &mut Frame, area: Rect, client: &FixClient) {
         );
         return;
     }
-    let min_price = candles
-        .iter()
-        .map(|candle| candle.low)
-        .fold(f64::INFINITY, f64::min);
-    let max_price = candles
-        .iter()
-        .map(|candle| candle.high)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let padding = ((max_price - min_price) * 0.12).max(1.0);
-    let x_max = f64::from(u32::try_from(candles.len()).unwrap_or(u32::MAX)).max(1.0);
-    let latest = candles.last().map_or(0.0, |candle| candle.close);
-    let chart = Canvas::default()
-        .marker(Marker::Braille)
-        .block(
-            Block::new()
-                .title(" LIVE MIDPRICE · OHLC CANDLES ")
-                .title_bottom(Line::from(format!(
-                    " {} candles / {} FIX snapshots · {:.1}–{:.1} · latest {:.1} ",
-                    candles.len(),
-                    client.prices.len(),
-                    min_price,
-                    max_price,
-                    latest
-                )))
-                .borders(Borders::ALL)
-                .border_style(styles::border()),
-        )
-        .x_bounds([0.0, x_max])
-        .y_bounds([min_price - padding, max_price + padding])
-        .paint(|context| {
-            for (index, candle) in candles.iter().enumerate() {
-                let x = f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5;
-                let color = if candle.close >= candle.open {
-                    Color::LightGreen
-                } else {
-                    Color::LightRed
-                };
-                context.draw(&CanvasLine::new(x, candle.low, x, candle.high, color));
-                let body_low = candle.open.min(candle.close);
-                let body_height = (candle.close - candle.open).abs();
-                if body_height < f64::EPSILON {
-                    context.draw(&CanvasLine::new(
-                        x - 0.3,
-                        candle.open,
-                        x + 0.3,
-                        candle.close,
-                        color,
-                    ));
-                } else {
-                    context.draw(&Rectangle::new(x - 0.3, body_low, 0.6, body_height, color));
-                }
-            }
-        });
-    frame.render_widget(chart, area);
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Candle {
-    open: f64,
-    high: f64,
-    low: f64,
-    close: f64,
+    let block = Block::new()
+        .title(" FIX ORDER BOOK · LONGBRIDGE CANDLESTICK CHART ")
+        .borders(Borders::ALL)
+        .border_style(styles::border());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 18 || inner.height < 8 {
+        frame.render_widget(Paragraph::new("Chart area is too small"), inner);
+        return;
+    }
+    let mut chart = Chart::new_with_size(candles, (inner.width, inner.height));
+    chart.set_name("BUNTING FIX BOOK".to_owned());
+    let output = chart.render();
+    frame.render_widget(AnsiChart(&output), inner);
 }
 
 fn candles(samples: &std::collections::VecDeque<crate::protocol::PriceSample>) -> Vec<Candle> {
-    let mids = samples
-        .iter()
-        .filter_map(|sample| {
-            let bid = i32::try_from(sample.bid).ok().map(f64::from)?;
-            let ask = i32::try_from(sample.ask).ok().map(f64::from)?;
-            Some(bid.midpoint(ask))
-        })
-        .collect::<Vec<_>>();
-    mids.chunks(SAMPLES_PER_CANDLE)
-        .filter_map(|mids| {
-            Some(Candle {
-                open: *mids.first()?,
-                high: mids.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-                low: mids.iter().copied().fold(f64::INFINITY, f64::min),
-                close: *mids.last()?,
-            })
+    let samples = samples.iter().copied().collect::<Vec<_>>();
+    samples
+        .chunks(SAMPLES_PER_CANDLE)
+        .filter_map(|samples| {
+            let first = samples.first()?;
+            let last = samples.last()?;
+            let midpoint = |sample: &crate::protocol::PriceSample| {
+                let bid = i32::try_from(sample.bid).ok().map(f64::from)?;
+                let ask = i32::try_from(sample.ask).ok().map(f64::from)?;
+                Some(bid.midpoint(ask))
+            };
+            let high = samples
+                .iter()
+                .filter_map(|sample| i32::try_from(sample.ask).ok().map(f64::from))
+                .fold(f64::NEG_INFINITY, f64::max);
+            let low = samples
+                .iter()
+                .filter_map(|sample| i32::try_from(sample.bid).ok().map(f64::from))
+                .fold(f64::INFINITY, f64::min);
+            let volume = samples.iter().try_fold(0_i64, |total, sample| {
+                total
+                    .checked_add(sample.bid_quantity)?
+                    .checked_add(sample.ask_quantity)
+            })?;
+            Some(Candle::new(
+                midpoint(first)?,
+                high,
+                low,
+                midpoint(last)?,
+                Some(i32::try_from(volume).ok().map(f64::from)?),
+                None,
+            ))
         })
         .collect()
 }
@@ -370,21 +330,49 @@ mod tests {
     use std::collections::VecDeque;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "integer book ticks and midpoint inputs produce exact binary halves"
+    )]
     fn builds_ohlc_candles_from_fix_midpoints() {
         let samples = VecDeque::from([
-            PriceSample { bid: 99, ask: 101 },
-            PriceSample { bid: 101, ask: 103 },
-            PriceSample { bid: 98, ask: 100 },
-            PriceSample { bid: 100, ask: 102 },
+            PriceSample {
+                bid: 99,
+                ask: 101,
+                bid_quantity: 4,
+                ask_quantity: 6,
+            },
+            PriceSample {
+                bid: 101,
+                ask: 103,
+                bid_quantity: 5,
+                ask_quantity: 5,
+            },
+            PriceSample {
+                bid: 98,
+                ask: 100,
+                bid_quantity: 3,
+                ask_quantity: 7,
+            },
+            PriceSample {
+                bid: 100,
+                ask: 102,
+                bid_quantity: 2,
+                ask_quantity: 8,
+            },
         ]);
-        assert_eq!(
-            candles(&samples),
-            vec![Candle {
-                open: 100.0,
-                high: 102.0,
-                low: 99.0,
-                close: 101.0,
-            }]
-        );
+        let candles = candles(&samples);
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].open, 100.0);
+        assert_eq!(candles[0].high, 103.0);
+        assert_eq!(candles[0].low, 98.0);
+        assert_eq!(candles[0].close, 101.0);
+        assert_eq!(candles[0].volume, Some(40.0));
+
+        let mut chart = Chart::new_with_size(candles, (80, 20));
+        chart.set_name("BUNTING FIX BOOK".to_owned());
+        let rendered = chart.render();
+        assert!(rendered.contains("Price:"));
+        assert!(rendered.contains("Cum. Vol"));
     }
 }
