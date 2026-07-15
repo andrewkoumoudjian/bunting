@@ -2,8 +2,11 @@
 // Copyright 2026 Longbridge. Licensed under Apache-2.0.
 // Rust guideline compliant 2026-02-21
 
-use crate::protocol::{FixClient, book_request};
 use crate::tui::{keys, nav, popup::PopupKind, render};
+use crate::{
+    config::{ConnectionProfile, TerminalConfig, WorkspaceLayout},
+    protocol::{FixClient, book_request},
+};
 use crossterm::{
     event::{self, Event},
     execute,
@@ -11,7 +14,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use simfix_session::ConnectionState;
-use std::{io, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
@@ -20,7 +23,38 @@ pub enum Tab {
     #[default]
     Market,
     Orders,
-    Fix,
+    Account,
+    Simulation,
+    Collaboration,
+    Administration,
+    Session,
+}
+
+impl Tab {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Market => "market",
+            Self::Orders => "orders",
+            Self::Account => "account",
+            Self::Simulation => "simulation",
+            Self::Collaboration => "collaboration",
+            Self::Administration => "administration",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "market" => Some(Self::Market),
+            "orders" => Some(Self::Orders),
+            "account" => Some(Self::Account),
+            "simulation" => Some(Self::Simulation),
+            "collaboration" => Some(Self::Collaboration),
+            "administration" | "admin" => Some(Self::Administration),
+            "session" | "fix" => Some(Self::Session),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,27 +167,43 @@ pub struct App {
     pub selected_level: usize,
     pub order_quantity: i64,
     pub order_ticket: Option<OrderTicket>,
+    pub active_workspace: String,
+    pub config: TerminalConfig,
+    pub config_path: PathBuf,
     next_id: u128,
-    book_requested: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
+        Self::new(
+            TerminalConfig::default(),
+            PathBuf::from("bunting-terminal.json"),
+        )
+    }
+}
+
+impl App {
+    pub fn new(config: TerminalConfig, config_path: PathBuf) -> Self {
+        let workspace = config
+            .workspaces
+            .get("default")
+            .cloned()
+            .unwrap_or_default();
         Self {
-            tab: Tab::default(),
+            tab: Tab::from_name(&workspace.initial_view).unwrap_or_default(),
             popup: PopupKind::default(),
             input: String::new(),
             status: String::new(),
             selected_level: 0,
             order_quantity: 1,
             order_ticket: None,
+            active_workspace: "default".to_owned(),
+            config,
+            config_path,
             next_id: 0,
-            book_requested: false,
         }
     }
-}
 
-impl App {
     pub fn allocate_id(&mut self) -> u128 {
         self.next_id = self.next_id.saturating_add(1).max(1);
         self.next_id
@@ -174,21 +224,95 @@ impl App {
         self.input.clear();
         self.order_ticket = None;
     }
+
+    pub fn save_workspace(&mut self, name: &str) -> Result<(), String> {
+        validate_workspace_name(name)?;
+        let current = self
+            .config
+            .workspaces
+            .get(&self.active_workspace)
+            .cloned()
+            .unwrap_or_default();
+        self.config.workspaces.insert(
+            name.to_owned(),
+            WorkspaceLayout {
+                initial_view: self.tab.name().to_owned(),
+                ..current
+            },
+        );
+        name.clone_into(&mut self.active_workspace);
+        self.config
+            .save(&self.config_path)
+            .map_err(|error| format!("workspace save failed: {error}"))
+    }
+
+    pub fn load_workspace(&mut self, name: &str) -> Result<(), String> {
+        validate_workspace_name(name)?;
+        let workspace = self
+            .config
+            .workspaces
+            .get(name)
+            .ok_or_else(|| format!("unknown workspace: {name}"))?;
+        self.tab = Tab::from_name(&workspace.initial_view)
+            .ok_or_else(|| format!("workspace {name} has an unknown initial_view"))?;
+        name.clone_into(&mut self.active_workspace);
+        Ok(())
+    }
+
+    pub fn remove_workspace(&mut self, name: &str) -> Result<(), String> {
+        if name == "default" {
+            return Err("the default workspace cannot be removed".to_owned());
+        }
+        if self.config.workspaces.remove(name).is_none() {
+            return Err(format!("unknown workspace: {name}"));
+        }
+        if self.active_workspace == name {
+            "default".clone_into(&mut self.active_workspace);
+        }
+        self.config
+            .save(&self.config_path)
+            .map_err(|error| format!("workspace removal failed: {error}"))
+    }
 }
 
-pub async fn run(address: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = FixClient::connect(address).await?;
-    let mut app = App::default();
+fn validate_workspace_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.len() > 32
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("workspace names use 1-32 letters, numbers, '-' or '_'".to_owned());
+    }
+    Ok(())
+}
+
+pub async fn run(
+    profile_name: String,
+    profile: ConnectionProfile,
+    credential_override: Option<String>,
+    config: TerminalConfig,
+    config_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = FixClient::new(profile_name, profile, credential_override)?;
+    let mut app = App::new(config, config_path);
+    if let Err(error) = client.reconnect().await {
+        app.status = error.to_string();
+    }
     let mut terminal = TerminalSession::new()?;
 
     loop {
-        Box::pin(client.poll()).await?;
-        if client.connection_state() == ConnectionState::Established && !app.book_requested {
-            let request_id = app.allocate_id();
-            client.send(book_request(request_id)).await?;
-            app.book_requested = true;
+        if let Err(error) = Box::pin(client.poll()).await {
+            app.status = error.to_string();
         }
-        app.status.clone_from(&client.status);
+        if client.connection_state() == ConnectionState::Established
+            && client.take_recovery_request()
+        {
+            let request_id = app.allocate_id();
+            if let Err(error) = client.send(book_request(request_id)).await {
+                app.status = error.to_string();
+            }
+        }
         terminal
             .terminal
             .draw(|frame| render::draw(frame, &app, &client))?;
@@ -232,6 +356,7 @@ impl Drop for TerminalSession {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -247,6 +372,27 @@ mod tests {
             ticket.values(),
             Err("quantity must be greater than zero".to_owned())
         );
+    }
+
+    fn app() -> App {
+        App::new(
+            TerminalConfig::default(),
+            PathBuf::from("unused-test-config.json"),
+        )
+    }
+
+    #[test]
+    fn workspace_reducer_saves_loads_and_removes_layouts() {
+        let mut app = app();
+        app.tab = Tab::Account;
+        app.config_path =
+            std::env::temp_dir().join(format!("bunting-workspace-{}.json", std::process::id()));
+        app.save_workspace("risk-desk").unwrap();
+        app.tab = Tab::Market;
+        app.load_workspace("risk-desk").unwrap();
+        assert_eq!(app.tab, Tab::Account);
+        app.remove_workspace("risk-desk").unwrap();
+        let _ = std::fs::remove_file(&app.config_path);
     }
 
     #[test]

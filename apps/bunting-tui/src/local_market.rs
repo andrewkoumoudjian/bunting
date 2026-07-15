@@ -783,6 +783,7 @@ impl ScenarioRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TerminalConfig;
     use crate::protocol::{FixClient, book_request, new_order};
     use std::time::Duration;
 
@@ -893,7 +894,16 @@ mod tests {
             ))
             .await
         });
-        let mut client = FixClient::connect(&address.to_string()).await?;
+        let mut profile = TerminalConfig::default()
+            .profile("local")
+            .map_err(io::Error::other)?;
+        profile.endpoint = address.to_string();
+        let mut client = FixClient::new(
+            "local-fixture".to_owned(),
+            profile,
+            Some("fixture-only".to_owned()),
+        )?;
+        client.reconnect().await?;
         for _ in 0..20 {
             Box::pin(client.poll()).await?;
             if client.connection_state() == simfix_session::ConnectionState::Established {

@@ -43,9 +43,25 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             app.close_popup();
             app.tab = Tab::Orders;
         }
-        Action::TabFix => {
+        Action::TabAccount => {
             app.close_popup();
-            app.tab = Tab::Fix;
+            app.tab = Tab::Account;
+        }
+        Action::TabSimulation => {
+            app.close_popup();
+            app.tab = Tab::Simulation;
+        }
+        Action::TabCollaboration => {
+            app.close_popup();
+            app.tab = Tab::Collaboration;
+        }
+        Action::TabAdministration => {
+            app.close_popup();
+            app.tab = Tab::Administration;
+        }
+        Action::TabSession => {
+            app.close_popup();
+            app.tab = Tab::Session;
         }
         Action::BeginCommand => app.begin_command(""),
         Action::BeginQuantity => app.begin_command("qty "),
@@ -60,8 +76,14 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
         Action::BeginCancel => app.begin_command("cancel "),
         Action::BeginReplace => app.begin_command("replace "),
         Action::Refresh => {
-            let request_id = app.allocate_id();
-            Box::pin(client.send(book_request(request_id))).await?;
+            if client.connection_state() == simfix_session::ConnectionState::Disconnected {
+                if let Err(error) = Box::pin(client.reconnect()).await {
+                    app.status = error.to_string();
+                }
+            } else {
+                let request_id = app.allocate_id();
+                try_send(app, client, book_request(request_id)).await;
+            }
         }
         Action::SelectPrevious => {
             app.selected_level = app.selected_level.saturating_sub(1);
@@ -115,7 +137,7 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                     Ok((side, quantity, price)) => {
                         let id = app.allocate_id();
                         app.popup = PopupKind::None;
-                        Box::pin(client.send(new_order(id, side, quantity, price))).await?;
+                        try_send(app, client, new_order(id, side, quantity, price)).await;
                     }
                     Err(error) => {
                         app.status = error;
@@ -130,12 +152,38 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             let input = std::mem::take(&mut app.input);
             app.popup = PopupKind::None;
             match parse_command(&input, app) {
-                Ok(Command::Send(message)) => Box::pin(client.send(message)).await?,
+                Ok(Command::Send(message)) => try_send(app, client, message).await,
                 Ok(Command::SetQuantity(quantity)) => {
                     app.order_quantity = quantity;
                     client.status = format!("order quantity set to {quantity}");
                 }
-                Ok(Command::Logout) => Box::pin(client.logout()).await?,
+                Ok(Command::Logout) => {
+                    if let Err(error) = Box::pin(client.logout()).await {
+                        app.status = error.to_string();
+                    }
+                }
+                Ok(Command::Reconnect) => {
+                    if let Err(error) = Box::pin(client.reconnect()).await {
+                        app.status = error.to_string();
+                    }
+                }
+                Ok(Command::ResetSession) => {
+                    if let Err(error) = Box::pin(client.reset_and_reconnect()).await {
+                        app.status = error.to_string();
+                    }
+                }
+                Ok(Command::SaveWorkspace(name)) => match app.save_workspace(&name) {
+                    Ok(()) => app.status = format!("workspace {name} saved"),
+                    Err(error) => app.status = error,
+                },
+                Ok(Command::LoadWorkspace(name)) => match app.load_workspace(&name) {
+                    Ok(()) => app.status = format!("workspace {name} loaded"),
+                    Err(error) => app.status = error,
+                },
+                Ok(Command::RemoveWorkspace(name)) => match app.remove_workspace(&name) {
+                    Ok(()) => app.status = format!("workspace {name} removed"),
+                    Err(error) => app.status = error,
+                },
                 Ok(Command::Quit) => return Ok(true),
                 Ok(Command::None) => {}
                 Err(error) => app.status = error,
@@ -222,19 +270,30 @@ async fn submit_selected_level(
         return Ok(());
     };
     let id = app.allocate_id();
-    Box::pin(client.send(new_order(
-        id,
-        side.as_fix_name(),
-        app.order_quantity,
-        Some(price),
-    )))
-    .await
+    try_send(
+        app,
+        client,
+        new_order(id, side.as_fix_name(), app.order_quantity, Some(price)),
+    )
+    .await;
+    Ok(())
+}
+
+async fn try_send(app: &mut App, client: &mut FixClient, message: simfix_wire::FixMessage) {
+    if let Err(error) = Box::pin(client.send(message)).await {
+        app.status = error.to_string();
+    }
 }
 
 enum Command {
     Send(simfix_wire::FixMessage),
     SetQuantity(i64),
     Logout,
+    Reconnect,
+    ResetSession,
+    SaveWorkspace(String),
+    LoadWorkspace(String),
+    RemoveWorkspace(String),
     Quit,
     None,
 }
@@ -296,6 +355,14 @@ fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
             Ok(Command::SetQuantity(quantity))
         }
         "logout" => Ok(Command::Logout),
+        "connect" | "reconnect" => Ok(Command::Reconnect),
+        "session" if parts.get(1) == Some(&"reset") => Ok(Command::ResetSession),
+        "workspace" => match (parts.get(1), parts.get(2)) {
+            (Some(&"save"), Some(name)) => Ok(Command::SaveWorkspace((*name).to_owned())),
+            (Some(&"load"), Some(name)) => Ok(Command::LoadWorkspace((*name).to_owned())),
+            (Some(&"remove"), Some(name)) => Ok(Command::RemoveWorkspace((*name).to_owned())),
+            _ => Err("usage: workspace save|load|remove NAME".to_owned()),
+        },
         "quit" | "exit" => Ok(Command::Quit),
         _ => Err(format!("unknown command: {command}")),
     }

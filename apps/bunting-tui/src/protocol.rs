@@ -1,17 +1,25 @@
 // Rust guideline compliant 2026-02-21
 
-use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
-use simfix_wire::{FixMessage, WireLimits};
+use crate::{
+    config::{ConnectionProfile, FIX_PROFILE_VERSION},
+    transport::{self, BoxedFixStream},
+};
+use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig, SessionSnapshot};
+use simfix_wire::{Field, FixMessage, WireLimits};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
 };
 use time::{OffsetDateTime, macros::format_description};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::{Duration, timeout},
+};
 
 pub const MAX_FIX_LOGS: usize = 256;
 pub const MAX_EXECUTIONS: usize = 128;
 pub const MAX_PRICE_SAMPLES: usize = 240;
+pub const MAX_BOOK_LEVELS: usize = 64;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Book {
@@ -66,8 +74,11 @@ pub struct PriceSample {
 }
 
 pub struct FixClient {
-    stream: TcpStream,
+    stream: Option<BoxedFixStream>,
     session: FixSession,
+    profile: ConnectionProfile,
+    credential_override: Option<String>,
+    pub profile_name: String,
     pub logs: VecDeque<String>,
     pub executions: VecDeque<Execution>,
     pub prices: VecDeque<PriceSample>,
@@ -75,32 +86,77 @@ pub struct FixClient {
     pub portfolio: Portfolio,
     pub status: String,
     pub book_sequence: String,
+    pub committed_sequence: String,
+    pub stale: bool,
+    pub reset_reason: Option<String>,
+    pub reconnect_attempts: u64,
+    pub observed_message_types: BTreeSet<String>,
+    recovery_request_pending: bool,
     order_sides: BTreeMap<String, String>,
 }
 
 impl FixClient {
-    pub async fn connect(address: &str) -> io::Result<Self> {
-        let stream = TcpStream::connect(address).await?;
-        let config = session_config("HUMAN", "BUNTING");
+    pub fn profile(&self) -> &ConnectionProfile {
+        &self.profile
+    }
+
+    pub fn new(
+        profile_name: String,
+        profile: ConnectionProfile,
+        credential_override: Option<String>,
+    ) -> io::Result<Self> {
+        profile
+            .validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let config = profile_session_config(&profile, credential_override.as_deref(), false)?;
         let session = FixSession::try_new(config).map_err(|error| session_error(&error))?;
-        let mut client = Self {
-            stream,
+        Ok(Self {
+            stream: None,
             session,
+            profile,
+            credential_override,
+            profile_name,
             logs: VecDeque::new(),
             executions: VecDeque::new(),
             prices: VecDeque::new(),
             book: Book::default(),
             portfolio: Portfolio::default(),
-            status: "logging on".to_owned(),
+            status: "disconnected; press R to connect".to_owned(),
             book_sequence: "-".to_owned(),
+            committed_sequence: "-".to_owned(),
+            stale: true,
+            reset_reason: None,
+            reconnect_attempts: 0,
+            observed_message_types: BTreeSet::new(),
+            recovery_request_pending: true,
             order_sides: BTreeMap::new(),
+        })
+    }
+
+    pub async fn reconnect(&mut self) -> io::Result<()> {
+        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
+        self.status = format!(
+            "connecting {} via {} (attempt {})",
+            self.profile.endpoint,
+            self.profile.transport.label(),
+            self.reconnect_attempts
+        );
+        let stream = match transport::connect(&self.profile.endpoint, &self.profile.transport).await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                self.mark_disconnected(&format!("connect failed: {error}"))?;
+                return Err(error);
+            }
         };
-        let actions = client
+        self.stream = Some(stream);
+        self.recovery_request_pending = true;
+        "TCP/TLS connected; awaiting FIX Logon".clone_into(&mut self.status);
+        let actions = self
             .session
             .connected_at(&timestamp(), now_millis())
             .map_err(|error| session_error(&error))?;
-        client.apply(actions).await?;
-        Ok(client)
+        self.apply(actions).await
     }
 
     pub fn connection_state(&self) -> ConnectionState {
@@ -108,6 +164,12 @@ impl FixClient {
     }
 
     pub async fn send(&mut self, message: FixMessage) -> io::Result<()> {
+        if self.stream.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "FIX session is disconnected; reconnect before sending",
+            ));
+        }
         let actions = self
             .session
             .send_application(message, &timestamp())
@@ -155,10 +217,14 @@ impl FixClient {
 
     pub async fn poll(&mut self) -> io::Result<()> {
         let mut bytes = [0_u8; 16_384];
-        loop {
-            match self.stream.try_read(&mut bytes) {
+        while let Some(stream) = self.stream.as_mut() {
+            let Ok(read_result) = timeout(Duration::from_millis(1), stream.read(&mut bytes)).await
+            else {
+                break;
+            };
+            match read_result {
                 Ok(0) => {
-                    "disconnected".clone_into(&mut self.status);
+                    self.mark_disconnected("peer closed the connection")?;
                     break;
                 }
                 Ok(read) => {
@@ -169,9 +235,14 @@ impl FixClient {
                         .map_err(|error| session_error(&error))?;
                     self.apply(actions).await?;
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.mark_disconnected(&format!("transport read failed: {error}"))?;
+                    return Err(error);
+                }
             }
+        }
+        if self.stream.is_none() {
+            return Ok(());
         }
         let actions = self
             .session
@@ -185,22 +256,76 @@ impl FixClient {
             match action {
                 SessionAction::Send(frame) => {
                     self.log("OUT", &frame);
-                    self.stream.write_all(&frame).await?;
+                    let Some(stream) = self.stream.as_mut() else {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotConnected,
+                            "session attempted to send on a disconnected transport",
+                        ));
+                    };
+                    stream.write_all(&frame).await?;
                 }
                 SessionAction::Application(message) => self.observe(&message),
                 SessionAction::Disconnect => {
-                    "disconnected".clone_into(&mut self.status);
+                    self.mark_disconnected("FIX peer requested disconnect")?;
                 }
                 SessionAction::Persist(_) => {}
             }
         }
         if self.connection_state() == ConnectionState::Established {
             "FIX established".clone_into(&mut self.status);
+            self.stale = false;
         }
         Ok(())
     }
 
+    fn mark_disconnected(&mut self, reason: &str) -> io::Result<()> {
+        self.stream = None;
+        self.stale = true;
+        self.status = format!("disconnected: {reason}; press R to reconnect");
+        let mut snapshot = self.session.snapshot();
+        snapshot.state = ConnectionState::Disconnected;
+        snapshot.outstanding_test_request = None;
+        self.session = FixSession::restore(
+            profile_session_config(&self.profile, self.credential_override.as_deref(), false)?,
+            snapshot,
+        )
+        .map_err(|error| session_error(&error))?;
+        Ok(())
+    }
+
+    pub async fn reset_and_reconnect(&mut self) -> io::Result<()> {
+        if !self.profile.allow_sequence_reset {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "profile does not authorize ResetSeqNumFlag; set allow_sequence_reset explicitly",
+            ));
+        }
+        self.stream = None;
+        self.session = FixSession::try_new(profile_session_config(
+            &self.profile,
+            self.credential_override.as_deref(),
+            true,
+        )?)
+        .map_err(|error| session_error(&error))?;
+        self.book = Book::default();
+        self.stale = true;
+        self.reset_reason = Some("operator requested authorized FIX sequence reset".to_owned());
+        self.reconnect().await
+    }
+
+    pub fn session_snapshot(&self) -> SessionSnapshot {
+        self.session.snapshot()
+    }
+
+    pub fn take_recovery_request(&mut self) -> bool {
+        std::mem::take(&mut self.recovery_request_pending)
+    }
+
     fn observe(&mut self, message: &FixMessage) {
+        self.observed_message_types.insert(message.msg_type.clone());
+        if let Some(sequence) = message.value(10010) {
+            sequence.clone_into(&mut self.committed_sequence);
+        }
         match message.msg_type.as_str() {
             "W" => {
                 self.book = parse_book(message);
@@ -215,6 +340,35 @@ impl FixClient {
                     .unwrap_or("?")
                     .clone_into(&mut self.book_sequence);
                 self.status = format!("book sequence {}", self.book_sequence);
+                self.stale = false;
+                self.reset_reason = None;
+                self.recovery_request_pending = false;
+            }
+            "X" => {
+                apply_incremental(&mut self.book, message);
+                if let Some(sample) = price_sample(&self.book) {
+                    push_bounded(&mut self.prices, sample, MAX_PRICE_SAMPLES);
+                }
+                self.stale = false;
+                self.status = format!(
+                    "incremental book update sequence {}",
+                    self.committed_sequence
+                );
+            }
+            "UC" => {
+                self.book = Book::default();
+                self.stale = true;
+                self.reset_reason = Some(
+                    message
+                        .value(10015)
+                        .unwrap_or("server requested snapshot recovery")
+                        .to_owned(),
+                );
+                self.recovery_request_pending = true;
+                self.status = format!(
+                    "market reset required: {}",
+                    self.reset_reason.as_deref().unwrap_or("unknown reason")
+                );
             }
             "8" => {
                 if let (Some(order_id), Some(quantity), Some(price)) = (
@@ -256,11 +410,67 @@ impl FixClient {
         if self.logs.len() == MAX_FIX_LOGS {
             self.logs.pop_front();
         }
-        self.logs.push_back(format!(
-            "{direction} {}",
-            String::from_utf8_lossy(frame).replace('\u{1}', "|")
-        ));
+        let readable = String::from_utf8_lossy(frame).replace('\u{1}', "|");
+        self.logs
+            .push_back(format!("{direction} {}", redact_fix(&readable)));
     }
+}
+
+fn push_bounded<T>(queue: &mut VecDeque<T>, value: T, maximum: usize) {
+    if queue.len() == maximum {
+        queue.pop_front();
+    }
+    queue.push_back(value);
+}
+
+fn redact_fix(frame: &str) -> String {
+    frame
+        .split('|')
+        .map(|field| {
+            if field.starts_with("554=") {
+                "554=<redacted>"
+            } else {
+                field
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn apply_incremental(book: &mut Book, message: &FixMessage) {
+    let mut action = "1";
+    let mut side = None;
+    let mut price = None;
+    for field in &message.fields {
+        match field.tag {
+            279 => action = field.value.as_str(),
+            269 => side = Some(field.value.as_str()),
+            270 => price = field.value.parse::<i64>().ok(),
+            271 => {
+                if let (Some(side), Some(price), Ok(quantity)) =
+                    (side, price.take(), field.value.parse::<i64>())
+                {
+                    let levels = if side == "0" {
+                        &mut book.bids
+                    } else if side == "1" {
+                        &mut book.asks
+                    } else {
+                        continue;
+                    };
+                    levels.retain(|level| level.0 != price);
+                    if action != "2" && quantity > 0 {
+                        levels.push((price, quantity));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    book.bids
+        .sort_unstable_by(|left, right| right.0.cmp(&left.0));
+    book.asks.sort_unstable_by_key(|level| level.0);
+    book.bids.truncate(MAX_BOOK_LEVELS);
+    book.asks.truncate(MAX_BOOK_LEVELS);
 }
 
 pub fn session_config(sender: &str, target: &str) -> SessionConfig {
@@ -271,7 +481,42 @@ pub fn session_config(sender: &str, target: &str) -> SessionConfig {
         max_journal_messages: 512,
         max_pending_inbound: 64,
         wire_limits: WireLimits::default(),
+        logon_fields: Vec::new(),
     }
+}
+
+fn profile_session_config(
+    profile: &ConnectionProfile,
+    credential_override: Option<&str>,
+    reset: bool,
+) -> io::Result<SessionConfig> {
+    let password = credential_override
+        .map_or_else(|| profile.password(), |password| Ok(password.to_owned()))
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
+    let mut logon_fields = vec![
+        Field::new(553, profile.username.clone()),
+        Field::new(554, password),
+        Field::new(10000, FIX_PROFILE_VERSION),
+        Field::new(10004, profile.role.as_str()),
+    ];
+    if let Some(run_id) = &profile.run_id {
+        logon_fields.push(Field::new(10001, run_id.clone()));
+    }
+    if let Some(team_id) = &profile.team_id {
+        logon_fields.push(Field::new(10005, team_id.clone()));
+    }
+    if reset {
+        logon_fields.push(Field::new(141, "Y"));
+    }
+    Ok(SessionConfig {
+        sender_comp_id: profile.sender_comp_id.clone(),
+        target_comp_id: profile.target_comp_id.clone(),
+        heartbeat_seconds: profile.heartbeat_seconds,
+        max_journal_messages: 512,
+        max_pending_inbound: 64,
+        wire_limits: WireLimits::default(),
+        logon_fields,
+    })
 }
 
 pub fn timestamp() -> String {
@@ -368,6 +613,8 @@ fn parse_book(message: &FixMessage) -> Book {
     book.bids
         .sort_unstable_by(|left, right| right.0.cmp(&left.0));
     book.asks.sort_unstable_by_key(|level| level.0);
+    book.bids.truncate(MAX_BOOK_LEVELS);
+    book.asks.truncate(MAX_BOOK_LEVELS);
     book
 }
 
@@ -391,6 +638,7 @@ fn price_sample(book: &Book) -> Option<PriceSample> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -478,5 +726,58 @@ mod tests {
         assert_eq!(portfolio.bought, 5);
         assert_eq!(portfolio.sold, 2);
         assert_eq!(portfolio.marked_value(101), 9);
+    }
+
+    #[test]
+    fn incremental_updates_use_absolute_quantity_and_delete_semantics() {
+        let mut book = Book {
+            bids: vec![(99, 4)],
+            asks: vec![(101, 7)],
+        };
+        let mut update = FixMessage::new("X");
+        for (tag, value) in [
+            (279, "1"),
+            (269, "0"),
+            (270, "99"),
+            (271, "9"),
+            (279, "2"),
+            (269, "1"),
+            (270, "101"),
+            (271, "0"),
+        ] {
+            update.push(tag, value);
+        }
+        apply_incremental(&mut book, &update);
+        assert_eq!(book.bids, vec![(99, 9)]);
+        assert!(book.asks.is_empty());
+    }
+
+    #[test]
+    fn reset_marks_projection_stale_until_a_new_snapshot() {
+        let profile = crate::config::TerminalConfig::default()
+            .profile("local")
+            .unwrap();
+        let mut client =
+            FixClient::new("local".to_owned(), profile, Some("test-only".to_owned())).unwrap();
+        client.book.bids.push((99, 1));
+        let mut reset = FixMessage::new("UC");
+        reset.push(10010, "42");
+        reset.push(10015, "cursor outside retention");
+        client.observe(&reset);
+        assert!(client.stale);
+        assert!(client.book.bids.is_empty());
+        assert_eq!(client.committed_sequence, "42");
+        assert_eq!(
+            client.reset_reason.as_deref(),
+            Some("cursor outside retention")
+        );
+    }
+
+    #[test]
+    fn raw_fix_diagnostics_redact_passwords() {
+        assert_eq!(
+            redact_fix("35=A|553=student|554=secret|10000=profile|"),
+            "35=A|553=student|554=<redacted>|10000=profile|"
+        );
     }
 }
