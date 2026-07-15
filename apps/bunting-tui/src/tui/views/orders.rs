@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, area: Rect, client: &FixClient) {
         .header(Row::new(["ORDER ID", "EXEC TYPE", "STATUS", "REASON"]).style(styles::label()))
         .block(
             Block::new()
-                .title(" FIX EXECUTION REPORT JOURNAL ")
+                .title(" OBSERVED FIX EXECUTION REPORTS · LIVE/HISTORY QUERY REQUIRES H/U4 ")
                 .borders(Borders::ALL)
                 .border_style(styles::active_border()),
         ),
@@ -50,6 +50,9 @@ pub fn render(frame: &mut Frame, area: Rect, client: &FixClient) {
             ]),
             Line::from("buy PRICE QTY | sell PRICE QTY | market buy|sell QTY"),
             Line::from("cancel ORDER_ID | replace OLD NEW PRICE QTY | status ORDER_ID"),
+            Line::from(
+                "bulk cancel and special policies remain unavailable until capability discovery",
+            ),
             Line::from(Span::styled(&client.status, styles::dim())),
         ])
         .block(

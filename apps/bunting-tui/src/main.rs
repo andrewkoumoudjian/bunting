@@ -2,25 +2,37 @@
 // Rust guideline compliant 2026-02-21
 
 #[cfg(not(target_arch = "wasm32"))]
+mod config;
+#[cfg(not(target_arch = "wasm32"))]
 mod local_market;
 #[cfg(not(target_arch = "wasm32"))]
 mod protocol;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 mod tui;
 
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Parser)]
-#[command(about = "Local Bunting market terminal over FIX 4.4/TCP")]
+#[command(about = "Bunting participant/operator terminal over FIX 4.4 TCP/TLS")]
 struct Arguments {
-    /// FIX acceptor address.
-    #[arg(long, default_value = "127.0.0.1:9880")]
-    address: String,
-    /// Connect to an already-running acceptor instead of spawning the local market.
+    /// Named profile from the terminal configuration.
     #[arg(long)]
-    remote: bool,
+    profile: Option<String>,
+    /// Terminal profile/workspace configuration path.
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Override the selected profile's HOST:PORT endpoint for this process.
+    #[arg(long)]
+    endpoint: Option<String>,
+    /// Start the native embedded market test fixture. Production local mode connects to a server.
+    #[arg(long)]
+    fixture: bool,
     /// Built-in policies to run in the embedded market (repeat or comma-separate).
     #[arg(
         long = "agent",
@@ -37,16 +49,32 @@ struct Arguments {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
-    let server = if arguments.remote {
-        None
-    } else {
+    let (config, config_path) = config::TerminalConfig::load(arguments.config)?;
+    let profile_name = arguments
+        .profile
+        .unwrap_or_else(|| config.selected_profile.clone());
+    let mut profile = config.profile(&profile_name)?;
+    if let Some(endpoint) = arguments.endpoint {
+        profile.endpoint = endpoint;
+    }
+    let server = if arguments.fixture {
         let scenario = local_market::LocalScenarioConfig::from_names(
             &arguments.agents,
             arguments.agent_tick_ms,
         )?;
-        Some(local_market::spawn(&arguments.address, scenario).await?)
+        Some(local_market::spawn(&profile.endpoint, scenario).await?)
+    } else {
+        None
     };
-    let result = Box::pin(tui::run(&arguments.address)).await;
+    let credential_override = arguments.fixture.then(|| "fixture-only".to_owned());
+    let result = Box::pin(tui::run(
+        profile_name,
+        profile,
+        credential_override,
+        config,
+        config_path,
+    ))
+    .await;
     if let Some(server) = server {
         server.abort();
     }

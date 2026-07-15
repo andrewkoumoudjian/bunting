@@ -7,3 +7,4 @@ pub mod market;
 pub mod navbar;
 pub mod orders;
 pub mod popup;
+pub mod workspace;

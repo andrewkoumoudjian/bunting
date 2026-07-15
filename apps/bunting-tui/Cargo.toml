@@ -24,12 +24,17 @@ crossterm = "0.29.0"
 quarcc-execution-engine.workspace = true
 quarcc-bunting-adapter = { path = "../../packages/quarcc-bunting-adapter" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+serde.workspace = true
 serde_json.workspace = true
 simfix-mapping = { path = "../../packages/simfix-mapping" }
 simfix-session.workspace = true
 simfix-wire.workspace = true
 time = { version = "0.3.47", features = ["formatting", "macros"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 unicode-width = "0.2.2"
 
 [lints]

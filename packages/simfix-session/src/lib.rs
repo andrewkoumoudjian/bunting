@@ -2,7 +2,7 @@
 //! Deterministic FIX session state behind explicit clock, store, and transport traits.
 
 use serde::{Deserialize, Serialize};
-use simfix_wire::{Decoder, FixMessage, WireError, WireLimits};
+use simfix_wire::{Decoder, Field, FixMessage, WireError, WireLimits};
 use std::collections::BTreeMap;
 
 pub trait SessionClock {
@@ -32,6 +32,10 @@ pub struct SessionConfig {
     pub max_journal_messages: usize,
     pub max_pending_inbound: usize,
     pub wire_limits: WireLimits,
+    /// Additional bounded Logon fields such as credentials and profile identity.
+    /// Standard session header fields are rejected because the session owns them.
+    #[serde(default)]
+    pub logon_fields: Vec<Field>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -180,6 +184,9 @@ impl FixSession {
         let mut message = FixMessage::new("A");
         message.push(98, "0");
         message.push(108, self.config.heartbeat_seconds.to_string());
+        for field in &self.config.logon_fields {
+            message.push(field.tag, field.value.clone());
+        }
         self.send_new(message, timestamp, now_millis, true)
     }
 
@@ -501,7 +508,21 @@ fn validate_config(config: &SessionConfig) -> Result<(), SessionError> {
         || config.heartbeat_seconds == 0
         || config.max_journal_messages == 0
         || config.max_pending_inbound == 0
+        || config.logon_fields.len() > 16
+        || config.logon_fields.iter().any(|field| {
+            matches!(field.tag, 8 | 9 | 10 | 34 | 35 | 49 | 52 | 56 | 98 | 108)
+                || field.value.len() > config.wire_limits.max_field_bytes
+        })
     {
+        return Err(SessionError::InvalidConfig);
+    }
+    let mut tags = config
+        .logon_fields
+        .iter()
+        .map(|field| field.tag)
+        .collect::<Vec<_>>();
+    tags.sort_unstable();
+    if tags.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(SessionError::InvalidConfig);
     }
     Ok(())
@@ -532,7 +553,48 @@ mod tests {
             max_journal_messages: 32,
             max_pending_inbound: 8,
             wire_limits: WireLimits::default(),
+            logon_fields: Vec::new(),
         }
+    }
+
+    #[test]
+    fn logon_includes_validated_profile_and_credentials() {
+        let mut config = config();
+        config.logon_fields = vec![
+            Field::new(553, "participant"),
+            Field::new(554, "secret"),
+            Field::new(10000, "bunting.fix44.competition.v1"),
+        ];
+        let mut session = FixSession::try_new(config).unwrap();
+        let actions = session.connected_at("20260713-12:00:00.000", 0).unwrap();
+        let frame = actions
+            .iter()
+            .find_map(|action| match action {
+                SessionAction::Send(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        let logon = decode_one(frame, WireLimits::default()).unwrap();
+        assert_eq!(logon.value(553), Some("participant"));
+        assert_eq!(logon.value(554), Some("secret"));
+        assert_eq!(logon.value(10000), Some("bunting.fix44.competition.v1"));
+    }
+
+    #[test]
+    fn logon_rejects_session_owned_or_duplicate_fields() {
+        let mut reserved = config();
+        reserved.logon_fields = vec![Field::new(49, "OTHER")];
+        assert!(matches!(
+            FixSession::try_new(reserved),
+            Err(SessionError::InvalidConfig)
+        ));
+
+        let mut duplicate = config();
+        duplicate.logon_fields = vec![Field::new(553, "one"), Field::new(553, "two")];
+        assert!(matches!(
+            FixSession::try_new(duplicate),
+            Err(SessionError::InvalidConfig)
+        ));
     }
 
     fn inbound(msg_type: &str, sequence: u64) -> Vec<u8> {

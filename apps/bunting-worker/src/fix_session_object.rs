@@ -141,6 +141,7 @@ impl FixSessionObject {
             max_journal_messages: 4_096,
             max_pending_inbound: 256,
             wire_limits: WireLimits::default(),
+            logon_fields: Vec::new(),
         };
         let previous: Option<StoredFixSession> = self.state.storage().get(STORAGE_KEY).await?;
         if previous.as_ref().is_some_and(|stored| {

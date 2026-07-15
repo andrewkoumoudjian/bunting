@@ -18,7 +18,11 @@ pub enum Action {
     Character(char),
     TabMarket,
     TabOrders,
-    TabFix,
+    TabAccount,
+    TabSimulation,
+    TabCollaboration,
+    TabAdministration,
+    TabSession,
     ToggleHelp,
     ToggleLog,
     BeginCommand,
@@ -60,9 +64,41 @@ pub fn resolve(event: KeyEvent, editing: bool) -> Action {
         KeyCode::Char('r' | 'R') => Action::Refresh,
         KeyCode::Char('1') => Action::TabMarket,
         KeyCode::Char('2') => Action::TabOrders,
-        KeyCode::Char('3') => Action::TabFix,
+        KeyCode::Char('3') => Action::TabAccount,
+        KeyCode::Char('4') => Action::TabSimulation,
+        KeyCode::Char('5') => Action::TabCollaboration,
+        KeyCode::Char('6') => Action::TabAdministration,
+        KeyCode::Char('7') => Action::TabSession,
         KeyCode::Up => Action::SelectPrevious,
         KeyCode::Down => Action::SelectNext,
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_shortcuts_cover_every_workspace_without_stealing_editor_keys() {
+        let key = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+        assert_eq!(resolve(key('1'), false), Action::TabMarket);
+        assert_eq!(resolve(key('7'), false), Action::TabSession);
+        assert_eq!(resolve(key('7'), true), Action::Character('7'));
+    }
+
+    #[test]
+    fn release_and_repeat_events_are_ignored() {
+        assert_eq!(
+            resolve(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char('q'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                ),
+                false,
+            ),
+            Action::None
+        );
     }
 }

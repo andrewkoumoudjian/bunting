@@ -38,9 +38,13 @@ pub fn draw(frame: &mut Frame, app: &App, client: &FixClient) {
     match app.tab {
         Tab::Market => views::market::render(frame, content, app, client),
         Tab::Orders => views::orders::render(frame, content, client),
-        Tab::Fix => LogPanel::render(frame, content, &client.logs, false),
+        Tab::Account => views::workspace::account(frame, content, client),
+        Tab::Simulation => views::workspace::simulation(frame, content, client),
+        Tab::Collaboration => views::workspace::collaboration(frame, content, client),
+        Tab::Administration => views::workspace::administration(frame, content, client),
+        Tab::Session => views::workspace::session(frame, content, app, client),
     }
-    views::footer::render(frame, footer, client);
+    views::footer::render(frame, footer, &app.status, client);
 
     if app.popup == PopupKind::FixLog {
         LogPanel::render(

@@ -12,19 +12,21 @@ use ratatui::{
 };
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    let popup = rect::centered(86, 29, area);
+    let popup = rect::centered(92, 34, area);
     let lines = vec![
         Line::from(""),
         Line::styled(
             format!("Bunting Terminal v{}", env!("CARGO_PKG_VERSION")),
             Style::new().add_modifier(Modifier::BOLD),
         ),
-        Line::from("FIX 4.4/TCP operator workstation backed by bunting-engine"),
+        Line::from("FIX 4.4 TCP/TLS participant and operator workstation"),
         Line::from(""),
         Line::from("General ----------------------------------------------------------"),
         Line::from("? / F1          Show or close this help"),
         Line::from("`               Toggle raw FIX console overlay"),
-        Line::from("1 / 2 / 3       Market, orders, or FIX-session tab"),
+        Line::from(
+            "1 .. 7          Market, orders, account, simulation, collaboration, admin, session",
+        ),
         Line::from("/               Open command entry"),
         Line::from("R               Refresh the engine book through FIX V"),
         Line::from("Q / Ctrl-C      Quit"),
@@ -43,6 +45,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("market SIDE QTY Submit a market buy or sell"),
         Line::from("status ORDER_ID Request current order status"),
         Line::from("logout          Orderly FIX logout"),
+        Line::from("reconnect       Reconnect while preserving FIX session sequence/journal"),
+        Line::from("session reset   Request an explicitly profile-authorized sequence reset"),
+        Line::from("workspace save|load|remove NAME   Persist terminal layout"),
         Line::from(""),
         Line::from(Span::styled(
             "Every action is sent through the FIX client; the TUI never mutates the engine.",

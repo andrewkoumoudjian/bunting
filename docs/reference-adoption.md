@@ -38,6 +38,7 @@ For every reference or vendored component, record:
 | `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
 | `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; excluded from the Worker dependency graph and no market semantics |
+| `rustls` / `tokio-rustls` / `rustls-native-certs` / `rustls-pemfile` | `0.23.42` / `0.26.4` / `0.8.4` / `2.2.0`; native FIX initiator TLS, platform trust roots and optional PEM CA loading | Native `bunting-tui` transport only; excluded from the Worker dependency graph, no FIX sequencing and no market semantics |
 
 The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
 

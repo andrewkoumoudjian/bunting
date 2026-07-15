@@ -99,7 +99,14 @@ fn render_instrument(frame: &mut Frame, area: Rect, client: &FixClient) {
     let lines = vec![
         Line::from(vec![
             Span::styled("BUNT ", styles::accent()),
-            Span::styled("Bunting Local Market · FIX 4.4", styles::label()),
+            Span::styled(
+                format!(
+                    "{} · {} · FIX 4.4",
+                    client.profile_name,
+                    client.profile().transport.label()
+                ),
+                styles::label(),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -277,6 +284,7 @@ fn render_actions(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  "),
             Span::styled(" [S] SELL ", styles::ask()),
             Span::raw("  [/] COMMAND "),
+            Span::styled(" limit/market mapping active ", styles::dim()),
         ]))
         .block(
             Block::new()

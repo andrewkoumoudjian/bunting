@@ -11,7 +11,7 @@ use ratatui::{
 };
 use simfix_session::ConnectionState;
 
-pub fn render(frame: &mut Frame, area: Rect, client: &FixClient) {
+pub fn render(frame: &mut Frame, area: Rect, operator_status: &str, client: &FixClient) {
     let [market_area, connection_area] =
         Layout::horizontal([Constraint::Percentage(90), Constraint::Percentage(10)]).areas(area);
     let bid = client.book.bids.first().map(|level| level.0);
@@ -23,12 +23,21 @@ pub fn render(frame: &mut Frame, area: Rect, client: &FixClient) {
             Span::styled(format!("ask {} ", display_price(ask)), styles::ask()),
             Span::styled(
                 format!(
-                    "| book seq {} | reports {} | FIX frames {}",
+                    "| committed {} | FIX {} | reports {} | frames {}",
+                    client.committed_sequence,
                     client.book_sequence,
                     client.executions.len(),
                     client.logs.len()
                 ),
                 styles::dim(),
+            ),
+            Span::styled(
+                if operator_status.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | {operator_status}")
+                },
+                styles::warning(),
             ),
         ])),
         market_area,
