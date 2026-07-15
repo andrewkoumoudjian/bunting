@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "profile": "cloudflare",
+  "storage": {"kind":"memory","path":null,"max_runs":1,"max_commands":1,"max_events_per_run":1},
+  "fix": null,
+  "admin": null,
+  "scenario": null,
+  "relay": {"participant_bind":"127.0.0.1:9876","worker_bind":"127.0.0.1:9877","participant_sender_comp_id":"PARTICIPANT","worker_sender_comp_id":"BUNTING","target_comp_id":"RELAY","participant_username":"participant","participant_password":"replace-with-secret","journal_path":"./relay-journal.bin","max_message_bytes":65536,"max_journal_bytes":16777216,"max_pending_bytes":1048576,"tls":{"mode":"terminated","trusted_proxy":"127.0.0.1","require_mutual_tls":true}}
+}

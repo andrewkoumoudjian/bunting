@@ -185,6 +185,14 @@ pub struct PreparedCommand {
     pub commit: CommitRequest,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExecutedTransaction {
+    pub result: CommandResult,
+    pub events: Vec<bunting_market_events::EventEnvelope>,
+    pub state: RunState,
+    pub duplicate: bool,
+}
+
 impl<'a, O, C> CommandTransaction<'a, O, C>
 where
     O: OriginStore,
@@ -196,13 +204,27 @@ where
     }
 
     pub fn execute(&self, command: &Command) -> Result<CommandResult, TransactionError> {
+        self.execute_detailed(command)
+            .map(|executed| executed.result)
+    }
+
+    /// Executes and returns the committed events and complete recovery state.
+    pub fn execute_detailed(
+        &self,
+        command: &Command,
+    ) -> Result<ExecutedTransaction, TransactionError> {
         let fingerprint = command_fingerprint(command)?;
         if let Some((stored_fingerprint, result)) = self
             .origin
             .find_command(command.run_id, command.command_id)?
         {
             return if stored_fingerprint == fingerprint {
-                Ok(result)
+                Ok(ExecutedTransaction {
+                    result,
+                    events: Vec::new(),
+                    state: self.origin.load_run(command.run_id)?,
+                    duplicate: true,
+                })
             } else {
                 Err(TransactionError::IdempotencyConflict)
             };
@@ -233,6 +255,8 @@ where
             })
             .map(|(key, listing)| (*key, listing.snapshot().clone()))
             .collect();
+        let events = prepared.commit.events.clone();
+        let committed_state = prepared.commit.candidate.clone();
         let outcome = self.origin.commit(prepared.commit)?;
         let committed = match outcome {
             CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
@@ -240,7 +264,12 @@ where
         for (key, snapshot) in changed_snapshots {
             let _cache_put = self.cache.put(key, &snapshot);
         }
-        Ok(committed)
+        Ok(ExecutedTransaction {
+            result: committed,
+            events,
+            state: committed_state,
+            duplicate: false,
+        })
     }
 }
 

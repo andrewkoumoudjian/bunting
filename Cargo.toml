@@ -8,6 +8,7 @@ members = [
   "packages/risk-engine",
   "packages/origin-store",
   "packages/command-transaction",
+  "packages/bunting-application",
   "packages/worker-cache",
   "packages/quarcc-execution-engine",
   "packages/quarcc-bunting-adapter",
@@ -21,6 +22,7 @@ members = [
   "tests/oracles/nbc-matcher",
   "bunting-rs",
   "apps/bunting-worker",
+  "apps/bunting-server",
   "apps/bunting-tui",
 ]
 exclude = ["ref", "vendor", "out"]
@@ -35,10 +37,13 @@ repository = "https://github.com/andrewkoumoudjian/bunting"
 bunting-market-events = { path = "packages/market-events" }
 bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
+bunting-application = { path = "packages/bunting-application" }
 bunting-engine = { path = "packages/bunting-engine" }
 quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
 simfix-wire = { path = "packages/simfix-wire" }
 simfix-session = { path = "packages/simfix-session" }
+simfix-mapping = { path = "packages/simfix-mapping" }
+quarcc-bunting-adapter = { path = "packages/quarcc-bunting-adapter" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 percent-encoding = "2"

@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Curated, portable entry point for Bunting's stable first-party contracts.
 
+pub use bunting_application::{
+    ApplicationService, FixApplicationRequest, FixApplicationState, MarketProjection,
+    VerifiedActor, project_market,
+};
+
 pub use bunting_engine::{
     EngineConfig, EngineSnapshotEnvelope, ListingDefinition, ParticipantDefinition, RunState,
     ScenarioDefinition,
