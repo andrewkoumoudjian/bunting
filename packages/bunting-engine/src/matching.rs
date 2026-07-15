@@ -7,11 +7,15 @@
 //! switch are upstream responsibilities. Bunting owns authentication, canonical event
 //! envelopes, participant accounting, persistence and Worker protocols.
 
-use bunting_market_events::Side as BuntingSide;
+use bunting_market_events::{
+    AdvancedOrderPolicy, PegReference, Side as BuntingSide, TimeInForcePolicy,
+};
 use bunting_market_types::{OrderId, PriceTicks, QuantityLots};
 use orderbook_rs::orderbook::OrderBookSnapshotPackage;
 use orderbook_rs::orderbook::modifications::OrderQuantity;
 use orderbook_rs::{DefaultOrderBook, Id, OrderBookError, Side, TradeResult};
+use pricelevel::{Hash32, OrderType, PegReferenceType, Price, Quantity};
+use std::num::NonZeroU64;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -106,6 +110,18 @@ pub const fn to_upstream_side(side: BuntingSide) -> Side {
     }
 }
 
+/// Maps the durable protocol policy to the released matcher policy.
+#[must_use]
+pub const fn to_upstream_time_in_force(policy: TimeInForcePolicy) -> TimeInForce {
+    match policy {
+        TimeInForcePolicy::Gtc => TimeInForce::Gtc,
+        TimeInForcePolicy::Ioc => TimeInForce::Ioc,
+        TimeInForcePolicy::Fok => TimeInForce::Fok,
+        TimeInForcePolicy::Gtd { expires_at_millis } => TimeInForce::Gtd(expires_at_millis),
+        TimeInForcePolicy::Day => TimeInForce::Day,
+    }
+}
+
 /// Recovers a sequential upstream identifier from its stable textual form.
 #[must_use]
 pub fn sequential_id_from_text(value: &str) -> Option<u64> {
@@ -163,6 +179,160 @@ impl KernelBook {
         )?;
 
         let _order_id = order.id().to_string();
+        Ok(LimitSubmission { trade_result })
+    }
+
+    /// Submits a released OrderBook-rs special order without exposing the matcher.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive construction maps each approved upstream special-order variant"
+    )]
+    pub fn submit_advanced_limit(
+        &self,
+        order_id: u64,
+        price: u128,
+        quantity: u64,
+        side: Side,
+        time_in_force: TimeInForcePolicy,
+        policy: AdvancedOrderPolicy,
+    ) -> Result<LimitSubmission, OrderBookError> {
+        let id = Id::sequential(order_id);
+        let price = Price::new(price);
+        let quantity = Quantity::new(quantity);
+        let user_id = Hash32([0; 32]);
+        let timestamp = self.inner.clock().now_millis();
+        let time_in_force = to_upstream_time_in_force(time_in_force);
+        let order = match policy {
+            AdvancedOrderPolicy::PostOnly => OrderType::PostOnly {
+                id,
+                price,
+                quantity,
+                side,
+                user_id,
+                timestamp,
+                time_in_force,
+                extra_fields: (),
+            },
+            AdvancedOrderPolicy::Iceberg { visible_quantity } => {
+                let visible = to_upstream_quantity(visible_quantity).map_err(|_| {
+                    OrderBookError::InvalidLotSize {
+                        quantity: 0,
+                        lot_size: 1,
+                    }
+                })?;
+                let hidden = quantity.as_u64().checked_sub(visible).ok_or(
+                    OrderBookError::InvalidLotSize {
+                        quantity: visible,
+                        lot_size: quantity.as_u64(),
+                    },
+                )?;
+                OrderType::IcebergOrder {
+                    id,
+                    price,
+                    visible_quantity: Quantity::new(visible),
+                    hidden_quantity: Quantity::new(hidden),
+                    side,
+                    user_id,
+                    timestamp,
+                    time_in_force,
+                    extra_fields: (),
+                }
+            }
+            AdvancedOrderPolicy::Reserve {
+                visible_quantity,
+                replenish_threshold,
+                replenish_quantity,
+                auto_replenish,
+            } => {
+                let visible = to_upstream_quantity(visible_quantity).map_err(|_| {
+                    OrderBookError::InvalidLotSize {
+                        quantity: 0,
+                        lot_size: 1,
+                    }
+                })?;
+                let hidden = quantity.as_u64().checked_sub(visible).ok_or(
+                    OrderBookError::InvalidLotSize {
+                        quantity: visible,
+                        lot_size: quantity.as_u64(),
+                    },
+                )?;
+                let threshold = to_upstream_quantity(replenish_threshold).map_err(|_| {
+                    OrderBookError::InvalidLotSize {
+                        quantity: 0,
+                        lot_size: 1,
+                    }
+                })?;
+                let replenish = to_upstream_quantity(replenish_quantity)
+                    .ok()
+                    .and_then(NonZeroU64::new)
+                    .ok_or(OrderBookError::InvalidLotSize {
+                        quantity: 0,
+                        lot_size: 1,
+                    })?;
+                OrderType::ReserveOrder {
+                    id,
+                    price,
+                    visible_quantity: Quantity::new(visible),
+                    hidden_quantity: Quantity::new(hidden),
+                    side,
+                    user_id,
+                    timestamp,
+                    time_in_force,
+                    replenish_threshold: Quantity::new(threshold),
+                    replenish_amount: Some(replenish),
+                    auto_replenish,
+                    extra_fields: (),
+                }
+            }
+            AdvancedOrderPolicy::Pegged {
+                offset_ticks,
+                reference,
+            } => OrderType::PeggedOrder {
+                id,
+                price,
+                quantity,
+                side,
+                user_id,
+                timestamp,
+                time_in_force,
+                reference_price_offset: offset_ticks,
+                reference_price_type: match reference {
+                    PegReference::BestBid => PegReferenceType::BestBid,
+                    PegReference::BestAsk => PegReferenceType::BestAsk,
+                    PegReference::MidPrice => PegReferenceType::MidPrice,
+                    PegReference::LastTrade => PegReferenceType::LastTrade,
+                },
+                extra_fields: (),
+            },
+            AdvancedOrderPolicy::TrailingStop { trail_ticks } => OrderType::TrailingStop {
+                id,
+                price,
+                quantity,
+                side,
+                user_id,
+                timestamp,
+                time_in_force,
+                trail_amount: Quantity::new(to_upstream_quantity(trail_ticks).map_err(|_| {
+                    OrderBookError::InvalidLotSize {
+                        quantity: 0,
+                        lot_size: 1,
+                    }
+                })?),
+                last_reference_price: price,
+                extra_fields: (),
+            },
+            AdvancedOrderPolicy::MarketToLimit => OrderType::MarketToLimit {
+                id,
+                price,
+                quantity,
+                side,
+                user_id,
+                timestamp,
+                time_in_force,
+                extra_fields: (),
+            },
+        };
+        let (_, trade_result) = self.inner.add_order_with_result(order)?;
         Ok(LimitSubmission { trade_result })
     }
 

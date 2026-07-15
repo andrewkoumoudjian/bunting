@@ -4,13 +4,14 @@
 
 pub mod compatibility;
 mod matching;
+pub mod simulation;
 
 use bunting_ledger::{
     Account, AccountProjection, Holding, HoldingProjection, Ledger, LedgerError, TradeSettlement,
 };
 use bunting_market_events::{
     CancelReason, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope, EventPayload,
-    OrderKind, RejectCode, Side,
+    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest,
 };
 use bunting_market_types::{
     EventId, EventSequence, InstrumentId, IterationId, ListingKey, MoneyMinor, OrderId,
@@ -25,9 +26,11 @@ use compatibility::nbc::{
 use matching::{
     KernelBook, SnapshotPackage, TimeInForce, TradeInfo, sequential_id_from_text,
     to_upstream_order_id, to_upstream_price, to_upstream_quantity, to_upstream_side,
+    to_upstream_time_in_force,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use simulation::{SIMULATION_POLICY_VERSION, SimulationError, SimulationScenario, SimulationState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -189,6 +192,8 @@ pub struct ScenarioDefinition {
     listings: BTreeMap<ListingKey, ListingDefinition>,
     /// Canonically ordered by participant identity.
     participants: BTreeMap<ParticipantId, ParticipantDefinition>,
+    #[serde(default)]
+    simulation: SimulationScenario,
 }
 
 impl ScenarioDefinition {
@@ -221,6 +226,7 @@ impl ScenarioDefinition {
             scenario_version,
             listings: listing_map,
             participants: participant_map,
+            simulation: SimulationScenario::default(),
         };
         definition.validate()?;
         Ok(definition)
@@ -268,6 +274,9 @@ impl ScenarioDefinition {
                 return Err(ScenarioError::InvalidParticipant);
             }
         }
+        self.simulation
+            .validate()
+            .map_err(|_| ScenarioError::InvalidSimulation)?;
         Ok(())
     }
 
@@ -286,6 +295,28 @@ impl ScenarioDefinition {
     pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
         &self.participants
     }
+
+    /// Attaches validated immutable simulation-domain configuration.
+    ///
+    /// # Errors
+    /// Returns [`ScenarioError::InvalidSimulation`] for invalid policy input.
+    pub fn with_simulation(
+        mut self,
+        simulation: SimulationScenario,
+    ) -> Result<Self, ScenarioError> {
+        simulation
+            .validate()
+            .map_err(|_| ScenarioError::InvalidSimulation)?;
+        self.simulation = simulation;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Returns immutable simulation-domain configuration.
+    #[must_use]
+    pub const fn simulation(&self) -> &SimulationScenario {
+        &self.simulation
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -298,6 +329,99 @@ pub enum ScenarioError {
     InvalidListing,
     InvalidParticipant,
     InvalidScenarioIdentity,
+    InvalidSimulation,
+}
+
+/// Immutable published scenario record addressed by identity, version and hash.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedScenario {
+    pub definition: ScenarioDefinition,
+    pub content_hash: String,
+}
+
+/// Result of idempotently publishing an immutable scenario version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishScenarioOutcome {
+    Published,
+    AlreadyPublished,
+}
+
+/// Bounded scenario publication catalog; published versions are never overwritten.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioCatalog {
+    records: Vec<PublishedScenario>,
+}
+
+impl ScenarioCatalog {
+    /// Validates and publishes one immutable scenario version idempotently.
+    ///
+    /// # Errors
+    /// Returns an error for invalid input, hash failure, capacity, or a conflicting version.
+    pub fn publish(
+        &mut self,
+        definition: ScenarioDefinition,
+    ) -> Result<PublishScenarioOutcome, ScenarioCatalogError> {
+        definition
+            .validate()
+            .map_err(|_| ScenarioCatalogError::InvalidScenario)?;
+        let content_hash = definition
+            .content_hash()
+            .map_err(|_| ScenarioCatalogError::Hash)?;
+        if let Some(existing) = self.records.iter().find(|record| {
+            record.definition.scenario_id == definition.scenario_id
+                && record.definition.scenario_version == definition.scenario_version
+        }) {
+            return if existing.content_hash == content_hash {
+                Ok(PublishScenarioOutcome::AlreadyPublished)
+            } else {
+                Err(ScenarioCatalogError::VersionConflict)
+            };
+        }
+        if self.records.len() == 4_096 {
+            return Err(ScenarioCatalogError::CatalogFull);
+        }
+        self.records.push(PublishedScenario {
+            definition,
+            content_hash,
+        });
+        self.records.sort_by_key(|record| {
+            (
+                record.definition.scenario_id,
+                record.definition.scenario_version,
+            )
+        });
+        Ok(PublishScenarioOutcome::Published)
+    }
+
+    /// Returns canonically ordered immutable publication records.
+    #[must_use]
+    pub fn list(&self) -> &[PublishedScenario] {
+        &self.records
+    }
+
+    /// Resolves one exact immutable scenario version.
+    #[must_use]
+    pub fn get(
+        &self,
+        scenario_id: ScenarioId,
+        scenario_version: ScenarioVersion,
+    ) -> Option<&PublishedScenario> {
+        self.records.iter().find(|record| {
+            record.definition.scenario_id == scenario_id
+                && record.definition.scenario_version == scenario_version
+        })
+    }
+}
+
+/// Stable scenario publication failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScenarioCatalogError {
+    InvalidScenario,
+    Hash,
+    VersionConflict,
+    CatalogFull,
 }
 
 /// Persisted lifecycle state for an owned order.
@@ -373,6 +497,8 @@ pub struct RunState {
     ownership: BTreeMap<OrderId, OwnedOrder>,
     #[serde(default)]
     nbc_compatibility: Option<NbcCompatibilityState>,
+    #[serde(default)]
+    simulation: SimulationState,
 }
 
 impl RunState {
@@ -435,6 +561,35 @@ impl RunState {
                     })
             })
             .collect();
+        let mut simulation = SimulationState::from_scenario(&scenario.simulation)
+            .map_err(|_| EngineError::InvalidScenario)?;
+        if let Some(currency) = scenario
+            .simulation
+            .instruments
+            .values()
+            .map(|instrument| instrument.settlement_currency)
+            .next()
+        {
+            for participant in scenario.participants.values() {
+                simulation
+                    .private
+                    .entry(participant.participant_id)
+                    .or_default();
+                simulation.portfolio_ledger.set_settled_cash(
+                    participant.participant_id,
+                    currency,
+                    participant.initial_cash,
+                );
+                for (instrument, quantity) in &participant.initial_positions {
+                    simulation.portfolio_ledger.set_position(
+                        participant.participant_id,
+                        *instrument,
+                        *quantity,
+                        MoneyMinor::new(0),
+                    );
+                }
+            }
+        }
         Ok(Self {
             run_id,
             sequence: EventSequence::new(0),
@@ -450,7 +605,26 @@ impl RunState {
             holdings,
             ownership: BTreeMap::new(),
             nbc_compatibility: None,
+            simulation,
         })
+    }
+
+    /// Deterministically resets this run to a new iteration of its pinned scenario.
+    ///
+    /// # Errors
+    /// Returns an error when the supplied scenario is not the exact pinned version/hash.
+    pub fn reset_iteration(
+        &self,
+        iteration_id: IterationId,
+        scenario: &ScenarioDefinition,
+    ) -> Result<Self, EngineError> {
+        if scenario.scenario_id != self.scenario_id
+            || scenario.scenario_version != self.scenario_version
+            || scenario.content_hash()? != self.scenario_hash
+        {
+            return Err(EngineError::InvalidScenario);
+        }
+        Self::from_scenario(self.run_id, iteration_id, scenario)
     }
 
     #[must_use]
@@ -496,6 +670,12 @@ impl RunState {
     #[must_use]
     pub const fn nbc_compatibility(&self) -> Option<&NbcCompatibilityState> {
         self.nbc_compatibility.as_ref()
+    }
+
+    /// Returns the complete authoritative simulation component.
+    #[must_use]
+    pub const fn simulation(&self) -> &SimulationState {
+        &self.simulation
     }
 
     pub fn with_nbc_compatibility(
@@ -565,6 +745,7 @@ impl RunState {
                 .listings
                 .values()
                 .any(|listing| listing.snapshot.schema_version != LISTING_SNAPSHOT_VERSION)
+            || self.simulation.policy_version != SIMULATION_POLICY_VERSION
         {
             return Err(SnapshotError::UnsupportedVersion);
         }
@@ -611,18 +792,31 @@ impl RunState {
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
                 });
-                let outcome = prepare_submit(
-                    order,
-                    listing_key,
-                    price_bounds,
-                    &book,
-                    &mut ledger,
-                    &risk,
-                    &mut candidate.ownership,
-                    &mut payloads,
-                )?;
-                candidate.replace_snapshot(listing_key, next_sequence, &book)?;
-                changed_listings.insert(listing_key);
+                let outcome = if !candidate.simulation.instruments.is_empty()
+                    && candidate.simulation.lifecycle != simulation::RunLifecycle::Active
+                {
+                    Err(RejectCode::RunNotActive)
+                } else if candidate
+                    .simulation
+                    .halted_instruments
+                    .contains(&order.instrument_id)
+                {
+                    Err(RejectCode::ListingHalted)
+                } else {
+                    let outcome = prepare_submit(
+                        order,
+                        listing_key,
+                        price_bounds,
+                        &book,
+                        &mut ledger,
+                        &risk,
+                        &mut candidate.ownership,
+                        &mut payloads,
+                    )?;
+                    candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    changed_listings.insert(listing_key);
+                    outcome
+                };
                 match outcome {
                     Ok(()) => (true, None, Some(order.order_id)),
                     Err(code) => {
@@ -711,6 +905,15 @@ impl RunState {
         if payloads.len() > MAX_EVENTS_PER_TRANSITION {
             return Err(EngineError::EventBatchTooLarge);
         }
+        for payload in &payloads {
+            candidate
+                .simulation
+                .project_event(command.logical_time, payload)
+                .map_err(EngineError::Simulation)?;
+        }
+        for listing_key in &changed_listings {
+            candidate.refresh_market_projection(*listing_key)?;
+        }
         let events = envelope(command, self.event_sequence, payloads)?;
         candidate.sequence = next_sequence;
         candidate.event_sequence = events
@@ -738,6 +941,118 @@ impl RunState {
         })
     }
 
+    /// Applies one authoritative simulation-administration command atomically.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the atomic transition stages matching, projections and canonical envelopes together"
+    )]
+    pub fn transition_simulation(
+        &self,
+        request: &SimulationCommandRequest,
+    ) -> Result<TransitionOutcome, EngineError> {
+        let metadata = Command {
+            run_id: request.run_id,
+            command_id: request.command_id,
+            correlation_id: request.correlation_id,
+            logical_time: request.logical_time,
+            expected_sequence: request.expected_sequence,
+            actor: request.actor,
+            payload: CommandPayload::ActivateKillSwitch,
+        };
+        if self.run_id != request.run_id || self.sequence != request.expected_sequence {
+            return Err(EngineError::SequenceConflict {
+                current: self.sequence,
+            });
+        }
+        let next_sequence = self
+            .sequence
+            .checked_add(EventSequence::new(1))
+            .ok_or(EngineError::SequenceOverflow)?;
+        let mut candidate = self.clone();
+        let mut ledger = Ledger::from_projection(self.accounts.clone(), self.holdings.clone());
+        let mut payloads = Vec::new();
+        let mut changed_listings = BTreeSet::new();
+        if let SimulationCommand::MassCancel {
+            participant_id,
+            instrument_id,
+        } = &request.payload
+        {
+            let order_ids = candidate
+                .ownership
+                .values()
+                .filter(|owned| {
+                    owned.state == OwnedOrderState::Active
+                        && participant_id.is_none_or(|id| owned.participant_id == id)
+                        && instrument_id.is_none_or(|id| owned.listing_key.instrument_id == id)
+                })
+                .map(|owned| owned.order_id)
+                .collect::<Vec<_>>();
+            for order_id in &order_ids {
+                let owned = candidate
+                    .ownership
+                    .get(order_id)
+                    .cloned()
+                    .ok_or(EngineError::OwnershipInvariant)?;
+                let book = candidate.restore_book(owned.listing_key, None, &metadata)?;
+                prepare_cancel(
+                    &bunting_market_events::CancelOrder {
+                        order_id: *order_id,
+                        participant_id: owned.participant_id,
+                    },
+                    &book,
+                    &mut ledger,
+                    &mut candidate.ownership,
+                    &mut payloads,
+                )?
+                .map_err(|_| EngineError::OwnershipInvariant)?;
+                candidate.replace_snapshot(owned.listing_key, next_sequence, &book)?;
+                changed_listings.insert(owned.listing_key);
+            }
+            payloads.push(EventPayload::Simulation(
+                bunting_market_events::SimulationEvent::MassCancelCompleted {
+                    canceled_orders: order_ids,
+                },
+            ));
+        } else {
+            let domain_events = candidate
+                .simulation
+                .apply(request.actor, request.logical_time, &request.payload)
+                .map_err(EngineError::Simulation)?;
+            payloads.extend(domain_events.into_iter().map(EventPayload::Simulation));
+        }
+        if payloads.len() > MAX_EVENTS_PER_TRANSITION {
+            return Err(EngineError::EventBatchTooLarge);
+        }
+        for payload in &payloads {
+            candidate
+                .simulation
+                .project_event(request.logical_time, payload)
+                .map_err(EngineError::Simulation)?;
+        }
+        for listing_key in &changed_listings {
+            candidate.refresh_market_projection(*listing_key)?;
+        }
+        let events = envelope(&metadata, self.event_sequence, payloads)?;
+        candidate.sequence = next_sequence;
+        candidate.event_sequence = events
+            .last()
+            .map_or(self.event_sequence, |event| event.sequence);
+        (candidate.accounts, candidate.holdings) = ledger.projection();
+        Ok(TransitionOutcome {
+            candidate,
+            events,
+            accepted: true,
+            reject_code: None,
+            order_id: None,
+            snapshot_checksum: changed_listings
+                .iter()
+                .next()
+                .and_then(|key| self.listings.get(key))
+                .map(|listing| listing.snapshot.checksum.clone()),
+            changed_listings,
+        })
+    }
+
     fn restore_risk(&self) -> RiskState {
         let mut risk = RiskState::new();
         for listing in self.listings.values() {
@@ -751,6 +1066,66 @@ impl RunState {
             risk.set_enabled(participant.participant_id, participant.enabled);
         }
         risk
+    }
+
+    fn refresh_market_projection(&mut self, listing_key: ListingKey) -> Result<(), EngineError> {
+        let (bids, asks) = self.visible_levels(listing_key)?;
+        let convert = |levels: VisibleLevels| {
+            levels
+                .into_iter()
+                .map(|(price, quantity)| {
+                    Ok((
+                        PriceTicks::new(i64::try_from(price).map_err(|_| EngineError::Accounting)?),
+                        QuantityLots::new(
+                            i64::try_from(quantity).map_err(|_| EngineError::Accounting)?,
+                        ),
+                    ))
+                })
+                .collect::<Result<Vec<_>, EngineError>>()
+        };
+        let mut raw_bids = Vec::new();
+        let mut raw_asks = Vec::new();
+        for owned in self.ownership.values().filter(|owned| {
+            owned.listing_key == listing_key && owned.state == OwnedOrderState::Active
+        }) {
+            let row = (owned.limit_price, owned.remaining_quantity, owned.order_id);
+            match owned.side {
+                Side::Buy => raw_bids.push(row),
+                Side::Sell => raw_asks.push(row),
+            }
+        }
+        for owned in self
+            .ownership
+            .values()
+            .filter(|owned| owned.listing_key == listing_key)
+        {
+            let private = self
+                .simulation
+                .private
+                .entry(owned.participant_id)
+                .or_default();
+            if owned.state == OwnedOrderState::Active {
+                private.live_orders.insert(owned.order_id);
+            } else {
+                private.live_orders.remove(&owned.order_id);
+                if !private.historical_orders.contains(&owned.order_id) {
+                    if private.historical_orders.len() == simulation::MAX_TRADE_HISTORY {
+                        private.historical_orders.pop_front();
+                    }
+                    private.historical_orders.push_back(owned.order_id);
+                }
+            }
+        }
+        raw_bids.sort_by(|left, right| right.0.cmp(&left.0).then(left.2.cmp(&right.2)));
+        raw_asks.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
+        self.simulation.set_depth(
+            listing_key.instrument_id,
+            raw_bids,
+            raw_asks,
+            convert(bids)?,
+            convert(asks)?,
+        );
+        Ok(())
     }
 
     fn restore_book(
@@ -1023,6 +1398,7 @@ pub enum EngineError {
     EventBatchTooLarge,
     Upstream,
     NbcCompatibility,
+    Simulation(SimulationError),
     Snapshot(SnapshotError),
 }
 
@@ -1074,7 +1450,9 @@ fn prepare_submit(
         return Ok(Err(RejectCode::InvalidQuantity));
     };
     let (reservation_price, upstream_price) = match order.kind {
-        OrderKind::Limit { price } => {
+        OrderKind::Limit { price }
+        | OrderKind::LimitWithPolicy { price, .. }
+        | OrderKind::AdvancedLimit { price, .. } => {
             let Ok(upstream_price) = to_upstream_price(price) else {
                 return Ok(Err(RejectCode::PriceOutOfBounds));
             };
@@ -1106,7 +1484,7 @@ fn prepare_submit(
         order,
         open_quantity,
         ledger,
-        (order.kind == OrderKind::Market).then_some(reservation_price),
+        order.kind.is_market().then_some(reservation_price),
     ) {
         Ok(value) => value,
         Err(code) => return Ok(Err(code)),
@@ -1133,13 +1511,35 @@ fn prepare_submit(
         },
     );
     let trade_result = if let Some(price) = upstream_price {
-        book.submit_limit(
-            upstream_id,
-            price,
-            upstream_quantity,
-            to_upstream_side(order.side),
-            TimeInForce::Gtc,
-        )
+        match order.kind {
+            OrderKind::Limit { .. } => book.submit_limit(
+                upstream_id,
+                price,
+                upstream_quantity,
+                to_upstream_side(order.side),
+                TimeInForce::Gtc,
+            ),
+            OrderKind::LimitWithPolicy { time_in_force, .. } => book.submit_limit(
+                upstream_id,
+                price,
+                upstream_quantity,
+                to_upstream_side(order.side),
+                to_upstream_time_in_force(time_in_force),
+            ),
+            OrderKind::AdvancedLimit {
+                time_in_force,
+                policy,
+                ..
+            } => book.submit_advanced_limit(
+                upstream_id,
+                price,
+                upstream_quantity,
+                to_upstream_side(order.side),
+                time_in_force,
+                policy,
+            ),
+            OrderKind::Market => unreachable!("market orders have no upstream price"),
+        }
         .map_err(|_| EngineError::Upstream)?
         .trade_result
     } else {
@@ -1174,7 +1574,7 @@ fn prepare_submit(
         payloads.push(EventPayload::OrderCompleted {
             order_id: order.order_id,
         });
-    } else if let OrderKind::Limit { price } = order.kind {
+    } else if let Some(price) = order.kind.limit_price() {
         payloads.push(EventPayload::OrderRested {
             order_id: order.order_id,
             participant_id: order.participant_id,

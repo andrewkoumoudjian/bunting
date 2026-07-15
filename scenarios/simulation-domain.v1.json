@@ -1,0 +1,66 @@
+{
+  "policy_version": 1,
+  "clock": {
+    "now": 0,
+    "step_ns": 1000000,
+    "mode": {
+      "mode": "lockstep"
+    }
+  },
+  "instruments": [
+    {
+      "instrument_id": 1,
+      "symbol": "BNT",
+      "settlement_currency": 1,
+      "kind": "equity",
+      "contract_multiplier": 1
+    },
+    {
+      "instrument_id": 2,
+      "symbol": "BNT-FUT",
+      "settlement_currency": 1,
+      "kind": {
+        "future": {
+          "underlying": 1,
+          "expiry": 1000000000,
+          "physical_delivery": true
+        }
+      },
+      "contract_multiplier": 100
+    }
+  ],
+  "facilities": [
+    {
+      "facility_id": 1,
+      "kind": "conversion",
+      "capacity": 100,
+      "input_instrument": 1,
+      "output_instrument": 2
+    }
+  ],
+  "scheduled_actions": [
+    {
+      "action_id": 1,
+      "effective_at": 2000000,
+      "kind": {
+        "cashflow": {
+          "participant_id": 1,
+          "currency_id": 1,
+          "amount": 25,
+          "kind": "dividend"
+        }
+      }
+    }
+  ],
+  "initial_news": [
+    {
+      "news_id": 1,
+      "published_at": 0,
+      "audience": {
+        "kind": "public"
+      },
+      "headline": "Scenario initialized",
+      "body": "Bunting-native deterministic fixture."
+    }
+  ]
+}
