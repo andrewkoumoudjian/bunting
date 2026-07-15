@@ -1,0 +1,27 @@
+[package]
+name = "bunting-application"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Transport-neutral Bunting application and transaction service"
+
+[dependencies]
+bunting-api-contract.workspace = true
+bunting-command-transaction = { path = "../command-transaction" }
+bunting-engine.workspace = true
+bunting-market-events.workspace = true
+bunting-market-types.workspace = true
+bunting-origin-store = { path = "../origin-store" }
+quarcc-bunting-adapter.workspace = true
+quarcc-execution-engine.workspace = true
+serde.workspace = true
+simfix-mapping.workspace = true
+simfix-wire.workspace = true
+
+[dev-dependencies]
+bunting-risk-engine = { path = "../risk-engine" }
+
+[lints]
+workspace = true

@@ -9,17 +9,16 @@ mod fix_session_object;
 mod subscriptions;
 
 use bunting_api_contract::{
-    API_VERSION, AccountsSubscribeInput, BuntingErrorCode, CancelOrderInput, CommandOutput,
-    HealthOutput, MarketSnapshotInput, MarketSnapshotOutput, MarketSubscribeInput, PriceLevel,
-    SequenceDecimalString, Side as ContractSide, SignedDecimalString, SubmitOrderInput,
-    UnsignedDecimalString,
+    API_VERSION, AccountsSubscribeInput, ActorIdentity, ActorRole, BuntingErrorCode,
+    CancelOrderInput, CommandOutput, HealthOutput, MarketSnapshotInput, MarketSnapshotOutput,
+    MarketSubscribeInput, PriceLevel, SequenceDecimalString, Side as ContractSide,
+    SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
 };
+use bunting_application::{VerifiedActor, prepare_authenticated, project_market};
 use bunting_browser_wire::{
     Call, ErrorCode, Method, ParsedRequest, Request as WireRequest, Response as WireResponse,
 };
-use bunting_command_transaction::{
-    CachedSnapshot, TransactionError, command_fingerprint, prepare_command,
-};
+use bunting_command_transaction::{CachedSnapshot, TransactionError, command_fingerprint};
 use bunting_engine::{ORDERBOOK_RS_VERSION, RunState};
 use bunting_market_events::{
     CancelOrder, Command, CommandPayload, EventEnvelope, OrderKind, Side, SubmitOrder,
@@ -108,6 +107,18 @@ fn authenticate(request: &Request, environment: &Env) -> Result<VerifiedClaims> 
     Ok(VerifiedClaims {
         participant_id: ParticipantId::new(participant_id),
     })
+}
+
+fn verified_participant(
+    participant_id: ParticipantId,
+) -> std::result::Result<VerifiedActor, ProcedureError> {
+    VerifiedActor::try_from_identity(ActorIdentity {
+        actor_id: UnsignedDecimalString::new(participant_id.get()),
+        role: ActorRole::Participant,
+        participant_id: Some(UnsignedDecimalString::new(participant_id.get())),
+        team_id: None,
+    })
+    .map_err(|_| ProcedureError::InternalContractMismatch)
 }
 
 fn decode_input<T: DeserializeOwned>(call: &Call) -> std::result::Result<T, ProcedureError> {
@@ -327,20 +338,14 @@ fn snapshot_output(
     state: &RunState,
     instrument_id: InstrumentId,
 ) -> std::result::Result<MarketSnapshotOutput, ProcedureError> {
-    let listing_key = state
-        .listing_key_for_instrument(instrument_id)
-        .map_err(|_| ProcedureError::NotFound)?;
-    let (upstream_bids, upstream_asks) = state
-        .visible_levels(listing_key)
-        .map_err(|_| ProcedureError::InternalContractMismatch)?;
-    let levels = |items: Vec<(u128, u64)>| {
+    let projection = project_market(state, instrument_id).map_err(|error| match error {
+        bunting_application::ApplicationError::UnknownInstrument => ProcedureError::NotFound,
+        _ => ProcedureError::InternalContractMismatch,
+    })?;
+    let levels = |items: Vec<(i64, i64)>| {
         items
             .into_iter()
             .map(|(price, quantity)| {
-                let price =
-                    i64::try_from(price).map_err(|_| ProcedureError::InternalContractMismatch)?;
-                let quantity = i64::try_from(quantity)
-                    .map_err(|_| ProcedureError::InternalContractMismatch)?;
                 Ok(PriceLevel {
                     price_ticks: SignedDecimalString::new(price),
                     quantity_lots: SignedDecimalString::new(quantity),
@@ -349,11 +354,11 @@ fn snapshot_output(
             .collect::<std::result::Result<Vec<_>, ProcedureError>>()
     };
     Ok(MarketSnapshotOutput {
-        run_id: UnsignedDecimalString::new(state.run_id().get()),
+        run_id: UnsignedDecimalString::new(projection.run_id.get()),
         instrument_id: UnsignedDecimalString::new(instrument_id.get()),
-        sequence: SequenceDecimalString::new(state.sequence().get()),
-        bids: levels(upstream_bids)?,
-        asks: levels(upstream_asks)?,
+        sequence: SequenceDecimalString::new(projection.sequence.get()),
+        bids: levels(projection.bids)?,
+        asks: levels(projection.asks)?,
     })
 }
 
@@ -422,8 +427,22 @@ pub(crate) async fn execute_command_detailed(
         }),
         Ok(None) | Err(_) => None,
     };
+    let actor = verified_participant(command.actor)?;
     let prepared =
-        prepare_command(&command, &state, cached.as_ref()).map_err(map_transaction_error)?;
+        prepare_authenticated(&actor, &command, &state, cached.as_ref()).map_err(|error| {
+            match error {
+                bunting_application::ApplicationError::Transaction(transaction) => {
+                    map_transaction_error(transaction)
+                }
+                bunting_application::ApplicationError::Unauthenticated
+                | bunting_application::ApplicationError::Unauthorized
+                | bunting_application::ApplicationError::ActorMismatch
+                | bunting_application::ApplicationError::InvalidIdentity => {
+                    ProcedureError::Unauthorized
+                }
+                _ => ProcedureError::InternalContractMismatch,
+            }
+        })?;
     let events = prepared.commit.events.clone();
     let command_json =
         serde_json::to_string(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;

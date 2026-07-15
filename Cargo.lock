@@ -128,6 +128,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bunting-application"
+version = "0.1.0"
+dependencies = [
+ "bunting-api-contract",
+ "bunting-command-transaction",
+ "bunting-engine",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-origin-store",
+ "bunting-risk-engine",
+ "quarcc-bunting-adapter",
+ "quarcc-execution-engine",
+ "serde",
+ "simfix-mapping",
+ "simfix-wire",
+]
+
+[[package]]
 name = "bunting-browser-wire"
 version = "0.1.0"
 dependencies = [
@@ -217,9 +235,30 @@ dependencies = [
 name = "bunting-rs"
 version = "0.1.0"
 dependencies = [
+ "bunting-application",
  "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
+]
+
+[[package]]
+name = "bunting-server"
+version = "0.1.0"
+dependencies = [
+ "bunting-api-contract",
+ "bunting-application",
+ "bunting-command-transaction",
+ "bunting-engine",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-origin-store",
+ "bunting-risk-engine",
+ "quarcc-execution-engine",
+ "serde",
+ "serde_json",
+ "simfix-mapping",
+ "simfix-session",
+ "simfix-wire",
 ]
 
 [[package]]
@@ -251,6 +290,7 @@ name = "bunting-worker"
 version = "0.1.0"
 dependencies = [
  "bunting-api-contract",
+ "bunting-application",
  "bunting-browser-wire",
  "bunting-command-transaction",
  "bunting-engine",

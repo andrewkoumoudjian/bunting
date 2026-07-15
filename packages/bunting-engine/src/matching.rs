@@ -218,7 +218,7 @@ impl KernelBook {
 
     /// Creates a checksum-protected package with explicit metadata.
     pub fn snapshot_package(&self, depth: usize) -> Result<SnapshotPackage, OrderBookError> {
-        let package = self.inner.create_snapshot_package(depth)?;
+        let package = canonical_snapshot_package(self.inner.create_snapshot_package(depth)?)?;
         Ok(SnapshotPackage {
             json: package.to_json()?,
             checksum: package.checksum.clone(),
@@ -247,6 +247,55 @@ impl KernelBook {
     }
 }
 
+/// `PriceLevel` 0.8.4 initializes `first_arrival_time` from wall-clock time even
+/// when OrderBook-rs uses a deterministic clock. Bunting treats these level
+/// statistics as derived diagnostics, so snapshots pin that field to the
+/// deterministic snapshot timestamp before recomputing the upstream checksum.
+fn canonical_snapshot_package(
+    package: OrderBookSnapshotPackage,
+) -> Result<OrderBookSnapshotPackage, OrderBookError> {
+    let mut snapshot_value = serde_json::to_value(&package.snapshot).map_err(|error| {
+        OrderBookError::SerializationError {
+            message: error.to_string(),
+        }
+    })?;
+    for side in ["bids", "asks"] {
+        if let Some(levels) = snapshot_value
+            .get_mut(side)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for level in levels {
+                if let Some(statistics) = level.get_mut("statistics")
+                    && let Some(object) = statistics.as_object_mut()
+                {
+                    object.insert(
+                        "first_arrival_time".to_owned(),
+                        serde_json::Value::from(package.snapshot.timestamp),
+                    );
+                }
+            }
+        }
+    }
+    let snapshot = serde_json::from_value(snapshot_value).map_err(|error| {
+        OrderBookError::DeserializationError {
+            message: error.to_string(),
+        }
+    })?;
+    let mut canonical = OrderBookSnapshotPackage::new(snapshot)?;
+    canonical.fee_schedule = package.fee_schedule;
+    canonical.stp_mode = package.stp_mode;
+    canonical.tick_size = package.tick_size;
+    canonical.lot_size = package.lot_size;
+    canonical.min_order_size = package.min_order_size;
+    canonical.max_order_size = package.max_order_size;
+    canonical.engine_seq = package.engine_seq;
+    canonical.kill_switch_engaged = package.kill_switch_engaged;
+    canonical.risk_config = package.risk_config;
+    canonical.market_close_timestamp = package.market_close_timestamp;
+    canonical.has_market_close = package.has_market_close;
+    Ok(canonical)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -272,6 +321,22 @@ mod tests {
                 .executed_quantity()
                 .map_or(0, pricelevel::Quantity::as_u64),
             3
+        );
+    }
+
+    #[test]
+    fn level_statistics_are_canonical_across_identical_books() {
+        let first = KernelBook::new_at("BNT/USD", 10);
+        let second = KernelBook::new_at("BNT/USD", 10);
+        first
+            .submit_limit(1, 100, 2, Side::Buy, TimeInForce::Gtc)
+            .unwrap();
+        second
+            .submit_limit(1, 100, 2, Side::Buy, TimeInForce::Gtc)
+            .unwrap();
+        assert_eq!(
+            first.snapshot_package(10).unwrap().checksum,
+            second.snapshot_package(10).unwrap().checksum
         );
     }
 

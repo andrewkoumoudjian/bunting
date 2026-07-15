@@ -30,7 +30,7 @@ pub enum AdapterError {
     ArithmeticOverflow,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BuntingExecutionAdapter {
     cumulative_fills: BTreeMap<LocalOrderId, QuantityLots>,
     order_quantities: BTreeMap<LocalOrderId, QuantityLots>,

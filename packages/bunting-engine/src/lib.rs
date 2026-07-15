@@ -469,6 +469,21 @@ impl RunState {
     }
 
     #[must_use]
+    pub const fn scenario_id(&self) -> ScenarioId {
+        self.scenario_id
+    }
+
+    #[must_use]
+    pub const fn scenario_version(&self) -> ScenarioVersion {
+        self.scenario_version
+    }
+
+    #[must_use]
+    pub fn scenario_hash(&self) -> &str {
+        &self.scenario_hash
+    }
+
+    #[must_use]
     pub const fn config(&self) -> EngineConfig {
         self.config
     }
