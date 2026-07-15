@@ -1,0 +1,61 @@
+{
+  "contractVersion": "bunting.product.v1",
+  "applicationService": {
+    "kind": "transport_neutral_sans_io_rust",
+    "authority": "bunting-engine",
+    "transaction": [
+      "authenticate",
+      "authorize",
+      "validate",
+      "recover_expected_version",
+      "apply_engine_transition",
+      "commit_origin",
+      "publish_committed_result"
+    ]
+  },
+  "deployments": {
+    "native": {
+      "inbound": ["fix_tcp", "fix_tls"],
+      "applicationCall": "in_process"
+    },
+    "cloudflare": {
+      "inbound": ["https_fetch", "https_stream"],
+      "rawTcp": "outbound_only",
+      "origin": "d1",
+      "publicSnapshotAcceleration": "workers_cache",
+      "fixTopology": "worker_initiator_to_external_acceptor"
+    }
+  },
+  "fixProfile": "bunting.fix44.competition.v1",
+  "roles": {
+    "participant": ["own_commands", "own_private_state", "competition_public_state"],
+    "team": ["team_private_state", "team_participant_management_when_delegated"],
+    "instructor": ["scenario_and_run_control", "instructional_monitoring"],
+    "administrator": ["platform_and_tenant_administration", "all_audiences"],
+    "built_in_agent": ["participant_scoped_commands", "own_private_state"]
+  },
+  "audiences": ["public", "participant", "team", "instructor", "administrator"],
+  "scenarioLifecycle": ["draft", "validated", "published"],
+  "runLifecycle": ["created", "stopped", "active", "paused", "terminated", "archived"],
+  "runPin": [
+    "scenario_hash",
+    "engine_version",
+    "policy_set_version",
+    "seed",
+    "clock_mode",
+    "pacing_version"
+  ],
+  "recovery": {
+    "cursor": "committed_event_sequence",
+    "onAvailableTail": "replay",
+    "onUnavailableTail": "reset_then_snapshot",
+    "slowConsumer": "disconnect_with_recovery_cursor",
+    "commitBeforeAck": true
+  },
+  "competitionInvariant": "Every competition-visible fact and participant action is available through the versioned FIX profile alone.",
+  "bounds": {
+    "allCollections": "implementation_defined_finite_limit",
+    "wideIntegers": "canonical_decimal_strings",
+    "moneyAndMarketUnits": "checked_fixed_point"
+  }
+}

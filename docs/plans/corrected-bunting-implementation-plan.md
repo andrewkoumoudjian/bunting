@@ -49,6 +49,29 @@ optional human/FIX QUARCC execution ----------------------+        v
 - [x] Repair CI to inspect `packages/bunting-engine` and
   `cargo tree -p bunting-engine`.
 
+## Canonical product contract
+
+- [x] Freeze `bunting.product.v1` as the transport-neutral application,
+  deployment, identity, lifecycle, recovery and FIX-only competition contract.
+- [x] Freeze `bunting.fix44.competition.v1` with standard FIX 4.4 messages where
+  suitable, Bunting extension tags/messages elsewhere, explicit audiences and
+  Cloudflare outbound-only TCP topology.
+- [x] Add compile-time role/audience types and deny-by-default audience tests in
+  `bunting-api-contract`, plus machine-readable product/FIX schemas and
+  dictionary integrity tests.
+- [x] Record the complete clean-room RIT workflow target and current Ratatui
+  implemented/partial/missing state without copying proprietary UI material.
+- [ ] Implement the expanded product procedures and FIX discovery, account,
+  news, tender, OTC, asset/lease, report/score and admin mappings. The current
+  application/FIX implementation remains a narrow order and market-data slice.
+- [ ] Reach Ratatui workflow parity. The current TUI has market, orders, FIX
+  session, order-ticket, price-chart, help and diagnostic slices; account,
+  risk, news, tender, OTC, assets, reports/score and instructor workflows are
+  missing.
+- [ ] Specify and implement each unresolved RIT formula under an explicitly
+  versioned Bunting policy with units, rounding, ordering and golden vectors.
+  No current policy may be described as exact RIT compatibility.
+
 ## Phase 1: portable QUARCC
 
 ### Execution core
@@ -98,24 +121,34 @@ optional human/FIX QUARCC execution ----------------------+        v
 
 ## Phase 2: built-in agents
 
-- [ ] Add `packages/bunting-agents` with a transport-neutral `AgentPolicy`
+- [x] Add `packages/bunting-agents` with a transport-neutral `AgentPolicy`
   contract and `ManagedAgent<P>` composition that always includes QUARCC.
-- [ ] Implement noise and liquidity policies: zero-intelligence/Poisson flow,
+- [ ] Complete noise and liquidity policies: the current Bunting-native
+  dispatcher implements bounded deterministic first slices for
+  zero-intelligence/Poisson flow,
   side/size/price distributions, cancellation, static/multi-level/fundamental
-  replenishment, and stress withdrawal.
-- [ ] Implement market makers in order: fixed spread, inventory skew, EWMA
+  replenishment, and stress withdrawal, but formula-specific provenance,
+  distributional vectors and scenario integration remain incomplete.
+- [ ] Complete market makers: the current dispatcher covers fixed spread,
+  inventory skew, EWMA
   volatility, book/order-flow imbalance, Avellaneda-Stoikov, GLFT, and
-  queue-aware quoting.
-- [ ] Implement fundamental and educational policies: informed variants,
+  queue-aware quoting as Bunting-native policies, but model-specific units,
+  golden vectors and compatibility evidence remain incomplete.
+- [ ] Complete fundamental and educational policies: current Bunting-native
+  branches cover informed variants,
   momentum, mean reversion, giveaway, ZIC, shaver, ZIP, Adaptive Aggressive,
-  PRZI, and spiking.
-- [ ] Implement HFT policies: Hawkes events, microprice, imbalance,
+  PRZI, and spiking, but exact source/evidence formulas remain unresolved.
+- [ ] Complete HFT policies: current Bunting-native branches cover Hawkes
+  events, microprice, imbalance,
   queue-reactive quoting, spread capture, order-flow momentum, fast withdrawal,
-  logical latency, and cross-venue arbitrage.
-- [ ] Implement institutional policies: TWAP, VWAP, POV, arrival price,
+  logical latency, and cross-venue arbitrage, but distributional/replay evidence
+  and engine scheduling integration remain incomplete.
+- [ ] Complete institutional policies: current Bunting-native branches cover
+  TWAP, VWAP, POV, arrival price,
   implementation shortfall, liquidity seeking, blocks, tender hedging, and
-  multi-venue parent orders.
-- [ ] Policies emit desired intents; QUARCC alone reconciles live orders.
+  multi-venue parent orders, but tender/facility integration and benchmark
+  policy vectors remain incomplete.
+- [x] Policies emit desired intents; QUARCC alone reconciles live orders.
 
 ## Phase 3: transport-boundary correction
 
