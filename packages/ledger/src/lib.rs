@@ -3,7 +3,9 @@
 //! Exact zero-fee cash, position, and reservation projection.
 
 use bunting_market_events::{EventPayload, Side};
-use bunting_market_types::{InstrumentId, MoneyMinor, ParticipantId, PriceTicks, QuantityLots};
+use bunting_market_types::{
+    CurrencyId, InstrumentId, MoneyMinor, ParticipantId, PriceTicks, QuantityLots,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -11,6 +13,8 @@ use std::collections::BTreeMap;
 pub enum LedgerError {
     ArithmeticOverflow,
     InvalidRelease,
+    UnbalancedTransaction,
+    InvalidPosting,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Account {
@@ -40,6 +44,335 @@ pub struct TradeSettlement {
     pub seller_limit: PriceTicks,
     pub execution_price: PriceTicks,
     pub quantity: QuantityLots,
+}
+
+/// Exact per-currency participant balance.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrencyBalance {
+    pub settled: MoneyMinor,
+    pub reserved: MoneyMinor,
+    pub accrued: MoneyMinor,
+    pub scheduled: MoneyMinor,
+    pub fees: MoneyMinor,
+    pub margin: MoneyMinor,
+}
+
+/// Exact position and valuation state for one instrument.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PositionBalance {
+    pub settled: QuantityLots,
+    pub reserved: QuantityLots,
+    pub cost_basis: MoneyMinor,
+    pub realized_pnl: MoneyMinor,
+    pub unrealized_pnl: MoneyMinor,
+}
+
+/// Typed double-entry account used by journal postings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostingAccount {
+    Cash,
+    Accrued,
+    Scheduled,
+    Fees,
+    Margin,
+    Clearing,
+}
+
+/// One exact journal posting.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JournalPosting {
+    pub participant_id: Option<ParticipantId>,
+    pub currency_id: CurrencyId,
+    pub account: PostingAccount,
+    pub amount: MoneyMinor,
+}
+
+/// Economic reason for a balanced transaction.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionKind {
+    Trade,
+    Tender,
+    Otc,
+    Lease,
+    Usage,
+    Commission,
+    MarkToMarket,
+    Closeout,
+    Settlement,
+    Fine,
+    Interest,
+    Dividend,
+    Adjustment,
+}
+
+/// Replayable balanced transaction.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct JournalTransaction {
+    pub transaction_id: u128,
+    pub kind: TransactionKind,
+    pub postings: Vec<JournalPosting>,
+}
+
+/// Multi-currency journal and valuation projection.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortfolioLedger {
+    #[serde(with = "currency_balances")]
+    balances: BTreeMap<(ParticipantId, CurrencyId), CurrencyBalance>,
+    #[serde(with = "position_balances")]
+    positions: BTreeMap<(ParticipantId, InstrumentId), PositionBalance>,
+    journal: Vec<JournalTransaction>,
+}
+
+mod currency_balances {
+    use super::{CurrencyBalance, CurrencyId, ParticipantId};
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S>(
+        value: &BTreeMap<(ParticipantId, CurrencyId), CurrencyBalance>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        value
+            .iter()
+            .map(|((participant, currency), balance)| (*participant, *currency, *balance))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(ParticipantId, CurrencyId), CurrencyBalance>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values =
+            Vec::<(ParticipantId, CurrencyId, CurrencyBalance)>::deserialize(deserializer)?;
+        let mut output = BTreeMap::new();
+        for (participant, currency, balance) in values {
+            if output.insert((participant, currency), balance).is_some() {
+                return Err(serde::de::Error::custom("duplicate currency balance"));
+            }
+        }
+        Ok(output)
+    }
+}
+
+mod position_balances {
+    use super::{InstrumentId, ParticipantId, PositionBalance};
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S>(
+        value: &BTreeMap<(ParticipantId, InstrumentId), PositionBalance>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        value
+            .iter()
+            .map(|((participant, instrument), balance)| (*participant, *instrument, *balance))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(ParticipantId, InstrumentId), PositionBalance>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values =
+            Vec::<(ParticipantId, InstrumentId, PositionBalance)>::deserialize(deserializer)?;
+        let mut output = BTreeMap::new();
+        for (participant, instrument, balance) in values {
+            if output.insert((participant, instrument), balance).is_some() {
+                return Err(serde::de::Error::custom("duplicate position balance"));
+            }
+        }
+        Ok(output)
+    }
+}
+
+impl PortfolioLedger {
+    /// Constructs an empty replayable portfolio ledger.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns one exact currency balance.
+    #[must_use]
+    pub fn balance(&self, participant: ParticipantId, currency: CurrencyId) -> CurrencyBalance {
+        self.balances
+            .get(&(participant, currency))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Returns one exact position balance.
+    #[must_use]
+    pub fn position(
+        &self,
+        participant: ParticipantId,
+        instrument: InstrumentId,
+    ) -> PositionBalance {
+        self.positions
+            .get(&(participant, instrument))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Seeds a settled balance during deterministic run initialization.
+    pub fn set_settled_cash(
+        &mut self,
+        participant: ParticipantId,
+        currency: CurrencyId,
+        amount: MoneyMinor,
+    ) {
+        self.balances
+            .entry((participant, currency))
+            .or_default()
+            .settled = amount;
+    }
+
+    /// Seeds a settled position during deterministic run initialization.
+    pub fn set_position(
+        &mut self,
+        participant: ParticipantId,
+        instrument: InstrumentId,
+        quantity: QuantityLots,
+        cost_basis: MoneyMinor,
+    ) {
+        let position = self.positions.entry((participant, instrument)).or_default();
+        position.settled = quantity;
+        position.cost_basis = cost_basis;
+    }
+
+    /// Applies an exact settled position delta for physical simulation workflows.
+    ///
+    /// # Errors
+    /// Returns an error when the resulting quantity overflows.
+    pub fn adjust_position(
+        &mut self,
+        participant: ParticipantId,
+        instrument: InstrumentId,
+        delta: QuantityLots,
+    ) -> Result<(), LedgerError> {
+        let position = self.positions.entry((participant, instrument)).or_default();
+        position.settled = position
+            .settled
+            .checked_add(delta)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        Ok(())
+    }
+
+    /// Applies one balanced transaction atomically.
+    ///
+    /// # Errors
+    /// Returns an error when postings are empty, unbalanced by currency, or overflow.
+    pub fn post(&mut self, transaction: JournalTransaction) -> Result<(), LedgerError> {
+        if transaction.postings.is_empty() {
+            return Err(LedgerError::InvalidPosting);
+        }
+        let mut totals = BTreeMap::<CurrencyId, MoneyMinor>::new();
+        for posting in &transaction.postings {
+            let total = totals.entry(posting.currency_id).or_default();
+            *total = total
+                .checked_add(posting.amount)
+                .ok_or(LedgerError::ArithmeticOverflow)?;
+        }
+        if totals.values().any(|total| total.get() != 0) {
+            return Err(LedgerError::UnbalancedTransaction);
+        }
+        let mut candidate = self.clone();
+        for posting in &transaction.postings {
+            let Some(participant) = posting.participant_id else {
+                continue;
+            };
+            let balance = candidate
+                .balances
+                .entry((participant, posting.currency_id))
+                .or_default();
+            let target = match posting.account {
+                PostingAccount::Cash => &mut balance.settled,
+                PostingAccount::Accrued => &mut balance.accrued,
+                PostingAccount::Scheduled => &mut balance.scheduled,
+                PostingAccount::Fees => &mut balance.fees,
+                PostingAccount::Margin => &mut balance.margin,
+                PostingAccount::Clearing => continue,
+            };
+            *target = target
+                .checked_add(posting.amount)
+                .ok_or(LedgerError::ArithmeticOverflow)?;
+        }
+        candidate.journal.push(transaction);
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Applies an explicit mark and versioned valuation policy result.
+    ///
+    /// # Errors
+    /// Returns an error when exact price-times-position arithmetic overflows.
+    pub fn mark_position(
+        &mut self,
+        participant: ParticipantId,
+        instrument: InstrumentId,
+        mark: PriceTicks,
+    ) -> Result<(), LedgerError> {
+        let position = self.positions.entry((participant, instrument)).or_default();
+        let value = MoneyMinor::checked_mul_price_quantity(mark, position.settled)
+            .map_err(|_| LedgerError::ArithmeticOverflow)?;
+        position.unrealized_pnl = value
+            .checked_sub(position.cost_basis)
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        Ok(())
+    }
+
+    /// Calculates exact net liquidation value in one currency.
+    ///
+    /// # Errors
+    /// Returns an error when aggregation overflows.
+    pub fn net_liquidation_value(
+        &self,
+        participant: ParticipantId,
+        currency: CurrencyId,
+    ) -> Result<MoneyMinor, LedgerError> {
+        let balance = self.balance(participant, currency);
+        let mut total = balance
+            .settled
+            .checked_add(balance.accrued)
+            .and_then(|value| value.checked_add(balance.scheduled))
+            .and_then(|value| value.checked_add(balance.fees))
+            .and_then(|value| value.checked_sub(balance.margin))
+            .ok_or(LedgerError::ArithmeticOverflow)?;
+        for ((owner, _), position) in &self.positions {
+            if *owner == participant {
+                total = total
+                    .checked_add(position.unrealized_pnl)
+                    .and_then(|value| value.checked_add(position.realized_pnl))
+                    .ok_or(LedgerError::ArithmeticOverflow)?;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Returns the canonically ordered transaction journal.
+    #[must_use]
+    pub fn journal(&self) -> &[JournalTransaction] {
+        &self.journal
+    }
 }
 
 impl Ledger {
@@ -246,5 +579,51 @@ mod tests {
         l.release(p, i, Side::Buy, PriceTicks(10), QuantityLots(4))
             .unwrap();
         assert_eq!(l.available_cash(p), Some(MoneyMinor(100)));
+    }
+
+    #[test]
+    fn portfolio_transactions_balance_and_failed_postings_roll_back() {
+        let participant = ParticipantId::new(1);
+        let currency = CurrencyId::new(1);
+        let mut ledger = PortfolioLedger::new();
+        let valid = JournalTransaction {
+            transaction_id: 1,
+            kind: TransactionKind::Dividend,
+            postings: vec![
+                JournalPosting {
+                    participant_id: Some(participant),
+                    currency_id: currency,
+                    account: PostingAccount::Cash,
+                    amount: MoneyMinor::new(25),
+                },
+                JournalPosting {
+                    participant_id: None,
+                    currency_id: currency,
+                    account: PostingAccount::Clearing,
+                    amount: MoneyMinor::new(-25),
+                },
+            ],
+        };
+        ledger.post(valid).unwrap();
+        assert_eq!(
+            ledger.balance(participant, currency).settled,
+            MoneyMinor::new(25)
+        );
+        let before = ledger.clone();
+        let invalid = JournalTransaction {
+            transaction_id: 2,
+            kind: TransactionKind::Adjustment,
+            postings: vec![JournalPosting {
+                participant_id: Some(participant),
+                currency_id: currency,
+                account: PostingAccount::Cash,
+                amount: MoneyMinor::new(1),
+            }],
+        };
+        assert_eq!(
+            ledger.post(invalid),
+            Err(LedgerError::UnbalancedTransaction)
+        );
+        assert_eq!(ledger, before);
     }
 }

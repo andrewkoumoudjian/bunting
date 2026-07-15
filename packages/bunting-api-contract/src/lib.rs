@@ -263,6 +263,58 @@ pub enum ProcedureKind {
     Subscription,
 }
 
+/// Engine-side product procedures implemented by the simulation-domain slice.
+///
+/// These names extend the canonical product contract without claiming that the
+/// current Worker dispatcher exposes every procedure yet.
+pub const SIMULATION_DOMAIN_PROCEDURES: &[(&str, ProcedureKind)] = &[
+    ("scenarios.validate", ProcedureKind::Mutation),
+    ("scenarios.publish", ProcedureKind::Mutation),
+    ("scenarios.list", ProcedureKind::Query),
+    ("scenarios.get", ProcedureKind::Query),
+    ("runs.create", ProcedureKind::Mutation),
+    ("runs.get", ProcedureKind::Query),
+    ("runs.start", ProcedureKind::Mutation),
+    ("runs.pause", ProcedureKind::Mutation),
+    ("runs.resume", ProcedureKind::Mutation),
+    ("runs.advance", ProcedureKind::Mutation),
+    ("runs.setPacing", ProcedureKind::Mutation),
+    ("runs.terminate", ProcedureKind::Mutation),
+    ("markets.listings", ProcedureKind::Query),
+    ("markets.snapshot", ProcedureKind::Query),
+    ("markets.trades", ProcedureKind::Query),
+    ("markets.history", ProcedureKind::Query),
+    ("orders.massCancel", ProcedureKind::Mutation),
+    ("orders.submitComposite", ProcedureKind::Mutation),
+    ("orders.list", ProcedureKind::Query),
+    ("accounts.snapshot", ProcedureKind::Query),
+    ("accounts.positions", ProcedureKind::Query),
+    ("accounts.cashflows", ProcedureKind::Query),
+    ("accounts.risk", ProcedureKind::Query),
+    ("news.list", ProcedureKind::Query),
+    ("tenders.list", ProcedureKind::Query),
+    ("tenders.accept", ProcedureKind::Mutation),
+    ("tenders.decline", ProcedureKind::Mutation),
+    ("otc.propose", ProcedureKind::Mutation),
+    ("otc.counter", ProcedureKind::Mutation),
+    ("otc.accept", ProcedureKind::Mutation),
+    ("otc.reject", ProcedureKind::Mutation),
+    ("admin.publishNews", ProcedureKind::Mutation),
+    ("admin.updateRunParameter", ProcedureKind::Mutation),
+    ("admin.setParticipantLimits", ProcedureKind::Mutation),
+    ("reports.generate", ProcedureKind::Mutation),
+    ("reports.status", ProcedureKind::Query),
+    ("reports.get", ProcedureKind::Query),
+];
+
+/// Resolves an engine-side simulation procedure without enabling a transport route.
+#[must_use]
+pub fn simulation_domain_procedure_kind(path: &str) -> Option<ProcedureKind> {
+    SIMULATION_DOMAIN_PROCEDURES
+        .iter()
+        .find_map(|(name, kind)| (*name == path).then_some(*kind))
+}
+
 #[must_use]
 pub fn procedure_kind(path: &str) -> Option<ProcedureKind> {
     match path {
@@ -457,5 +509,23 @@ mod tests {
         }
         assert_eq!(fix["transport"]["cloudflareIngress"], "none");
         Ok(())
+    }
+
+    #[test]
+    fn simulation_domain_procedures_match_the_canonical_product_families() {
+        assert_eq!(
+            simulation_domain_procedure_kind("runs.advance"),
+            Some(ProcedureKind::Mutation)
+        );
+        assert_eq!(
+            simulation_domain_procedure_kind("accounts.risk"),
+            Some(ProcedureKind::Query)
+        );
+        assert_eq!(simulation_domain_procedure_kind("unknown"), None);
+        assert!(
+            SIMULATION_DOMAIN_PROCEDURES
+                .windows(2)
+                .all(|pair| pair[0].0 != pair[1].0)
+        );
     }
 }

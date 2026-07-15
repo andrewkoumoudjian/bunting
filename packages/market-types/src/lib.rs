@@ -127,6 +127,12 @@ identifier!(VenueId);
 identifier!(ScenarioId);
 identifier!(ScenarioVersion);
 identifier!(IterationId);
+identifier!(CurrencyId);
+identifier!(FacilityId);
+identifier!(TenderId);
+identifier!(NegotiationId);
+identifier!(NewsId);
+identifier!(AgentId);
 
 macro_rules! checked_identifier {
     ($name:ident) => {
@@ -150,6 +156,12 @@ checked_identifier!(VenueId);
 checked_identifier!(ScenarioId);
 checked_identifier!(ScenarioVersion);
 checked_identifier!(IterationId);
+checked_identifier!(CurrencyId);
+checked_identifier!(FacilityId);
+checked_identifier!(TenderId);
+checked_identifier!(NegotiationId);
+checked_identifier!(NewsId);
+checked_identifier!(AgentId);
 
 /// Venue-specific identity of one tradable listing.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
