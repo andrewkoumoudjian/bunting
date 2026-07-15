@@ -23,7 +23,7 @@ use simfix_mapping::{
     InboundApplication, MappingContext, business_reject, map_execution_report, map_inbound,
     market_snapshot,
 };
-use simfix_session::{FixSession, SessionAction};
+use simfix_session::{ConnectionState, FixSession, SessionAction};
 use simfix_wire::FixMessage;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -125,7 +125,9 @@ pub async fn spawn(address: &str, config: LocalScenarioConfig) -> io::Result<Joi
     let listener = TcpListener::bind(address).await?;
     Ok(tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
-            let _ = Box::pin(serve(stream, config)).await;
+            if let Err(error) = Box::pin(serve(stream, config)).await {
+                eprintln!("bunting-tui: embedded market connection closed: {error}");
+            }
         }
     }))
 }
@@ -173,6 +175,9 @@ async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result
                 }
             }
             _ = timer.tick() => {
+                if session.snapshot().state != ConnectionState::Established {
+                    continue;
+                }
                 let changed = market.advance_agents()?;
                 for response in market.drain_human_reports() {
                     if write_application(&mut stream, &mut session, response).await? {
@@ -880,6 +885,32 @@ mod tests {
             .iter()
             .find(|field| field.tag == tag)
             .map(|field| field.value.as_str())
+    }
+
+    #[tokio::test]
+    async fn embedded_market_waits_for_slow_fix_logon() -> io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            Box::pin(serve(
+                stream,
+                LocalScenarioConfig::from_names(&["static_liquidity_provider".to_owned()], 10)?,
+            ))
+            .await
+        });
+        let mut stream = TcpStream::connect(address).await?;
+        let mut bytes = [0_u8; 16_384];
+        assert!(stream.read(&mut bytes).await? > 0);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), stream.read(&mut bytes))
+                .await
+                .is_err(),
+            "embedded market closed before the client sent FIX Logon"
+        );
+        server.abort();
+        Ok(())
     }
 
     #[tokio::test]

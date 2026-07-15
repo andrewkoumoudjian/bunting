@@ -128,8 +128,11 @@ fn run_fix_acceptor(
         let active = active.clone();
         let session_path = session_path.map(Path::to_path_buf);
         thread::spawn(move || {
-            let _result =
-                handle_fix_connection(stream, &config, &origin, &cache, session_path.as_deref());
+            if let Err(error) =
+                handle_fix_connection(stream, &config, &origin, &cache, session_path.as_deref())
+            {
+                eprintln!("bunting-server: FIX connection closed: {error}");
+            }
             active.fetch_sub(1, Ordering::AcqRel);
         });
     }
