@@ -1,6 +1,7 @@
 # RIT workflow to Ratatui parity matrix
 
-Status: target workflow contract derived from clean-room static evidence
+Status: target workflow contract derived from clean-room static evidence;
+implementation state reconciled 2026-07-15
 
 This matrix specifies user-visible workflow parity, not proprietary layout,
 wording or implementation. RIT resources, UI text and bytes are prohibited to

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "scenario_id": 1,
+  "scenario_version": 1,
+  "listings": {
+    "1:1": {
+      "key": "1:1",
+      "symbol": "BNT",
+      "price_bounds": {"min": 1, "max": 1000000}
+    }
+  },
+  "participants": {
+    "1": {
+      "participant_id": 1,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": 1000000000,
+      "initial_positions": {}
+    }
+  }
+}

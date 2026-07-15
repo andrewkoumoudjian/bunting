@@ -2,6 +2,15 @@
 
 Status: active, persisted 2026-07-13
 
+Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
+contract, simulation domain, portable server, and Ratatui lanes now compile and
+test as one workspace. This establishes one portable application/engine path,
+native FIX order-entry parity with the Worker command path, deterministic
+simulation replay, and an engine-backed FIX TUI fixture. It does not close the
+unchecked expanded FIX mappings, external interoperability, or full Ratatui
+workflow rows below; exact reconciliation evidence and requirement IDs are in
+[`worktree-handoffs/reconciliation.md`](worktree-handoffs/reconciliation.md).
+
 This plan implements ADR 0018, ADR 0019, and ADR 0020. It supersedes active
 roadmap text that treats tRPC as the permanent universal transport or routes
 FIX through an RPC hop. Evidence and licensing gates in

@@ -185,6 +185,7 @@ fn handle_fix_connection(
         max_journal_messages: config.max_journal_messages,
         max_pending_inbound: config.max_pending_inbound,
         wire_limits,
+        logon_fields: Vec::new(),
     };
     let persisted = session_path.map(load_session).transpose()?.flatten();
     let (mut session, mut application) = persisted.map_or_else(
