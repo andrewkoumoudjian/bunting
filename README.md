@@ -42,10 +42,9 @@ bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
 ```
 
 The server and TUI are native applications because they use TCP, filesystem,
-TLS, and terminal APIs. Each release separately includes
-`bunting-worker-vX.Y.Z.tar.gz`, containing the optimized Worker Wasm module,
-JavaScript shim, Wrangler configuration, and D1 migrations for Cloudflare
-deployment.
+TLS, and terminal APIs. GitHub Releases contain only these locally installable
+applications. Build and deploy the Cloudflare Worker from source using its
+Wrangler configuration and D1 migrations under `apps/bunting-worker`.
 
 ## Engine model
 

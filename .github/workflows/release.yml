@@ -57,41 +57,9 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  worker:
-    name: Cloudflare Worker bundle
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: false
-      - name: Install Worker build tool
-        run: |
-          rustup target add wasm32-unknown-unknown
-          cargo install worker-build --version 0.8.5 --locked
-      - name: Build Worker bundle
-        working-directory: apps/bunting-worker
-        run: worker-build --release
-      - name: Package Worker bundle
-        run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          package="bunting-worker-${tag}"
-          mkdir -p "stage/${package}/build/worker" "stage/${package}/migrations" dist
-          cp apps/bunting-worker/build/index.js apps/bunting-worker/build/index_bg.wasm "stage/${package}/build/"
-          cp apps/bunting-worker/build/worker/shim.mjs "stage/${package}/build/worker/"
-          cp apps/bunting-worker/migrations/*.sql "stage/${package}/migrations/"
-          cp apps/bunting-worker/wrangler.toml README.md "stage/${package}/"
-          tar -C stage -czf "dist/${package}.tar.gz" "${package}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: worker-wasm
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
   publish:
     name: Publish GitHub release
-    needs: [native, worker]
+    needs: native
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -114,7 +82,7 @@ jobs:
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
             '```' \
             '' \
-            'The installer adds `bunting-server`, `bunting-tui`, and server configuration templates without overwriting existing configuration. The Worker archive contains the optimized Wasm module, JavaScript shim, Wrangler configuration, and D1 migrations. Verify manual downloads with `SHA256SUMS`.' \
+            'The installer adds `bunting-server`, `bunting-tui`, and server configuration templates without overwriting existing configuration. Releases contain only locally installable native applications. Verify manual downloads with `SHA256SUMS`.' \
             '' \
             'See the repository README for server configuration and platform details.' \
             > release-notes.md
