@@ -14,7 +14,8 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
-const SAMPLES_PER_CANDLE: usize = 4;
+// Aggregate a wider time window while preserving one-column Longbridge candles.
+const SAMPLES_PER_CANDLE: usize = 8;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
     let [levels_area, detail_area] =
@@ -34,7 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, client: &FixClient) {
     render_portfolio(frame, portfolio_area, client);
 
     let [chart_area, reports_area] =
-        Layout::horizontal([Constraint::Percentage(75), Constraint::Percentage(25)])
+        Layout::horizontal([Constraint::Percentage(82), Constraint::Percentage(18)])
             .areas(lower_area);
     render_price_chart(frame, chart_area, client);
     render_reports(frame, reports_area, client);

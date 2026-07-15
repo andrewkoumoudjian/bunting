@@ -18,7 +18,8 @@ use tokio::{
 
 pub const MAX_FIX_LOGS: usize = 256;
 pub const MAX_EXECUTIONS: usize = 128;
-pub const MAX_PRICE_SAMPLES: usize = 240;
+// Retain enough bounded FIX snapshots for the chart's zoomed-out time window.
+pub const MAX_PRICE_SAMPLES: usize = 480;
 pub const MAX_BOOK_LEVELS: usize = 64;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
