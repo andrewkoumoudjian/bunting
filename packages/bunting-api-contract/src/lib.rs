@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const API_VERSION: &str = "bunting.v1";
+pub const PRODUCT_CONTRACT_VERSION: &str = "bunting.product.v1";
+pub const FIX_COMPETITION_PROFILE_VERSION: &str = "bunting.fix44.competition.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecimalStringError;
@@ -199,6 +201,61 @@ pub struct MarketSnapshotOutput {
     pub asks: Vec<PriceLevel>,
 }
 
+/// Authenticated product roles. A built-in agent is a participant-scoped
+/// service identity, not an administrator or a second market authority.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorRole {
+    Participant,
+    Team,
+    Instructor,
+    Administrator,
+    BuiltInAgent,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorIdentity {
+    pub actor_id: UnsignedDecimalString,
+    pub role: ActorRole,
+    pub participant_id: Option<UnsignedDecimalString>,
+    pub team_id: Option<UnsignedDecimalString>,
+}
+
+/// Audience attached to every externally publishable projection or event.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum Audience {
+    Public,
+    Participant(UnsignedDecimalString),
+    Team(UnsignedDecimalString),
+    Instructor,
+    Administrator,
+}
+
+/// Applies the product's deny-by-default projection boundary.
+#[must_use]
+pub fn audience_allows(actor: &ActorIdentity, audience: &Audience) -> bool {
+    if actor.role == ActorRole::Administrator {
+        return true;
+    }
+    match audience {
+        Audience::Public => true,
+        Audience::Participant(participant_id) => {
+            matches!(actor.role, ActorRole::Participant | ActorRole::BuiltInAgent)
+                && actor.participant_id.as_ref() == Some(participant_id)
+        }
+        Audience::Team(team_id) => {
+            matches!(
+                actor.role,
+                ActorRole::Participant | ActorRole::Team | ActorRole::BuiltInAgent
+            ) && actor.team_id.as_ref() == Some(team_id)
+        }
+        Audience::Instructor => actor.role == ActorRole::Instructor,
+        Audience::Administrator => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcedureKind {
     Query,
@@ -314,6 +371,91 @@ mod tests {
             schema_hash(),
             canonical["implemented_rust_contract"]["sha256"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn audience_boundaries_are_deny_by_default() {
+        let participant = ActorIdentity {
+            actor_id: UnsignedDecimalString::new(1),
+            role: ActorRole::Participant,
+            participant_id: Some(UnsignedDecimalString::new(10)),
+            team_id: Some(UnsignedDecimalString::new(20)),
+        };
+        let other_participant = Audience::Participant(UnsignedDecimalString::new(11));
+        assert!(audience_allows(&participant, &Audience::Public));
+        assert!(audience_allows(
+            &participant,
+            &Audience::Participant(UnsignedDecimalString::new(10))
+        ));
+        assert!(audience_allows(
+            &participant,
+            &Audience::Team(UnsignedDecimalString::new(20))
+        ));
+        assert!(!audience_allows(&participant, &other_participant));
+        assert!(!audience_allows(&participant, &Audience::Instructor));
+        assert!(!audience_allows(&participant, &Audience::Administrator));
+
+        let instructor = ActorIdentity {
+            actor_id: UnsignedDecimalString::new(2),
+            role: ActorRole::Instructor,
+            participant_id: None,
+            team_id: None,
+        };
+        assert!(audience_allows(&instructor, &Audience::Instructor));
+        assert!(!audience_allows(
+            &instructor,
+            &Audience::Participant(UnsignedDecimalString::new(10))
+        ));
+
+        let administrator = ActorIdentity {
+            actor_id: UnsignedDecimalString::new(3),
+            role: ActorRole::Administrator,
+            participant_id: None,
+            team_id: None,
+        };
+        assert!(audience_allows(&administrator, &other_participant));
+        assert!(audience_allows(&administrator, &Audience::Administrator));
+    }
+
+    #[test]
+    fn versioned_product_schemas_are_well_formed() -> Result<(), Box<dyn std::error::Error>> {
+        let product: Value = serde_json::from_str(include_str!(
+            "../../../schemas/product/bunting.product.v1.json"
+        ))?;
+        let fix: Value = serde_json::from_str(include_str!(
+            "../../../schemas/fix/bunting.fix44.competition.v1.json"
+        ))?;
+        assert_eq!(product["contractVersion"], PRODUCT_CONTRACT_VERSION);
+        assert_eq!(fix["profileVersion"], FIX_COMPETITION_PROFILE_VERSION);
+        assert_eq!(product["fixProfile"], FIX_COMPETITION_PROFILE_VERSION);
+        assert_eq!(product["applicationService"]["authority"], "bunting-engine");
+
+        let messages = fix["messages"].as_array().ok_or("messages")?;
+        let mut message_types = std::collections::BTreeSet::new();
+        for message in messages {
+            let message_type = message["msgType"].as_str().ok_or("msgType")?;
+            assert!(
+                message_types.insert(message_type),
+                "duplicate {message_type}"
+            );
+            let audience = message["audience"].as_str().ok_or("audience")?;
+            assert!(matches!(
+                audience,
+                "public" | "private" | "admin" | "session"
+            ));
+        }
+        let fields = fix["extensionFields"].as_array().ok_or("fields")?;
+        let mut tags = std::collections::BTreeSet::new();
+        for field in fields {
+            let tag = field["tag"].as_u64().ok_or("tag")?;
+            assert!(
+                tag >= 10_000,
+                "extension tag {tag} is outside Bunting range"
+            );
+            assert!(tags.insert(tag), "duplicate extension tag {tag}");
+        }
+        assert_eq!(fix["transport"]["cloudflareIngress"], "none");
         Ok(())
     }
 }
