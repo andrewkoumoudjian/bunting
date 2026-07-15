@@ -2,6 +2,51 @@
 
 Bunting is a Rust market-simulation and exchange-testing platform designed to run in a plain Cloudflare Worker.
 
+## Install
+
+Release archives contain native `bunting-server` and `bunting-tui` executables
+for macOS Apple Silicon, macOS Intel, Linux x86_64, and Windows x86_64. macOS
+and Linux users can install the latest release into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | sh
+```
+
+Pin a release or choose other binary and configuration directories when
+reproducibility or a system-wide path matters:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh |
+  BUNTING_VERSION=v0.1.0 BUNTING_INSTALL_DIR="$HOME/bin" \
+  BUNTING_CONFIG_DIR="$HOME/.config/bunting/server" sh
+```
+
+The installer detects supported macOS/Linux platforms, downloads the matching
+GitHub release archive, verifies it against `SHA256SUMS`, and installs both
+commands plus server configuration templates. It preserves configuration files
+that already exist. Windows users can download and extract the matching
+`.tar.gz` archive from
+[GitHub Releases](https://github.com/andrewkoumoudjian/bunting/releases).
+
+Start a self-contained terminal fixture:
+
+```bash
+bunting-tui --fixture
+```
+
+To run the native FIX server, review the installed credentials and network
+settings, then start it with:
+
+```bash
+bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
+```
+
+The server and TUI are native applications because they use TCP, filesystem,
+TLS, and terminal APIs. Each release separately includes
+`bunting-worker-vX.Y.Z.tar.gz`, containing the optimized Worker Wasm module,
+JavaScript shim, Wrangler configuration, and D1 migrations for Cloudflare
+deployment.
+
 ## Engine model
 
 Bunting distinguishes venue-side market engines from participant-side execution engines.
@@ -51,7 +96,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 
 - `market-types`: checked Bunting identifiers and fixed-point values;
 - `market-events`: protocol-neutral commands and canonical event envelopes;
-- `orderbook`: thin version-pinned adapter around `OrderBook-rs`;
+- `bunting-engine`: the sole authoritative engine and private version-pinned adapter around `OrderBook-rs`;
 - `ledger`: participant cash, position and reservation projections;
 - `risk-engine`: participant/account controls not supplied by the upstream book;
 - `origin-store`: authoritative projections, idempotency, expected-version commits and recovery metadata;
@@ -62,6 +107,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
+- `apps/bunting-server`: native FIX/TCP server, durable local origin, admin health surface, and external Cloudflare FIX relay.
 - `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
 
 ## Native Worker transports

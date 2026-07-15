@@ -120,10 +120,24 @@ impl ServerConfig {
         if bytes.len() > 65_536 {
             return Err(ConfigError("configuration exceeds 65536 bytes".to_owned()));
         }
-        let config: Self = serde_json::from_slice(&bytes)
+        let mut config: Self = serde_json::from_slice(&bytes)
             .map_err(|error| ConfigError(format!("invalid configuration JSON: {error}")))?;
+        config.resolve_relative_paths(path);
         config.validate()?;
         Ok(config)
+    }
+
+    fn resolve_relative_paths(&mut self, config_path: &Path) {
+        let base = config_path.parent().unwrap_or_else(|| Path::new("."));
+        if let Some(path) = self.storage.path.as_mut() {
+            resolve_relative(path, base);
+        }
+        if let Some(scenario) = self.scenario.as_mut() {
+            resolve_relative(&mut scenario.path, base);
+        }
+        if let Some(relay) = self.relay.as_mut() {
+            resolve_relative(&mut relay.journal_path, base);
+        }
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -187,6 +201,13 @@ impl ServerConfig {
             validate_relay(relay)?;
         }
         Ok(())
+    }
+}
+
+fn resolve_relative(value: &mut String, base: &Path) {
+    let path = Path::new(value);
+    if path.is_relative() {
+        *value = base.join(path).to_string_lossy().into_owned();
     }
 }
 
@@ -327,6 +348,26 @@ mod tests {
                 .map_err(|error| ConfigError(format!("profile JSON invalid: {error}")))?;
             config.validate()?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn local_profile_paths_are_relative_to_the_configuration() -> Result<(), ConfigError> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/local.json");
+        let config = ServerConfig::from_file(&path)?;
+        assert!(
+            config
+                .storage
+                .path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("config/bunting-local-state.json"))
+        );
+        assert!(
+            config
+                .scenario
+                .as_ref()
+                .is_some_and(|scenario| scenario.path.ends_with("config/scenario.json"))
+        );
         Ok(())
     }
 }

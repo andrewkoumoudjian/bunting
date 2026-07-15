@@ -1,9 +1,9 @@
 {
   "version": 1,
   "profile": "local",
-  "storage": {"kind":"file","path":"./bunting-local-state.json","max_runs":16,"max_commands":100000,"max_events_per_run":1000000},
+  "storage": {"kind":"file","path":"bunting-local-state.json","max_runs":16,"max_commands":100000,"max_events_per_run":1000000},
   "fix": {"bind":"127.0.0.1:9876","sender_comp_id":"BUNTING","target_comp_id":"PARTICIPANT","username":"participant","password":"replace-with-12-bytes","participant_id":1,"run_id":1,"heartbeat_seconds":30,"max_connections":1,"max_message_bytes":16384,"max_journal_messages":4096,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
   "admin": {"bind":"127.0.0.1:8080","bearer_token":"replace-admin-token","max_request_bytes":4096},
-  "scenario": {"path":"./apps/bunting-server/config/scenario.json","run_id":1,"iteration_id":1},
+  "scenario": {"path":"scenario.json","run_id":1,"iteration_id":1},
   "relay": null
 }
