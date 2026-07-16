@@ -1,5 +1,7 @@
 # Native Rust tRPC and NBC implementation sprints
 
+> **SUPERSEDED:** This is historical execution evidence. New work follows ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); do not revive the tRPC-era product layout.
+
 Status: fully superseded for active sequencing by ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); retained for completed tRPC/NBC evidence history
 
 Historical decision set: ADR 0013, ADR 0014, ADR 0016, ADR 0017, ADR 0018 and ADR 0019. ADR 0020 supersedes the universal-tRPC and client-side-FIX outcome below.

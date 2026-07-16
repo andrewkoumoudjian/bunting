@@ -87,7 +87,7 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and deployable applications live under `apps/`.
 
-Cargo-less future scaffolds remain under `crates/` until a roadmap phase introduces real source, tests and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
+Future packages appear only with real source, tests, and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
 
 Read the complete move map and Codex execution contract in [`docs/repository-reorganization.md`](docs/repository-reorganization.md).
 

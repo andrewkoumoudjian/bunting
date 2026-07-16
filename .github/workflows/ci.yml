@@ -41,7 +41,6 @@ jobs:
           grep -Fq 'uuid = { version = "=1.23.4", features = ["js"] }' packages/bunting-engine/Cargo.toml
           grep -Fq 'getrandom_backend="wasm_js"' .cargo/config.toml
           grep -Fq 'Cache::default()' packages/worker-cache/src/lib.rs
-          test ! -e workers/market-run-do/AGENTS.md
 
       - name: Check formatting
         run: cargo fmt --all --check

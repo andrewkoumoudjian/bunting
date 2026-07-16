@@ -1,6 +1,70 @@
 # Corrected Bunting implementation plan
 
-Status: active, persisted 2026-07-13
+Status: active, persisted 2026-07-13; product-alignment sequence accepted 2026-07-15
+
+## Product-alignment execution sequence
+
+This sequence reconciles the RIT-class product contract with the narrower
+implemented order and market-data slice. The competition invariant is that
+every participant-visible action and observation is available through FIX;
+the TUI is the reference FIX client rather than a privileged control path.
+Assets and leases, OTC, options, Excel RTD/VBA, voice, multi-run hosting, and a
+web UI are deferred until after the competition MVC.
+
+The public competition profile moves before competition-message implementation
+to `bunting.fixlatest.competition.v1`: FIXT.1.1 session semantics, FIX 5.0 SP2
+application semantics, and FIX Latest Orchestra as the normative dictionary
+source. Standard FIX 5.0 SP2 messages replace extensions where possible;
+Bunting `U*` messages remain only for genuinely product-specific tenders,
+score, and run control.
+
+The wire and session implementation must come from an existing pure-Rust,
+Wasm-compatible FIX crate. Evaluate maintained RustyFIX first and FerrumFIX
+second, using the pinned FerrumFIX reference only as evidence. Adopt a crates.io
+release under `reference-adoption.md`; never depend on `ref/`. A spike must
+prove `wasm32-unknown-unknown`, sans-I/O operation, bounded buffers, fixed-point
+field decoding, FIXT.1.1 recovery, and FIX 5.0 SP2/Orchestra support. If no
+candidate satisfies the session requirements, retain the sans-I/O
+`simfix-session` core and replace only its wire/dictionary layer. Keep the old
+stack temporarily as a differential oracle and retain `simfix-mapping` as the
+FIX-to-application boundary.
+
+- [x] **Phase 0 - hygiene:** archive dirty tRPC-era worktree state with pushed
+  tags, prune all stale worktrees and branches, remove empty scaffold trees and
+  generated Worker output, and mark tRPC-era plans as superseded.
+- [ ] **Phase 1 - compile speed:** tune dev/release profiles, remove the chart
+  git dependency through licensed source adoption or an approved fallback,
+  path-filter Wasm CI on pull requests, and document focused checks/sccache.
+- [ ] **Phase 2 - TUI event loop:** move socket ownership to an I/O task with
+  bounded 256-event and 64-command channels; coalesce redraws behind a dirty
+  flag; never block rendering on sends; drop market deltas, never private
+  reports or acknowledgements, under backpressure.
+- [ ] **Phase 3 - unified CLI:** ship one `bunting` binary with `server`, `tui`,
+  `relay`, `init`, and `version` commands; retain old binary names as one-release
+  compatibility shims and install one release artifact.
+- [ ] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
+  bounded isolated hosted sessions, and concrete hosted/Cloudflare relay
+  deployment guides and smoke gates.
+- [ ] **Phase 5 - server runtime:** extract deterministic scheduling and agents
+  from the TUI fixture into `packages/bunting-runtime`; host it in the server
+  with authenticated participant roles and a single commit-before-ack writer.
+- [ ] **Phase 5.5 - FIX adoption and upgrade:** accept an ADR-backed existing
+  engine, port server/TUI/relay/Worker paths, prove differential session
+  recovery, replace the profile, and generate participant dictionaries before
+  any competition extension is implemented.
+- [ ] **Phase 6 - competition MVC:** land discovery/account, news/tenders, then
+  risk/score/admin as three reviewable slices with audience enforcement and
+  versioned PnL, commission, news, tender, risk, fine, and score policies.
+- [ ] **Phase 7 - TUI parity:** apply the Longbridge interaction idioms, consume
+  authoritative FIX account state, add news/tenders/leaderboard/instructor
+  workflows, and snapshot-test every tab.
+- [ ] **Phase 8 - hardening:** run a real TCP TUI/server black-box suite,
+  QuickFIX/J or quickfix-go FIXT.1.1/FIX 5.0 SP2 interop, and deterministic
+  golden full-run ledger/score/transcript tests in CI.
+
+The profile upgrade is a hard gate between Phases 5 and 6. A phase is complete
+only when its documented validation gate passes; specification text never
+counts as implementation evidence.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

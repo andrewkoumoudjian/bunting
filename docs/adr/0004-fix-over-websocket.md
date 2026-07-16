@@ -3,6 +3,8 @@
 - Status: Superseded by ADR 0016
 - Date: 2026-07-11
 
+Historical note: ADR 0020 supersedes the later tRPC/FIX bridge topology as well; this ADR is not active implementation guidance.
+
 ## Context
 
 Users require FIX compatibility. Standard FIX engines normally connect to a TCP acceptor. Cloudflare Workers currently provide an API for outbound TCP connections but do not expose an inbound raw TCP listener for a Worker.
