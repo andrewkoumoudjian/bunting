@@ -273,6 +273,7 @@ fn handle_fix_connection(
     let mut response = FixMessage::new("A");
     response.push(98, "0");
     response.push(108, config.heartbeat_seconds.to_string());
+    response.push(1137, simfix_wire::FIX_50_SP2_APPL_VER_ID);
     response.push(10000, FIX_COMPETITION_PROFILE_VERSION);
     send_messages(
         &mut session,
@@ -448,7 +449,8 @@ fn read_first_message(
     stream: &mut TcpStream,
     limits: WireLimits,
 ) -> Result<(Vec<u8>, FixMessage), String> {
-    let mut decoder = Decoder::new(limits);
+    let mut decoder = Decoder::try_new(limits)
+        .map_err(|error| format!("cannot load FIX dictionaries: {error:?}"))?;
     let mut collected = Vec::new();
     let mut buffer = vec![0; limits.max_message_bytes.min(8_192)];
     loop {
@@ -475,6 +477,7 @@ fn authenticate_logon(message: &FixMessage, config: &FixConfig) -> Result<(), St
     if message.msg_type != "A"
         || message.value(49) != Some(config.target_comp_id.as_str())
         || message.value(56) != Some(config.sender_comp_id.as_str())
+        || message.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
         || message.value(10000) != Some(FIX_COMPETITION_PROFILE_VERSION)
     {
         return Err("FIX Logon identity or Bunting profile is invalid".to_owned());

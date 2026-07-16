@@ -1,7 +1,8 @@
 # Bunting trading terminal
 
 This native Ratatui workstation adapts the Longbridge Terminal component
-hierarchy and interaction model to Bunting. Production mode is a FIX 4.4
+hierarchy and interaction model to Bunting. Production mode is a FIXT.1.1
+session with FIX 5.0 SP2 application semantics and is a
 initiator over configured TCP or TLS; it never reads or mutates
 `bunting-engine`. The embedded engine-backed acceptor remains available only
 behind `--fixture` for deterministic native testing.

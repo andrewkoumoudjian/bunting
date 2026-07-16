@@ -514,6 +514,27 @@ Layering, parser/error, and conformance reference. Do not import bundled specifi
 
 Evidence: upstream `README.md`, root `Cargo.toml`.
 
+### 2026-07-16 FIX adoption spike
+
+Observed: the pinned gitlink and checkout both resolve to
+`ca2bbe4c6461108646f35f7cc9245bf1848ec368`, with a clean checkout and an
+MIT OR Apache-2.0 root manifest. The released `fefix 0.7.0` crate pulls a
+native async/database/TLS graph even with default features disabled and fails
+the `wasm32-unknown-unknown` build at `getrandom`. It is not adopted.
+
+Observed: released RustyFIX `0.7.4` comes from source commit
+`2f0ef7830553d482765c14e3c4b32be3432d57b0` under Apache-2.0. Its complete
+engine needs downstream feature repairs for native and Wasm builds, retains an
+unbounded `VecDeque` pending queue, has no serializable session snapshot, and
+does not consume Orchestra. The complete engine is not adopted.
+
+Observed: `rustyfix-dictionary 0.7.4` with only `fix50sp2` and `fixt11`
+features compiles unchanged for native and `wasm32-unknown-unknown` on Rust
+1.88. It provides standard message, field and datatype lookup for the two
+selected versions. Its bundled QuickFIX resources remain implementation data;
+Bunting does not copy, edit or present them as the normative FIX Latest
+Orchestra repository.
+
 ## `ref/quickfixj` — QuickFIX/J
 
 ### Observed functionality

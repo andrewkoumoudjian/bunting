@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fixr:repository xmlns:fixr="http://fixprotocol.io/2020/orchestra/repository" name="bunting.fixlatest.competition.v1" version="1.0">
+  <fixr:metadata>
+    <dcterms:title xmlns:dcterms="http://purl.org/dc/terms/">Bunting competition extensions</dcterms:title>
+  </fixr:metadata>
+  <fixr:fields>
+    <fixr:field id="10000" name="BuntingProfileVersion" type="String"/>
+    <fixr:field id="10001" name="BuntingRunID" type="String"/>
+    <fixr:field id="10002" name="BuntingScenarioID" type="String"/>
+    <fixr:field id="10003" name="BuntingScenarioVersion" type="String"/>
+    <fixr:field id="10004" name="BuntingActorRole" type="String"/>
+    <fixr:field id="10005" name="BuntingTeamID" type="String"/>
+    <fixr:field id="10006" name="BuntingParticipantID" type="String"/>
+    <fixr:field id="10007" name="BuntingCommandID" type="String"/>
+    <fixr:field id="10008" name="BuntingCorrelationID" type="String"/>
+    <fixr:field id="10009" name="BuntingExpectedVersion" type="String"/>
+    <fixr:field id="10010" name="BuntingCommittedSequence" type="String"/>
+    <fixr:field id="10011" name="BuntingRecoveryCursor" type="String"/>
+    <fixr:field id="10012" name="BuntingAudience" type="String"/>
+    <fixr:field id="10013" name="BuntingLogicalTimeNs" type="String"/>
+    <fixr:field id="10014" name="BuntingPolicyVersion" type="String"/>
+    <fixr:field id="10015" name="BuntingResetReason" type="String"/>
+    <fixr:field id="10016" name="BuntingResourceKind" type="String"/>
+    <fixr:field id="10017" name="BuntingResourceID" type="String"/>
+    <fixr:field id="10018" name="BuntingAction" type="String"/>
+    <fixr:field id="10019" name="BuntingStatus" type="String"/>
+    <fixr:field id="10020" name="BuntingPayloadJSON" type="data"/>
+  </fixr:fields>
+  <fixr:messages>
+    <fixr:message id="9001" name="BuntingDiscoveryRequest" msgType="U1" category="Bunting"/>
+    <fixr:message id="9002" name="BuntingDiscoveryReport" msgType="U2" category="Bunting"/>
+    <fixr:message id="9003" name="BuntingAccountRequest" msgType="U3" category="Bunting"/>
+    <fixr:message id="9004" name="BuntingAccountReport" msgType="U4" category="Bunting"/>
+    <fixr:message id="9005" name="BuntingNews" msgType="U5" category="Bunting"/>
+    <fixr:message id="9006" name="BuntingTender" msgType="U6" category="Bunting"/>
+    <fixr:message id="9007" name="BuntingOtc" msgType="U7" category="Bunting"/>
+    <fixr:message id="9008" name="BuntingAssetLease" msgType="U8" category="Bunting"/>
+    <fixr:message id="9009" name="BuntingReportScore" msgType="U9" category="Bunting"/>
+    <fixr:message id="9010" name="BuntingRunControl" msgType="UA" category="Bunting"/>
+    <fixr:message id="9011" name="BuntingRiskAdmin" msgType="UB" category="Bunting"/>
+    <fixr:message id="9012" name="BuntingStreamReset" msgType="UC" category="Bunting"/>
+  </fixr:messages>
+</fixr:repository>

@@ -4,7 +4,7 @@ use clap::Parser;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Parser)]
-#[command(about = "Bunting participant/operator terminal over FIX 4.4 TCP/TLS")]
+#[command(about = "Bunting participant/operator terminal over FIXT.1.1 TCP/TLS")]
 struct Arguments {
     #[command(flatten)]
     options: bunting_tui::TuiOptions,

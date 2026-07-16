@@ -102,7 +102,7 @@ fn render_instrument(frame: &mut Frame, area: Rect, client: &FixClient) {
             Span::styled("BUNT ", styles::accent()),
             Span::styled(
                 format!(
-                    "{} · {} · FIX 4.4",
+                    "{} · {} · FIXT.1.1",
                     client.profile_name,
                     client.profile().transport.label()
                 ),

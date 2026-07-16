@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! FIX 4.4 application mapping with session concerns kept outside market authority.
+//! FIX 5.0 SP2 application mapping with session concerns kept outside market authority.
 
 use bunting_market_events::{OrderKind, Side};
 use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots};
@@ -9,7 +9,7 @@ use quarcc_execution_engine::{
     order::DesiredOrder,
 };
 use serde::{Deserialize, Serialize};
-use simfix_wire::{FixMessage, WireError, validate_fix44};
+use simfix_wire::{FixMessage, WireError, validate_competition};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,7 +62,7 @@ pub fn map_inbound(
     message: &FixMessage,
     context: MappingContext,
 ) -> Result<InboundApplication, MappingError> {
-    validate_fix44(message).map_err(MappingError::Dictionary)?;
+    validate_competition(message).map_err(MappingError::Dictionary)?;
     match message.msg_type.as_str() {
         "D" => {
             let client_order_id = ClientOrderId::new(parse(message, 11)?);
@@ -219,7 +219,7 @@ pub enum MarketDataUpdateAction {
     Delete,
 }
 
-/// Maps one committed level change to FIX 4.4 `MarketDataIncrementalRefresh`.
+/// Maps one committed level change to FIX 5.0 SP2 `MarketDataIncrementalRefresh`.
 #[must_use]
 pub fn market_incremental(
     request_id: &str,
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_and_incremental_messages_use_fix44_group_layout() {
+    fn snapshot_and_incremental_messages_use_competition_group_layout() {
         let snapshot = market_snapshot(
             "book",
             InstrumentId::new(7),

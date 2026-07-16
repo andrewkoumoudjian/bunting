@@ -50,6 +50,7 @@ quarcc-bunting-adapter = { path = "packages/quarcc-bunting-adapter" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 percent-encoding = "2"
+rustyfix-dictionary = { version = "=0.7.4", features = ["fix50sp2", "fixt11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

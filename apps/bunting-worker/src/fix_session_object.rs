@@ -16,7 +16,7 @@ use simfix_mapping::{
     map_inbound, market_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
-use simfix_wire::{FixMessage, WireLimits};
+use simfix_wire::{Field, FixMessage, WireLimits};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -141,7 +141,10 @@ impl FixSessionObject {
             max_journal_messages: 4_096,
             max_pending_inbound: 256,
             wire_limits: WireLimits::default(),
-            logon_fields: Vec::new(),
+            logon_fields: vec![Field::new(
+                10000,
+                bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION,
+            )],
         };
         let previous: Option<StoredFixSession> = self.state.storage().get(STORAGE_KEY).await?;
         if previous.as_ref().is_some_and(|stored| {
@@ -291,7 +294,7 @@ impl FixSessionObject {
             Err(error) => {
                 return vec![business_reject(
                     &message.msg_type,
-                    &format!("invalid supported FIX 4.4 message: {error:?}"),
+                    &format!("invalid supported FIX application message: {error:?}"),
                 )];
             }
         };

@@ -24,7 +24,7 @@ impl LogPanel {
             .title(if overlay {
                 " Raw FIX Console [`] "
             } else {
-                " Raw FIX 4.4 Session Journal "
+                " Raw FIXT.1.1 Session Journal "
             })
             .borders(Borders::ALL)
             .border_style(if overlay {

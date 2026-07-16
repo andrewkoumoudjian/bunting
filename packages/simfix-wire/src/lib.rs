@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 //! Bounded, transport-neutral FIX tag-value framing.
 
+use rustyfix_dictionary::{Dictionary, FixDatatype};
 use serde::{Deserialize, Serialize};
 
 pub const SOH: u8 = 0x01;
-pub const FIX_44: &str = "FIX.4.4";
+/// FIX Transport session version used by the competition profile.
+pub const FIXT_11: &str = "FIXT.1.1";
+/// `ApplVerID` value assigned to FIX 5.0 SP2.
+pub const FIX_50_SP2_APPL_VER_ID: &str = "9";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Field {
@@ -33,7 +37,7 @@ impl FixMessage {
     #[must_use]
     pub fn new(msg_type: impl Into<String>) -> Self {
         Self {
-            begin_string: FIX_44.to_owned(),
+            begin_string: FIXT_11.to_owned(),
             msg_type: msg_type.into(),
             fields: Vec::new(),
         }
@@ -119,21 +123,28 @@ pub enum WireError {
     InvalidMessageType,
     InvalidRepeatingGroup(u32),
     ReservedTag(u32),
+    DictionaryUnavailable,
+    UnknownTag(u32),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Decoder {
     limits: WireLimits,
     buffer: Vec<u8>,
+    dictionary: CompetitionDictionary,
 }
 
 impl Decoder {
-    #[must_use]
-    pub fn new(limits: WireLimits) -> Self {
-        Self {
+    /// Creates a bounded decoder using the standard FIXT.1.1 and FIX 5.0 SP2 dictionaries.
+    ///
+    /// # Errors
+    /// Returns an error if the released, embedded dictionaries cannot be loaded.
+    pub fn try_new(limits: WireLimits) -> Result<Self, WireError> {
+        Ok(Self {
             limits,
             buffer: Vec::new(),
-        }
+            dictionary: CompetitionDictionary::load()?,
+        })
     }
 
     #[must_use]
@@ -157,7 +168,9 @@ impl Decoder {
                 break;
             };
             let frame: Vec<u8> = self.buffer.drain(..frame_len).collect();
-            messages.push(parse_frame(&frame, &self.limits)?);
+            let message = parse_frame(&frame, &self.limits)?;
+            self.dictionary.validate(&message)?;
+            messages.push(message);
         }
         Ok(messages)
     }
@@ -199,7 +212,7 @@ fn complete_frame_len(bytes: &[u8], limits: &WireLimits) -> Result<Option<usize>
     if bytes.is_empty() {
         return Ok(None);
     }
-    if !bytes.starts_with(b"8=FIX.") {
+    if !bytes.starts_with(b"8=FIXT.1.1\x01") {
         return Err(WireError::InvalidBeginString);
     }
     let Some(begin_end) = delimiter_after(bytes, 0) else {
@@ -278,7 +291,7 @@ fn parse_frame(frame: &[u8], limits: &WireLimits) -> Result<FixMessage, WireErro
         .ok_or(WireError::InvalidBeginString)?
         .value
         .clone();
-    if begin_string != FIX_44 {
+    if begin_string != FIXT_11 {
         return Err(WireError::InvalidBeginString);
     }
     if parsed.get(1).map(|field| field.tag) != Some(9) {
@@ -399,7 +412,7 @@ const MARKET_DATA_REQUEST: MessageRule = MessageRule {
 };
 
 #[must_use]
-pub fn fix44_rule(msg_type: &str) -> Option<&'static MessageRule> {
+pub fn competition_rule(msg_type: &str) -> Option<&'static MessageRule> {
     match msg_type {
         "D" => Some(&NEW_ORDER_SINGLE),
         "F" => Some(&CANCEL_REQUEST),
@@ -410,12 +423,12 @@ pub fn fix44_rule(msg_type: &str) -> Option<&'static MessageRule> {
     }
 }
 
-/// Validates the supported FIX 4.4 application dictionary subset.
+/// Validates the supported competition application subset.
 ///
 /// # Errors
 /// Returns an error for a missing, duplicate, or unsupported application tag.
-pub fn validate_fix44(message: &FixMessage) -> Result<(), WireError> {
-    let rule = fix44_rule(&message.msg_type).ok_or(WireError::InvalidMessageType)?;
+pub fn validate_competition(message: &FixMessage) -> Result<(), WireError> {
+    let rule = competition_rule(&message.msg_type).ok_or(WireError::InvalidMessageType)?;
     for required in rule.required_tags {
         if !message.fields.iter().any(|field| field.tag == *required) {
             return Err(WireError::MissingRequiredTag(*required));
@@ -436,6 +449,65 @@ pub fn validate_fix44(message: &FixMessage) -> Result<(), WireError> {
     Ok(())
 }
 
+/// Loaded standard dictionaries for the competition profile.
+#[derive(Debug)]
+pub struct CompetitionDictionary {
+    session: Dictionary,
+    application: Dictionary,
+}
+
+impl CompetitionDictionary {
+    /// Loads the released FIXT.1.1 and FIX 5.0 SP2 dictionaries.
+    ///
+    /// # Errors
+    /// Returns an error if either embedded dictionary is malformed.
+    pub fn load() -> Result<Self, WireError> {
+        Ok(Self {
+            session: Dictionary::fixt11().map_err(|_| WireError::DictionaryUnavailable)?,
+            application: Dictionary::fix50sp2().map_err(|_| WireError::DictionaryUnavailable)?,
+        })
+    }
+
+    /// Validates standard message and field identities while permitting the bounded Bunting overlay.
+    ///
+    /// # Errors
+    /// Returns an error for unknown messages or tags.
+    pub fn validate(&self, message: &FixMessage) -> Result<(), WireError> {
+        if message.begin_string != FIXT_11 {
+            return Err(WireError::InvalidBeginString);
+        }
+        let standard = self.session.message_by_msgtype(&message.msg_type).is_some()
+            || self
+                .application
+                .message_by_msgtype(&message.msg_type)
+                .is_some();
+        let extension = matches!(
+            message.msg_type.as_str(),
+            "U1" | "U2" | "U3" | "U4" | "U5" | "U6" | "U7" | "U8" | "U9" | "UA" | "UB" | "UC"
+        );
+        if !standard && !extension {
+            return Err(WireError::InvalidMessageType);
+        }
+        for field in &message.fields {
+            if self.session.field_by_tag(field.tag).is_none()
+                && self.application.field_by_tag(field.tag).is_none()
+                && !(10_000..=10_020).contains(&field.tag)
+            {
+                return Err(WireError::UnknownTag(field.tag));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether the standard dictionary declares a field as exact decimal `Price`.
+    #[must_use]
+    pub fn is_price_field(&self, tag: u32) -> bool {
+        self.application
+            .field_by_tag(tag)
+            .is_some_and(|field| field.fix_datatype() == FixDatatype::Price)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -451,7 +523,7 @@ mod tests {
         let first = first.encode(&limits).unwrap();
         let second = second.encode(&limits).unwrap();
         let split = first.len() / 2;
-        let mut decoder = Decoder::new(limits);
+        let mut decoder = Decoder::try_new(limits).unwrap();
         assert!(decoder.push(&first[..split]).unwrap().is_empty());
         let mut tail = first[split..].to_vec();
         tail.extend_from_slice(&second);
@@ -467,7 +539,7 @@ mod tests {
         let mut encoded = FixMessage::new("0").encode(&limits).unwrap();
         encoded[2] = b'X';
         assert_eq!(
-            Decoder::new(limits).push(&encoded),
+            Decoder::try_new(limits).unwrap().push(&encoded),
             Err(WireError::InvalidBeginString)
         );
     }
@@ -483,7 +555,7 @@ mod tests {
         message.push(40, "2");
         message.push(44, "101");
         let frame = message.encode(&limits).unwrap();
-        let decoded = Decoder::new(limits).push(&frame).unwrap();
+        let decoded = Decoder::try_new(limits).unwrap().push(&frame).unwrap();
         assert_eq!(decoded, vec![message]);
     }
 
@@ -497,13 +569,33 @@ mod tests {
         request.push(269, "0");
         request.push(269, "1");
         request.push(48, "7");
-        validate_fix44(&request).unwrap();
+        validate_competition(&request).unwrap();
         let group = request.repeating_group(267, 269, &[]).unwrap();
         assert_eq!(group.entries.len(), 2);
         request.fields.retain(|field| field.tag != 48);
         assert_eq!(
-            validate_fix44(&request),
+            validate_competition(&request),
             Err(WireError::MissingRequiredTag(48))
+        );
+    }
+
+    #[test]
+    fn standard_dictionaries_cover_session_application_and_exact_price() {
+        let dictionary = CompetitionDictionary::load().unwrap();
+        for message_type in ["A", "0", "D", "V", "AN", "BE"] {
+            let message = FixMessage::new(message_type);
+            dictionary.validate(&message).unwrap();
+        }
+        assert!(dictionary.is_price_field(44));
+        assert_eq!("9223372036854775807".parse::<i64>().unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn unknown_standard_identity_is_rejected() {
+        let dictionary = CompetitionDictionary::load().unwrap();
+        assert_eq!(
+            dictionary.validate(&FixMessage::new("ZZ")),
+            Err(WireError::InvalidMessageType)
         );
     }
 }

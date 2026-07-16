@@ -25,7 +25,8 @@ FIX sequence numbers remain distinct from committed Bunting event sequences.
 
 ### Native local or server deployment
 
-A native host may accept inbound standard FIX 4.4 over TCP or TLS. The acceptor
+A native host may accept inbound standard FIXT.1.1 with FIX 5.0 SP2 application
+semantics over TCP or TLS. The acceptor
 owns sockets, TLS, FIX sessions, bounded journals and reconnect policy, then
 calls the application service in process. It is not a second exchange service.
 

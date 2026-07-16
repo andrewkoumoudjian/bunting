@@ -1,23 +1,28 @@
-# Bunting FIX 4.4 competition profile
+# Bunting FIX Latest competition profile
 
-Status: canonical target profile, version `bunting.fix44.competition.v1`
+Status: canonical target profile, version `bunting.fixlatest.competition.v1`
 
-This profile uses standard FIX 4.4 messages where their semantics fit and
+This profile uses a FIXT.1.1 session, FIX 5.0 SP2 application semantics and
+standard FIX Latest messages where their semantics fit, with the FIX Latest
+Orchestra repository as the normative standard dictionary. The released
+`rustyfix-dictionary` crate supplies the runtime FIXT.1.1 and FIX 5.0 SP2
+QuickFIX dictionaries; it is a validation implementation, not the normative
+source. Bunting's generated Orchestra overlay defines only project-owned
 Bunting `U*` messages plus tags `10000`-`10020` for simulation concepts. The
 machine-readable dictionary is
-[`schemas/fix/bunting.fix44.competition.v1.json`](../../schemas/fix/bunting.fix44.competition.v1.json).
+[`schemas/fix/bunting.fixlatest.competition.v1.json`](../../schemas/fix/bunting.fixlatest.competition.v1.json).
 The existing `simfix-*` packages implement only the subset marked implemented
 in the corrected plan; listing a message here is a downstream requirement, not
 an implementation claim.
 
 ## Session, authentication and topology
 
-The wire format is standard SOH-delimited FIX 4.4 with BodyLength and CheckSum.
+The wire format is standard SOH-delimited FIXT.1.1 with BodyLength and CheckSum.
 Native Bunting may be a TCP/TLS acceptor. Cloudflare Bunting is always the TCP
 initiator to an external acceptor; there is no Worker raw-TCP ingress.
 
 Logon `A` requires standard sender/target IDs, sequence/time, encryption method,
-heartbeat interval, Username `553`, Password `554` or an approved credential
+heartbeat interval, `DefaultApplVerID(1137)=9`, Username `553`, Password `554` or an approved credential
 token, and `BuntingProfileVersion(10000)`. The authenticated session binds actor,
 role, tenant, team, participant and allowed runs. Application fields cannot
 change that binding. ResetSeqNumFlag is honored only when both peers and the

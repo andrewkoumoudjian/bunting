@@ -1,7 +1,14 @@
 {
-  "profileVersion": "bunting.fix44.competition.v1",
-  "beginString": "FIX.4.4",
-  "applVerID": "6",
+  "profileVersion": "bunting.fixlatest.competition.v1",
+  "beginString": "FIXT.1.1",
+  "applVerID": "9",
+  "applicationVersion": "FIX.5.0SP2",
+  "normativeDictionary": {
+    "format": "FIX Orchestra 1.0",
+    "standard": "FIX Latest",
+    "source": "https://github.com/FIXTradingCommunity/fix-orchestrations/tree/master/FIX%20Standard",
+    "buntingOverlay": "bunting.fixlatest.competition.v1.orchestra.xml"
+  },
   "transport": {
     "nativeIngress": ["tcp", "tls"],
     "cloudflareIngress": "none",
@@ -10,7 +17,7 @@
   },
   "authentication": {
     "logon": "A",
-    "required": [49, 56, 34, 52, 98, 108, 553, 554, 10000],
+    "required": [49, 56, 34, 52, 98, 108, 1137, 553, 554, 10000],
     "resetRequiresExplicitAuthorization": true
   },
   "sequence": {

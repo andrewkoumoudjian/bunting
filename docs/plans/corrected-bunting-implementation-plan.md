@@ -48,7 +48,7 @@ FIX-to-application boundary.
 - [x] **Phase 5 - server runtime:** extract deterministic scheduling and agents
   from the TUI fixture into `packages/bunting-runtime`; host it in the server
   with authenticated participant roles and a single commit-before-ack writer.
-- [ ] **Phase 5.5 - FIX adoption and upgrade:** accept an ADR-backed existing
+- [x] **Phase 5.5 - FIX adoption and upgrade:** accept an ADR-backed existing
   engine, port server/TUI/relay/Worker paths, prove differential session
   recovery, replace the profile, and generate participant dictionaries before
   any competition extension is implemented.
@@ -94,6 +94,16 @@ command before the origin transaction returns committed events. Focused tests
 proved authenticated agent commits and deterministic resume; a live
 zero-configuration run advanced origin state to committed sequence 6 and event
 sequence 18 through the server-hosted runtime.
+
+Phase 5.5 completed on the same branch under ADR 0021. Full RustyFIX and
+FerrumFIX sessions failed the bounded Worker/recovery gates, while exact
+`rustyfix-dictionary 0.7.4` passed native and Wasm with only `fixt11` and
+`fix50sp2`. The shared server, TUI, relay and Worker now use FIXT.1.1,
+`DefaultApplVerID(1137)=9` and `bunting.fixlatest.competition.v1`; the
+first-party bounded session retains snapshot recovery, with a checked legacy
+transition golden. The Bunting-owned Orchestra overlay is deterministically
+generated from the profile. Focused tests, Wasm checks, the Worker release
+build and raw Workerd health/FIX-Durable-Object/D1-failure-closed smoke passed.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and
@@ -155,7 +165,8 @@ optional human/FIX QUARCC execution ----------------------+        v
 
 - [x] Freeze `bunting.product.v1` as the transport-neutral application,
   deployment, identity, lifecycle, recovery and FIX-only competition contract.
-- [x] Freeze `bunting.fix44.competition.v1` with standard FIX 4.4 messages where
+- [x] Freeze `bunting.fixlatest.competition.v1` with FIXT.1.1 session and FIX
+  5.0 SP2 application semantics, with standard messages where
   suitable, Bunting extension tags/messages elsewhere, explicit audiences and
   Cloudflare outbound-only TCP topology.
 - [x] Add compile-time role/audience types and deny-by-default audience tests in
@@ -267,13 +278,13 @@ optional human/FIX QUARCC execution ----------------------+        v
 - [x] Delete transitional tRPC packages after browser transport migration and
   conformance coverage make them unused.
 
-## Phase 4: FIX 4.4 over outbound TCP
+## Phase 4: FIX over outbound TCP
 
 ### Wire and session packages
 
 - [x] Add `packages/simfix-wire`: bounded incremental SOH tag-value framing,
   partial/coalesced reads, retained tails, `BeginString`, `BodyLength`,
-  `MsgType`, `CheckSum`, repeating groups, FIX 4.4 dictionaries,
+  `MsgType`, `CheckSum`, repeating groups, standard dictionaries,
   deterministic serialization, structured errors, native/Wasm compilation.
 - [x] Add `packages/simfix-session`: logon/logout, heartbeat/test request,
   inbound/outbound sequences, resend/gap fill, `PossDupFlag`,
