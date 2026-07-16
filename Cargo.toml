@@ -24,6 +24,7 @@ members = [
   "apps/bunting-worker",
   "apps/bunting-server",
   "apps/bunting-tui",
+  "apps/bunting-cli",
 ]
 exclude = ["ref", "vendor", "out"]
 

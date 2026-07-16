@@ -52,9 +52,10 @@ fi
 
 tar -xzf "$temporary/$archive" -C "$temporary"
 mkdir -p "$install_dir"
-cp "$temporary/bunting-${version}-${target}/bin/bunting-server" "$install_dir/bunting-server"
-cp "$temporary/bunting-${version}-${target}/bin/bunting-tui" "$install_dir/bunting-tui"
-chmod 755 "$install_dir/bunting-server" "$install_dir/bunting-tui"
+cp "$temporary/bunting-${version}-${target}/bin/bunting" "$install_dir/bunting"
+chmod 755 "$install_dir/bunting"
+ln -sf bunting "$install_dir/bunting-server"
+ln -sf bunting "$install_dir/bunting-tui"
 
 mkdir -p "$config_dir"
 for config in "$temporary/bunting-${version}-${target}/config/"*.json; do
@@ -64,7 +65,7 @@ for config in "$temporary/bunting-${version}-${target}/config/"*.json; do
   fi
 done
 
-echo "Installed bunting-server and bunting-tui $version to $install_dir"
+echo "Installed bunting $version and compatibility aliases to $install_dir"
 echo "Installed server configuration templates to $config_dir"
 case ":$PATH:" in
   *":$install_dir:"*) ;;

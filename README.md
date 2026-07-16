@@ -4,7 +4,7 @@ Bunting is a Rust market-simulation and exchange-testing platform designed to ru
 
 ## Install
 
-Release archives contain native `bunting-server` and `bunting-tui` executables
+Release archives contain one native `bunting` executable
 for macOS Apple Silicon, macOS Intel, Linux x86_64, and Windows x86_64. macOS
 and Linux users can install the latest release into `~/.local/bin`:
 
@@ -22,8 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/inst
 ```
 
 The installer detects supported macOS/Linux platforms, downloads the matching
-GitHub release archive, verifies it against `SHA256SUMS`, and installs both
-commands plus server configuration templates. It preserves configuration files
+GitHub release archive, verifies it against `SHA256SUMS`, and installs the
+command plus server configuration templates. It preserves configuration files
 that already exist. Windows users can download and extract the matching
 `.tar.gz` archive from
 [GitHub Releases](https://github.com/andrewkoumoudjian/bunting/releases).
@@ -31,19 +31,20 @@ that already exist. Windows users can download and extract the matching
 Start a self-contained terminal fixture:
 
 ```bash
-bunting-tui --fixture
+bunting tui --fixture
 ```
 
 To run the native FIX server, review the installed credentials and network
 settings, then start it with:
 
 ```bash
-bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
+bunting server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
 ```
 
-The server and TUI are native applications because they use TCP, filesystem,
-TLS, and terminal APIs. GitHub Releases contain only these locally installable
-applications. Build and deploy the Cloudflare Worker from source using its
+The server and TUI modes are native because they use TCP, filesystem, TLS, and
+terminal APIs. `bunting-server` and `bunting-tui` remain one-release aliases to
+the same executable. GitHub Releases contain only this locally installable
+application. Build and deploy the Cloudflare Worker from source using its
 Wrangler configuration and D1 migrations under `apps/bunting-worker`.
 
 ## Engine model
@@ -106,6 +107,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
+- `apps/bunting-cli`: unified `bunting server|tui|relay|init|version` native command.
 - `apps/bunting-server`: native FIX/TCP server, durable local origin, admin health surface, and external Cloudflare FIX relay.
 - `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
 

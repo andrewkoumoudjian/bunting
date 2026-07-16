@@ -39,7 +39,7 @@ FIX-to-application boundary.
   bounded 256-event and 64-command channels; coalesce redraws behind a dirty
   flag; never block rendering on sends; drop market deltas, never private
   reports or acknowledgements, under backpressure.
-- [ ] **Phase 3 - unified CLI:** ship one `bunting` binary with `server`, `tui`,
+- [x] **Phase 3 - unified CLI:** ship one `bunting` binary with `server`, `tui`,
   `relay`, `init`, and `version` commands; retain old binary names as one-release
   compatibility shims and install one release artifact.
 - [ ] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
@@ -65,6 +65,15 @@ FIX-to-application boundary.
 The profile upgrade is a hard gate between Phases 5 and 6. A phase is complete
 only when its documented validation gate passes; specification text never
 counts as implementation evidence.
+
+Phase 3 completed on `codex/bunting-product-alignment`: the native server and
+terminal now expose reusable library entrypoints behind `apps/bunting-cli`; the
+release workflow builds one `bunting` executable and packages the old names as
+one-release aliases. CLI parsing, compatibility dispatch, configuration init,
+focused Clippy/tests, and a native release build passed. The workspace Wasm
+retry was deferred to the final gate because the active toolchain did not have
+`wasm32-unknown-unknown` installed; the CLI itself target-gates all native
+dependencies behind an inert Wasm stub.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

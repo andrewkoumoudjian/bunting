@@ -156,6 +156,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bunting-cli"
+version = "0.1.0"
+dependencies = [
+ "bunting-api-contract",
+ "bunting-rs",
+ "bunting-server",
+ "bunting-tui",
+ "clap",
+ "tokio",
+]
+
+[[package]]
 name = "bunting-command-transaction"
 version = "0.1.0"
 dependencies = [
