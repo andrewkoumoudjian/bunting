@@ -37,9 +37,8 @@ facts. Resent messages use PossDupFlag and OrigSendingTime.
 
 SecurityListRequest `x` and SecurityList `y` expose eligible instruments with
 standard security fields plus run/scenario/version, listing, tick, lot, bounds,
-currency, capability and policy tags. `U1/U2` discover scenario publications,
-runs, lifecycle, logical time, pacing, participant assignment and supported
-profile capabilities. Participant sessions cannot start or control runs.
+currency, run lifecycle, logical time, capability and policy tags. Participant
+sessions cannot start or control runs.
 
 Instructor/admin sessions use `UA` for publish/create/start/pause/resume/advance,
 pacing and terminate operations. Each mutation carries tags `10007`-`10009` and
@@ -77,8 +76,8 @@ facts.
 ## Private account and competition state
 
 Order status/execution reports expose private live and historical orders/fills.
-RequestForPositions `AN` and PositionReport `AP` provide positions. `U3/U4`
-provide exact cash by currency, settled/reserved/accrued/scheduled balances,
+RequestForPositions `AN` and PositionReport `AP` provide positions and exact
+cash by currency, settled/reserved/accrued/scheduled balances,
 buying power, NLV, realized/unrealized P&L, cost basis, fees/rebates, limits,
 warnings, penalties and risk groups. All wide integers use canonical decimal
 strings and all marks name their policy version.
@@ -89,14 +88,15 @@ authenticated participant/team binding before serialization.
 
 ## News, tenders, OTC, assets, leases, reports and score
 
-- `U5` publishes ordered news with public, participant or team audience, logical time and read cursor.
+- Standard News `B` publishes ordered news with public, participant or team audience and logical time.
 - `U6` lists tenders and performs bid/accept/decline with expiry and committed outcome.
-- `U7` performs OTC propose/counter/accept/reject/expire/break and versioned composite or trade-at-settle actions.
-- `U8` queries assets/facilities/leases and performs lease, release, transport, storage and conversion actions.
 - `U9` requests or delivers transaction logs, P&L, time-and-sales, OTC activity, reports, rankings and score.
 - `UB` is instructor/admin-only risk, limit, compliance, fine and participant-control mutation/query traffic.
 
-Each message uses `BuntingResourceKind(10016)`, resource ID, action, status and a
+Product areas deferred beyond the competition MVC, including OTC and
+asset/facility workflows, receive a reviewed standard-message mapping before
+they enter this profile. Each extension message uses
+`BuntingResourceKind(10016)`, resource ID, action, status and a
 bounded canonical JSON payload only where standard FIX groups cannot express the
 versioned structure. Payload schemas are separately versioned and unknown fields
 reject. A generic JSON escape hatch is prohibited.

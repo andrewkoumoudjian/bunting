@@ -1,6 +1,10 @@
 use crate::protocol::{now_millis, session_config, session_error, timestamp};
 use bunting_agents::PolicyKind;
-use bunting_application::VerifiedActor;
+use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
+use bunting_application::{
+    VerifiedActor,
+    competition::{account, discovery, news_tenders, risk_score},
+};
 use bunting_engine::{
     ListingDefinition, OwnedOrderState, ParticipantDefinition, RunState, ScenarioDefinition,
 };
@@ -22,8 +26,8 @@ use quarcc_execution_engine::{
     ids::{ClientOrderId, IntentId},
 };
 use simfix_mapping::{
-    InboundApplication, MappingContext, business_reject, map_execution_report, map_inbound,
-    market_snapshot,
+    CompetitionRequest, InboundApplication, MappingContext, business_reject, competition_report,
+    map_execution_report, map_inbound, market_snapshot,
 };
 use simfix_session::{ConnectionState, FixSession, SessionAction};
 use simfix_wire::FixMessage;
@@ -120,8 +124,12 @@ pub async fn spawn(address: &str, config: LocalScenarioConfig) -> io::Result<Joi
 }
 
 async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result<()> {
-    let mut session = FixSession::try_new(session_config("BUNTING", "HUMAN"))
-        .map_err(|error| session_error(&error))?;
+    let mut session_config = session_config("BUNTING", "HUMAN");
+    session_config.logon_fields = vec![
+        simfix_wire::Field::new(10000, crate::config::FIX_PROFILE_VERSION),
+        simfix_wire::Field::new(10004, "participant"),
+    ];
+    let mut session = FixSession::try_new(session_config).map_err(|error| session_error(&error))?;
     let actions = session
         .connected_at(&timestamp(), now_millis())
         .map_err(|error| session_error(&error))?;
@@ -146,6 +154,7 @@ async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result
                 for action in actions {
                     match action {
                         SessionAction::Application(message) => applications.push(message),
+                        SessionAction::PeerLogon(_) => {}
                         other => {
                             if write_actions(&mut stream, vec![other]).await? {
                                 return Ok(());
@@ -200,7 +209,9 @@ async fn write_actions(stream: &mut TcpStream, actions: Vec<SessionAction>) -> i
         match action {
             SessionAction::Send(frame) => stream.write_all(&frame).await?,
             SessionAction::Disconnect => disconnect = true,
-            SessionAction::Application(_) | SessionAction::Persist(_) => {}
+            SessionAction::Application(_)
+            | SessionAction::PeerLogon(_)
+            | SessionAction::Persist(_) => {}
         }
     }
     Ok(disconnect)
@@ -350,6 +361,7 @@ impl Market {
             }
         };
         let mut responses = match application {
+            InboundApplication::Competition(request) => self.competition(&request),
             InboundApplication::MarketDataRequest { request_id, .. } => {
                 vec![self.book(&request_id)]
             }
@@ -359,6 +371,118 @@ impl Market {
             responses.push(self.book("book-live"));
         }
         responses
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the deterministic fixture keeps every competition projection in one exhaustive match"
+    )]
+    fn competition(&self, request: &CompetitionRequest) -> Vec<FixMessage> {
+        let actor = match VerifiedActor::try_from_identity(ActorIdentity {
+            actor_id: UnsignedDecimalString::new(HUMAN_ID.get()),
+            role: ActorRole::Participant,
+            participant_id: Some(UnsignedDecimalString::new(HUMAN_ID.get())),
+            team_id: None,
+        }) {
+            Ok(actor) => actor,
+            Err(error) => {
+                return vec![business_reject(
+                    "competition",
+                    &format!("fixture actor is invalid: {error:?}"),
+                )];
+            }
+        };
+        let result = match request {
+            CompetitionRequest::Discovery => competition_report(
+                "y",
+                "public",
+                "discovery",
+                "snapshot",
+                "ok",
+                self.state.sequence().get(),
+                &discovery(&self.state),
+            ),
+            CompetitionRequest::Account => account(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "AP",
+                        "private",
+                        "account",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::News => news_tenders(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "B",
+                        "private",
+                        "news",
+                        "list",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.news,
+                    )
+                },
+            ),
+            CompetitionRequest::Tender { .. } => news_tenders(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "U6",
+                        "private",
+                        "tender",
+                        "list",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.tenders,
+                    )
+                },
+            ),
+            CompetitionRequest::Score => risk_score(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "U9",
+                        "private",
+                        "score",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.latest_score,
+                    )
+                },
+            ),
+            CompetitionRequest::Risk => risk_score(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "UB",
+                        "private",
+                        "risk",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::RunControl { .. } | CompetitionRequest::RiskAdmin { .. } => {
+                return vec![business_reject("UA", "fixture operator role required")];
+            }
+        };
+        match result {
+            Ok(report) => vec![report],
+            Err(error) => vec![business_reject(
+                "U1",
+                &format!("fixture competition projection failed: {error:?}"),
+            )],
+        }
     }
 
     fn execute(&mut self, intent: ExecutionIntent, original: &FixMessage) -> Vec<FixMessage> {

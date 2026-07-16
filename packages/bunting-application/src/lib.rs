@@ -2,13 +2,15 @@
 #![allow(clippy::missing_errors_doc)]
 //! Transport-neutral application service around the authoritative Bunting engine.
 
+pub mod competition;
+
 use bunting_api_contract::{ActorIdentity, ActorRole};
 use bunting_command_transaction::{
     CachedSnapshot, CommandTransaction, ExecutedTransaction, PreparedCommand, SnapshotCache,
-    TransactionError, prepare_command,
+    TransactionError, prepare_command, prepare_simulation_command,
 };
 use bunting_engine::RunState;
-use bunting_market_events::{Command, CommandPayload};
+use bunting_market_events::{Command, CommandPayload, SimulationCommand, SimulationCommandRequest};
 use bunting_market_types::{
     CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId, RunId,
 };
@@ -20,7 +22,9 @@ use quarcc_execution_engine::{
     ids::{ClientOrderId, IntentId, LocalOrderId},
 };
 use serde::{Deserialize, Serialize};
-use simfix_mapping::{InboundApplication, MappingContext, MappingError, map_inbound};
+use simfix_mapping::{
+    CompetitionRequest, InboundApplication, MappingContext, MappingError, map_inbound,
+};
 use simfix_wire::FixMessage;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -134,6 +138,36 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
     Ok(())
 }
 
+/// Enforces participant versus operator authority for simulation-domain commands.
+pub fn authorize_simulation_command(
+    actor: &VerifiedActor,
+    request: &SimulationCommandRequest,
+) -> Result<(), ApplicationError> {
+    let participant_action = matches!(
+        request.payload,
+        SimulationCommand::DecideTender { .. }
+            | SimulationCommand::CounterOtc { .. }
+            | SimulationCommand::DecideOtc { .. }
+    );
+    if participant_action {
+        let participant = actor.participant_id.ok_or(ApplicationError::Unauthorized)?;
+        if request.actor != participant
+            || !matches!(
+                actor.identity.role,
+                ActorRole::Participant | ActorRole::BuiltInAgent
+            )
+        {
+            return Err(ApplicationError::ActorMismatch);
+        }
+    } else if !matches!(
+        actor.identity.role,
+        ActorRole::Instructor | ActorRole::Administrator
+    ) {
+        return Err(ApplicationError::Unauthorized);
+    }
+    Ok(())
+}
+
 /// Worker-compatible authenticated prepare step. Persistence remains adapter-owned.
 pub fn prepare_authenticated(
     actor: &VerifiedActor,
@@ -143,6 +177,16 @@ pub fn prepare_authenticated(
 ) -> Result<PreparedCommand, ApplicationError> {
     authorize_command(actor, command)?;
     prepare_command(command, candidate, cached).map_err(ApplicationError::from)
+}
+
+/// Worker-compatible authenticated simulation prepare step.
+pub fn prepare_authenticated_simulation(
+    actor: &VerifiedActor,
+    request: &SimulationCommandRequest,
+    state: &RunState,
+) -> Result<PreparedCommand, ApplicationError> {
+    authorize_simulation_command(actor, request)?;
+    prepare_simulation_command(request, state).map_err(ApplicationError::from)
 }
 
 #[derive(Debug)]
@@ -170,6 +214,18 @@ where
         authorize_command(actor, command)?;
         CommandTransaction::new(self.origin, self.cache)
             .execute_detailed(command)
+            .map_err(ApplicationError::from)
+    }
+
+    /// Executes one authenticated simulation-domain command and returns committed facts.
+    pub fn execute_simulation(
+        &self,
+        actor: &VerifiedActor,
+        request: &SimulationCommandRequest,
+    ) -> Result<ExecutedTransaction, ApplicationError> {
+        authorize_simulation_command(actor, request)?;
+        CommandTransaction::new(self.origin, self.cache)
+            .execute_simulation_detailed(request)
             .map_err(ApplicationError::from)
     }
 
@@ -248,6 +304,7 @@ pub enum FixApplicationRequest {
         subscription: bool,
         market_depth: usize,
     },
+    Competition(CompetitionRequest),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,6 +366,9 @@ impl FixApplicationState {
             .checked_add(1)
             .ok_or(ApplicationError::InvalidIdentity)?;
         match mapped {
+            InboundApplication::Competition(request) => {
+                Ok(FixApplicationRequest::Competition(request))
+            }
             InboundApplication::MarketDataRequest {
                 request_id,
                 instrument_id,
@@ -398,9 +458,11 @@ mod tests {
     use bunting_api_contract::UnsignedDecimalString;
     use bunting_command_transaction::InMemorySnapshotCache;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
-    use bunting_market_events::{OrderKind, Side, SubmitOrder};
+    use bunting_market_events::{
+        NewsAudience, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
+    };
     use bunting_market_types::{
-        CommandId, InstrumentId, IterationId, MoneyMinor, OrderId, PriceBounds, PriceTicks,
+        CommandId, InstrumentId, IterationId, MoneyMinor, NewsId, OrderId, PriceBounds, PriceTicks,
         QuantityLots, ScenarioId, ScenarioVersion, VenueId,
     };
     use bunting_origin_store::InMemoryOrigin;
@@ -482,5 +544,42 @@ mod tests {
             authorize_command(&actor(8), &command()),
             Err(ApplicationError::ActorMismatch)
         );
+    }
+
+    #[test]
+    fn competition_projections_do_not_leak_another_participants_news() {
+        let initial = run();
+        let publish = |sequence, command_id, audience| SimulationCommandRequest {
+            run_id: RunId::new(1),
+            command_id: CommandId::new(command_id),
+            correlation_id: CorrelationId::new(command_id),
+            logical_time: LogicalTimeNs::new(command_id as u64),
+            expected_sequence: EventSequence::new(sequence),
+            actor: ParticipantId::new(99),
+            payload: SimulationCommand::PublishNews {
+                news_id: NewsId::new(command_id),
+                audience,
+                headline: format!("news-{command_id}"),
+                body: "bounded".to_owned(),
+            },
+        };
+        let public = initial
+            .transition_simulation(&publish(0, 1, NewsAudience::Public))
+            .unwrap()
+            .candidate;
+        let private = public
+            .transition_simulation(&publish(
+                1,
+                2,
+                NewsAudience::Participant(ParticipantId::new(8)),
+            ))
+            .unwrap()
+            .candidate;
+        let view = competition::news_tenders(&private, &actor(7)).unwrap();
+        assert_eq!(view.news.len(), 1);
+        assert_eq!(view.news[0].news_id, NewsId::new(1));
+        let account = competition::account(&private, &actor(7)).unwrap();
+        assert_eq!(account.participant_id, ParticipantId::new(7));
+        assert_eq!(account.policies.score, "bunting.score.nlv-rank.v1");
     }
 }

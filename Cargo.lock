@@ -176,6 +176,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-origin-store",
  "bunting-risk-engine",
+ "serde",
  "serde_json",
  "sha2",
 ]
@@ -296,6 +297,7 @@ name = "bunting-tui"
 version = "0.1.0"
 dependencies = [
  "bunting-agents",
+ "bunting-api-contract",
  "bunting-application",
  "bunting-engine",
  "bunting-market-events",
@@ -1882,6 +1884,7 @@ dependencies = [
  "bunting-market-types",
  "quarcc-execution-engine",
  "serde",
+ "serde_json",
  "simfix-wire",
 ]
 

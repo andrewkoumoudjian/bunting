@@ -1,4 +1,5 @@
 use bunting_agents::PolicyKind;
+use bunting_api_contract::ActorRole;
 use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots, RunId};
 use bunting_runtime::{RuntimeAgentConfig, RuntimeConfig};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,8 @@ pub struct FixConfig {
     pub target_comp_id: String,
     pub username: String,
     pub password: String,
+    #[serde(default = "participant_role")]
+    pub role: ActorRole,
     pub participant_id: u128,
     pub run_id: u128,
     pub heartbeat_seconds: u32,
@@ -58,6 +61,10 @@ pub struct FixConfig {
     pub max_journal_messages: usize,
     pub max_pending_inbound: usize,
     pub tls: TlsConfig,
+}
+
+const fn participant_role() -> ActorRole {
+    ActorRole::Participant
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,6 +152,7 @@ impl ServerConfig {
                 target_comp_id: "HUMAN".to_owned(),
                 username: "participant".to_owned(),
                 password: "bunting-local-dev".to_owned(),
+                role: ActorRole::Participant,
                 participant_id: 1,
                 run_id: 1,
                 heartbeat_seconds: 30,
@@ -438,6 +446,7 @@ mod tests {
             target_comp_id: "CLIENT".to_owned(),
             username: "client".to_owned(),
             password: "long-password".to_owned(),
+            role: ActorRole::Participant,
             participant_id: 1,
             run_id: 1,
             heartbeat_seconds: 30,

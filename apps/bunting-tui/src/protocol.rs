@@ -4,6 +4,8 @@ use crate::{
     config::{ConnectionProfile, FIX_PROFILE_VERSION},
     transport::{self, BoxedFixStream},
 };
+use bunting_application::competition::{AccountView, DiscoveryView, RiskScoreView};
+use bunting_engine::simulation::{NewsItem, ScoreEntry, TenderState};
 use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Field, FixMessage, WireLimits};
 use std::{
@@ -82,6 +84,13 @@ pub struct FixClient {
     pub prices: VecDeque<PriceSample>,
     pub book: Book,
     pub portfolio: Portfolio,
+    pub discovery: Option<DiscoveryView>,
+    pub authoritative_account: Option<AccountView>,
+    pub news: Vec<NewsItem>,
+    pub tenders: Vec<TenderState>,
+    pub risk: Option<RiskScoreView>,
+    pub score: Option<ScoreEntry>,
+    pub verified_role: Option<String>,
     pub status: String,
     pub book_sequence: String,
     pub committed_sequence: String,
@@ -90,6 +99,7 @@ pub struct FixClient {
     pub reconnect_attempts: u64,
     pub observed_message_types: BTreeSet<String>,
     recovery_request_pending: bool,
+    competition_request_pending: bool,
     order_sides: BTreeMap<String, String>,
 }
 
@@ -119,6 +129,13 @@ impl FixClient {
             prices: VecDeque::new(),
             book: Book::default(),
             portfolio: Portfolio::default(),
+            discovery: None,
+            authoritative_account: None,
+            news: Vec::new(),
+            tenders: Vec::new(),
+            risk: None,
+            score: None,
+            verified_role: None,
             status: "disconnected; press R to connect".to_owned(),
             book_sequence: "-".to_owned(),
             committed_sequence: "-".to_owned(),
@@ -127,6 +144,7 @@ impl FixClient {
             reconnect_attempts: 0,
             observed_message_types: BTreeSet::new(),
             recovery_request_pending: true,
+            competition_request_pending: true,
             order_sides: BTreeMap::new(),
         })
     }
@@ -281,6 +299,10 @@ impl FixClient {
                     critical |= !matches!(message.msg_type.as_str(), "W" | "X");
                     self.observe(&message);
                 }
+                SessionAction::PeerLogon(message) => {
+                    self.observe(&message);
+                    critical = true;
+                }
                 SessionAction::Disconnect => {
                     self.mark_disconnected("FIX peer requested disconnect")?;
                     critical = true;
@@ -298,6 +320,8 @@ impl FixClient {
     pub(crate) fn mark_disconnected(&mut self, reason: &str) -> io::Result<()> {
         self.stream = None;
         self.stale = true;
+        self.recovery_request_pending = true;
+        self.competition_request_pending = true;
         self.status = format!("disconnected: {reason}; press R to reconnect");
         let mut snapshot = self.session.snapshot();
         snapshot.state = ConnectionState::Disconnected;
@@ -350,6 +374,13 @@ impl FixClient {
             prices: self.prices.clone(),
             book: self.book.clone(),
             portfolio: self.portfolio,
+            discovery: self.discovery.clone(),
+            authoritative_account: self.authoritative_account.clone(),
+            news: self.news.clone(),
+            tenders: self.tenders.clone(),
+            risk: self.risk.clone(),
+            score: self.score,
+            verified_role: self.verified_role.clone(),
             status: self.status.clone(),
             book_sequence: self.book_sequence.clone(),
             committed_sequence: self.committed_sequence.clone(),
@@ -358,6 +389,7 @@ impl FixClient {
             reconnect_attempts: self.reconnect_attempts,
             observed_message_types: self.observed_message_types.clone(),
             recovery_request_pending: self.recovery_request_pending,
+            competition_request_pending: self.competition_request_pending,
             order_sides: self.order_sides.clone(),
         })
     }
@@ -366,12 +398,23 @@ impl FixClient {
         std::mem::take(&mut self.recovery_request_pending)
     }
 
+    pub fn take_competition_request(&mut self) -> bool {
+        std::mem::take(&mut self.competition_request_pending)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the bounded projection reducer exhaustively maps all negotiated FIX responses"
+    )]
     fn observe(&mut self, message: &FixMessage) {
         self.observed_message_types.insert(message.msg_type.clone());
         if let Some(sequence) = message.value(10010) {
             sequence.clone_into(&mut self.committed_sequence);
         }
         match message.msg_type.as_str() {
+            "A" => {
+                self.verified_role = message.value(10004).map(ToOwned::to_owned);
+            }
             "W" => {
                 self.book = parse_book(message);
                 if let Some(sample) = price_sample(&self.book) {
@@ -447,6 +490,30 @@ impl FixClient {
             "9" | "j" => {
                 self.status = format!("FIX reject: {}", message.value(58).unwrap_or("unknown"));
             }
+            "y" => {
+                self.discovery = decode_payload(message);
+                "authoritative discovery updated".clone_into(&mut self.status);
+            }
+            "AP" => {
+                self.authoritative_account = decode_payload(message);
+                "authoritative account updated".clone_into(&mut self.status);
+            }
+            "B" => {
+                self.news = decode_payload(message).unwrap_or_default();
+                "news updated".clone_into(&mut self.status);
+            }
+            "U6" => {
+                self.tenders = decode_payload(message).unwrap_or_default();
+                "tenders updated".clone_into(&mut self.status);
+            }
+            "U9" => {
+                self.score = decode_payload(message).flatten();
+                "score updated".clone_into(&mut self.status);
+            }
+            "UB" => {
+                self.risk = decode_payload(message);
+                "risk updated".clone_into(&mut self.status);
+            }
             _ => {}
         }
     }
@@ -459,6 +526,10 @@ impl FixClient {
         self.logs
             .push_back(format!("{direction} {}", redact_fix(&readable)));
     }
+}
+
+fn decode_payload<T: serde::de::DeserializeOwned>(message: &FixMessage) -> Option<T> {
+    serde_json::from_str(message.value(10020)?).ok()
 }
 
 fn push_bounded<T>(queue: &mut VecDeque<T>, value: T, maximum: usize) {
@@ -629,6 +700,41 @@ pub fn book_request(id: u128) -> FixMessage {
     message.push(269, "0");
     message.push(269, "1");
     message.push(48, "1");
+    message
+}
+
+pub fn competition_requests(id: u128) -> Vec<FixMessage> {
+    let mut discovery = FixMessage::new("x");
+    discovery.push(320, format!("discovery-{id}"));
+    let mut account = FixMessage::new("AN");
+    account.push(710, format!("account-{id}"));
+    let mut news = FixMessage::new("BE");
+    news.push(923, format!("news-{id}"));
+    news.push(10016, "news");
+    let mut tenders = FixMessage::new("U6");
+    tenders.push(10018, "list");
+    let mut score = FixMessage::new("U9");
+    score.push(10018, "snapshot");
+    let mut risk = FixMessage::new("UB");
+    risk.push(10018, "query");
+    vec![discovery, account, news, tenders, score, risk]
+}
+
+#[must_use]
+pub fn competition_action(
+    msg_type: &str,
+    action: &str,
+    resource_id: Option<u64>,
+    payload: Option<String>,
+) -> FixMessage {
+    let mut message = FixMessage::new(msg_type);
+    message.push(10018, action);
+    if let Some(resource_id) = resource_id {
+        message.push(10017, resource_id.to_string());
+    }
+    if let Some(payload) = payload {
+        message.push(10020, payload);
+    }
     message
 }
 

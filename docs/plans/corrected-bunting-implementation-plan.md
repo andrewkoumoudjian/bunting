@@ -52,10 +52,10 @@ FIX-to-application boundary.
   engine, port server/TUI/relay/Worker paths, prove differential session
   recovery, replace the profile, and generate participant dictionaries before
   any competition extension is implemented.
-- [ ] **Phase 6 - competition MVC:** land discovery/account, news/tenders, then
+- [x] **Phase 6 - competition MVC:** land discovery/account, news/tenders, then
   risk/score/admin as three reviewable slices with audience enforcement and
   versioned PnL, commission, news, tender, risk, fine, and score policies.
-- [ ] **Phase 7 - TUI parity:** apply the Longbridge interaction idioms, consume
+- [x] **Phase 7 - TUI parity:** apply the Longbridge interaction idioms, consume
   authoritative FIX account state, add news/tenders/leaderboard/instructor
   workflows, and snapshot-test every tab.
 - [ ] **Phase 8 - hardening:** run a real TCP TUI/server black-box suite,
@@ -104,6 +104,25 @@ first-party bounded session retains snapshot recovery, with a checked legacy
 transition golden. The Bunting-owned Orchestra overlay is deterministically
 generated from the profile. Focused tests, Wasm checks, the Worker release
 build and raw Workerd health/FIX-Durable-Object/D1-failure-closed smoke passed.
+
+Phase 6 completed on the same branch as three authority-preserving slices.
+Standard SecurityList, PositionReport and News messages now carry discovery,
+account and audience-filtered news projections; Bunting `U6`, `U9`, `UA` and
+`UB` cover targeted tenders, score, run control and risk/admin. Participant
+tender decisions and operator mutations share the same idempotent atomic origin
+commit as orders, including the D1 adapter. Every projection names the exact
+Bunting-native PnL, zero-commission, news, tender, risk, fine and NLV-rank
+policy. Tests prove private-news denial, targeted tender authority, deterministic
+score ordering and an exact balanced fine debit; no RIT formula equivalence is
+claimed.
+
+Phase 7 completed on the same branch. The Longbridge-derived tab, table,
+command-palette and popup idioms now render authoritative FIX discovery,
+account, position/PnL, news, tender, risk and score projections. Tender and
+role-authorized run/news/score/fine workflows emit bounded profile messages;
+the peer Logon exposes the server-validated role before administration controls
+are shown. A full-frame deterministic golden covers every terminal tab, and the
+embedded TCP fixture exercises the negotiated competition projection set.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

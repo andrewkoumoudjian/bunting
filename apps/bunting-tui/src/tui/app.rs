@@ -6,7 +6,7 @@ use crate::tui::{keys, nav, popup::PopupKind, render};
 use crate::{
     config::{ConnectionProfile, TerminalConfig, WorkspaceLayout},
     io_task::{IoTask, OutboundCmd, UiEvent},
-    protocol::{FixClient, book_request},
+    protocol::{FixClient, book_request, competition_requests},
 };
 use crossterm::{
     event::{Event, EventStream},
@@ -337,6 +337,14 @@ pub async fn run(
                 {
                     let request_id = app.allocate_id();
                     enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(book_request(request_id)));
+                }
+                if client.connection_state() == ConnectionState::Established
+                    && client.take_competition_request()
+                {
+                    let request_id = app.allocate_id();
+                    for request in competition_requests(request_id) {
+                        enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(request));
+                    }
                 }
                 dirty = true;
             }

@@ -9,7 +9,7 @@ use crate::tui::{
 };
 use crate::{
     io_task::OutboundCmd,
-    protocol::{FixClient, book_request, cancel, new_order, replace, status},
+    protocol::{FixClient, book_request, cancel, competition_action, new_order, replace, status},
 };
 use tokio::sync::mpsc;
 
@@ -314,6 +314,10 @@ enum Command {
     None,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the command palette parser keeps all documented operator and participant workflows together"
+)]
 fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
     let parts: Vec<_> = input.split_whitespace().collect();
     let Some(command) = parts.first().copied() else {
@@ -363,6 +367,91 @@ fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
         }
         "status" => Ok(Command::Send(status(identifier(1, "order id")?))),
         "book" | "refresh" => Ok(Command::Send(book_request(app.allocate_id()))),
+        "tender" => {
+            let action = parts.get(1).copied().ok_or("missing tender action")?;
+            if !matches!(action, "accept" | "decline") {
+                return Err("usage: tender accept|decline ID".to_owned());
+            }
+            let tender_id = parts
+                .get(2)
+                .ok_or("missing tender id")?
+                .parse::<u64>()
+                .map_err(|_| "invalid tender id")?;
+            Ok(Command::Send(competition_action(
+                "U6",
+                action,
+                Some(tender_id),
+                None,
+            )))
+        }
+        "run" => {
+            let action = parts.get(1).copied().ok_or("missing run action")?;
+            let payload = match action {
+                "start" | "pause" | "resume" | "score" => None,
+                "advance" => Some(
+                    serde_json::json!({ "logical_time": number(2, "logical time")? }).to_string(),
+                ),
+                "terminate" => Some(
+                    serde_json::json!({ "reason": parts.get(2..).unwrap_or_default().join(" ") })
+                        .to_string(),
+                ),
+                _ => {
+                    return Err(
+                        "usage: run start|pause|resume|advance N|terminate REASON".to_owned()
+                    );
+                }
+            };
+            Ok(Command::Send(competition_action(
+                "UA", action, None, payload,
+            )))
+        }
+        "news" => {
+            let news_id = parts
+                .get(1)
+                .ok_or("missing news id")?
+                .parse::<u64>()
+                .map_err(|_| "invalid news id")?;
+            let audience = parts.get(2).copied().ok_or("missing audience")?;
+            let headline = parts.get(3..).unwrap_or_default().join(" ");
+            if headline.is_empty() {
+                return Err("missing headline".to_owned());
+            }
+            let payload = serde_json::json!({
+                "news_id": news_id,
+                "audience": audience,
+                "headline": headline,
+            })
+            .to_string();
+            Ok(Command::Send(competition_action(
+                "UA",
+                "publish_news",
+                None,
+                Some(payload),
+            )))
+        }
+        "score" => Ok(Command::Send(competition_action("UA", "score", None, None))),
+        "fine" => {
+            let participant_id = parts.get(1).copied().ok_or("missing participant id")?;
+            let currency = parts.get(2).copied().ok_or("missing currency")?;
+            let amount = number(3, "amount")?;
+            let reason = parts.get(4..).unwrap_or_default().join(" ");
+            if reason.is_empty() {
+                return Err("missing fine reason".to_owned());
+            }
+            let payload = serde_json::json!({
+                "participant_id": participant_id,
+                "currency": currency,
+                "amount": amount,
+                "reason": reason,
+            })
+            .to_string();
+            Ok(Command::Send(competition_action(
+                "UB",
+                "fine",
+                None,
+                Some(payload),
+            )))
+        }
         "qty" | "quantity" => {
             let quantity = number(1, "quantity")?;
             if quantity <= 0 {
@@ -399,6 +488,12 @@ mod tests {
             "replace 1 2 101 3",
             "status 2",
             "book",
+            "tender accept 7",
+            "run pause",
+            "run advance 10",
+            "news 3 public Market opens",
+            "score",
+            "fine participant-1 USD 25 conduct",
         ] {
             assert!(matches!(
                 parse_command(command, &mut app),

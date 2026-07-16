@@ -349,6 +349,42 @@ fn checked_in_simulation_fixture_is_strict_and_versioned() {
 }
 
 #[test]
+fn fine_policy_posts_an_exact_balanced_cash_debit() {
+    let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let before = initial
+        .simulation()
+        .portfolio_ledger
+        .balance(PARTICIPANT, CURRENCY)
+        .settled;
+    let fined = apply(
+        &initial,
+        &command(
+            0,
+            0,
+            ADMIN,
+            SimulationCommand::ApplyFine {
+                participant_id: PARTICIPANT,
+                currency_id: CURRENCY,
+                amount: MoneyMinor::new(125),
+                reason: "late disclosure".to_owned(),
+            },
+        ),
+    );
+    assert_eq!(
+        fined
+            .simulation()
+            .portfolio_ledger
+            .balance(PARTICIPANT, CURRENCY)
+            .settled,
+        before.checked_sub(MoneyMinor::new(125)).unwrap()
+    );
+    assert_eq!(
+        fined.simulation().portfolio_ledger.journal()[0].kind,
+        TransactionKind::Fine
+    );
+}
+
+#[test]
 fn scenario_publication_is_immutable_versioned_and_idempotent() {
     let definition = scenario();
     let hash = definition.content_hash().unwrap();

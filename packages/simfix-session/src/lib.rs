@@ -72,6 +72,8 @@ pub struct SessionSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionAction {
     Send(Vec<u8>),
+    /// Reports the validated peer Logon after the session becomes established.
+    PeerLogon(FixMessage),
     Application(FixMessage),
     Persist(SessionSnapshot),
     Disconnect,
@@ -416,7 +418,7 @@ impl FixSession {
                     return Err(SessionError::InvalidApplicationVersion);
                 }
                 self.snapshot.state = ConnectionState::Established;
-                Ok(Vec::new())
+                Ok(vec![SessionAction::PeerLogon(message)])
             }
             "0" => {
                 if self.snapshot.outstanding_test_request.as_deref() == message.value(112) {

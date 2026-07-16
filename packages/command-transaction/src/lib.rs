@@ -5,7 +5,7 @@
 use bunting_engine::{
     CachedListingSnapshot, EngineError, ListingSnapshot, RunState, TransitionOutcome,
 };
-use bunting_market_events::{Command, CommandPayload};
+use bunting_market_events::{Command, CommandPayload, SimulationCommandRequest};
 use bunting_market_types::{EventSequence, ListingKey};
 use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError, OriginStore};
 use sha2::{Digest, Sha256};
@@ -271,6 +271,48 @@ where
             duplicate: false,
         })
     }
+
+    /// Executes one simulation-domain command through the same atomic origin boundary.
+    pub fn execute_simulation_detailed(
+        &self,
+        request: &SimulationCommandRequest,
+    ) -> Result<ExecutedTransaction, TransactionError> {
+        let fingerprint = simulation_command_fingerprint(request)?;
+        if let Some((stored_fingerprint, result)) = self
+            .origin
+            .find_command(request.run_id, request.command_id)?
+        {
+            return if stored_fingerprint == fingerprint {
+                Ok(ExecutedTransaction {
+                    result,
+                    events: Vec::new(),
+                    state: self.origin.load_run(request.run_id)?,
+                    duplicate: true,
+                })
+            } else {
+                Err(TransactionError::IdempotencyConflict)
+            };
+        }
+        let state = self.origin.load_run(request.run_id)?;
+        if state.sequence() != request.expected_sequence {
+            return Err(TransactionError::Origin(OriginError::VersionConflict {
+                current: state.sequence(),
+            }));
+        }
+        let prepared = prepare_simulation_command(request, &state)?;
+        let events = prepared.commit.events.clone();
+        let committed_state = prepared.commit.candidate.clone();
+        let outcome = self.origin.commit(prepared.commit)?;
+        let result = match outcome {
+            CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
+        };
+        Ok(ExecutedTransaction {
+            result,
+            events,
+            state: committed_state,
+            duplicate: false,
+        })
+    }
 }
 
 /// Prepares the engine-owned candidate without origin or cache I/O.
@@ -308,8 +350,53 @@ pub fn prepare_command(
     })
 }
 
+/// Prepares one simulation command without origin or cache I/O.
+pub fn prepare_simulation_command(
+    request: &SimulationCommandRequest,
+    state: &RunState,
+) -> Result<PreparedCommand, TransactionError> {
+    let TransitionOutcome {
+        candidate,
+        events,
+        accepted,
+        reject_code,
+        order_id,
+        snapshot_checksum,
+        ..
+    } = state.transition_simulation(request)?;
+    let result = CommandResult {
+        accepted,
+        reject_code,
+        committed_sequence: candidate.sequence(),
+        order_id,
+        snapshot_checksum,
+    };
+    Ok(PreparedCommand {
+        commit: CommitRequest {
+            run_id: request.run_id,
+            command_id: request.command_id,
+            fingerprint: simulation_command_fingerprint(request)?,
+            expected_version: request.expected_sequence,
+            events,
+            result,
+            candidate,
+        },
+    })
+}
+
 pub fn command_fingerprint(command: &Command) -> Result<String, TransactionError> {
-    let bytes = serde_json::to_vec(command).map_err(|_| TransactionError::Serialization)?;
+    fingerprint(command)
+}
+
+/// Returns the stable idempotency fingerprint for a simulation-domain command.
+pub fn simulation_command_fingerprint(
+    command: &SimulationCommandRequest,
+) -> Result<String, TransactionError> {
+    fingerprint(command)
+}
+
+fn fingerprint(value: &impl serde::Serialize) -> Result<String, TransactionError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| TransactionError::Serialization)?;
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
     for byte in digest {
@@ -341,7 +428,9 @@ fn command_listing_key(
 mod tests {
     use super::*;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
-    use bunting_market_events::{CancelOrder, OrderKind, Side, SubmitOrder};
+    use bunting_market_events::{
+        CancelOrder, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
+    };
     use bunting_market_types::{
         CommandId, CorrelationId, InstrumentId, IterationId, LogicalTimeNs, MoneyMinor, OrderId,
         ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
@@ -459,6 +548,30 @@ mod tests {
                 OriginError::VersionConflict { .. }
             ))
         ));
+        assert_eq!(
+            origin.load_run(RunId::new(1)).unwrap().sequence(),
+            EventSequence::new(1)
+        );
+    }
+
+    #[test]
+    fn simulation_commands_use_the_same_idempotent_origin_commit() {
+        let (origin, cache) = setup();
+        let transaction = CommandTransaction::new(&origin, &cache);
+        let request = SimulationCommandRequest {
+            run_id: RunId::new(1),
+            command_id: CommandId::new(50),
+            correlation_id: CorrelationId::new(50),
+            logical_time: LogicalTimeNs::new(0),
+            expected_sequence: EventSequence::new(0),
+            actor: ParticipantId::new(99),
+            payload: SimulationCommand::StartRun,
+        };
+        let committed = transaction.execute_simulation_detailed(&request).unwrap();
+        assert!(!committed.duplicate);
+        let duplicate = transaction.execute_simulation_detailed(&request).unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.result, committed.result);
         assert_eq!(
             origin.load_run(RunId::new(1)).unwrap().sequence(),
             EventSequence::new(1)

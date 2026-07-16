@@ -252,6 +252,12 @@ pub enum SimulationCommand {
         effective_at: LogicalTimeNs,
         reason: String,
     },
+    ApplyFine {
+        participant_id: ParticipantId,
+        currency_id: CurrencyId,
+        amount: MoneyMinor,
+        reason: String,
+    },
     ScheduleFacilityJob {
         facility_id: FacilityId,
         participant_id: ParticipantId,
@@ -376,6 +382,12 @@ pub enum SimulationEvent {
         participant_id: ParticipantId,
         currency_id: CurrencyId,
         amount: MoneyMinor,
+    },
+    FineApplied {
+        participant_id: ParticipantId,
+        currency_id: CurrencyId,
+        amount: MoneyMinor,
+        policy_version: u16,
     },
     FacilityJobScheduled {
         facility_id: FacilityId,

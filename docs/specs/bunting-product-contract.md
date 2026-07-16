@@ -144,6 +144,10 @@ explicit formulas, units, rounding, ordering, bounds, golden vectors and
 snapshot compatibility. Unknown parameters remain inert until such a policy is
 implemented.
 
+The implemented competition MVC subset is fixed in
+[`competition-policies-v1.md`](competition-policies-v1.md). Its policy names
+are explicitly Bunting-native and do not imply exact RIT behavior.
+
 ## Machine-readable contract
 
 [`schemas/product/bunting.product.v1.json`](../../schemas/product/bunting.product.v1.json)

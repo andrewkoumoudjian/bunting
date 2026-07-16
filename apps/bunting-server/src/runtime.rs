@@ -7,18 +7,24 @@ use bunting_api_contract::{
 };
 use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationSnapshot, FixApplicationState,
-    FixCommandContext, VerifiedActor, project_market,
+    FixCommandContext, VerifiedActor,
+    competition::{account, discovery, news_tenders, risk_score},
+    project_market,
 };
 use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::{RunState, ScenarioDefinition};
+use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
 use bunting_market_types::{
-    CorrelationId, IterationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots, RunId,
+    CommandId, CorrelationId, IterationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots,
+    RunId, TenderId,
 };
 use bunting_origin_store::{OriginError, OriginStore};
 use bunting_runtime::{DeterministicRuntime, RuntimeError, RuntimeHost};
 use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
-use simfix_mapping::{business_reject, market_snapshot};
+use simfix_mapping::{
+    CompetitionRequest, TenderAction, business_reject, competition_report, market_snapshot,
+};
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
 use std::fs::{self, File};
@@ -275,6 +281,7 @@ fn handle_fix_connection(
     response.push(108, config.heartbeat_seconds.to_string());
     response.push(1137, simfix_wire::FIX_50_SP2_APPL_VER_ID);
     response.push(10000, FIX_COMPETITION_PROFILE_VERSION);
+    response.push(10004, actor_role_name(config.role));
     send_messages(
         &mut session,
         &mut stream,
@@ -284,8 +291,12 @@ fn handle_fix_connection(
     )?;
     let actor = VerifiedActor::try_from_identity(ActorIdentity {
         actor_id: UnsignedDecimalString::new(config.participant_id),
-        role: ActorRole::Participant,
-        participant_id: Some(UnsignedDecimalString::new(config.participant_id)),
+        role: config.role,
+        participant_id: matches!(
+            config.role,
+            ActorRole::Participant | ActorRole::BuiltInAgent
+        )
+        .then(|| UnsignedDecimalString::new(config.participant_id)),
         team_id: None,
     })
     .map_err(|error| format!("invalid configured actor: {error}"))?;
@@ -322,6 +333,7 @@ fn handle_fix_connection(
         for action in actions {
             match action {
                 SessionAction::Application(message) => applications.push(message),
+                SessionAction::PeerLogon(_) => {}
                 other => process_session_actions(
                     vec![other],
                     &mut stream,
@@ -375,6 +387,13 @@ fn handle_fix_connection(
                         let asks = typed_levels(&projection.asks, market_depth);
                         vec![market_snapshot(&request_id, instrument_id, &bids, &asks)]
                     }
+                    Ok(FixApplicationRequest::Competition(request)) => competition_messages(
+                        &service,
+                        &actor,
+                        &state,
+                        request,
+                        u128::from(session.snapshot().incoming_sequence),
+                    )?,
                     Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
                 }
             };
@@ -386,6 +405,242 @@ fn handle_fix_connection(
                 &application,
             )?;
         }
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive competition request router keeps projection and mutation authority visible"
+)]
+fn competition_messages<O: OriginStore, C: bunting_command_transaction::SnapshotCache>(
+    service: &ApplicationService<'_, O, C>,
+    actor: &VerifiedActor,
+    state: &RunState,
+    request: CompetitionRequest,
+    request_id: u128,
+) -> Result<Vec<FixMessage>, String> {
+    let report = match request {
+        CompetitionRequest::Discovery => competition_report(
+            "y",
+            "public",
+            "discovery",
+            "snapshot",
+            "ok",
+            state.sequence().get(),
+            &discovery(state),
+        ),
+        CompetitionRequest::Account => competition_report(
+            "AP",
+            "private",
+            "account",
+            "snapshot",
+            "ok",
+            state.sequence().get(),
+            &account(state, actor).map_err(|error| error.to_string())?,
+        ),
+        CompetitionRequest::News => competition_report(
+            "B",
+            "private",
+            "news",
+            "list",
+            "ok",
+            state.sequence().get(),
+            &news_tenders(state, actor)
+                .map_err(|error| error.to_string())?
+                .news,
+        ),
+        CompetitionRequest::Tender { action, tender_id } => {
+            let participant = actor
+                .participant_id()
+                .ok_or_else(|| "competition participant identity is unavailable".to_owned())?;
+            let current = if action == TenderAction::List {
+                state.clone()
+            } else {
+                let decision = if action == TenderAction::Accept {
+                    TenderDecision::Accept
+                } else {
+                    TenderDecision::Decline
+                };
+                service
+                    .execute_simulation(
+                        actor,
+                        &SimulationCommandRequest {
+                            run_id: state.run_id(),
+                            command_id: competition_command_id(request_id),
+                            correlation_id: CorrelationId::new(request_id),
+                            logical_time: state.simulation().clock.now,
+                            expected_sequence: state.sequence(),
+                            actor: participant,
+                            payload: SimulationCommand::DecideTender {
+                                tender_id: TenderId::new(
+                                    tender_id
+                                        .ok_or_else(|| "missing tender identity".to_owned())?,
+                                ),
+                                decision,
+                            },
+                        },
+                    )
+                    .map_err(|error| error.to_string())?
+                    .state
+            };
+            competition_report(
+                "U6",
+                "private",
+                "tender",
+                "list",
+                "ok",
+                current.sequence().get(),
+                &news_tenders(&current, actor)
+                    .map_err(|error| error.to_string())?
+                    .tenders,
+            )
+        }
+        CompetitionRequest::Score => competition_report(
+            "U9",
+            "private",
+            "score",
+            "snapshot",
+            "ok",
+            state.sequence().get(),
+            &risk_score(state, actor)
+                .map_err(|error| error.to_string())?
+                .latest_score,
+        ),
+        CompetitionRequest::Risk => competition_report(
+            "UB",
+            "private",
+            "risk",
+            "snapshot",
+            "ok",
+            state.sequence().get(),
+            &risk_score(state, actor).map_err(|error| error.to_string())?,
+        ),
+        CompetitionRequest::RunControl {
+            action,
+            payload_json,
+        }
+        | CompetitionRequest::RiskAdmin {
+            action,
+            payload_json,
+        } => {
+            let executed = service
+                .execute_simulation(
+                    actor,
+                    &SimulationCommandRequest {
+                        run_id: state.run_id(),
+                        command_id: competition_command_id(request_id),
+                        correlation_id: CorrelationId::new(request_id),
+                        logical_time: state.simulation().clock.now,
+                        expected_sequence: state.sequence(),
+                        actor: ParticipantId::new(actor.identity().actor_id.get()),
+                        payload: operator_command(&action, payload_json.as_deref())?,
+                    },
+                )
+                .map_err(|error| format!("operator command failed: {error}"))?;
+            competition_report(
+                "UA",
+                "admin",
+                "run_control",
+                &action,
+                "committed",
+                executed.state.sequence().get(),
+                &discovery(&executed.state),
+            )
+        }
+    }
+    .map_err(|error| format!("competition report mapping failed: {error:?}"))?;
+    Ok(vec![report])
+}
+
+const fn competition_command_id(sequence: u128) -> CommandId {
+    CommandId::new((1_u128 << 127) | sequence)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdvancePayload {
+    steps: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReasonPayload {
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishNewsPayload {
+    news_id: bunting_market_types::NewsId,
+    audience: bunting_market_events::NewsAudience,
+    headline: String,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenTenderPayload {
+    tender_id: TenderId,
+    participant_id: ParticipantId,
+    instrument_id: bunting_market_types::InstrumentId,
+    side: bunting_market_events::Side,
+    quantity: QuantityLots,
+    price: PriceTicks,
+    expires_at: LogicalTimeNs,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FinePayload {
+    participant_id: ParticipantId,
+    currency_id: bunting_market_types::CurrencyId,
+    amount: bunting_market_types::MoneyMinor,
+    reason: String,
+}
+
+fn operator_command(action: &str, payload_json: Option<&str>) -> Result<SimulationCommand, String> {
+    let payload = payload_json.unwrap_or("{}");
+    match action {
+        "start" => Ok(SimulationCommand::StartRun),
+        "pause" => Ok(SimulationCommand::PauseRun),
+        "resume" => Ok(SimulationCommand::ResumeRun),
+        "advance" => serde_json::from_str::<AdvancePayload>(payload)
+            .map(|value| SimulationCommand::Advance { steps: value.steps })
+            .map_err(|error| format!("invalid advance payload: {error}")),
+        "terminate" => serde_json::from_str::<ReasonPayload>(payload)
+            .map(|value| SimulationCommand::Terminate {
+                reason: value.reason,
+            })
+            .map_err(|error| format!("invalid terminate payload: {error}")),
+        "publish_news" => serde_json::from_str::<PublishNewsPayload>(payload)
+            .map(|value| SimulationCommand::PublishNews {
+                news_id: value.news_id,
+                audience: value.audience,
+                headline: value.headline,
+                body: value.body,
+            })
+            .map_err(|error| format!("invalid news payload: {error}")),
+        "open_tender" => serde_json::from_str::<OpenTenderPayload>(payload)
+            .map(|value| SimulationCommand::OpenTender {
+                tender_id: value.tender_id,
+                participant_id: value.participant_id,
+                instrument_id: value.instrument_id,
+                side: value.side,
+                quantity: value.quantity,
+                price: value.price,
+                expires_at: value.expires_at,
+            })
+            .map_err(|error| format!("invalid tender payload: {error}")),
+        "score" => Ok(SimulationCommand::ScoreIteration),
+        "fine" => serde_json::from_str::<FinePayload>(payload)
+            .map(|value| SimulationCommand::ApplyFine {
+                participant_id: value.participant_id,
+                currency_id: value.currency_id,
+                amount: value.amount,
+                reason: value.reason,
+            })
+            .map_err(|error| format!("invalid fine payload: {error}")),
+        _ => Err(format!("unsupported operator action {action}")),
     }
 }
 
@@ -479,6 +734,7 @@ fn authenticate_logon(message: &FixMessage, config: &FixConfig) -> Result<(), St
         || message.value(56) != Some(config.sender_comp_id.as_str())
         || message.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
         || message.value(10000) != Some(FIX_COMPETITION_PROFILE_VERSION)
+        || message.value(10004) != Some(actor_role_name(config.role))
     {
         return Err("FIX Logon identity or Bunting profile is invalid".to_owned());
     }
@@ -488,6 +744,16 @@ fn authenticate_logon(message: &FixMessage, config: &FixConfig) -> Result<(), St
         return Err("FIX Logon credentials rejected".to_owned());
     }
     Ok(())
+}
+
+const fn actor_role_name(role: ActorRole) -> &'static str {
+    match role {
+        ActorRole::Participant => "participant",
+        ActorRole::Team => "team",
+        ActorRole::Instructor => "instructor",
+        ActorRole::Administrator => "administrator",
+        ActorRole::BuiltInAgent => "built_in_agent",
+    }
 }
 
 fn constant_time_eq(left: &str, right: &str) -> bool {
@@ -534,6 +800,7 @@ fn process_session_actions(
             SessionAction::Application(_) => {
                 return Err("application action must be handled by caller".to_owned());
             }
+            SessionAction::PeerLogon(_) => {}
         }
     }
     Ok(())

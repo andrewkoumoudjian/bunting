@@ -57,3 +57,47 @@ pub fn draw(frame: &mut Frame, app: &App, client: &FixClient) {
         views::popup::render(frame, inner, app);
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::config::TerminalConfig;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn every_workspace_tab_matches_its_full_frame_snapshot() {
+        let profile = TerminalConfig::default().profile("local").unwrap();
+        let client =
+            FixClient::new("local".to_owned(), profile, Some("test-only".to_owned())).unwrap();
+        let snapshots = [
+            (Tab::Market, 2_860_379_810_998_369_312_u64),
+            (Tab::Orders, 6_963_824_031_582_916_210),
+            (Tab::Account, 6_625_834_207_265_573_254),
+            (Tab::Simulation, 17_137_701_615_183_501_023),
+            (Tab::Collaboration, 521_444_836_489_403_141),
+            (Tab::Administration, 2_461_448_359_647_326_975),
+            (Tab::Session, 1_400_212_887_613_168_380),
+        ];
+        let mut actual_snapshots = Vec::new();
+        for (tab, _) in snapshots {
+            let mut app = App::default();
+            app.tab = tab;
+            let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+            terminal.draw(|frame| draw(frame, &app, &client)).unwrap();
+            let actual = terminal.backend().buffer().content().iter().fold(
+                0xcbf2_9ce4_8422_2325_u64,
+                |hash, cell| {
+                    cell.symbol().as_bytes().iter().fold(hash, |value, byte| {
+                        value.wrapping_mul(0x0000_0100_0000_01b3) ^ u64::from(*byte)
+                    })
+                },
+            );
+            actual_snapshots.push((tab.name(), actual));
+        }
+        assert_eq!(
+            actual_snapshots,
+            snapshots.map(|(tab, hash)| (tab.name(), hash))
+        );
+    }
+}

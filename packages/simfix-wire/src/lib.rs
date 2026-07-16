@@ -428,7 +428,10 @@ pub fn competition_rule(msg_type: &str) -> Option<&'static MessageRule> {
 /// # Errors
 /// Returns an error for a missing, duplicate, or unsupported application tag.
 pub fn validate_competition(message: &FixMessage) -> Result<(), WireError> {
-    let rule = competition_rule(&message.msg_type).ok_or(WireError::InvalidMessageType)?;
+    CompetitionDictionary::load()?.validate(message)?;
+    let Some(rule) = competition_rule(&message.msg_type) else {
+        return Ok(());
+    };
     for required in rule.required_tags {
         if !message.fields.iter().any(|field| field.tag == *required) {
             return Err(WireError::MissingRequiredTag(*required));
@@ -481,10 +484,7 @@ impl CompetitionDictionary {
                 .application
                 .message_by_msgtype(&message.msg_type)
                 .is_some();
-        let extension = matches!(
-            message.msg_type.as_str(),
-            "U1" | "U2" | "U3" | "U4" | "U5" | "U6" | "U7" | "U8" | "U9" | "UA" | "UB" | "UC"
-        );
+        let extension = matches!(message.msg_type.as_str(), "U6" | "U9" | "UA" | "UB" | "UC");
         if !standard && !extension {
             return Err(WireError::InvalidMessageType);
         }

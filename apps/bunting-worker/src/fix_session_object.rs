@@ -1,8 +1,15 @@
-use crate::{execute_command_detailed, load_run, snapshot_output};
-use bunting_market_events::{CancelOrder, Command, CommandPayload, EventPayload, SubmitOrder};
+use crate::{
+    execute_command_detailed, execute_simulation_detailed, load_run, snapshot_output,
+    verified_participant,
+};
+use bunting_application::competition::{account, discovery, news_tenders, risk_score};
+use bunting_market_events::{
+    CancelOrder, Command, CommandPayload, EventPayload, SimulationCommand,
+    SimulationCommandRequest, SubmitOrder, TenderDecision,
+};
 use bunting_market_types::{
     CommandId, CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId,
-    RunId,
+    RunId, TenderId,
 };
 use quarcc_execution_engine::event::ExecutionAction;
 use quarcc_execution_engine::ids::{IntentId, LocalOrderId, ReportId, VenueOrderId};
@@ -12,8 +19,8 @@ use quarcc_execution_engine::{
 };
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{
-    ExecutionMode, InboundApplication, MappingContext, business_reject, map_execution_report,
-    map_inbound, market_snapshot,
+    CompetitionRequest, ExecutionMode, InboundApplication, MappingContext, TenderAction,
+    business_reject, competition_report, map_execution_report, map_inbound, market_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Field, FixMessage, WireLimits};
@@ -141,10 +148,10 @@ impl FixSessionObject {
             max_journal_messages: 4_096,
             max_pending_inbound: 256,
             wire_limits: WireLimits::default(),
-            logon_fields: vec![Field::new(
-                10000,
-                bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION,
-            )],
+            logon_fields: vec![
+                Field::new(10000, bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION),
+                Field::new(10004, "participant"),
+            ],
         };
         let previous: Option<StoredFixSession> = self.state.storage().get(STORAGE_KEY).await?;
         if previous.as_ref().is_some_and(|stored| {
@@ -299,6 +306,9 @@ impl FixSessionObject {
             }
         };
         match application {
+            InboundApplication::Competition(request) => {
+                self.execute_competition(stored, request).await
+            }
             InboundApplication::MarketDataRequest {
                 request_id,
                 instrument_id,
@@ -340,6 +350,152 @@ impl FixSessionObject {
                 ExecutionMode::Direct => self.execute_direct(stored, intent, message).await,
                 ExecutionMode::QuarccManaged => self.execute_managed(stored, intent, message).await,
             },
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the Durable Object router keeps every authorized competition request in one auditable match"
+    )]
+    async fn execute_competition(
+        &self,
+        stored: &mut StoredFixSession,
+        request: CompetitionRequest,
+    ) -> Vec<FixMessage> {
+        let Ok(actor) = verified_participant(stored.participant_id) else {
+            return vec![business_reject("U1", "participant identity rejected")];
+        };
+        let Ok(database) = self.environment.d1("ORIGIN_DB") else {
+            return vec![business_reject("U1", "origin unavailable")];
+        };
+        let Ok(state) = crate::d1_origin::load_run(&database, &stored.run_id.to_string()).await
+        else {
+            return vec![business_reject("U1", "run unavailable")];
+        };
+        let report = match request {
+            CompetitionRequest::Discovery => competition_report(
+                "y",
+                "public",
+                "discovery",
+                "snapshot",
+                "ok",
+                state.sequence().get(),
+                &discovery(&state),
+            ),
+            CompetitionRequest::Account => account(&state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "AP",
+                        "private",
+                        "account",
+                        "snapshot",
+                        "ok",
+                        state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::News => news_tenders(&state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "B",
+                        "private",
+                        "news",
+                        "list",
+                        "ok",
+                        state.sequence().get(),
+                        &view.news,
+                    )
+                },
+            ),
+            CompetitionRequest::Tender { action, tender_id } => {
+                let current = if action == TenderAction::List {
+                    state
+                } else {
+                    let decision = if action == TenderAction::Accept {
+                        TenderDecision::Accept
+                    } else {
+                        TenderDecision::Decline
+                    };
+                    let command_id = stored.next_intent_id;
+                    let request = SimulationCommandRequest {
+                        run_id: stored.run_id,
+                        command_id: CommandId::new(command_id),
+                        correlation_id: CorrelationId::new(command_id),
+                        logical_time: state.simulation().clock.now,
+                        expected_sequence: state.sequence(),
+                        actor: stored.participant_id,
+                        payload: SimulationCommand::DecideTender {
+                            tender_id: TenderId::new(tender_id.unwrap_or_default()),
+                            decision,
+                        },
+                    };
+                    if execute_simulation_detailed(request, &actor, &self.environment)
+                        .await
+                        .is_err()
+                    {
+                        return vec![business_reject("U6", "tender decision rejected")];
+                    }
+                    match crate::d1_origin::load_run(&database, &stored.run_id.to_string()).await {
+                        Ok(state) => state,
+                        Err(_) => return vec![business_reject("U6", "run recovery failed")],
+                    }
+                };
+                news_tenders(&current, &actor).map_or_else(
+                    |_| Err(simfix_mapping::MappingError::Serialization),
+                    |view| {
+                        competition_report(
+                            "U6",
+                            "private",
+                            "tender",
+                            "list",
+                            "ok",
+                            current.sequence().get(),
+                            &view.tenders,
+                        )
+                    },
+                )
+            }
+            CompetitionRequest::Score => risk_score(&state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "U9",
+                        "private",
+                        "score",
+                        "snapshot",
+                        "ok",
+                        state.sequence().get(),
+                        &view.latest_score,
+                    )
+                },
+            ),
+            CompetitionRequest::Risk => risk_score(&state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "UB",
+                        "private",
+                        "risk",
+                        "snapshot",
+                        "ok",
+                        state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::RunControl { .. } | CompetitionRequest::RiskAdmin { .. } => {
+                return vec![business_reject("UA", "operator FIX role is required")];
+            }
+        };
+        match report {
+            Ok(report) => vec![report],
+            Err(error) => vec![business_reject(
+                "U1",
+                &format!("competition report failed: {error:?}"),
+            )],
         }
     }
 
