@@ -1,4 +1,6 @@
-use crate::config::{AdminConfig, FixConfig, ServerConfig, StorageKind, TlsConfig};
+use crate::config::{
+    AdminConfig, FixConfig, ScenarioRuntimeConfig, ServerConfig, StorageKind, TlsConfig,
+};
 use crate::storage::NativeOrigin;
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
@@ -13,6 +15,7 @@ use bunting_market_types::{
     CorrelationId, IterationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots, RunId,
 };
 use bunting_origin_store::{OriginError, OriginStore};
+use bunting_runtime::{DeterministicRuntime, RuntimeError, RuntimeHost};
 use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{business_reject, market_snapshot};
@@ -22,8 +25,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +51,23 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
             &definition,
         )
         .map_err(|error| format!("cannot create run from scenario: {error}"))?;
+        if let Some(runtime) = &config.runtime {
+            if runtime.scheduler.run_id != run.run_id()
+                || run
+                    .listing_key_for_instrument(runtime.scheduler.instrument_id)
+                    .is_err()
+                || runtime.scheduler.agents.iter().any(|agent| {
+                    !definition
+                        .participants()
+                        .contains_key(&agent.participant_id)
+                })
+            {
+                return Err(
+                    "runtime run, instrument and agent participants must exist in the immutable scenario"
+                        .to_owned(),
+                );
+            }
+        }
         match origin.load_run(run.run_id()) {
             Ok(existing) if existing.scenario_hash() == run.scenario_hash() => {}
             Ok(_) => {
@@ -65,14 +85,24 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     }
     let origin = Arc::new(origin);
     let cache = Arc::new(InMemorySnapshotCache::new());
+    let writer = Arc::new(Mutex::new(()));
     let mut threads = Vec::new();
     if let Some(admin) = config.admin.clone() {
         let origin = origin.clone();
         threads.push(thread::spawn(move || run_admin(&admin, &origin)));
     }
+    if let Some(runtime) = config.runtime.clone() {
+        let origin = origin.clone();
+        let cache = cache.clone();
+        let writer = writer.clone();
+        threads.push(thread::spawn(move || {
+            run_scenario_runtime(&runtime, &origin, &cache, &writer)
+        }));
+    }
     if let Some(fix) = config.fix.clone() {
         let origin = origin.clone();
         let cache = cache.clone();
+        let writer = writer.clone();
         let session_path = match config.storage.kind {
             StorageKind::File => config
                 .storage
@@ -82,7 +112,7 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
             StorageKind::Memory => None,
         };
         threads.push(thread::spawn(move || {
-            run_fix_acceptor(&fix, &origin, &cache, session_path.as_deref())
+            run_fix_acceptor(&fix, &origin, &cache, &writer, session_path.as_deref())
         }));
     }
     if threads.is_empty() {
@@ -121,6 +151,7 @@ fn run_fix_acceptor(
     config: &FixConfig,
     origin: &Arc<NativeOrigin>,
     cache: &Arc<InMemorySnapshotCache>,
+    writer: &Arc<Mutex<()>>,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
@@ -138,12 +169,18 @@ fn run_fix_acceptor(
         let config = config.clone();
         let origin = origin.clone();
         let cache = cache.clone();
+        let writer = writer.clone();
         let active = active.clone();
         let session_path = session_path.map(Path::to_path_buf);
         thread::spawn(move || {
-            if let Err(error) =
-                handle_fix_connection(stream, &config, &origin, &cache, session_path.as_deref())
-            {
+            if let Err(error) = handle_fix_connection(
+                stream,
+                &config,
+                &origin,
+                &cache,
+                &writer,
+                session_path.as_deref(),
+            ) {
                 eprintln!("bunting-server: FIX connection closed: {error}");
             }
             active.fetch_sub(1, Ordering::AcqRel);
@@ -184,6 +221,7 @@ fn handle_fix_connection(
     config: &FixConfig,
     origin: &NativeOrigin,
     cache: &InMemorySnapshotCache,
+    writer: &Mutex<()>,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
     stream
@@ -293,46 +331,51 @@ fn handle_fix_connection(
             }
         }
         for message in applications {
-            let state = service
-                .recover(RunId::new(config.run_id))
-                .map_err(|error| format!("run recovery failed: {error}"))?;
-            let request = application.map_message(
-                &message,
-                &FixCommandContext {
-                    actor: ParticipantId::new(config.participant_id),
-                    run_id: RunId::new(config.run_id),
-                    expected_sequence: state.sequence(),
-                    logical_time: LogicalTimeNs::new(epoch_millis().saturating_mul(1_000_000)),
-                    correlation_id: CorrelationId::new(u128::from(
-                        session.snapshot().incoming_sequence,
-                    )),
-                },
-            );
-            let outbound = match request {
-                Ok(FixApplicationRequest::Command(command)) => {
-                    let executed = service
-                        .execute(&actor, &command)
-                        .map_err(|error| format!("application command failed: {error}"))?;
-                    application
-                        .committed_messages(
-                            ParticipantId::new(config.participant_id),
-                            &executed.events,
-                        )
-                        .map_err(|error| format!("FIX report mapping failed: {error}"))?
+            let outbound = {
+                let _writer_guard = writer
+                    .lock()
+                    .map_err(|_| "authoritative writer lock is unavailable".to_owned())?;
+                let state = service
+                    .recover(RunId::new(config.run_id))
+                    .map_err(|error| format!("run recovery failed: {error}"))?;
+                let request = application.map_message(
+                    &message,
+                    &FixCommandContext {
+                        actor: ParticipantId::new(config.participant_id),
+                        run_id: RunId::new(config.run_id),
+                        expected_sequence: state.sequence(),
+                        logical_time: LogicalTimeNs::new(epoch_millis().saturating_mul(1_000_000)),
+                        correlation_id: CorrelationId::new(u128::from(
+                            session.snapshot().incoming_sequence,
+                        )),
+                    },
+                );
+                match request {
+                    Ok(FixApplicationRequest::Command(command)) => {
+                        let executed = service
+                            .execute(&actor, &command)
+                            .map_err(|error| format!("application command failed: {error}"))?;
+                        application
+                            .committed_messages(
+                                ParticipantId::new(config.participant_id),
+                                &executed.events,
+                            )
+                            .map_err(|error| format!("FIX report mapping failed: {error}"))?
+                    }
+                    Ok(FixApplicationRequest::MarketData {
+                        request_id,
+                        instrument_id,
+                        market_depth,
+                        ..
+                    }) => {
+                        let projection = project_market(&state, instrument_id)
+                            .map_err(|error| format!("market projection failed: {error}"))?;
+                        let bids = typed_levels(&projection.bids, market_depth);
+                        let asks = typed_levels(&projection.asks, market_depth);
+                        vec![market_snapshot(&request_id, instrument_id, &bids, &asks)]
+                    }
+                    Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
                 }
-                Ok(FixApplicationRequest::MarketData {
-                    request_id,
-                    instrument_id,
-                    market_depth,
-                    ..
-                }) => {
-                    let projection = project_market(&state, instrument_id)
-                        .map_err(|error| format!("market projection failed: {error}"))?;
-                    let bids = typed_levels(&projection.bids, market_depth);
-                    let asks = typed_levels(&projection.asks, market_depth);
-                    vec![market_snapshot(&request_id, instrument_id, &bids, &asks)]
-                }
-                Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
             };
             send_messages(
                 &mut session,
@@ -342,6 +385,54 @@ fn handle_fix_connection(
                 &application,
             )?;
         }
+    }
+}
+
+struct NativeRuntimeHost<'a> {
+    origin: &'a NativeOrigin,
+    cache: &'a InMemorySnapshotCache,
+}
+
+impl RuntimeHost for NativeRuntimeHost<'_> {
+    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
+        self.origin
+            .load_run(run_id)
+            .map_err(|error| RuntimeError::Host(origin_error(&error)))
+    }
+
+    fn commit(
+        &mut self,
+        actor: &VerifiedActor,
+        command: &bunting_market_events::Command,
+    ) -> Result<Vec<bunting_market_events::EventEnvelope>, RuntimeError> {
+        ApplicationService::new(self.origin, self.cache)
+            .execute(actor, command)
+            .map(|executed| executed.events)
+            .map_err(|error| RuntimeError::Host(format!("runtime command failed: {error}")))
+    }
+}
+
+fn run_scenario_runtime(
+    config: &ScenarioRuntimeConfig,
+    origin: &NativeOrigin,
+    cache: &InMemorySnapshotCache,
+    writer: &Mutex<()>,
+) -> Result<(), String> {
+    let mut runtime = DeterministicRuntime::new(config.scheduler.clone())
+        .map_err(|error| format!("invalid deterministic runtime: {error}"))?;
+    let mut host = NativeRuntimeHost { origin, cache };
+    let cadence = Duration::from_millis(config.wall_tick_ms);
+    loop {
+        let started = std::time::Instant::now();
+        {
+            let _writer_guard = writer
+                .lock()
+                .map_err(|_| "authoritative writer lock is unavailable".to_owned())?;
+            runtime
+                .advance(&mut host)
+                .map_err(|error| format!("deterministic runtime failed: {error}"))?;
+        }
+        thread::sleep(cadence.saturating_sub(started.elapsed()));
     }
 }
 
@@ -623,7 +714,12 @@ mod tests {
             .ok_or_else(|| "local scenario missing".to_owned())?;
         assert_eq!((run_id, iteration_id), (1, 1));
         assert_eq!(scenario.listings().len(), 1);
-        assert_eq!(scenario.participants().len(), 1);
+        assert_eq!(scenario.participants().len(), 2);
+        assert!(
+            scenario
+                .participants()
+                .contains_key(&ParticipantId::new(10))
+        );
         Ok(())
     }
 }

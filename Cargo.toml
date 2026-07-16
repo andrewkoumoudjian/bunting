@@ -14,6 +14,7 @@ members = [
   "packages/quarcc-bunting-adapter",
   "packages/quarcc-execution-wasm",
   "packages/bunting-agents",
+  "packages/bunting-runtime",
   "packages/simfix-wire",
   "packages/simfix-session",
   "packages/simfix-mapping",
@@ -40,6 +41,7 @@ bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
 bunting-application = { path = "packages/bunting-application" }
 bunting-engine = { path = "packages/bunting-engine" }
+bunting-runtime = { path = "packages/bunting-runtime" }
 quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
 simfix-wire = { path = "packages/simfix-wire" }
 simfix-session = { path = "packages/simfix-session" }

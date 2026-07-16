@@ -14,9 +14,11 @@ path = "src/main.rs"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bunting-agents = { path = "../../packages/bunting-agents" }
+bunting-application.workspace = true
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+bunting-runtime.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 clap = { version = "4.6.1", features = ["derive"] }
 colored = "2"

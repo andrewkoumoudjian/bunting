@@ -5,5 +5,6 @@
   "fix": {"bind":"127.0.0.1:9880","sender_comp_id":"BUNTING","target_comp_id":"HUMAN","username":"participant","password":"bunting-local-dev","participant_id":1,"run_id":1,"heartbeat_seconds":30,"max_connections":1,"max_message_bytes":16384,"max_journal_messages":4096,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
   "admin": {"bind":"127.0.0.1:8080","bearer_token":"replace-admin-token","max_request_bytes":4096},
   "scenario": {"path":"scenario.json","run_id":1,"iteration_id":1},
+  "runtime": {"wall_tick_ms":250,"scheduler":{"run_id":1,"instrument_id":1,"fundamental_price":100,"remaining_parent_quantity":1000,"max_actions_per_tick":256,"agents":[{"kind":"static_liquidity_provider","participant_id":10,"base_quantity":5,"spread_ticks":2,"inventory_target":0,"wake_interval_ns":1000000000,"seed":42,"max_intents_per_wake":4}]}},
   "relay": null
 }

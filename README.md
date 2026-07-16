@@ -104,6 +104,7 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `command-transaction`: recovery, risk, matching, accounting and commit orchestration;
 - `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: portable participant execution, venue mapping, and browser bindings;
 - `bunting-agents`: deterministic built-in policies composed with mandatory QUARCC execution;
+- `bunting-runtime`: deterministic built-in participant scheduling shared by the server and local FIX fixture;
 - `simfix-wire`, `simfix-session`, and `simfix-mapping`: FIX framing, session recovery, and application mapping;
 - `worker-cache`: immutable Workers Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;

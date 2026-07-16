@@ -20,6 +20,17 @@
       },
       "initial_cash": 1000000000,
       "initial_positions": {}
+    },
+    "10": {
+      "participant_id": 10,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": 1000000000,
+      "initial_positions": {"1": 100000}
     }
   }
 }

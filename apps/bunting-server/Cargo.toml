@@ -9,11 +9,13 @@ description = "Native Bunting FIX server and Cloudflare FIX session relay"
 
 [dependencies]
 bunting-api-contract.workspace = true
+bunting-agents = { path = "../../packages/bunting-agents" }
 bunting-application.workspace = true
 bunting-command-transaction = { path = "../../packages/command-transaction" }
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+bunting-runtime.workspace = true
 bunting-origin-store = { path = "../../packages/origin-store" }
 quarcc-execution-engine.workspace = true
 serde.workspace = true

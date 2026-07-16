@@ -45,7 +45,7 @@ FIX-to-application boundary.
 - [x] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
   bounded isolated hosted sessions, and concrete hosted/Cloudflare relay
   deployment guides and smoke gates.
-- [ ] **Phase 5 - server runtime:** extract deterministic scheduling and agents
+- [x] **Phase 5 - server runtime:** extract deterministic scheduling and agents
   from the TUI fixture into `packages/bunting-runtime`; host it in the server
   with authenticated participant roles and a single commit-before-ack writer.
 - [ ] **Phase 5.5 - FIX adoption and upgrade:** accept an ADR-backed existing
@@ -83,6 +83,17 @@ and Cloudflare relay gates. Raw Workerd `2026-07-16` loaded the release JS/Wasm
 bundle, returned compatible health, instantiated the FIX Durable Object, and
 proved that the deliberately absent D1 backend fails closed rather than
 falling back to non-authoritative state.
+
+Phase 5 completed on the same branch: `packages/bunting-runtime` now owns the
+deterministic sans-I/O wake queue, bounded action cascades, mandatory QUARCC
+participant state, authenticated `BuiltInAgent` identities, and portable
+snapshot/restore. Both the TUI fixture and native server host that package. The
+server serializes runtime and FIX recovery/commit work through one writer,
+releases the writer before socket output, and therefore cannot acknowledge a
+command before the origin transaction returns committed events. Focused tests
+proved authenticated agent commits and deterministic resume; a live
+zero-configuration run advanced origin state to committed sequence 6 and event
+sequence 18 through the server-hosted runtime.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

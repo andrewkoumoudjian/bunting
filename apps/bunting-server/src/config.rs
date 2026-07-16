@@ -1,3 +1,6 @@
+use bunting_agents::PolicyKind;
+use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots, RunId};
+use bunting_runtime::{RuntimeAgentConfig, RuntimeConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -75,6 +78,13 @@ pub struct ScenarioConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ScenarioRuntimeConfig {
+    pub wall_tick_ms: u64,
+    pub scheduler: RuntimeConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelayConfig {
     pub participant_bind: String,
     pub worker_bind: String,
@@ -99,6 +109,8 @@ pub struct ServerConfig {
     pub fix: Option<FixConfig>,
     pub admin: Option<AdminConfig>,
     pub scenario: Option<ScenarioConfig>,
+    #[serde(default)]
+    pub runtime: Option<ScenarioRuntimeConfig>,
     pub relay: Option<RelayConfig>,
 }
 
@@ -148,6 +160,26 @@ impl ServerConfig {
                 max_request_bytes: 4_096,
             }),
             scenario: None,
+            runtime: Some(ScenarioRuntimeConfig {
+                wall_tick_ms: 250,
+                scheduler: RuntimeConfig {
+                    run_id: RunId::new(1),
+                    instrument_id: InstrumentId::new(1),
+                    fundamental_price: PriceTicks::new(100),
+                    remaining_parent_quantity: QuantityLots::new(1_000),
+                    max_actions_per_tick: 256,
+                    agents: vec![RuntimeAgentConfig {
+                        kind: PolicyKind::StaticLiquidityProvider,
+                        participant_id: ParticipantId::new(10),
+                        base_quantity: QuantityLots::new(5),
+                        spread_ticks: 2,
+                        inventory_target: QuantityLots::new(0),
+                        wake_interval_ns: 1_000_000_000,
+                        seed: 42,
+                        max_intents_per_wake: 4,
+                    }],
+                },
+            }),
             relay: None,
         }
     }
@@ -257,8 +289,35 @@ impl ServerConfig {
         if let Some(relay) = &self.relay {
             validate_relay(relay)?;
         }
+        if let Some(runtime) = &self.runtime {
+            validate_runtime(runtime, self.scenario.as_ref(), self.fix.as_ref())?;
+        }
         Ok(())
     }
+}
+
+fn validate_runtime(
+    runtime: &ScenarioRuntimeConfig,
+    scenario: Option<&ScenarioConfig>,
+    fix: Option<&FixConfig>,
+) -> Result<(), ConfigError> {
+    if !(1..=60_000).contains(&runtime.wall_tick_ms) {
+        return Err(ConfigError(
+            "runtime.wall_tick_ms must be 1..=60000".to_owned(),
+        ));
+    }
+    runtime
+        .scheduler
+        .validate()
+        .map_err(|error| ConfigError(format!("invalid runtime scheduler: {error}")))?;
+    if scenario.is_some_and(|value| value.run_id != runtime.scheduler.run_id.get())
+        || fix.is_some_and(|value| value.run_id != runtime.scheduler.run_id.get())
+    {
+        return Err(ConfigError(
+            "runtime, scenario and FIX run IDs must match".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_relative(value: &mut String, base: &Path) {

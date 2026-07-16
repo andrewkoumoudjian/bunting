@@ -254,9 +254,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bunting-runtime"
+version = "0.1.0"
+dependencies = [
+ "bunting-agents",
+ "bunting-api-contract",
+ "bunting-application",
+ "bunting-engine",
+ "bunting-market-events",
+ "bunting-market-types",
+ "bunting-risk-engine",
+ "quarcc-bunting-adapter",
+ "quarcc-execution-engine",
+ "serde",
+]
+
+[[package]]
 name = "bunting-server"
 version = "0.1.0"
 dependencies = [
+ "bunting-agents",
  "bunting-api-contract",
  "bunting-application",
  "bunting-command-transaction",
@@ -265,6 +282,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-origin-store",
  "bunting-risk-engine",
+ "bunting-runtime",
  "quarcc-execution-engine",
  "serde",
  "serde_json",
@@ -278,10 +296,12 @@ name = "bunting-tui"
 version = "0.1.0"
 dependencies = [
  "bunting-agents",
+ "bunting-application",
  "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",
  "bunting-risk-engine",
+ "bunting-runtime",
  "clap",
  "colored",
  "crossterm",
