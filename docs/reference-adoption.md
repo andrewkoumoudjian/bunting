@@ -48,6 +48,7 @@ The first-party adapter now lives in a private `packages/bunting-engine` module 
 | Candidate | Observed version/source | Intended boundary |
 |---|---|---|
 | `@trpc/server` / `@trpc/client` | `11.18.0`, source git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT; selected manifests and transport entrypoints are hashed in the functionality audit | Development-only wire/fixture oracle for ADR 0016. Only `tests/oracles/trpc` may install the TypeScript packages; committed normalized fixtures are the offline input to Rust differential tests, and no production Worker or Cargo manifest may depend on them. |
+| `quickfixgo/quickfix` | exact Go module `v0.9.10`, QuickFIX Software License 1.0, `github.com/quickfixgo/quickfix` | Development-only external FIXT.1.1/FIX 5.0 SP2 serializer/parser oracle under `tests/interop/quickfixgo`; it drives the native TCP acceptor and is absent from every production manifest. |
 
 ## Audited disposition matrix
 

@@ -258,8 +258,7 @@ impl FixClient {
         }
     }
 
-    #[cfg(test)]
-    pub async fn poll_for_test(&mut self) -> io::Result<()> {
+    pub(crate) async fn poll_once(&mut self) -> io::Result<()> {
         use tokio::io::AsyncReadExt;
 
         let mut bytes = [0_u8; 16_384];

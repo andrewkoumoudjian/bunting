@@ -940,7 +940,7 @@ mod tests {
         )?;
         client.reconnect().await?;
         for _ in 0..20 {
-            Box::pin(client.poll_for_test()).await?;
+            Box::pin(client.poll_once()).await?;
             if client.connection_state() == simfix_session::ConnectionState::Established {
                 break;
             }
@@ -948,7 +948,7 @@ mod tests {
         }
         client.send(book_request(1)).await?;
         for _ in 0..20 {
-            Box::pin(client.poll_for_test()).await?;
+            Box::pin(client.poll_once()).await?;
             if !client.book.bids.is_empty() && !client.book.asks.is_empty() {
                 break;
             }
@@ -958,7 +958,7 @@ mod tests {
         assert_eq!(client.book.asks.first(), Some(&(101, 50)));
         client.send(new_order(2, "buy", 5, Some(100))).await?;
         for _ in 0..20 {
-            Box::pin(client.poll_for_test()).await?;
+            Box::pin(client.poll_once()).await?;
             if client.book.bids.first() == Some(&(100, 5)) {
                 break;
             }
@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(client.book.bids.first(), Some(&(100, 5)));
         client.send(new_order(3, "buy", 5, None)).await?;
         for _ in 0..20 {
-            Box::pin(client.poll_for_test()).await?;
+            Box::pin(client.poll_once()).await?;
             if client
                 .executions
                 .iter()

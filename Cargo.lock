@@ -284,12 +284,14 @@ dependencies = [
  "bunting-origin-store",
  "bunting-risk-engine",
  "bunting-runtime",
+ "bunting-tui",
  "quarcc-execution-engine",
  "serde",
  "serde_json",
  "simfix-mapping",
  "simfix-session",
  "simfix-wire",
+ "tokio",
 ]
 
 [[package]]

@@ -52,6 +52,18 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked --workspace
 
+      - name: Install Go for external FIX interoperability
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: tests/interop/quickfixgo/go.sum
+
+      - name: Run QuickFIX-Go FIXT.1.1 and FIX 5.0 SP2 interop
+        run: |
+          cargo build --locked -p bunting-server
+          cd tests/interop/quickfixgo
+          BUNTING_SERVER_BIN="$GITHUB_WORKSPACE/target/debug/bunting-server" go test .
+
       - name: Smoke zero-configuration native server
         run: |
           set -euo pipefail

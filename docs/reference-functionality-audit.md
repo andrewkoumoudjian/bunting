@@ -552,6 +552,25 @@ High-value external conformance oracle and fixture generator for FIX session/mes
 
 Evidence: upstream `README.md` and modules.
 
+## `tests/interop/quickfixgo` — QuickFIX/Go oracle
+
+### Observed functionality
+
+The exact released Go module `github.com/quickfixgo/quickfix v0.9.10` provides
+FIX message serialization with computed BodyLength/CheckSum and parsing with
+BodyLength validation. Its project documents FIXT.1.1 and FIX 5.0 SP2 support
+under the QuickFIX Software License 1.0.
+
+### Bunting disposition
+
+Development-only external interoperability oracle. QuickFIX/Go serializes a
+Logon and SecurityListRequest into Bunting's real native TCP acceptor, then
+parses the Bunting Logon and SecurityList responses. It is not a Cargo,
+production, Worker, market-engine, or copied-source dependency.
+
+Evidence: `tests/interop/quickfixgo/go.mod`, upstream package documentation and
+the executable interop test.
+
 ## `ref/ironsbe` — IronSBE
 
 ### Observed functionality

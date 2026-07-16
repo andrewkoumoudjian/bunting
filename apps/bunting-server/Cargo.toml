@@ -26,6 +26,8 @@ simfix-wire.workspace = true
 
 [dev-dependencies]
 bunting-risk-engine = { path = "../../packages/risk-engine" }
+bunting-tui = { path = "../bunting-tui" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

@@ -58,7 +58,7 @@ FIX-to-application boundary.
 - [x] **Phase 7 - TUI parity:** apply the Longbridge interaction idioms, consume
   authoritative FIX account state, add news/tenders/leaderboard/instructor
   workflows, and snapshot-test every tab.
-- [ ] **Phase 8 - hardening:** run a real TCP TUI/server black-box suite,
+- [x] **Phase 8 - hardening:** run a real TCP TUI/server black-box suite,
   QuickFIX/J or quickfix-go FIXT.1.1/FIX 5.0 SP2 interop, and deterministic
   golden full-run ledger/score/transcript tests in CI.
 
@@ -123,6 +123,14 @@ role-authorized run/news/score/fine workflows emit bounded profile messages;
 the peer Logon exposes the server-validated role before administration controls
 are shown. A full-frame deterministic golden covers every terminal tab, and the
 embedded TCP fixture exercises the negotiated competition projection set.
+
+Phase 8 completed on the same branch. A headless black-box harness now drives
+the real TUI TCP/session/projection client through the native server acceptor.
+The exact QuickFIX/Go `v0.9.10` engine serializes FIXT.1.1 Logon and FIX 5.0 SP2
+SecurityListRequest frames accepted by Bunting, then parses Bunting's Logon and
+SecurityList responses in CI. A checked full-run golden pins the canonical
+state hash, balanced fine/dividend journal, NLV-rank score report and complete
+committed event transcript.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

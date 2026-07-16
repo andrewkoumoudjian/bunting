@@ -553,7 +553,7 @@ mod tests {
             run_id: RunId::new(1),
             command_id: CommandId::new(command_id),
             correlation_id: CorrelationId::new(command_id),
-            logical_time: LogicalTimeNs::new(command_id as u64),
+            logical_time: LogicalTimeNs::new(u64::try_from(command_id).unwrap()),
             expected_sequence: EventSequence::new(sequence),
             actor: ParticipantId::new(99),
             payload: SimulationCommand::PublishNews {
