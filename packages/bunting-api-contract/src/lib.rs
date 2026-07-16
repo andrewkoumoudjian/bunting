@@ -130,6 +130,21 @@ pub struct MarketSnapshotInput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarketSubscribeInput {
+    pub run_id: UnsignedDecimalString,
+    pub instrument_id: UnsignedDecimalString,
+    pub after_sequence: SequenceDecimalString,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountsSubscribeInput {
+    pub run_id: UnsignedDecimalString,
+    pub after_sequence: SequenceDecimalString,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandOutput {
     pub accepted: bool,
     pub reject_code: Option<String>,
@@ -188,6 +203,7 @@ pub struct MarketSnapshotOutput {
 pub enum ProcedureKind {
     Query,
     Mutation,
+    Subscription,
 }
 
 #[must_use]
@@ -195,6 +211,7 @@ pub fn procedure_kind(path: &str) -> Option<ProcedureKind> {
     match path {
         "system.health" | "market.snapshot" => Some(ProcedureKind::Query),
         "orders.submit" | "orders.cancel" => Some(ProcedureKind::Mutation),
+        "market.subscribe" | "accounts.subscribe" => Some(ProcedureKind::Subscription),
         _ => None,
     }
 }
@@ -216,6 +233,8 @@ pub fn generated_schema() -> Value {
             {"name":"orders.cancel","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
             {"name":"orders.submit","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id","side":"side","priceTicks":"marketUnit","quantityLots":"marketUnit"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
             {"name":"system.health","kind":"query","input":{},"output":{"apiVersion":"string","serviceVersion":"string","orderbookVersion":"string","contractCompatible":"boolean"}}
+            ,{"name":"market.subscribe","kind":"subscription","input":{"runId":"id","instrumentId":"id","afterSequence":"sequence"},"output":{"event":"committedEvent|stream.reset|market.snapshot"}}
+            ,{"name":"accounts.subscribe","kind":"subscription","input":{"runId":"id","afterSequence":"sequence"},"output":{"event":"committedPrivateEvent|stream.reset|account.snapshot"}}
         ],
         "structures": {"priceLevel":{"priceTicks":"marketUnit","quantityLots":"marketUnit"}}
     })

@@ -37,6 +37,7 @@ pub struct Call {
 pub enum ParsedRequest {
     Query(Call),
     Mutation(Call),
+    Subscription(Call),
     QueryBatch(Vec<Call>),
 }
 
@@ -166,7 +167,7 @@ pub fn parse(request: &Request<'_>) -> Result<ParsedRequest, WireError> {
         )
     })?;
     let input = match (request.method, kind) {
-        (Method::Get, ProcedureKind::Query) => {
+        (Method::Get, ProcedureKind::Query | ProcedureKind::Subscription) => {
             if !request.body.is_empty() {
                 return Err(WireError::new(
                     ErrorCode::BadRequest,
@@ -205,10 +206,10 @@ pub fn parse(request: &Request<'_>) -> Result<ParsedRequest, WireError> {
         path: decoded.into_owned(),
         input,
     };
-    Ok(if kind == ProcedureKind::Query {
-        ParsedRequest::Query(call)
-    } else {
-        ParsedRequest::Mutation(call)
+    Ok(match kind {
+        ProcedureKind::Query => ParsedRequest::Query(call),
+        ProcedureKind::Mutation => ParsedRequest::Mutation(call),
+        ProcedureKind::Subscription => ParsedRequest::Subscription(call),
     })
 }
 

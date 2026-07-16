@@ -6,11 +6,13 @@
 //! There is deliberately no REST router or Durable Object binding.
 
 mod d1_origin;
+mod subscriptions;
 
 use bunting_api_contract::{
-    API_VERSION, BuntingErrorCode, CancelOrderInput, CommandOutput, HealthOutput,
-    MarketSnapshotInput, MarketSnapshotOutput, PriceLevel, SequenceDecimalString,
-    Side as ContractSide, SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
+    API_VERSION, AccountsSubscribeInput, BuntingErrorCode, CancelOrderInput, CommandOutput,
+    HealthOutput, MarketSnapshotInput, MarketSnapshotOutput, MarketSubscribeInput, PriceLevel,
+    SequenceDecimalString, Side as ContractSide, SignedDecimalString, SubmitOrderInput,
+    UnsignedDecimalString,
 };
 use bunting_command_transaction::{
     CachedSnapshot, TransactionError, command_fingerprint, prepare_command,
@@ -171,6 +173,100 @@ fn worker_response(response: WireResponse) -> Result<Response> {
         .with_header("content-type", response.content_type)?
         .with_header("vary", response.vary)?
         .fixed(response.body))
+}
+
+fn subscription_response(frames: Vec<Vec<u8>>) -> Result<Response> {
+    let body = frames.concat();
+    Ok(ResponseBuilder::new()
+        .with_status(200)
+        .with_header("content-type", "text/event-stream")?
+        .with_header("cache-control", "no-cache, no-transform")?
+        .with_header("vary", "trpc-accept")?
+        .with_header("x-accel-buffering", "no")?
+        .fixed(body))
+}
+
+fn resume_cursor(request: &Request, input_cursor: u64) -> Result<u64> {
+    request
+        .headers()
+        .get("last-event-id")?
+        .map_or(Ok(input_cursor), |value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| Error::RustError("invalid Last-Event-ID".to_string()))
+        })
+}
+
+async fn subscribe(call: &Call, request: &Request, environment: &Env) -> Result<Response> {
+    let (run_id, instrument_id, after, class) = match call.path.as_str() {
+        "market.subscribe" => {
+            let input: MarketSubscribeInput = decode_input(call)
+                .map_err(|_| Error::RustError("invalid market subscription input".to_string()))?;
+            let run_id = RunId::new(input.run_id.get());
+            let instrument_id = InstrumentId::new(input.instrument_id.get());
+            let after = resume_cursor(request, input.after_sequence.get())?;
+            (
+                run_id,
+                Some(instrument_id),
+                after,
+                subscriptions::StreamClass::Public { instrument_id },
+            )
+        }
+        "accounts.subscribe" => {
+            let claims = authenticate(request, environment)?;
+            let input: AccountsSubscribeInput = decode_input(call)
+                .map_err(|_| Error::RustError("invalid account subscription input".to_string()))?;
+            let run_id = RunId::new(input.run_id.get());
+            let after = resume_cursor(request, input.after_sequence.get())?;
+            (
+                run_id,
+                None,
+                after,
+                subscriptions::StreamClass::Private {
+                    participant_id: claims.participant_id,
+                },
+            )
+        }
+        _ => return Err(Error::RustError("unknown subscription".to_string())),
+    };
+    let database = environment.d1("ORIGIN_DB")?;
+    let state = d1_origin::load_run(&database, &run_id.to_string())
+        .await
+        .map_err(|_| Error::RustError("subscription origin unavailable".to_string()))?;
+    if let Some(instrument_id) = instrument_id {
+        if state.instrument_id != instrument_id {
+            return Err(Error::RustError(
+                "subscription instrument not found".to_string(),
+            ));
+        }
+    }
+    if after > state.version.get() {
+        return Err(Error::RustError(
+            "resume cursor exceeds committed origin sequence".to_string(),
+        ));
+    }
+    let events = d1_origin::load_event_tail(
+        &database,
+        &run_id.to_string(),
+        after,
+        subscriptions::ORIGIN_READ_LIMIT,
+    )
+    .await
+    .map_err(|_| Error::RustError("subscription tail unavailable".to_string()))?;
+    let plan = subscriptions::plan(events, state.version, class);
+    let snapshot = if matches!(plan, subscriptions::Plan::Reset { .. }) && instrument_id.is_some() {
+        Some(
+            snapshot_output(&state)
+                .map_err(|_| Error::RustError("snapshot unavailable".to_string()))?,
+        )
+    } else {
+        None
+    };
+    subscription_response(subscriptions::encode(
+        plan,
+        snapshot.as_ref(),
+        state.version,
+    ))
 }
 
 fn health() -> HealthOutput {
@@ -443,6 +539,7 @@ pub async fn main(mut request: Request, environment: Env, _context: Context) -> 
             }
             bunting_trpc_wire::batch_responses(&results)
         }
+        ParsedRequest::Subscription(call) => return subscribe(&call, &request, &environment).await,
     };
     worker_response(response)
 }
