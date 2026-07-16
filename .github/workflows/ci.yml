@@ -52,6 +52,25 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked --workspace
 
+      - name: Smoke zero-configuration native server
+        run: |
+          set -euo pipefail
+          cargo build --locked -p bunting-cli
+          target/debug/bunting server > /tmp/bunting-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8080/health > /tmp/bunting-health.json; then
+              break
+            fi
+            sleep 0.25
+          done
+          grep -Fq '"status":"ok"' /tmp/bunting-health.json
+          curl --fail --silent \
+            -H 'Authorization: Bearer bunting-local-admin-token' \
+            http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
+          grep -Fq '"runId":"1"' /tmp/bunting-run.json
+
       - name: Verify upstream dependency
         run: cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
 
@@ -71,3 +90,36 @@ jobs:
       - name: Check Wasm target
         if: github.event_name != 'pull_request' || steps.wasm-changes.outputs.worker == 'true'
         run: cargo check --locked --workspace --target wasm32-unknown-unknown
+
+      - name: Smoke deployable Worker on raw Workerd
+        if: github.event_name != 'pull_request' || steps.wasm-changes.outputs.worker == 'true'
+        run: |
+          set -euo pipefail
+          cargo install worker-build --version 0.8.5 --locked
+          (
+            cd apps/bunting-worker
+            worker-build --release --no-panic-recovery
+            npx --yes workerd@1.20260716.1 serve workerd/workerd.capnp \
+              > /tmp/bunting-workerd.log 2>&1 &
+            workerd_pid=$!
+            trap 'kill "$workerd_pid" 2>/dev/null || true' EXIT
+            for attempt in $(seq 1 120); do
+              if curl --fail --silent \
+                http://127.0.0.1:8787/api/system.health \
+                > /tmp/bunting-workerd-health.json; then
+                break
+              fi
+              sleep 0.25
+            done
+            grep -Fq '"contractCompatible":true' /tmp/bunting-workerd-health.json
+            curl --fail --silent \
+              -H 'Authorization: Bearer workerd-smoke-token' \
+              http://127.0.0.1:8787/fix-sessions/smoke/snapshot \
+              > /tmp/bunting-workerd-fix.json
+            test "$(cat /tmp/bunting-workerd-fix.json)" = null
+            status=$(curl --silent --output /tmp/bunting-workerd-d1.json \
+              --write-out '%{http_code}' \
+              'http://127.0.0.1:8787/api/market.snapshot?input=%7B%22runId%22%3A%221%22%2C%22instrumentId%22%3A%221%22%7D')
+            test "$status" = 500
+            grep -Fq '"buntingCode":"ORIGIN_UNAVAILABLE"' /tmp/bunting-workerd-d1.json
+          )

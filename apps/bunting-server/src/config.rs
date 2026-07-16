@@ -114,6 +114,44 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl ServerConfig {
+    /// Returns a bounded, ephemeral loopback profile suitable for local use.
+    #[must_use]
+    pub fn local_default() -> Self {
+        Self {
+            version: 1,
+            profile: DeploymentProfile::Local,
+            storage: StorageConfig {
+                kind: StorageKind::Memory,
+                path: None,
+                max_runs: 4,
+                max_commands: 10_000,
+                max_events_per_run: 100_000,
+            },
+            fix: Some(FixConfig {
+                bind: "127.0.0.1:9880".to_owned(),
+                sender_comp_id: "BUNTING".to_owned(),
+                target_comp_id: "HUMAN".to_owned(),
+                username: "participant".to_owned(),
+                password: "bunting-local-dev".to_owned(),
+                participant_id: 1,
+                run_id: 1,
+                heartbeat_seconds: 30,
+                max_connections: 1,
+                max_message_bytes: 16_384,
+                max_journal_messages: 4_096,
+                max_pending_inbound: 64,
+                tls: TlsConfig::Disabled,
+            }),
+            admin: Some(AdminConfig {
+                bind: "127.0.0.1:8080".to_owned(),
+                bearer_token: "bunting-local-admin-token".to_owned(),
+                max_request_bytes: 4_096,
+            }),
+            scenario: None,
+            relay: None,
+        }
+    }
+
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let bytes = fs::read(path)
             .map_err(|error| ConfigError(format!("cannot read {}: {error}", path.display())))?;
@@ -181,11 +219,30 @@ impl ServerConfig {
                 ));
             }
         }
+        if self.profile == DeploymentProfile::HostedNative {
+            if self.storage.kind != StorageKind::File || self.scenario.is_none() {
+                return Err(ConfigError(
+                    "hosted-native requires bounded file storage and an immutable scenario"
+                        .to_owned(),
+                ));
+            }
+            if self.relay.is_some() {
+                return Err(ConfigError(
+                    "hosted-native cannot configure the Cloudflare relay".to_owned(),
+                ));
+            }
+        }
         if let Some(fix) = &self.fix {
             validate_fix(fix, self.profile)?;
         }
         if let Some(admin) = &self.admin {
-            parse_socket("admin.bind", &admin.bind)?;
+            let bind = parse_socket("admin.bind", &admin.bind)?;
+            if self.profile == DeploymentProfile::HostedNative && !bind.ip().is_loopback() {
+                return Err(ConfigError(
+                    "hosted-native admin.bind must remain loopback behind the authenticated terminator"
+                        .to_owned(),
+                ));
+            }
             if admin.bearer_token.len() < 16 || admin.bearer_token.len() > 256 {
                 return Err(ConfigError(
                     "admin.bearer_token must contain 16..=256 bytes".to_owned(),
@@ -348,6 +405,30 @@ mod tests {
                 .map_err(|error| ConfigError(format!("profile JSON invalid: {error}")))?;
             config.validate()?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_configuration_local_profile_is_bounded_and_valid() -> Result<(), ConfigError> {
+        let config = ServerConfig::local_default();
+        config.validate()?;
+        assert_eq!(config.profile, DeploymentProfile::Local);
+        assert_eq!(config.fix.as_ref().map(|fix| fix.max_connections), Some(1));
+        assert_eq!(config.storage.kind, StorageKind::Memory);
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_sessions_require_durable_isolated_state() -> Result<(), ConfigError> {
+        let mut config: ServerConfig =
+            serde_json::from_str(include_str!("../config/hosted-native.json"))
+                .map_err(|error| ConfigError(error.to_string()))?;
+        config.storage.kind = StorageKind::Memory;
+        config.storage.path = None;
+        let Err(error) = config.validate() else {
+            return Err(ConfigError("memory-hosted profile was accepted".to_owned()));
+        };
+        assert!(error.0.contains("bounded file storage"));
         Ok(())
     }
 

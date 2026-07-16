@@ -75,7 +75,13 @@ pub async fn run(options: TuiOptions) -> Result<(), String> {
     } else {
         None
     };
-    let credential_override = options.fixture.then(|| "fixture-only".to_owned());
+    let credential_override = if options.fixture {
+        Some("fixture-only".to_owned())
+    } else if profile_name == "local" && std::env::var_os(&profile.password_env).is_none() {
+        Some("bunting-local-dev".to_owned())
+    } else {
+        None
+    };
     let result = Box::pin(tui::run(
         profile_name,
         profile,

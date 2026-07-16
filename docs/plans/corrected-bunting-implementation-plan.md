@@ -42,7 +42,7 @@ FIX-to-application boundary.
 - [x] **Phase 3 - unified CLI:** ship one `bunting` binary with `server`, `tui`,
   `relay`, `init`, and `version` commands; retain old binary names as one-release
   compatibility shims and install one release artifact.
-- [ ] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
+- [x] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
   bounded isolated hosted sessions, and concrete hosted/Cloudflare relay
   deployment guides and smoke gates.
 - [ ] **Phase 5 - server runtime:** extract deterministic scheduling and agents
@@ -74,6 +74,15 @@ focused Clippy/tests, and a native release build passed. The workspace Wasm
 retry was deferred to the final gate because the active toolchain did not have
 `wasm32-unknown-unknown` installed; the CLI itself target-gates all native
 dependencies behind an inert Wasm stub.
+
+Phase 4 completed on the same branch: `bunting server` now boots an ephemeral,
+bounded loopback run with no file or environment setup; hosted-native profiles
+require isolated file state, an immutable scenario, one static FIX binding and
+loopback administration behind mutual TLS. The deployment guide records native
+and Cloudflare relay gates. Raw Workerd `2026-07-16` loaded the release JS/Wasm
+bundle, returned compatible health, instantiated the FIX Durable Object, and
+proved that the deliberately absent D1 backend fails closed rather than
+falling back to non-authoritative state.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and

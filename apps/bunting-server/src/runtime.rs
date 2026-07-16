@@ -38,21 +38,13 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
-    if let Some(scenario) = &config.scenario {
-        let bytes = fs::read(&scenario.path).map_err(|error| {
-            format!("cannot read immutable scenario {}: {error}", scenario.path)
-        })?;
-        if bytes.len() > 4 * 1_024 * 1_024 {
-            return Err("scenario exceeds 4194304 bytes".to_owned());
-        }
-        let definition: ScenarioDefinition = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("invalid scenario JSON: {error}"))?;
+    if let Some((run_id, iteration_id, definition)) = bootstrap_scenario(config)? {
         definition
             .validate()
             .map_err(|error| format!("scenario validation failed: {error:?}"))?;
         let run = RunState::from_scenario(
-            RunId::new(scenario.run_id),
-            IterationId::new(scenario.iteration_id),
+            RunId::new(run_id),
+            IterationId::new(iteration_id),
             &definition,
         )
         .map_err(|error| format!("cannot create run from scenario: {error}"))?;
@@ -102,6 +94,27 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
             .map_err(|_| "server listener thread panicked".to_owned())??;
     }
     Ok(())
+}
+
+fn bootstrap_scenario(
+    config: &ServerConfig,
+) -> Result<Option<(u128, u128, ScenarioDefinition)>, String> {
+    let (run_id, iteration_id, bytes) = if let Some(scenario) = &config.scenario {
+        let bytes = fs::read(&scenario.path).map_err(|error| {
+            format!("cannot read immutable scenario {}: {error}", scenario.path)
+        })?;
+        (scenario.run_id, scenario.iteration_id, bytes)
+    } else if config.profile == crate::config::DeploymentProfile::Local {
+        (1, 1, include_bytes!("../config/scenario.json").to_vec())
+    } else {
+        return Ok(None);
+    };
+    if bytes.len() > 4 * 1_024 * 1_024 {
+        return Err("scenario exceeds 4194304 bytes".to_owned());
+    }
+    let definition = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid scenario JSON: {error}"))?;
+    Ok(Some((run_id, iteration_id, definition)))
 }
 
 fn run_fix_acceptor(
@@ -602,5 +615,15 @@ mod tests {
     fn timestamp_calendar_conversion_is_stable() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_000), (2024, 10, 4));
+    }
+
+    #[test]
+    fn zero_configuration_profile_bootstraps_the_canonical_scenario() -> Result<(), String> {
+        let (run_id, iteration_id, scenario) = bootstrap_scenario(&ServerConfig::local_default())?
+            .ok_or_else(|| "local scenario missing".to_owned())?;
+        assert_eq!((run_id, iteration_id), (1, 1));
+        assert_eq!(scenario.listings().len(), 1);
+        assert_eq!(scenario.participants().len(), 1);
+        Ok(())
     }
 }

@@ -66,6 +66,7 @@ See:
 - [`docs/reference-functionality-audit.md`](docs/reference-functionality-audit.md)
 - [`docs/reference-adoption.md`](docs/reference-adoption.md)
 - [`docs/architecture.md`](docs/architecture.md)
+- [`docs/deployment.md`](docs/deployment.md)
 
 ## Current architecture
 

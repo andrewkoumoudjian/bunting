@@ -20,4 +20,4 @@ tag = "v1"
 new_sqlite_classes = ["FixSessionObject"]
 
 [build]
-command = "worker-build --release"
+command = "worker-build --release --no-panic-recovery"

@@ -26,8 +26,8 @@ struct Cli {
 enum Command {
     /// Run the native FIX and administration server.
     Server {
-        /// Versioned server configuration JSON.
-        config: PathBuf,
+        /// Versioned server configuration JSON. Omit for an ephemeral loopback server.
+        config: Option<PathBuf>,
     },
     /// Run the native FIX participant/operator terminal.
     Tui {
@@ -60,7 +60,7 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
     let arguments = compatibility_arguments(arguments);
     let cli = Cli::try_parse_from(arguments).map_err(|error| error.to_string())?;
     match cli.command {
-        Command::Server { config } => run_server(&config),
+        Command::Server { config } => run_server(config.as_deref()),
         Command::Tui { options } => bunting_tui::run(options).await,
         Command::Relay { config } => run_relay(&config),
         Command::Init { config_dir } => init(config_dir.as_deref()),
@@ -97,8 +97,11 @@ fn compatibility_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec
     normalized
 }
 
-fn run_server(path: &Path) -> Result<(), String> {
-    let config = ServerConfig::from_file(path).map_err(|error| error.to_string())?;
+fn run_server(path: Option<&Path>) -> Result<(), String> {
+    let config = path.map_or_else(
+        || Ok(ServerConfig::local_default()),
+        |path| ServerConfig::from_file(path).map_err(|error| error.to_string()),
+    )?;
     if config.profile == DeploymentProfile::Cloudflare {
         return Err("use `bunting relay` for a Cloudflare relay profile".to_owned());
     }
@@ -173,6 +176,7 @@ mod tests {
     fn unified_commands_parse() {
         for arguments in [
             vec!["bunting", "server", "local.json"],
+            vec!["bunting", "server"],
             vec!["bunting", "tui", "--fixture"],
             vec!["bunting", "relay", "cloudflare.json"],
             vec!["bunting", "init"],
