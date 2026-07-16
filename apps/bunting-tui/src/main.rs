@@ -2,6 +2,8 @@
 // Rust guideline compliant 2026-02-21
 
 #[cfg(not(target_arch = "wasm32"))]
+mod chart;
+#[cfg(not(target_arch = "wasm32"))]
 mod config;
 #[cfg(not(target_arch = "wasm32"))]
 mod local_market;

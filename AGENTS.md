@@ -112,6 +112,11 @@ No client, strategy, execution engine, adapter, or agent may mutate a market eng
 
 ## Required checks
 
+During implementation, prefer `cargo check -p <package>` and the package's
+focused tests before paying for workspace-wide gates. Developers with sccache
+installed may set `RUSTC_WRAPPER=sccache`; CI and release correctness must not
+depend on sccache being available.
+
 Run from repository root before marking work complete:
 
 ```bash

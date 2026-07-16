@@ -32,7 +32,7 @@ FIX-to-application boundary.
 - [x] **Phase 0 - hygiene:** archive dirty tRPC-era worktree state with pushed
   tags, prune all stale worktrees and branches, remove empty scaffold trees and
   generated Worker output, and mark tRPC-era plans as superseded.
-- [ ] **Phase 1 - compile speed:** tune dev/release profiles, remove the chart
+- [x] **Phase 1 - compile speed:** tune dev/release profiles, remove the chart
   git dependency through licensed source adoption or an approved fallback,
   path-filter Wasm CI on pull requests, and document focused checks/sccache.
 - [ ] **Phase 2 - TUI event loop:** move socket ownership to an I/O task with

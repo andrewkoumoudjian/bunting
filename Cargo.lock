@@ -271,7 +271,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-risk-engine",
  "clap",
- "cli-candlestick-chart",
+ "colored",
  "crossterm",
  "quarcc-bunting-adapter",
  "quarcc-execution-engine",
@@ -409,14 +409,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "cli-candlestick-chart"
-version = "0.24.0"
-source = "git+https://github.com/longbridge/longbridge-terminal.git?rev=05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3#05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3"
-dependencies = [
- "colored",
-]
 
 [[package]]
 name = "colorchoice"

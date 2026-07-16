@@ -3,10 +3,10 @@
 // Rust guideline compliant 2026-02-21
 
 use crate::{
+    chart::{Candle, Chart},
     protocol::FixClient,
     tui::{app::App, ui::styles, widgets::candlestick_chart::AnsiChart},
 };
-use cli_candlestick_chart::{Candle, Chart};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
