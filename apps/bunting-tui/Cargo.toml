@@ -20,7 +20,8 @@ bunting-market-types.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 clap = { version = "4.6.1", features = ["derive"] }
 colored = "2"
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures-util = "0.3"
 quarcc-execution-engine.workspace = true
 quarcc-bunting-adapter = { path = "../../packages/quarcc-bunting-adapter" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }

@@ -6,6 +6,8 @@ mod chart;
 #[cfg(not(target_arch = "wasm32"))]
 mod config;
 #[cfg(not(target_arch = "wasm32"))]
+mod io_task;
+#[cfg(not(target_arch = "wasm32"))]
 mod local_market;
 #[cfg(not(target_arch = "wasm32"))]
 mod protocol;

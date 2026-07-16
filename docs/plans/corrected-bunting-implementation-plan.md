@@ -35,7 +35,7 @@ FIX-to-application boundary.
 - [x] **Phase 1 - compile speed:** tune dev/release profiles, remove the chart
   git dependency through licensed source adoption or an approved fallback,
   path-filter Wasm CI on pull requests, and document focused checks/sccache.
-- [ ] **Phase 2 - TUI event loop:** move socket ownership to an I/O task with
+- [x] **Phase 2 - TUI event loop:** move socket ownership to an I/O task with
   bounded 256-event and 64-command channels; coalesce redraws behind a dirty
   flag; never block rendering on sends; drop market deltas, never private
   reports or acknowledgements, under backpressure.

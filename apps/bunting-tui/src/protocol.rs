@@ -11,10 +11,7 @@ use std::{
     io,
 };
 use time::{OffsetDateTime, macros::format_description};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    time::{Duration, timeout},
-};
+use tokio::io::AsyncWriteExt;
 
 pub const MAX_FIX_LOGS: usize = 256;
 pub const MAX_EXECUTIONS: usize = 128;
@@ -75,7 +72,7 @@ pub struct PriceSample {
 }
 
 pub struct FixClient {
-    stream: Option<BoxedFixStream>,
+    pub(crate) stream: Option<BoxedFixStream>,
     session: FixSession,
     profile: ConnectionProfile,
     credential_override: Option<String>,
@@ -157,7 +154,7 @@ impl FixClient {
             .session
             .connected_at(&timestamp(), now_millis())
             .map_err(|error| session_error(&error))?;
-        self.apply(actions).await
+        self.apply(actions).await.map(|_| ())
     }
 
     pub fn connection_state(&self) -> ConnectionState {
@@ -171,12 +168,15 @@ impl FixClient {
                 "FIX session is disconnected; reconnect before sending",
             ));
         }
+        if message.msg_type == "V" {
+            self.recovery_request_pending = false;
+        }
         let actions = self
             .session
             .send_application(message, &timestamp())
             .map_err(|error| session_error(&error))?;
         self.remember_order(&actions);
-        self.apply(actions).await
+        self.apply(actions).await.map(|_| ())
     }
 
     fn remember_order(&mut self, actions: &[SessionAction]) {
@@ -213,46 +213,58 @@ impl FixClient {
             .session
             .request_logout(&timestamp(), Some("operator logout"))
             .map_err(|error| session_error(&error))?;
+        self.apply(actions).await.map(|_| ())
+    }
+
+    pub(crate) async fn receive_bytes(&mut self, bytes: &[u8]) -> io::Result<bool> {
+        self.log("IN ", bytes);
+        let actions = self
+            .session
+            .receive_bytes_at(bytes, &timestamp(), now_millis())
+            .map_err(|error| session_error(&error))?;
         self.apply(actions).await
     }
 
-    pub async fn poll(&mut self) -> io::Result<()> {
-        let mut bytes = [0_u8; 16_384];
-        while let Some(stream) = self.stream.as_mut() {
-            let Ok(read_result) = timeout(Duration::from_millis(1), stream.read(&mut bytes)).await
-            else {
-                break;
-            };
-            match read_result {
-                Ok(0) => {
-                    self.mark_disconnected("peer closed the connection")?;
-                    break;
-                }
-                Ok(read) => {
-                    self.log("IN ", &bytes[..read]);
-                    let actions = self
-                        .session
-                        .receive_bytes_at(&bytes[..read], &timestamp(), now_millis())
-                        .map_err(|error| session_error(&error))?;
-                    self.apply(actions).await?;
-                }
-                Err(error) => {
-                    self.mark_disconnected(&format!("transport read failed: {error}"))?;
-                    return Err(error);
-                }
-            }
-        }
+    pub(crate) async fn poll_session(&mut self) -> io::Result<Option<bool>> {
         if self.stream.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let actions = self
             .session
             .poll(now_millis(), &timestamp())
             .map_err(|error| session_error(&error))?;
-        self.apply(actions).await
+        if actions.is_empty() {
+            Ok(None)
+        } else {
+            self.apply(actions).await.map(Some)
+        }
     }
 
-    async fn apply(&mut self, actions: Vec<SessionAction>) -> io::Result<()> {
+    #[cfg(test)]
+    pub async fn poll_for_test(&mut self) -> io::Result<()> {
+        use tokio::io::AsyncReadExt;
+
+        let mut bytes = [0_u8; 16_384];
+        if let Some(stream) = self.stream.as_mut()
+            && let Ok(result) = tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                stream.read(&mut bytes),
+            )
+            .await
+        {
+            match result {
+                Ok(0) => self.mark_disconnected("peer closed the connection")?,
+                Ok(read) => {
+                    self.receive_bytes(&bytes[..read]).await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.poll_session().await.map(|_| ())
+    }
+
+    async fn apply(&mut self, actions: Vec<SessionAction>) -> io::Result<bool> {
+        let mut critical = false;
         for action in actions {
             match action {
                 SessionAction::Send(frame) => {
@@ -265,9 +277,13 @@ impl FixClient {
                     };
                     stream.write_all(&frame).await?;
                 }
-                SessionAction::Application(message) => self.observe(&message),
+                SessionAction::Application(message) => {
+                    critical |= !matches!(message.msg_type.as_str(), "W" | "X");
+                    self.observe(&message);
+                }
                 SessionAction::Disconnect => {
                     self.mark_disconnected("FIX peer requested disconnect")?;
+                    critical = true;
                 }
                 SessionAction::Persist(_) => {}
             }
@@ -276,10 +292,10 @@ impl FixClient {
             "FIX established".clone_into(&mut self.status);
             self.stale = false;
         }
-        Ok(())
+        Ok(critical)
     }
 
-    fn mark_disconnected(&mut self, reason: &str) -> io::Result<()> {
+    pub(crate) fn mark_disconnected(&mut self, reason: &str) -> io::Result<()> {
         self.stream = None;
         self.stale = true;
         self.status = format!("disconnected: {reason}; press R to reconnect");
@@ -316,6 +332,34 @@ impl FixClient {
 
     pub fn session_snapshot(&self) -> SessionSnapshot {
         self.session.snapshot()
+    }
+
+    pub(crate) fn view_clone(&self) -> io::Result<Self> {
+        let mut config = session_config(&self.profile.sender_comp_id, &self.profile.target_comp_id);
+        config.heartbeat_seconds = self.profile.heartbeat_seconds;
+        let session = FixSession::restore(config, self.session.snapshot())
+            .map_err(|error| session_error(&error))?;
+        Ok(Self {
+            stream: None,
+            session,
+            profile: self.profile.clone(),
+            credential_override: self.credential_override.clone(),
+            profile_name: self.profile_name.clone(),
+            logs: self.logs.clone(),
+            executions: self.executions.clone(),
+            prices: self.prices.clone(),
+            book: self.book.clone(),
+            portfolio: self.portfolio,
+            status: self.status.clone(),
+            book_sequence: self.book_sequence.clone(),
+            committed_sequence: self.committed_sequence.clone(),
+            stale: self.stale,
+            reset_reason: self.reset_reason.clone(),
+            reconnect_attempts: self.reconnect_attempts,
+            observed_message_types: self.observed_message_types.clone(),
+            recovery_request_pending: self.recovery_request_pending,
+            order_sides: self.order_sides.clone(),
+        })
     }
 
     pub fn take_recovery_request(&mut self) -> bool {
