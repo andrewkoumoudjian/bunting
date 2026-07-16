@@ -12,9 +12,13 @@ members = [
   "packages/quarcc-trading-engine",
   "packages/bunting-api-contract",
   "packages/trpc-wire",
+  "packages/trpc-client",
+  "packages/fix-tagvalue",
+  "packages/fix-session",
   "packages/nbc-market-engine",
   "bunting-rs",
   "apps/trpc-api",
+  "clients/fix-bridge",
 ]
 exclude = ["ref", "vendor", "out"]
 
