@@ -1,6 +1,136 @@
 # Corrected Bunting implementation plan
 
-Status: active, persisted 2026-07-13
+Status: active, persisted 2026-07-13; product-alignment sequence accepted 2026-07-15
+
+## Product-alignment execution sequence
+
+This sequence reconciles the RIT-class product contract with the narrower
+implemented order and market-data slice. The competition invariant is that
+every participant-visible action and observation is available through FIX;
+the TUI is the reference FIX client rather than a privileged control path.
+Assets and leases, OTC, options, Excel RTD/VBA, voice, multi-run hosting, and a
+web UI are deferred until after the competition MVC.
+
+The public competition profile moves before competition-message implementation
+to `bunting.fixlatest.competition.v1`: FIXT.1.1 session semantics, FIX 5.0 SP2
+application semantics, and FIX Latest Orchestra as the normative dictionary
+source. Standard FIX 5.0 SP2 messages replace extensions where possible;
+Bunting `U*` messages remain only for genuinely product-specific tenders,
+score, and run control.
+
+The wire and session implementation must come from an existing pure-Rust,
+Wasm-compatible FIX crate. Evaluate maintained RustyFIX first and FerrumFIX
+second, using the pinned FerrumFIX reference only as evidence. Adopt a crates.io
+release under `reference-adoption.md`; never depend on `ref/`. A spike must
+prove `wasm32-unknown-unknown`, sans-I/O operation, bounded buffers, fixed-point
+field decoding, FIXT.1.1 recovery, and FIX 5.0 SP2/Orchestra support. If no
+candidate satisfies the session requirements, retain the sans-I/O
+`simfix-session` core and replace only its wire/dictionary layer. Keep the old
+stack temporarily as a differential oracle and retain `simfix-mapping` as the
+FIX-to-application boundary.
+
+- [x] **Phase 0 - hygiene:** archive dirty tRPC-era worktree state with pushed
+  tags, prune all stale worktrees and branches, remove empty scaffold trees and
+  generated Worker output, and mark tRPC-era plans as superseded.
+- [x] **Phase 1 - compile speed:** tune dev/release profiles, remove the chart
+  git dependency through licensed source adoption or an approved fallback,
+  path-filter Wasm CI on pull requests, and document focused checks/sccache.
+- [x] **Phase 2 - TUI event loop:** move socket ownership to an I/O task with
+  bounded 256-event and 64-command channels; coalesce redraws behind a dirty
+  flag; never block rendering on sends; drop market deltas, never private
+  reports or acknowledgements, under backpressure.
+- [x] **Phase 3 - unified CLI:** ship one `bunting` binary with `server`, `tui`,
+  `relay`, `init`, and `version` commands; retain old binary names as one-release
+  compatibility shims and install one release artifact.
+- [x] **Phase 4 - runnable everywhere:** provide zero-config local defaults,
+  bounded isolated hosted sessions, and concrete hosted/Cloudflare relay
+  deployment guides and smoke gates.
+- [x] **Phase 5 - server runtime:** extract deterministic scheduling and agents
+  from the TUI fixture into `packages/bunting-runtime`; host it in the server
+  with authenticated participant roles and a single commit-before-ack writer.
+- [x] **Phase 5.5 - FIX adoption and upgrade:** accept an ADR-backed existing
+  engine, port server/TUI/relay/Worker paths, prove differential session
+  recovery, replace the profile, and generate participant dictionaries before
+  any competition extension is implemented.
+- [x] **Phase 6 - competition MVC:** land discovery/account, news/tenders, then
+  risk/score/admin as three reviewable slices with audience enforcement and
+  versioned PnL, commission, news, tender, risk, fine, and score policies.
+- [x] **Phase 7 - TUI parity:** apply the Longbridge interaction idioms, consume
+  authoritative FIX account state, add news/tenders/leaderboard/instructor
+  workflows, and snapshot-test every tab.
+- [x] **Phase 8 - hardening:** run a real TCP TUI/server black-box suite,
+  QuickFIX/J or quickfix-go FIXT.1.1/FIX 5.0 SP2 interop, and deterministic
+  golden full-run ledger/score/transcript tests in CI.
+
+The profile upgrade is a hard gate between Phases 5 and 6. A phase is complete
+only when its documented validation gate passes; specification text never
+counts as implementation evidence.
+
+Phase 3 completed on `codex/bunting-product-alignment`: the native server and
+terminal now expose reusable library entrypoints behind `apps/bunting-cli`; the
+release workflow builds one `bunting` executable and packages the old names as
+one-release aliases. CLI parsing, compatibility dispatch, configuration init,
+focused Clippy/tests, and a native release build passed. The workspace Wasm
+retry was deferred to the final gate because the active toolchain did not have
+`wasm32-unknown-unknown` installed; the CLI itself target-gates all native
+dependencies behind an inert Wasm stub.
+
+Phase 4 completed on the same branch: `bunting server` now boots an ephemeral,
+bounded loopback run with no file or environment setup; hosted-native profiles
+require isolated file state, an immutable scenario, one static FIX binding and
+loopback administration behind mutual TLS. The deployment guide records native
+and Cloudflare relay gates. Raw Workerd `2026-07-16` loaded the release JS/Wasm
+bundle, returned compatible health, instantiated the FIX Durable Object, and
+proved that the deliberately absent D1 backend fails closed rather than
+falling back to non-authoritative state.
+
+Phase 5 completed on the same branch: `packages/bunting-runtime` now owns the
+deterministic sans-I/O wake queue, bounded action cascades, mandatory QUARCC
+participant state, authenticated `BuiltInAgent` identities, and portable
+snapshot/restore. Both the TUI fixture and native server host that package. The
+server serializes runtime and FIX recovery/commit work through one writer,
+releases the writer before socket output, and therefore cannot acknowledge a
+command before the origin transaction returns committed events. Focused tests
+proved authenticated agent commits and deterministic resume; a live
+zero-configuration run advanced origin state to committed sequence 6 and event
+sequence 18 through the server-hosted runtime.
+
+Phase 5.5 completed on the same branch under ADR 0021. Full RustyFIX and
+FerrumFIX sessions failed the bounded Worker/recovery gates, while exact
+`rustyfix-dictionary 0.7.4` passed native and Wasm with only `fixt11` and
+`fix50sp2`. The shared server, TUI, relay and Worker now use FIXT.1.1,
+`DefaultApplVerID(1137)=9` and `bunting.fixlatest.competition.v1`; the
+first-party bounded session retains snapshot recovery, with a checked legacy
+transition golden. The Bunting-owned Orchestra overlay is deterministically
+generated from the profile. Focused tests, Wasm checks, the Worker release
+build and raw Workerd health/FIX-Durable-Object/D1-failure-closed smoke passed.
+
+Phase 6 completed on the same branch as three authority-preserving slices.
+Standard SecurityList, PositionReport and News messages now carry discovery,
+account and audience-filtered news projections; Bunting `U6`, `U9`, `UA` and
+`UB` cover targeted tenders, score, run control and risk/admin. Participant
+tender decisions and operator mutations share the same idempotent atomic origin
+commit as orders, including the D1 adapter. Every projection names the exact
+Bunting-native PnL, zero-commission, news, tender, risk, fine and NLV-rank
+policy. Tests prove private-news denial, targeted tender authority, deterministic
+score ordering and an exact balanced fine debit; no RIT formula equivalence is
+claimed.
+
+Phase 7 completed on the same branch. The Longbridge-derived tab, table,
+command-palette and popup idioms now render authoritative FIX discovery,
+account, position/PnL, news, tender, risk and score projections. Tender and
+role-authorized run/news/score/fine workflows emit bounded profile messages;
+the peer Logon exposes the server-validated role before administration controls
+are shown. A full-frame deterministic golden covers every terminal tab, and the
+embedded TCP fixture exercises the negotiated competition projection set.
+
+Phase 8 completed on the same branch. A headless black-box harness now drives
+the real TUI TCP/session/projection client through the native server acceptor.
+The exact QuickFIX/Go `v0.9.10` engine serializes FIXT.1.1 Logon and FIX 5.0 SP2
+SecurityListRequest frames accepted by Bunting, then parses Bunting's Logon and
+SecurityList responses in CI. A checked full-run golden pins the canonical
+state hash, balanced fine/dividend journal, NLV-rank score report and complete
+committed event transcript.
 
 Reconciled 2026-07-15 on `codex/reconcile-bunting-product`. The product
 contract, simulation domain, portable server, and Ratatui lanes now compile and
@@ -62,7 +192,8 @@ optional human/FIX QUARCC execution ----------------------+        v
 
 - [x] Freeze `bunting.product.v1` as the transport-neutral application,
   deployment, identity, lifecycle, recovery and FIX-only competition contract.
-- [x] Freeze `bunting.fix44.competition.v1` with standard FIX 4.4 messages where
+- [x] Freeze `bunting.fixlatest.competition.v1` with FIXT.1.1 session and FIX
+  5.0 SP2 application semantics, with standard messages where
   suitable, Bunting extension tags/messages elsewhere, explicit audiences and
   Cloudflare outbound-only TCP topology.
 - [x] Add compile-time role/audience types and deny-by-default audience tests in
@@ -174,13 +305,13 @@ optional human/FIX QUARCC execution ----------------------+        v
 - [x] Delete transitional tRPC packages after browser transport migration and
   conformance coverage make them unused.
 
-## Phase 4: FIX 4.4 over outbound TCP
+## Phase 4: FIX over outbound TCP
 
 ### Wire and session packages
 
 - [x] Add `packages/simfix-wire`: bounded incremental SOH tag-value framing,
   partial/coalesced reads, retained tails, `BeginString`, `BodyLength`,
-  `MsgType`, `CheckSum`, repeating groups, FIX 4.4 dictionaries,
+  `MsgType`, `CheckSum`, repeating groups, standard dictionaries,
   deterministic serialization, structured errors, native/Wasm compilation.
 - [x] Add `packages/simfix-session`: logon/logout, heartbeat/test request,
   inbound/outbound sequences, resend/gap fill, `PossDupFlag`,

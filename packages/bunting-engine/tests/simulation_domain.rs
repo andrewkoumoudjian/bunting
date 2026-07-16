@@ -349,6 +349,42 @@ fn checked_in_simulation_fixture_is_strict_and_versioned() {
 }
 
 #[test]
+fn fine_policy_posts_an_exact_balanced_cash_debit() {
+    let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let before = initial
+        .simulation()
+        .portfolio_ledger
+        .balance(PARTICIPANT, CURRENCY)
+        .settled;
+    let fined = apply(
+        &initial,
+        &command(
+            0,
+            0,
+            ADMIN,
+            SimulationCommand::ApplyFine {
+                participant_id: PARTICIPANT,
+                currency_id: CURRENCY,
+                amount: MoneyMinor::new(125),
+                reason: "late disclosure".to_owned(),
+            },
+        ),
+    );
+    assert_eq!(
+        fined
+            .simulation()
+            .portfolio_ledger
+            .balance(PARTICIPANT, CURRENCY)
+            .settled,
+        before.checked_sub(MoneyMinor::new(125)).unwrap()
+    );
+    assert_eq!(
+        fined.simulation().portfolio_ledger.journal()[0].kind,
+        TransactionKind::Fine
+    );
+}
+
+#[test]
 fn scenario_publication_is_immutable_versioned_and_idempotent() {
     let definition = scenario();
     let hash = definition.content_hash().unwrap();
@@ -406,4 +442,59 @@ fn released_post_only_policy_is_matched_and_replayable() {
     .unwrap()
     .state;
     assert_eq!(restored.state_hash().unwrap(), state.state_hash().unwrap());
+}
+
+#[test]
+fn full_competition_run_matches_ledger_score_and_transcript_golden() {
+    let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let commands = [
+        command(0, 0, ADMIN, SimulationCommand::StartRun),
+        command(
+            1,
+            0,
+            ADMIN,
+            SimulationCommand::ApplyFine {
+                participant_id: PARTICIPANT,
+                currency_id: CURRENCY,
+                amount: MoneyMinor::new(125),
+                reason: "late disclosure".to_owned(),
+            },
+        ),
+        command(2, 0, ADMIN, SimulationCommand::Advance { steps: 1 }),
+        command(3, 1_000_000, ADMIN, SimulationCommand::Advance { steps: 1 }),
+        command(4, 2_000_000, ADMIN, SimulationCommand::ScoreIteration),
+        command(
+            5,
+            2_000_000,
+            ADMIN,
+            SimulationCommand::Terminate {
+                reason: "golden run complete".to_owned(),
+            },
+        ),
+    ];
+    let mut transcript = Vec::new();
+    for command in commands {
+        let outcome = state.transition_simulation(&command).unwrap();
+        transcript.extend(
+            outcome
+                .events
+                .iter()
+                .map(|event| serde_json::to_value(event).unwrap()),
+        );
+        state = outcome.candidate;
+    }
+    let actual = serde_json::json!({
+        "state_hash": state.state_hash().unwrap(),
+        "sequence": state.sequence(),
+        "lifecycle": state.simulation().lifecycle,
+        "logical_time": state.simulation().clock.now,
+        "ledger": state.simulation().portfolio_ledger.journal(),
+        "scores": state.simulation().reports,
+        "transcript": transcript,
+    });
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/goldens/competition-full-run.v1.json"
+    ))
+    .unwrap();
+    assert_eq!(actual, expected);
 }

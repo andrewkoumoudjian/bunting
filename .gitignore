@@ -6,6 +6,8 @@
 # Cloudflare
 .wrangler/
 apps/trpc-api/build/
+apps/bunting-worker/build/
+apps/bunting-worker/.wrangler/
 .dev.vars
 .dev.vars.*
 

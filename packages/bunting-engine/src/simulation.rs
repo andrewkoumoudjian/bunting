@@ -861,6 +861,53 @@ impl SimulationState {
                     amount: *amount,
                 }])
             }
+            SimulationCommand::ApplyFine {
+                participant_id,
+                currency_id,
+                amount,
+                reason,
+            } => {
+                validate_reason(reason)?;
+                if amount.get() <= 0 {
+                    return Err(SimulationError::InvalidCommand);
+                }
+                let debit = MoneyMinor::new(0)
+                    .checked_sub(*amount)
+                    .ok_or(SimulationError::ArithmeticOverflow)?;
+                let transaction_id = self.next_transaction();
+                self.portfolio_ledger
+                    .post(JournalTransaction {
+                        transaction_id,
+                        kind: TransactionKind::Fine,
+                        postings: vec![
+                            JournalPosting {
+                                participant_id: Some(*participant_id),
+                                currency_id: *currency_id,
+                                account: PostingAccount::Cash,
+                                amount: debit,
+                            },
+                            JournalPosting {
+                                participant_id: None,
+                                currency_id: *currency_id,
+                                account: PostingAccount::Clearing,
+                                amount: *amount,
+                            },
+                        ],
+                    })
+                    .map_err(SimulationError::from)?;
+                self.record_admin(actor, logical_time, reason.clone());
+                Ok(vec![
+                    SimulationEvent::FineApplied {
+                        participant_id: *participant_id,
+                        currency_id: *currency_id,
+                        amount: *amount,
+                        policy_version: SIMULATION_POLICY_VERSION,
+                    },
+                    SimulationEvent::AdministratorChangeRecorded {
+                        reason: reason.clone(),
+                    },
+                ])
+            }
             SimulationCommand::ScheduleFacilityJob {
                 facility_id,
                 participant_id,

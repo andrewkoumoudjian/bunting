@@ -19,7 +19,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
             format!("Bunting Terminal v{}", env!("CARGO_PKG_VERSION")),
             Style::new().add_modifier(Modifier::BOLD),
         ),
-        Line::from("FIX 4.4 TCP/TLS participant and operator workstation"),
+        Line::from("FIXT.1.1 / FIX 5.0 SP2 participant and operator workstation"),
         Line::from(""),
         Line::from("General ----------------------------------------------------------"),
         Line::from("? / F1          Show or close this help"),

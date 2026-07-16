@@ -5,16 +5,19 @@
 use crate::tui::{keys, nav, popup::PopupKind, render};
 use crate::{
     config::{ConnectionProfile, TerminalConfig, WorkspaceLayout},
-    protocol::{FixClient, book_request},
+    io_task::{IoTask, OutboundCmd, UiEvent},
+    protocol::{FixClient, book_request, competition_requests},
 };
 use crossterm::{
-    event::{self, Event},
+    event::{Event, EventStream},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use futures_util::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use simfix_session::ConnectionState;
 use std::{io, path::PathBuf, time::Duration};
+use tokio::time::{MissedTickBehavior, interval};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
@@ -294,42 +297,81 @@ pub async fn run(
     config: TerminalConfig,
     config_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = FixClient::new(profile_name, profile, credential_override)?;
+    let connection = FixClient::new(profile_name, profile, credential_override)?;
+    let mut client = connection.view_clone()?;
+    let mut io_task = IoTask::spawn(connection);
     let mut app = App::new(config, config_path);
-    if let Err(error) = client.reconnect().await {
-        app.status = error.to_string();
-    }
     let mut terminal = TerminalSession::new()?;
+    let mut input = EventStream::new();
+    let mut ticker = interval(FRAME_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut dirty = true;
 
     loop {
-        if let Err(error) = Box::pin(client.poll()).await {
-            app.status = error.to_string();
-        }
-        if client.connection_state() == ConnectionState::Established
-            && client.take_recovery_request()
-        {
-            let request_id = app.allocate_id();
-            if let Err(error) = client.send(book_request(request_id)).await {
-                app.status = error.to_string();
+        tokio::select! {
+            event = input.next() => match event {
+                Some(Ok(Event::Key(key))) => {
+                    let action = keys::resolve(
+                        key,
+                        matches!(app.popup, PopupKind::Command | PopupKind::OrderTicket),
+                    );
+                    if nav::handle(action, &mut app, &mut client, &io_task.outbound) {
+                        break;
+                    }
+                    dirty = true;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(error)) => return Err(Box::new(error)),
+                None => break,
+            },
+            event = io_task.events.recv() => {
+                let Some(UiEvent::Snapshot(snapshot)) = event else {
+                    break;
+                };
+                client = *snapshot;
+                while let Ok(UiEvent::Snapshot(snapshot)) = io_task.events.try_recv() {
+                    client = *snapshot;
+                }
+                if client.connection_state() == ConnectionState::Established
+                    && client.take_recovery_request()
+                {
+                    let request_id = app.allocate_id();
+                    enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(book_request(request_id)));
+                }
+                if client.connection_state() == ConnectionState::Established
+                    && client.take_competition_request()
+                {
+                    let request_id = app.allocate_id();
+                    for request in competition_requests(request_id) {
+                        enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(request));
+                    }
+                }
+                dirty = true;
             }
-        }
-        terminal
-            .terminal
-            .draw(|frame| render::draw(frame, &app, &client))?;
-
-        if event::poll(FRAME_INTERVAL)?
-            && let Event::Key(key) = event::read()?
-        {
-            let action = keys::resolve(
-                key,
-                matches!(app.popup, PopupKind::Command | PopupKind::OrderTicket),
-            );
-            if nav::handle(action, &mut app, &mut client).await? {
-                break;
+            _ = ticker.tick() => {
+                if dirty {
+                    terminal
+                        .terminal
+                        .draw(|frame| render::draw(frame, &app, &client))?;
+                    dirty = false;
+                }
             }
         }
     }
+    io_task.shutdown().await;
     Ok(())
+}
+
+fn enqueue(app: &mut App, outbound: &tokio::sync::mpsc::Sender<OutboundCmd>, command: OutboundCmd) {
+    match outbound.try_send(command) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            "FIX outbound queue is full; command was not sent".clone_into(&mut app.status);
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            "FIX I/O task is unavailable; command was not sent".clone_into(&mut app.status);
+        }
+    }
 }
 
 struct TerminalSession {

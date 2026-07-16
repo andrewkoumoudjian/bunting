@@ -5,6 +5,8 @@
 - Supersedes: ADR 0004; the REST/WebSocket transport selections in ADR 0006 and ADR 0011
 - Retains: ADR 0011 committed-sequence, reset, coalescing and backpressure semantics
 
+Historical note: ADR 0020 replaces this tRPC-first topology with the transport-neutral Rust application and outbound FIX/TCP design. This ADR is not active implementation guidance.
+
 ## Context
 
 Bunting needs one typed public API for browsers, SDKs, automated participants and protocol adapters. The current Rust Worker exposes provisional REST routes, while ADR 0004 specifies a separate raw-FIX-over-WebSocket endpoint. Those surfaces duplicate authentication, command validation, recovery and streaming behavior, and raw FIX transport makes the server own a second public session protocol.

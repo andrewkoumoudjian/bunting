@@ -3,10 +3,10 @@
 // Rust guideline compliant 2026-02-21
 
 use crate::{
+    chart::{Candle, Chart},
     protocol::FixClient,
     tui::{app::App, ui::styles, widgets::candlestick_chart::AnsiChart},
 };
-use cli_candlestick_chart::{Candle, Chart};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -102,7 +102,7 @@ fn render_instrument(frame: &mut Frame, area: Rect, client: &FixClient) {
             Span::styled("BUNT ", styles::accent()),
             Span::styled(
                 format!(
-                    "{} · {} · FIX 4.4",
+                    "{} · {} · FIXT.1.1",
                     client.profile_name,
                     client.profile().transport.label()
                 ),

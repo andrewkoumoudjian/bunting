@@ -2,13 +2,16 @@
 // Copyright 2026 Longbridge. Licensed under Apache-2.0.
 // Rust guideline compliant 2026-02-21
 
-use crate::protocol::{FixClient, book_request, cancel, new_order, replace, status};
 use crate::tui::{
     app::{App, OrderSide, OrderType, Tab, TicketField},
     keys::Action,
     popup::PopupKind,
 };
-use std::io;
+use crate::{
+    io_task::OutboundCmd,
+    protocol::{FixClient, book_request, cancel, competition_action, new_order, replace, status},
+};
+use tokio::sync::mpsc;
 
 const MAX_COMMAND_BYTES: usize = 256;
 const MAX_ORDER_NUMBER_BYTES: usize = 20;
@@ -17,9 +20,14 @@ const MAX_ORDER_NUMBER_BYTES: usize = 20;
     clippy::too_many_lines,
     reason = "the navigation reducer keeps every key action in one exhaustive match"
 )]
-pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io::Result<bool> {
+pub fn handle(
+    action: Action,
+    app: &mut App,
+    client: &mut FixClient,
+    outbound: &mpsc::Sender<OutboundCmd>,
+) -> bool {
     match action {
-        Action::Quit => return Ok(true),
+        Action::Quit => return true,
         Action::Escape => app.close_popup(),
         Action::ToggleHelp => {
             app.popup = if app.popup == PopupKind::Help {
@@ -66,10 +74,10 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
         Action::BeginCommand => app.begin_command(""),
         Action::BeginQuantity => app.begin_command("qty "),
         Action::BeginBuy if app.popup == PopupKind::None && app.tab == Tab::Market => {
-            submit_selected_level(app, client, OrderSide::Buy).await?;
+            submit_selected_level(app, client, outbound, OrderSide::Buy);
         }
         Action::BeginSell if app.popup == PopupKind::None && app.tab == Tab::Market => {
-            submit_selected_level(app, client, OrderSide::Sell).await?;
+            submit_selected_level(app, client, outbound, OrderSide::Sell);
         }
         Action::BeginBuy => app.begin_order(OrderSide::Buy),
         Action::BeginSell => app.begin_order(OrderSide::Sell),
@@ -77,12 +85,10 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
         Action::BeginReplace => app.begin_command("replace "),
         Action::Refresh => {
             if client.connection_state() == simfix_session::ConnectionState::Disconnected {
-                if let Err(error) = Box::pin(client.reconnect()).await {
-                    app.status = error.to_string();
-                }
+                enqueue(app, outbound, OutboundCmd::Reconnect);
             } else {
                 let request_id = app.allocate_id();
-                try_send(app, client, book_request(request_id)).await;
+                enqueue(app, outbound, OutboundCmd::Send(book_request(request_id)));
             }
         }
         Action::SelectPrevious => {
@@ -104,7 +110,7 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                 } else {
                     OrderSide::Sell
                 };
-                submit_selected_level(app, client, side).await?;
+                submit_selected_level(app, client, outbound, side);
             }
         }
         Action::NextField if app.popup == PopupKind::OrderTicket => {
@@ -131,13 +137,17 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                 .is_some_and(|ticket| ticket.focused == TicketField::Submit);
             if should_submit {
                 let Some(ticket) = app.order_ticket.take() else {
-                    return Ok(false);
+                    return false;
                 };
                 match ticket.values() {
                     Ok((side, quantity, price)) => {
                         let id = app.allocate_id();
                         app.popup = PopupKind::None;
-                        try_send(app, client, new_order(id, side, quantity, price)).await;
+                        enqueue(
+                            app,
+                            outbound,
+                            OutboundCmd::Send(new_order(id, side, quantity, price)),
+                        );
                     }
                     Err(error) => {
                         app.status = error;
@@ -152,25 +162,21 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
             let input = std::mem::take(&mut app.input);
             app.popup = PopupKind::None;
             match parse_command(&input, app) {
-                Ok(Command::Send(message)) => try_send(app, client, message).await,
+                Ok(Command::Send(message)) => {
+                    enqueue(app, outbound, OutboundCmd::Send(message));
+                }
                 Ok(Command::SetQuantity(quantity)) => {
                     app.order_quantity = quantity;
                     client.status = format!("order quantity set to {quantity}");
                 }
                 Ok(Command::Logout) => {
-                    if let Err(error) = Box::pin(client.logout()).await {
-                        app.status = error.to_string();
-                    }
+                    enqueue(app, outbound, OutboundCmd::Logout);
                 }
                 Ok(Command::Reconnect) => {
-                    if let Err(error) = Box::pin(client.reconnect()).await {
-                        app.status = error.to_string();
-                    }
+                    enqueue(app, outbound, OutboundCmd::Reconnect);
                 }
                 Ok(Command::ResetSession) => {
-                    if let Err(error) = Box::pin(client.reset_and_reconnect()).await {
-                        app.status = error.to_string();
-                    }
+                    enqueue(app, outbound, OutboundCmd::ResetSession);
                 }
                 Ok(Command::SaveWorkspace(name)) => match app.save_workspace(&name) {
                     Ok(()) => app.status = format!("workspace {name} saved"),
@@ -184,7 +190,7 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
                     Ok(()) => app.status = format!("workspace {name} removed"),
                     Err(error) => app.status = error,
                 },
-                Ok(Command::Quit) => return Ok(true),
+                Ok(Command::Quit) => return true,
                 Ok(Command::None) => {}
                 Err(error) => app.status = error,
             }
@@ -240,7 +246,7 @@ pub async fn handle(action: Action, app: &mut App, client: &mut FixClient) -> io
         | Action::Left
         | Action::Right => {}
     }
-    Ok(false)
+    false
 }
 
 fn selected_level<'a>(app: &App, client: &'a FixClient) -> Option<(&'a str, i64, i64)> {
@@ -260,28 +266,38 @@ fn selected_level<'a>(app: &App, client: &'a FixClient) -> Option<(&'a str, i64,
         .nth(app.selected_level)
 }
 
-async fn submit_selected_level(
+fn submit_selected_level(
     app: &mut App,
     client: &mut FixClient,
+    outbound: &mpsc::Sender<OutboundCmd>,
     side: OrderSide,
-) -> io::Result<()> {
+) {
     let Some((_, price, _)) = selected_level(app, client) else {
         "select a live order-book level first".clone_into(&mut app.status);
-        return Ok(());
+        return;
     };
     let id = app.allocate_id();
-    try_send(
+    enqueue(
         app,
-        client,
-        new_order(id, side.as_fix_name(), app.order_quantity, Some(price)),
-    )
-    .await;
-    Ok(())
+        outbound,
+        OutboundCmd::Send(new_order(
+            id,
+            side.as_fix_name(),
+            app.order_quantity,
+            Some(price),
+        )),
+    );
 }
 
-async fn try_send(app: &mut App, client: &mut FixClient, message: simfix_wire::FixMessage) {
-    if let Err(error) = Box::pin(client.send(message)).await {
-        app.status = error.to_string();
+fn enqueue(app: &mut App, outbound: &mpsc::Sender<OutboundCmd>, command: OutboundCmd) {
+    match outbound.try_send(command) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            "FIX outbound queue is full; command was not sent".clone_into(&mut app.status);
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            "FIX I/O task is unavailable; command was not sent".clone_into(&mut app.status);
+        }
     }
 }
 
@@ -298,6 +314,10 @@ enum Command {
     None,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the command palette parser keeps all documented operator and participant workflows together"
+)]
 fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
     let parts: Vec<_> = input.split_whitespace().collect();
     let Some(command) = parts.first().copied() else {
@@ -347,6 +367,91 @@ fn parse_command(input: &str, app: &mut App) -> Result<Command, String> {
         }
         "status" => Ok(Command::Send(status(identifier(1, "order id")?))),
         "book" | "refresh" => Ok(Command::Send(book_request(app.allocate_id()))),
+        "tender" => {
+            let action = parts.get(1).copied().ok_or("missing tender action")?;
+            if !matches!(action, "accept" | "decline") {
+                return Err("usage: tender accept|decline ID".to_owned());
+            }
+            let tender_id = parts
+                .get(2)
+                .ok_or("missing tender id")?
+                .parse::<u64>()
+                .map_err(|_| "invalid tender id")?;
+            Ok(Command::Send(competition_action(
+                "U6",
+                action,
+                Some(tender_id),
+                None,
+            )))
+        }
+        "run" => {
+            let action = parts.get(1).copied().ok_or("missing run action")?;
+            let payload = match action {
+                "start" | "pause" | "resume" | "score" => None,
+                "advance" => Some(
+                    serde_json::json!({ "logical_time": number(2, "logical time")? }).to_string(),
+                ),
+                "terminate" => Some(
+                    serde_json::json!({ "reason": parts.get(2..).unwrap_or_default().join(" ") })
+                        .to_string(),
+                ),
+                _ => {
+                    return Err(
+                        "usage: run start|pause|resume|advance N|terminate REASON".to_owned()
+                    );
+                }
+            };
+            Ok(Command::Send(competition_action(
+                "UA", action, None, payload,
+            )))
+        }
+        "news" => {
+            let news_id = parts
+                .get(1)
+                .ok_or("missing news id")?
+                .parse::<u64>()
+                .map_err(|_| "invalid news id")?;
+            let audience = parts.get(2).copied().ok_or("missing audience")?;
+            let headline = parts.get(3..).unwrap_or_default().join(" ");
+            if headline.is_empty() {
+                return Err("missing headline".to_owned());
+            }
+            let payload = serde_json::json!({
+                "news_id": news_id,
+                "audience": audience,
+                "headline": headline,
+            })
+            .to_string();
+            Ok(Command::Send(competition_action(
+                "UA",
+                "publish_news",
+                None,
+                Some(payload),
+            )))
+        }
+        "score" => Ok(Command::Send(competition_action("UA", "score", None, None))),
+        "fine" => {
+            let participant_id = parts.get(1).copied().ok_or("missing participant id")?;
+            let currency = parts.get(2).copied().ok_or("missing currency")?;
+            let amount = number(3, "amount")?;
+            let reason = parts.get(4..).unwrap_or_default().join(" ");
+            if reason.is_empty() {
+                return Err("missing fine reason".to_owned());
+            }
+            let payload = serde_json::json!({
+                "participant_id": participant_id,
+                "currency": currency,
+                "amount": amount,
+                "reason": reason,
+            })
+            .to_string();
+            Ok(Command::Send(competition_action(
+                "UB",
+                "fine",
+                None,
+                Some(payload),
+            )))
+        }
         "qty" | "quantity" => {
             let quantity = number(1, "quantity")?;
             if quantity <= 0 {
@@ -383,6 +488,12 @@ mod tests {
             "replace 1 2 101 3",
             "status 2",
             "book",
+            "tender accept 7",
+            "run pause",
+            "run advance 10",
+            "news 3 public Market opens",
+            "score",
+            "fine participant-1 USD 25 conduct",
         ] {
             assert!(matches!(
                 parse_command(command, &mut app),

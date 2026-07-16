@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub const API_VERSION: &str = "bunting.v1";
 pub const PRODUCT_CONTRACT_VERSION: &str = "bunting.product.v1";
-pub const FIX_COMPETITION_PROFILE_VERSION: &str = "bunting.fix44.competition.v1";
+pub const FIX_COMPETITION_PROFILE_VERSION: &str = "bunting.fixlatest.competition.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecimalStringError;
@@ -476,7 +476,7 @@ mod tests {
             "../../../schemas/product/bunting.product.v1.json"
         ))?;
         let fix: Value = serde_json::from_str(include_str!(
-            "../../../schemas/fix/bunting.fix44.competition.v1.json"
+            "../../../schemas/fix/bunting.fixlatest.competition.v1.json"
         ))?;
         assert_eq!(product["contractVersion"], PRODUCT_CONTRACT_VERSION);
         assert_eq!(fix["profileVersion"], FIX_COMPETITION_PROFILE_VERSION);

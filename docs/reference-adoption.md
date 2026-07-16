@@ -39,6 +39,7 @@ For every reference or vendored component, record:
 | `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
 | `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; excluded from the Worker dependency graph and no market semantics |
 | `rustls` / `tokio-rustls` / `rustls-native-certs` / `rustls-pemfile` | `0.23.42` / `0.26.4` / `0.8.4` / `2.2.0`; native FIX initiator TLS, platform trust roots and optional PEM CA loading | Native `bunting-tui` transport only; excluded from the Worker dependency graph, no FIX sequencing and no market semantics |
+| `rustyfix-dictionary` | exact crates.io release `0.7.4`, Apache-2.0, upstream source commit `2f0ef7830553d482765c14e3c4b32be3432d57b0`; features `fix50sp2`, `fixt11` only | Production standard message/field/datatype lookup in `simfix-wire`; no engine, session, transport or copied dictionary resources, and FIX Latest Orchestra remains normative |
 
 The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
 
@@ -47,6 +48,7 @@ The first-party adapter now lives in a private `packages/bunting-engine` module 
 | Candidate | Observed version/source | Intended boundary |
 |---|---|---|
 | `@trpc/server` / `@trpc/client` | `11.18.0`, source git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT; selected manifests and transport entrypoints are hashed in the functionality audit | Development-only wire/fixture oracle for ADR 0016. Only `tests/oracles/trpc` may install the TypeScript packages; committed normalized fixtures are the offline input to Rust differential tests, and no production Worker or Cargo manifest may depend on them. |
+| `quickfixgo/quickfix` | exact Go module `v0.9.10`, QuickFIX Software License 1.0, `github.com/quickfixgo/quickfix` | Development-only external FIXT.1.1/FIX 5.0 SP2 serializer/parser oracle under `tests/interop/quickfixgo`; it drives the native TCP acceptor and is absent from every production manifest. |
 
 ## Audited disposition matrix
 
@@ -110,7 +112,7 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
 | `makeev/alphai-tui` | MIT Rust/Ratatui stock dashboard with split market views, semantic key mapping and isolated application/UI modules at `f814697c6159d76b2dfb503ba5201b8c3fb702ad` | Historical adaptation input for the superseded first CLI; no AlphaAI source remains active after the Longbridge-first `bunting-tui` rewrite, but its retained license and provenance record the removed adaptation |
-| `longbridge/longbridge-terminal` | Apache-2.0 Rust/Ratatui trading terminal with explicit application, input, navigation, popup, rendering, view, UI-helper and widget layers plus an MIT `cli-candlestick-chart` package exposed as version `0.24.0` at `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3` | Approved source adaptation of the complete `src/tui` tree and direct exact-revision chart dependency for `apps/bunting-tui`; remove Longbridge brokerage/data systems and feed the chart only bounded Bunting FIX/TCP book projections; retain Apache-2.0 and MIT licenses, Longbridge attribution notice and prominent modification notices in changed files |
+| `longbridge/longbridge-terminal` | Apache-2.0 Rust/Ratatui trading terminal with explicit application, input, navigation, popup, rendering, view, UI-helper and widget layers plus an MIT `cli-candlestick-chart` package exposed as version `0.24.0` at `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3` | Approved source adaptation of the complete `src/tui` tree and the chart package's required MIT modules into `apps/bunting-tui`; remove the network-bound git dependency, exclude its CLI/examples/optional integrations, feed the chart only bounded Bunting FIX/TCP book projections, and retain Apache-2.0 and MIT licenses, exact commit/path provenance, Longbridge attribution, and prominent modification notices in changed files |
 
 ## Local port-source restrictions
 

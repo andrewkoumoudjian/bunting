@@ -26,7 +26,7 @@
       "fixTopology": "worker_initiator_to_external_acceptor"
     }
   },
-  "fixProfile": "bunting.fix44.competition.v1",
+  "fixProfile": "bunting.fixlatest.competition.v1",
   "roles": {
     "participant": ["own_commands", "own_private_state", "competition_public_state"],
     "team": ["team_private_state", "team_participant_management_when_delegated"],

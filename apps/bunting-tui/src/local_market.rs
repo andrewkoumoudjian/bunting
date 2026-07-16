@@ -1,12 +1,15 @@
 use crate::protocol::{now_millis, session_config, session_error, timestamp};
-use bunting_agents::{
-    AgentConfig, AgentContext, AgentObservation, BuiltInPolicy, ManagedAgent, NextWake, PolicyKind,
+use bunting_agents::PolicyKind;
+use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
+use bunting_application::{
+    VerifiedActor,
+    competition::{account, discovery, news_tenders, risk_score},
 };
 use bunting_engine::{
     ListingDefinition, OwnedOrderState, ParticipantDefinition, RunState, ScenarioDefinition,
 };
 use bunting_market_events::{
-    CancelOrder, Command, CommandPayload, EventEnvelope, EventPayload, OrderKind, Side, SubmitOrder,
+    CancelOrder, Command, CommandPayload, EventEnvelope, OrderKind, Side, SubmitOrder,
 };
 use bunting_market_types::{
     CommandId, CorrelationId, InstrumentId, IterationId, ListingKey, LogicalTimeNs, MoneyMinor,
@@ -14,14 +17,17 @@ use bunting_market_types::{
     ScenarioVersion, VenueId,
 };
 use bunting_risk_engine::RiskLimits;
-use quarcc_bunting_adapter::{BuntingCommandContext, BuntingExecutionAdapter};
+use bunting_runtime::{
+    DeterministicRuntime, RuntimeAgentConfig, RuntimeConfig, RuntimeError, RuntimeHost,
+};
+use quarcc_bunting_adapter::BuntingExecutionAdapter;
 use quarcc_execution_engine::{
-    ExecutionAction, ExecutionConfig, ExecutionIntent, ExecutionSnapshot, QuarccExecutionEngine,
+    ExecutionIntent,
     ids::{ClientOrderId, IntentId},
 };
 use simfix_mapping::{
-    InboundApplication, MappingContext, business_reject, map_execution_report, map_inbound,
-    market_snapshot,
+    CompetitionRequest, InboundApplication, MappingContext, business_reject, competition_report,
+    map_execution_report, map_inbound, market_snapshot,
 };
 use simfix_session::{ConnectionState, FixSession, SessionAction};
 use simfix_wire::FixMessage;
@@ -42,7 +48,6 @@ const INSTRUMENT_ID: InstrumentId = InstrumentId::new(1);
 const HUMAN_ID: ParticipantId = ParticipantId::new(1);
 const MAKER_ID: ParticipantId = ParticipantId::new(2);
 const FIRST_AGENT_ID: u128 = 10;
-const AGENT_ID_STRIDE: u128 = 1_000_000;
 const AGENT_WAKE_INTERVAL_NS: u64 = 1_000_000_000;
 const MAX_AGENT_ACTIONS_PER_TICK: usize = 256;
 const MAX_PENDING_HUMAN_REPORTS: usize = 256;
@@ -101,24 +106,10 @@ struct Market {
     next_command_id: u128,
     next_report_id: u128,
     logical_time: LogicalTimeNs,
-    previous_trade: PriceTicks,
-    last_trade: PriceTicks,
     orders: BTreeMap<u128, OrderView>,
     human_adapter: BuntingExecutionAdapter,
     pending_human_reports: VecDeque<FixMessage>,
-    runner: Option<ScenarioRunner>,
-}
-
-struct ScheduledAgent {
-    participant_id: ParticipantId,
-    managed: ManagedAgent<BuiltInPolicy>,
-    adapter: BuntingExecutionAdapter,
-    next_wake: NextWake,
-}
-
-struct ScenarioRunner {
-    agents: Vec<ScheduledAgent>,
-    logical_time: LogicalTimeNs,
+    runner: Option<DeterministicRuntime>,
 }
 
 pub async fn spawn(address: &str, config: LocalScenarioConfig) -> io::Result<JoinHandle<()>> {
@@ -133,8 +124,12 @@ pub async fn spawn(address: &str, config: LocalScenarioConfig) -> io::Result<Joi
 }
 
 async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result<()> {
-    let mut session = FixSession::try_new(session_config("BUNTING", "HUMAN"))
-        .map_err(|error| session_error(&error))?;
+    let mut session_config = session_config("BUNTING", "HUMAN");
+    session_config.logon_fields = vec![
+        simfix_wire::Field::new(10000, crate::config::FIX_PROFILE_VERSION),
+        simfix_wire::Field::new(10004, "participant"),
+    ];
+    let mut session = FixSession::try_new(session_config).map_err(|error| session_error(&error))?;
     let actions = session
         .connected_at(&timestamp(), now_millis())
         .map_err(|error| session_error(&error))?;
@@ -159,6 +154,7 @@ async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result
                 for action in actions {
                     match action {
                         SessionAction::Application(message) => applications.push(message),
+                        SessionAction::PeerLogon(_) => {}
                         other => {
                             if write_actions(&mut stream, vec![other]).await? {
                                 return Ok(());
@@ -213,7 +209,9 @@ async fn write_actions(stream: &mut TcpStream, actions: Vec<SessionAction>) -> i
         match action {
             SessionAction::Send(frame) => stream.write_all(&frame).await?,
             SessionAction::Disconnect => disconnect = true,
-            SessionAction::Application(_) | SessionAction::Persist(_) => {}
+            SessionAction::Application(_)
+            | SessionAction::PeerLogon(_)
+            | SessionAction::Persist(_) => {}
         }
     }
     Ok(disconnect)
@@ -267,8 +265,6 @@ impl Market {
             next_command_id: 1,
             next_report_id: MANUAL_REPORT_ID_START,
             logical_time: LogicalTimeNs::new(0),
-            previous_trade: PriceTicks::new(100),
-            last_trade: PriceTicks::new(100),
             orders: BTreeMap::new(),
             human_adapter: BuntingExecutionAdapter::default(),
             pending_human_reports: VecDeque::new(),
@@ -276,7 +272,36 @@ impl Market {
         };
         market.seed(9_001, Side::Buy, 99, 50)?;
         market.seed(9_002, Side::Sell, 101, 50)?;
-        market.runner = Some(ScenarioRunner::new(policies)?);
+        let agents = policies
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, kind)| {
+                let offset =
+                    u128::try_from(index).map_err(|_| io::Error::other("too many local agents"))?;
+                Ok(RuntimeAgentConfig {
+                    kind,
+                    participant_id: ParticipantId::new(FIRST_AGENT_ID + offset),
+                    base_quantity: QuantityLots::new(5),
+                    spread_ticks: 2,
+                    inventory_target: QuantityLots::new(0),
+                    wake_interval_ns: AGENT_WAKE_INTERVAL_NS,
+                    seed: 42_u64.saturating_add(u64::try_from(index).unwrap_or(u64::MAX)),
+                    max_intents_per_wake: 4,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        market.runner = Some(
+            DeterministicRuntime::new(RuntimeConfig {
+                run_id: RUN_ID,
+                instrument_id: INSTRUMENT_ID,
+                fundamental_price: PriceTicks::new(100),
+                remaining_parent_quantity: QuantityLots::new(1_000),
+                max_actions_per_tick: MAX_AGENT_ACTIONS_PER_TICK,
+                agents,
+            })
+            .map_err(runtime_error)?,
+        );
         Ok(market)
     }
 
@@ -284,7 +309,10 @@ impl Market {
         let Some(mut runner) = self.runner.take() else {
             return Ok(false);
         };
-        let result = runner.advance(self);
+        let result = runner
+            .advance(self)
+            .map(|processed| processed > 0)
+            .map_err(runtime_error);
         self.runner = Some(runner);
         result
     }
@@ -333,6 +361,7 @@ impl Market {
             }
         };
         let mut responses = match application {
+            InboundApplication::Competition(request) => self.competition(&request),
             InboundApplication::MarketDataRequest { request_id, .. } => {
                 vec![self.book(&request_id)]
             }
@@ -342,6 +371,118 @@ impl Market {
             responses.push(self.book("book-live"));
         }
         responses
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the deterministic fixture keeps every competition projection in one exhaustive match"
+    )]
+    fn competition(&self, request: &CompetitionRequest) -> Vec<FixMessage> {
+        let actor = match VerifiedActor::try_from_identity(ActorIdentity {
+            actor_id: UnsignedDecimalString::new(HUMAN_ID.get()),
+            role: ActorRole::Participant,
+            participant_id: Some(UnsignedDecimalString::new(HUMAN_ID.get())),
+            team_id: None,
+        }) {
+            Ok(actor) => actor,
+            Err(error) => {
+                return vec![business_reject(
+                    "competition",
+                    &format!("fixture actor is invalid: {error:?}"),
+                )];
+            }
+        };
+        let result = match request {
+            CompetitionRequest::Discovery => competition_report(
+                "y",
+                "public",
+                "discovery",
+                "snapshot",
+                "ok",
+                self.state.sequence().get(),
+                &discovery(&self.state),
+            ),
+            CompetitionRequest::Account => account(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "AP",
+                        "private",
+                        "account",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::News => news_tenders(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "B",
+                        "private",
+                        "news",
+                        "list",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.news,
+                    )
+                },
+            ),
+            CompetitionRequest::Tender { .. } => news_tenders(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "U6",
+                        "private",
+                        "tender",
+                        "list",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.tenders,
+                    )
+                },
+            ),
+            CompetitionRequest::Score => risk_score(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "U9",
+                        "private",
+                        "score",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view.latest_score,
+                    )
+                },
+            ),
+            CompetitionRequest::Risk => risk_score(&self.state, &actor).map_or_else(
+                |_| Err(simfix_mapping::MappingError::Serialization),
+                |view| {
+                    competition_report(
+                        "UB",
+                        "private",
+                        "risk",
+                        "snapshot",
+                        "ok",
+                        self.state.sequence().get(),
+                        &view,
+                    )
+                },
+            ),
+            CompetitionRequest::RunControl { .. } | CompetitionRequest::RiskAdmin { .. } => {
+                return vec![business_reject("UA", "fixture operator role required")];
+            }
+        };
+        match result {
+            Ok(report) => vec![report],
+            Err(error) => vec![business_reject(
+                "U1",
+                &format!("fixture competition projection failed: {error:?}"),
+            )],
+        }
     }
 
     fn execute(&mut self, intent: ExecutionIntent, original: &FixMessage) -> Vec<FixMessage> {
@@ -530,12 +671,6 @@ impl Market {
             return Err(io::Error::other("human execution-report queue is full"));
         }
         self.logical_time = command.logical_time;
-        for event in &outcome.events {
-            if let EventPayload::TradeExecuted { price, .. } = event.payload {
-                self.previous_trade = self.last_trade;
-                self.last_trade = price;
-            }
-        }
         self.state = outcome.candidate.clone();
         self.human_adapter = human_adapter;
         self.pending_human_reports.extend(messages);
@@ -577,35 +712,6 @@ impl Market {
                 .get()
                 .max(self.logical_time.get().saturating_add(1)),
         )
-    }
-
-    fn observation(&self) -> io::Result<AgentObservation> {
-        let (bids, asks) = self
-            .state
-            .visible_levels(ListingKey::new(VenueId::new(1), INSTRUMENT_ID))
-            .map_err(|error| io::Error::other(format!("visible depth: {error:?}")))?;
-        let (best_bid, bid_quantity) = bids
-            .first()
-            .copied()
-            .ok_or_else(|| io::Error::other("agent wake requires bid depth"))?;
-        let (best_ask, ask_quantity) = asks
-            .first()
-            .copied()
-            .ok_or_else(|| io::Error::other("agent wake requires ask depth"))?;
-        Ok(AgentObservation {
-            best_bid: PriceTicks::new(i64::try_from(best_bid).map_err(io::Error::other)?),
-            best_ask: PriceTicks::new(i64::try_from(best_ask).map_err(io::Error::other)?),
-            bid_quantity: QuantityLots::new(i64::try_from(bid_quantity).map_err(io::Error::other)?),
-            ask_quantity: QuantityLots::new(i64::try_from(ask_quantity).map_err(io::Error::other)?),
-            last_trade: self.last_trade,
-            fundamental: PriceTicks::new(100),
-            previous_trade: self.previous_trade,
-            observed_volume: QuantityLots::new(
-                i64::try_from(bid_quantity.saturating_add(ask_quantity))
-                    .map_err(io::Error::other)?,
-            ),
-            stress_bps: 0,
-        })
     }
 
     fn report(
@@ -655,134 +761,32 @@ impl Market {
     }
 }
 
-impl ScenarioRunner {
-    fn new(policies: &[PolicyKind]) -> io::Result<Self> {
-        let agents = policies
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, kind)| {
-                let offset =
-                    u128::try_from(index).map_err(|_| io::Error::other("too many local agents"))?;
-                let participant_id = ParticipantId::new(FIRST_AGENT_ID + offset);
-                let policy = BuiltInPolicy::new(AgentConfig {
-                    kind,
-                    participant_id,
-                    instrument_id: INSTRUMENT_ID,
-                    base_quantity: QuantityLots::new(5),
-                    spread_ticks: 2,
-                    inventory_target: QuantityLots::new(0),
-                    wake_interval_ns: AGENT_WAKE_INTERVAL_NS,
-                    seed: 42_u64.saturating_add(u64::try_from(index).unwrap_or(u64::MAX)),
-                    max_intents_per_wake: 4,
-                });
-                let mut snapshot = ExecutionSnapshot::empty(ExecutionConfig::default());
-                snapshot.next_id = participant_id
-                    .get()
-                    .checked_mul(AGENT_ID_STRIDE)
-                    .ok_or_else(|| io::Error::other("agent identifier namespace overflow"))?;
-                let execution = QuarccExecutionEngine::restore(snapshot)
-                    .map_err(|error| io::Error::other(format!("QUARCC restore: {error:?}")))?;
-                Ok(ScheduledAgent {
-                    participant_id,
-                    managed: ManagedAgent::new(policy, execution),
-                    adapter: BuntingExecutionAdapter::default(),
-                    next_wake: NextWake {
-                        logical_time: LogicalTimeNs::new(0),
-                    },
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        Ok(Self {
-            agents,
-            logical_time: LogicalTimeNs::new(0),
-        })
+impl RuntimeHost for Market {
+    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
+        if run_id != self.state.run_id() {
+            return Err(RuntimeError::Host(
+                "runtime requested an unknown run".to_owned(),
+            ));
+        }
+        Ok(self.state.clone())
     }
 
-    fn advance(&mut self, market: &mut Market) -> io::Result<bool> {
-        let Some(next_time) = self
-            .agents
-            .iter()
-            .map(|agent| agent.next_wake.logical_time)
-            .min()
-        else {
-            return Ok(false);
-        };
-        self.logical_time = market.next_logical_time(next_time);
-        let observation = market.observation()?;
-        let due = self
-            .agents
-            .iter()
-            .enumerate()
-            .filter_map(|(index, agent)| {
-                (agent.next_wake.logical_time <= self.logical_time).then_some(index)
-            })
-            .collect::<Vec<_>>();
-        let mut pending = VecDeque::new();
-        for index in due {
-            let snapshot = self.agents[index].managed.snapshot();
-            let position = snapshot
-                .execution
-                .positions
-                .get(&INSTRUMENT_ID)
-                .map_or_else(|| QuantityLots::new(0), |position| position.quantity);
-            let (next_wake, actions) = self.agents[index]
-                .managed
-                .on_wake(
-                    &AgentContext {
-                        logical_time: self.logical_time,
-                        current_position: position,
-                        remaining_parent_quantity: QuantityLots::new(1_000),
-                    },
-                    &observation,
-                )
-                .map_err(|error| io::Error::other(format!("agent wake: {error:?}")))?;
-            self.agents[index].next_wake = next_wake;
-            pending.extend(actions.into_iter().map(|action| (index, action)));
-        }
-        let mut processed = 0_usize;
-        while let Some((index, action)) = pending.pop_front() {
-            if processed >= MAX_AGENT_ACTIONS_PER_TICK {
-                return Err(io::Error::other("agent action cascade exceeded its bound"));
-            }
-            processed += 1;
-            let logical_time = market.next_logical_time(self.logical_time);
-            let context = BuntingCommandContext {
-                run_id: RUN_ID,
-                actor: self.agents[index].participant_id,
-                expected_sequence: market.state.sequence(),
-                logical_time,
-                correlation_id: CorrelationId::new(logical_time.get().into()),
-            };
-            let command = self.agents[index]
-                .adapter
-                .command_for_action(&action, &context)
-                .map_err(|error| io::Error::other(format!("agent command mapping: {error:?}")))?;
-            let outcome = market.apply_command(&command)?;
-            self.dispatch(&outcome.events, &mut pending)?;
-        }
-        Ok(processed > 0)
-    }
-
-    fn dispatch(
+    fn commit(
         &mut self,
-        events: &[EventEnvelope],
-        pending: &mut VecDeque<(usize, ExecutionAction)>,
-    ) -> io::Result<()> {
-        for (index, agent) in self.agents.iter_mut().enumerate() {
-            let reports = agent
-                .adapter
-                .normalize_committed_events(agent.participant_id, events)
-                .map_err(|error| io::Error::other(format!("venue report mapping: {error:?}")))?;
-            for report in reports {
-                let actions = agent.managed.on_private_event(&report).map_err(|error| {
-                    io::Error::other(format!("private agent report: {error:?}"))
-                })?;
-                pending.extend(actions.into_iter().map(|action| (index, action)));
-            }
+        actor: &VerifiedActor,
+        command: &Command,
+    ) -> Result<Vec<EventEnvelope>, RuntimeError> {
+        if actor.participant_id() != Some(command.actor) {
+            return Err(RuntimeError::Host("runtime actor mismatch".to_owned()));
         }
-        Ok(())
+        self.apply_command(command)
+            .map(|outcome| outcome.events)
+            .map_err(|error| RuntimeError::Host(error.to_string()))
     }
+}
+
+fn runtime_error(error: RuntimeError) -> io::Error {
+    io::Error::other(error)
 }
 
 #[cfg(test)]
@@ -819,7 +823,7 @@ mod tests {
             .as_ref()
             .ok_or_else(|| io::Error::other("missing scenario runner"))?;
         assert_eq!(
-            runner.agents[0].managed.snapshot().execution.orders.len(),
+            runner.snapshot().agents[0].managed.execution.orders.len(),
             2
         );
         Ok(())
@@ -936,7 +940,7 @@ mod tests {
         )?;
         client.reconnect().await?;
         for _ in 0..20 {
-            Box::pin(client.poll()).await?;
+            Box::pin(client.poll_once()).await?;
             if client.connection_state() == simfix_session::ConnectionState::Established {
                 break;
             }
@@ -944,7 +948,7 @@ mod tests {
         }
         client.send(book_request(1)).await?;
         for _ in 0..20 {
-            Box::pin(client.poll()).await?;
+            Box::pin(client.poll_once()).await?;
             if !client.book.bids.is_empty() && !client.book.asks.is_empty() {
                 break;
             }
@@ -954,7 +958,7 @@ mod tests {
         assert_eq!(client.book.asks.first(), Some(&(101, 50)));
         client.send(new_order(2, "buy", 5, Some(100))).await?;
         for _ in 0..20 {
-            Box::pin(client.poll()).await?;
+            Box::pin(client.poll_once()).await?;
             if client.book.bids.first() == Some(&(100, 5)) {
                 break;
             }
@@ -963,11 +967,12 @@ mod tests {
         assert_eq!(client.book.bids.first(), Some(&(100, 5)));
         client.send(new_order(3, "buy", 5, None)).await?;
         for _ in 0..20 {
-            Box::pin(client.poll()).await?;
+            Box::pin(client.poll_once()).await?;
             if client
                 .executions
                 .iter()
                 .any(|report| report.order_id == "3" && report.kind == "F")
+                && client.book.asks.first() == Some(&(101, 45))
             {
                 break;
             }

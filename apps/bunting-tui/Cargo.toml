@@ -14,13 +14,17 @@ path = "src/main.rs"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bunting-agents = { path = "../../packages/bunting-agents" }
+bunting-application.workspace = true
+bunting-api-contract.workspace = true
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+bunting-runtime.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 clap = { version = "4.6.1", features = ["derive"] }
-cli-candlestick-chart = { git = "https://github.com/longbridge/longbridge-terminal.git", rev = "05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3", version = "=0.24.0", default-features = false }
-crossterm = "0.29.0"
+colored = "2"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures-util = "0.3"
 quarcc-execution-engine.workspace = true
 quarcc-bunting-adapter = { path = "../../packages/quarcc-bunting-adapter" }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }

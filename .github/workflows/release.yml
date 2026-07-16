@@ -36,18 +36,24 @@ jobs:
       - name: Install Rust target
         shell: bash
         run: rustup target add "${{ matrix.target }}"
-      - name: Build server and terminal
+      - name: Build unified native application
         shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p bunting-server -p bunting-tui
-      - name: Package native applications
+        run: cargo build --locked --release --target "${{ matrix.target }}" -p bunting-cli
+      - name: Package native application
         shell: bash
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           package="bunting-${tag}-${{ matrix.target }}"
           mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
-          cp "target/${{ matrix.target }}/release/bunting-server${{ matrix.executable_suffix }}" "stage/${package}/bin/"
-          cp "target/${{ matrix.target }}/release/bunting-tui${{ matrix.executable_suffix }}" "stage/${package}/bin/"
+          cp "target/${{ matrix.target }}/release/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/"
+          if [ -n "${{ matrix.executable_suffix }}" ]; then
+            cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/bunting-server${{ matrix.executable_suffix }}"
+            cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/bunting-tui${{ matrix.executable_suffix }}"
+          else
+            ln -s bunting "stage/${package}/bin/bunting-server"
+            ln -s bunting "stage/${package}/bin/bunting-tui"
+          fi
           cp apps/bunting-server/config/*.json "stage/${package}/config/"
           cp README.md "stage/${package}/"
           tar -C stage -czf "dist/${package}.tar.gz" "${package}"
@@ -82,7 +88,7 @@ jobs:
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
             '```' \
             '' \
-            'The installer adds `bunting-server`, `bunting-tui`, and server configuration templates without overwriting existing configuration. Releases contain only locally installable native applications. Verify manual downloads with `SHA256SUMS`.' \
+            'The installer adds the unified `bunting` executable, one-release `bunting-server` and `bunting-tui` compatibility aliases, and server configuration templates without overwriting existing configuration. Releases contain only the locally installable native application. Verify manual downloads with `SHA256SUMS`.' \
             '' \
             'See the repository README for server configuration and platform details.' \
             > release-notes.md

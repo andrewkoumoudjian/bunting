@@ -14,14 +14,12 @@ bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
 bunting-origin-store = { path = "../origin-store" }
+bunting-risk-engine = { path = "../risk-engine" }
 quarcc-bunting-adapter.workspace = true
 quarcc-execution-engine.workspace = true
 serde.workspace = true
 simfix-mapping.workspace = true
 simfix-wire.workspace = true
-
-[dev-dependencies]
-bunting-risk-engine = { path = "../risk-engine" }
 
 [lints]
 workspace = true

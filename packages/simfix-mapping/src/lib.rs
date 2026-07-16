@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! FIX 4.4 application mapping with session concerns kept outside market authority.
+//! FIX 5.0 SP2 application mapping with session concerns kept outside market authority.
 
 use bunting_market_events::{OrderKind, Side};
 use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots};
@@ -9,7 +9,7 @@ use quarcc_execution_engine::{
     order::DesiredOrder,
 };
 use serde::{Deserialize, Serialize};
-use simfix_wire::{FixMessage, WireError, validate_fix44};
+use simfix_wire::{FixMessage, WireError, validate_competition};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +28,35 @@ pub enum InboundApplication {
         market_depth: usize,
         entry_types: Vec<MarketDataEntryType>,
     },
+    Competition(CompetitionRequest),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompetitionRequest {
+    Discovery,
+    Account,
+    News,
+    Tender {
+        action: TenderAction,
+        tender_id: Option<u128>,
+    },
+    Score,
+    Risk,
+    RunControl {
+        action: String,
+        payload_json: Option<String>,
+    },
+    RiskAdmin {
+        action: String,
+        payload_json: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TenderAction {
+    List,
+    Accept,
+    Decline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +74,8 @@ pub enum MappingError {
     UnsupportedOrderType,
     UnsupportedSubscriptionType,
     Dictionary(WireError),
+    Serialization,
+    PayloadTooLarge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +93,7 @@ pub fn map_inbound(
     message: &FixMessage,
     context: MappingContext,
 ) -> Result<InboundApplication, MappingError> {
-    validate_fix44(message).map_err(MappingError::Dictionary)?;
+    validate_competition(message).map_err(MappingError::Dictionary)?;
     match message.msg_type.as_str() {
         "D" => {
             let client_order_id = ClientOrderId::new(parse(message, 11)?);
@@ -123,8 +154,83 @@ pub fn map_inbound(
                 entry_types,
             })
         }
+        _ => map_competition(message),
+    }
+}
+
+fn map_competition(message: &FixMessage) -> Result<InboundApplication, MappingError> {
+    match message.msg_type.as_str() {
+        "x" => Ok(InboundApplication::Competition(
+            CompetitionRequest::Discovery,
+        )),
+        "AN" => Ok(InboundApplication::Competition(CompetitionRequest::Account)),
+        "BE" if message.value(10016) == Some("news") => {
+            Ok(InboundApplication::Competition(CompetitionRequest::News))
+        }
+        "U6" => {
+            let action = match message.value(10018).unwrap_or("list") {
+                "list" => TenderAction::List,
+                "accept" => TenderAction::Accept,
+                "decline" => TenderAction::Decline,
+                _ => return Err(MappingError::InvalidTag(10018)),
+            };
+            let tender_id = message
+                .value(10017)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| MappingError::InvalidTag(10017))?;
+            if action != TenderAction::List && tender_id.is_none() {
+                return Err(MappingError::MissingTag(10017));
+            }
+            Ok(InboundApplication::Competition(
+                CompetitionRequest::Tender { action, tender_id },
+            ))
+        }
+        "U9" => Ok(InboundApplication::Competition(CompetitionRequest::Score)),
+        "UB" if message.value(10018).is_none_or(|action| action == "query") => {
+            Ok(InboundApplication::Competition(CompetitionRequest::Risk))
+        }
+        "UA" => Ok(InboundApplication::Competition(
+            CompetitionRequest::RunControl {
+                action: required(message, 10018)?.to_owned(),
+                payload_json: message.value(10020).map(ToOwned::to_owned),
+            },
+        )),
+        "UB" => Ok(InboundApplication::Competition(
+            CompetitionRequest::RiskAdmin {
+                action: required(message, 10018)?.to_owned(),
+                payload_json: message.value(10020).map(ToOwned::to_owned),
+            },
+        )),
         _ => Err(MappingError::UnsupportedMessage),
     }
+}
+
+/// Encodes a typed competition projection in the bounded Bunting Orchestra overlay.
+///
+/// # Errors
+/// Returns an error when the payload cannot be encoded or exceeds the profile bound.
+pub fn competition_report(
+    msg_type: &str,
+    audience: &str,
+    resource_kind: &str,
+    action: &str,
+    status: &str,
+    committed_sequence: u64,
+    payload: &impl Serialize,
+) -> Result<FixMessage, MappingError> {
+    let payload_json = serde_json::to_string(payload).map_err(|_| MappingError::Serialization)?;
+    if payload_json.len() > 16_384 {
+        return Err(MappingError::PayloadTooLarge);
+    }
+    let mut message = FixMessage::new(msg_type);
+    message.push(10010, committed_sequence.to_string());
+    message.push(10012, audience);
+    message.push(10016, resource_kind);
+    message.push(10018, action);
+    message.push(10019, status);
+    message.push(10020, payload_json);
+    Ok(message)
 }
 
 /// Converts a normalized committed venue result to its FIX application response.
@@ -219,7 +325,7 @@ pub enum MarketDataUpdateAction {
     Delete,
 }
 
-/// Maps one committed level change to FIX 4.4 `MarketDataIncrementalRefresh`.
+/// Maps one committed level change to FIX 5.0 SP2 `MarketDataIncrementalRefresh`.
 #[must_use]
 pub fn market_incremental(
     request_id: &str,
@@ -384,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_and_incremental_messages_use_fix44_group_layout() {
+    fn snapshot_and_incremental_messages_use_competition_group_layout() {
         let snapshot = market_snapshot(
             "book",
             InstrumentId::new(7),
@@ -426,5 +532,43 @@ mod tests {
         assert_eq!(complete.value(39), Some("2"));
         assert_eq!(complete.value(151), Some("0"));
         Ok(())
+    }
+
+    #[test]
+    fn competition_requests_use_standard_messages_and_bounded_extension_reports() {
+        let context = MappingContext {
+            participant_id: ParticipantId::new(9),
+            next_intent_id: IntentId::new(10),
+        };
+        assert_eq!(
+            map_inbound(&FixMessage::new("x"), context).unwrap(),
+            InboundApplication::Competition(CompetitionRequest::Discovery)
+        );
+        assert_eq!(
+            map_inbound(&FixMessage::new("AN"), context).unwrap(),
+            InboundApplication::Competition(CompetitionRequest::Account)
+        );
+        let mut tender = FixMessage::new("U6");
+        tender.push(10018, "accept");
+        tender.push(10017, "42");
+        assert_eq!(
+            map_inbound(&tender, context).unwrap(),
+            InboundApplication::Competition(CompetitionRequest::Tender {
+                action: TenderAction::Accept,
+                tender_id: Some(42),
+            })
+        );
+        let report = competition_report(
+            "U9",
+            "private",
+            "score",
+            "snapshot",
+            "ok",
+            7,
+            &serde_json::json!({"score":"100","policy":"bunting.score.nlv-rank.v1"}),
+        )
+        .unwrap();
+        assert_eq!(report.value(10010), Some("7"));
+        assert!(report.value(10020).unwrap().len() <= 16_384);
     }
 }

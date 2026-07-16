@@ -14,14 +14,19 @@ use bunting_api_contract::{
     MarketSubscribeInput, PriceLevel, SequenceDecimalString, Side as ContractSide,
     SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
 };
-use bunting_application::{VerifiedActor, prepare_authenticated, project_market};
+use bunting_application::{
+    VerifiedActor, prepare_authenticated, prepare_authenticated_simulation, project_market,
+};
 use bunting_browser_wire::{
     Call, ErrorCode, Method, ParsedRequest, Request as WireRequest, Response as WireResponse,
 };
-use bunting_command_transaction::{CachedSnapshot, TransactionError, command_fingerprint};
+use bunting_command_transaction::{
+    CachedSnapshot, TransactionError, command_fingerprint, simulation_command_fingerprint,
+};
 use bunting_engine::{ORDERBOOK_RS_VERSION, RunState};
 use bunting_market_events::{
-    CancelOrder, Command, CommandPayload, EventEnvelope, OrderKind, Side, SubmitOrder,
+    CancelOrder, Command, CommandPayload, EventEnvelope, OrderKind, Side, SimulationCommandRequest,
+    SubmitOrder,
 };
 use bunting_market_types::{
     CommandId, CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId,
@@ -109,7 +114,7 @@ fn authenticate(request: &Request, environment: &Env) -> Result<VerifiedClaims> 
     })
 }
 
-fn verified_participant(
+pub(crate) fn verified_participant(
     participant_id: ParticipantId,
 ) -> std::result::Result<VerifiedActor, ProcedureError> {
     VerifiedActor::try_from_identity(ActorIdentity {
@@ -466,6 +471,61 @@ pub(crate) async fn execute_command_detailed(
         let _cache_result =
             cloudflare::put_json(&key, snapshot.package_json.clone(), CachePolicy::default()).await;
     }
+    Ok(ExecutedCommand { result, events })
+}
+
+pub(crate) async fn execute_simulation_detailed(
+    request: SimulationCommandRequest,
+    actor: &VerifiedActor,
+    environment: &Env,
+) -> std::result::Result<ExecutedCommand, ProcedureError> {
+    let database = environment
+        .d1("ORIGIN_DB")
+        .map_err(|_| ProcedureError::OriginUnavailable)?;
+    let fingerprint = simulation_command_fingerprint(&request)
+        .map_err(|_| ProcedureError::InternalContractMismatch)?;
+    if let Some((stored_fingerprint, result)) = d1_origin::find_command(
+        &database,
+        &request.run_id.to_string(),
+        &request.command_id.to_string(),
+    )
+    .await
+    .map_err(|error| map_origin_error(&error))?
+    {
+        return if stored_fingerprint == fingerprint {
+            Ok(ExecutedCommand {
+                result,
+                events: Vec::new(),
+            })
+        } else {
+            Err(ProcedureError::DuplicateCommandConflict)
+        };
+    }
+    let state = d1_origin::load_run(&database, &request.run_id.to_string())
+        .await
+        .map_err(|error| map_origin_error(&error))?;
+    let prepared =
+        prepare_authenticated_simulation(actor, &request, &state).map_err(|error| match error {
+            bunting_application::ApplicationError::Transaction(transaction) => {
+                map_transaction_error(transaction)
+            }
+            bunting_application::ApplicationError::Unauthenticated
+            | bunting_application::ApplicationError::Unauthorized
+            | bunting_application::ApplicationError::ActorMismatch
+            | bunting_application::ApplicationError::InvalidIdentity => {
+                ProcedureError::Unauthorized
+            }
+            _ => ProcedureError::InternalContractMismatch,
+        })?;
+    let events = prepared.commit.events.clone();
+    let request_json =
+        serde_json::to_string(&request).map_err(|_| ProcedureError::InternalContractMismatch)?;
+    let outcome = d1_origin::commit(&database, &prepared.commit, &request_json)
+        .await
+        .map_err(|error| map_origin_error(&error))?;
+    let result = match outcome {
+        CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
+    };
     Ok(ExecutedCommand { result, events })
 }
 

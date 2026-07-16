@@ -677,6 +677,12 @@ impl RunState {
         &self.holdings
     }
 
+    /// Returns immutable participant configuration pinned by the run scenario.
+    #[must_use]
+    pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
+        &self.participants
+    }
+
     #[must_use]
     pub fn ownership(&self) -> &BTreeMap<OrderId, OwnedOrder> {
         &self.ownership

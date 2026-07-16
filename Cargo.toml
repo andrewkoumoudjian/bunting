@@ -14,6 +14,7 @@ members = [
   "packages/quarcc-bunting-adapter",
   "packages/quarcc-execution-wasm",
   "packages/bunting-agents",
+  "packages/bunting-runtime",
   "packages/simfix-wire",
   "packages/simfix-session",
   "packages/simfix-mapping",
@@ -24,6 +25,7 @@ members = [
   "apps/bunting-worker",
   "apps/bunting-server",
   "apps/bunting-tui",
+  "apps/bunting-cli",
 ]
 exclude = ["ref", "vendor", "out"]
 
@@ -39,6 +41,7 @@ bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
 bunting-application = { path = "packages/bunting-application" }
 bunting-engine = { path = "packages/bunting-engine" }
+bunting-runtime = { path = "packages/bunting-runtime" }
 quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
 simfix-wire = { path = "packages/simfix-wire" }
 simfix-session = { path = "packages/simfix-session" }
@@ -47,6 +50,7 @@ quarcc-bunting-adapter = { path = "packages/quarcc-bunting-adapter" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"
 percent-encoding = "2"
+rustyfix-dictionary = { version = "=0.7.4", features = ["fix50sp2", "fixt11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -66,3 +70,14 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 float_arithmetic = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -11,6 +11,7 @@ bunting-market-events.workspace = true
 bunting-market-types.workspace = true
 quarcc-execution-engine.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 simfix-wire.workspace = true
 
 [lints]

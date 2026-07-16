@@ -145,10 +145,11 @@ fn authenticate(
     target: &str,
     credentials: Option<(&str, &str)>,
 ) -> Result<Vec<u8>, String> {
-    let mut decoder = Decoder::new(WireLimits {
+    let mut decoder = Decoder::try_new(WireLimits {
         max_message_bytes,
         ..WireLimits::default()
-    });
+    })
+    .map_err(|error| format!("cannot load FIX dictionaries: {error:?}"))?;
     let mut collected = Vec::new();
     let mut chunk = vec![0; max_message_bytes.min(8_192)];
     loop {
@@ -181,6 +182,8 @@ fn validate_logon(
     if message.msg_type != "A"
         || message.value(49) != Some(sender)
         || message.value(56) != Some(target)
+        || message.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
+        || message.value(10000) != Some(bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION)
     {
         return Err("relay peer FIX identity does not match configured binding".to_owned());
     }

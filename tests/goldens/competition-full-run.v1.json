@@ -1,0 +1,46 @@
+{
+  "state_hash": "8ef66bd23a34f37ed3959ef3fd6a255addaaaf995b0553bfde9cd493e661f3de",
+  "sequence": 6,
+  "lifecycle": "terminated",
+  "logical_time": 2000000,
+  "ledger": [
+    {
+      "transaction_id": 1,
+      "kind": "fine",
+      "postings": [
+        {"participant_id": 1, "currency_id": 1, "account": "cash", "amount": -125},
+        {"participant_id": null, "currency_id": 1, "account": "clearing", "amount": 125}
+      ]
+    },
+    {
+      "transaction_id": 2,
+      "kind": "dividend",
+      "postings": [
+        {"participant_id": 1, "currency_id": 1, "account": "cash", "amount": 25},
+        {"participant_id": null, "currency_id": 1, "account": "clearing", "amount": -25}
+      ]
+    }
+  ],
+  "scores": [
+    {
+      "policy_version": 1,
+      "generated_at": 2000000,
+      "entries": [
+        {"participant_id": 2, "score": 1000000, "rank": 1},
+        {"participant_id": 99, "score": 1000000, "rank": 2},
+        {"participant_id": 1, "score": 999900, "rank": 3}
+      ]
+    }
+  ],
+  "transcript": [
+    {"schema_version":1,"run_id":11,"sequence":1,"event_id":2,"command_id":1,"correlation_id":1,"causation_sequence":null,"logical_time":0,"actor":99,"payload":{"simulation":{"lifecycle_changed":{"status":"active"}}}},
+    {"schema_version":1,"run_id":11,"sequence":2,"event_id":3,"command_id":2,"correlation_id":1,"causation_sequence":null,"logical_time":0,"actor":99,"payload":{"simulation":{"fine_applied":{"participant_id":1,"currency_id":1,"amount":125,"policy_version":1}}}},
+    {"schema_version":1,"run_id":11,"sequence":3,"event_id":4,"command_id":2,"correlation_id":1,"causation_sequence":null,"logical_time":0,"actor":99,"payload":{"simulation":{"administrator_change_recorded":{"reason":"late disclosure"}}}},
+    {"schema_version":1,"run_id":11,"sequence":4,"event_id":4,"command_id":3,"correlation_id":1,"causation_sequence":null,"logical_time":0,"actor":99,"payload":{"simulation":{"clock_advanced":{"from":0,"to":1000000}}}},
+    {"schema_version":1,"run_id":11,"sequence":5,"event_id":5,"command_id":4,"correlation_id":1,"causation_sequence":null,"logical_time":1000000,"actor":99,"payload":{"simulation":{"clock_advanced":{"from":1000000,"to":2000000}}}},
+    {"schema_version":1,"run_id":11,"sequence":6,"event_id":6,"command_id":4,"correlation_id":1,"causation_sequence":null,"logical_time":1000000,"actor":99,"payload":{"simulation":{"scheduled_action_applied":{"action_id":1}}}},
+    {"schema_version":1,"run_id":11,"sequence":7,"event_id":6,"command_id":5,"correlation_id":1,"causation_sequence":null,"logical_time":2000000,"actor":99,"payload":{"simulation":{"iteration_scored":{"participant_count":3}}}},
+    {"schema_version":1,"run_id":11,"sequence":8,"event_id":7,"command_id":6,"correlation_id":1,"causation_sequence":null,"logical_time":2000000,"actor":99,"payload":{"simulation":{"lifecycle_changed":{"status":"terminated"}}}},
+    {"schema_version":1,"run_id":11,"sequence":9,"event_id":8,"command_id":6,"correlation_id":1,"causation_sequence":null,"logical_time":2000000,"actor":99,"payload":{"simulation":{"administrator_change_recorded":{"reason":"golden run complete"}}}}
+  ]
+}

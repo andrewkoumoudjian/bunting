@@ -1,3 +1,7 @@
+use bunting_agents::PolicyKind;
+use bunting_api_contract::ActorRole;
+use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots, RunId};
+use bunting_runtime::{RuntimeAgentConfig, RuntimeConfig};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -47,6 +51,8 @@ pub struct FixConfig {
     pub target_comp_id: String,
     pub username: String,
     pub password: String,
+    #[serde(default = "participant_role")]
+    pub role: ActorRole,
     pub participant_id: u128,
     pub run_id: u128,
     pub heartbeat_seconds: u32,
@@ -55,6 +61,10 @@ pub struct FixConfig {
     pub max_journal_messages: usize,
     pub max_pending_inbound: usize,
     pub tls: TlsConfig,
+}
+
+const fn participant_role() -> ActorRole {
+    ActorRole::Participant
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -71,6 +81,13 @@ pub struct ScenarioConfig {
     pub path: String,
     pub run_id: u128,
     pub iteration_id: u128,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioRuntimeConfig {
+    pub wall_tick_ms: u64,
+    pub scheduler: RuntimeConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,6 +116,8 @@ pub struct ServerConfig {
     pub fix: Option<FixConfig>,
     pub admin: Option<AdminConfig>,
     pub scenario: Option<ScenarioConfig>,
+    #[serde(default)]
+    pub runtime: Option<ScenarioRuntimeConfig>,
     pub relay: Option<RelayConfig>,
 }
 
@@ -114,6 +133,65 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl ServerConfig {
+    /// Returns a bounded, ephemeral loopback profile suitable for local use.
+    #[must_use]
+    pub fn local_default() -> Self {
+        Self {
+            version: 1,
+            profile: DeploymentProfile::Local,
+            storage: StorageConfig {
+                kind: StorageKind::Memory,
+                path: None,
+                max_runs: 4,
+                max_commands: 10_000,
+                max_events_per_run: 100_000,
+            },
+            fix: Some(FixConfig {
+                bind: "127.0.0.1:9880".to_owned(),
+                sender_comp_id: "BUNTING".to_owned(),
+                target_comp_id: "HUMAN".to_owned(),
+                username: "participant".to_owned(),
+                password: "bunting-local-dev".to_owned(),
+                role: ActorRole::Participant,
+                participant_id: 1,
+                run_id: 1,
+                heartbeat_seconds: 30,
+                max_connections: 1,
+                max_message_bytes: 16_384,
+                max_journal_messages: 4_096,
+                max_pending_inbound: 64,
+                tls: TlsConfig::Disabled,
+            }),
+            admin: Some(AdminConfig {
+                bind: "127.0.0.1:8080".to_owned(),
+                bearer_token: "bunting-local-admin-token".to_owned(),
+                max_request_bytes: 4_096,
+            }),
+            scenario: None,
+            runtime: Some(ScenarioRuntimeConfig {
+                wall_tick_ms: 250,
+                scheduler: RuntimeConfig {
+                    run_id: RunId::new(1),
+                    instrument_id: InstrumentId::new(1),
+                    fundamental_price: PriceTicks::new(100),
+                    remaining_parent_quantity: QuantityLots::new(1_000),
+                    max_actions_per_tick: 256,
+                    agents: vec![RuntimeAgentConfig {
+                        kind: PolicyKind::StaticLiquidityProvider,
+                        participant_id: ParticipantId::new(10),
+                        base_quantity: QuantityLots::new(5),
+                        spread_ticks: 2,
+                        inventory_target: QuantityLots::new(0),
+                        wake_interval_ns: 1_000_000_000,
+                        seed: 42,
+                        max_intents_per_wake: 4,
+                    }],
+                },
+            }),
+            relay: None,
+        }
+    }
+
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let bytes = fs::read(path)
             .map_err(|error| ConfigError(format!("cannot read {}: {error}", path.display())))?;
@@ -181,11 +259,30 @@ impl ServerConfig {
                 ));
             }
         }
+        if self.profile == DeploymentProfile::HostedNative {
+            if self.storage.kind != StorageKind::File || self.scenario.is_none() {
+                return Err(ConfigError(
+                    "hosted-native requires bounded file storage and an immutable scenario"
+                        .to_owned(),
+                ));
+            }
+            if self.relay.is_some() {
+                return Err(ConfigError(
+                    "hosted-native cannot configure the Cloudflare relay".to_owned(),
+                ));
+            }
+        }
         if let Some(fix) = &self.fix {
             validate_fix(fix, self.profile)?;
         }
         if let Some(admin) = &self.admin {
-            parse_socket("admin.bind", &admin.bind)?;
+            let bind = parse_socket("admin.bind", &admin.bind)?;
+            if self.profile == DeploymentProfile::HostedNative && !bind.ip().is_loopback() {
+                return Err(ConfigError(
+                    "hosted-native admin.bind must remain loopback behind the authenticated terminator"
+                        .to_owned(),
+                ));
+            }
             if admin.bearer_token.len() < 16 || admin.bearer_token.len() > 256 {
                 return Err(ConfigError(
                     "admin.bearer_token must contain 16..=256 bytes".to_owned(),
@@ -200,8 +297,35 @@ impl ServerConfig {
         if let Some(relay) = &self.relay {
             validate_relay(relay)?;
         }
+        if let Some(runtime) = &self.runtime {
+            validate_runtime(runtime, self.scenario.as_ref(), self.fix.as_ref())?;
+        }
         Ok(())
     }
+}
+
+fn validate_runtime(
+    runtime: &ScenarioRuntimeConfig,
+    scenario: Option<&ScenarioConfig>,
+    fix: Option<&FixConfig>,
+) -> Result<(), ConfigError> {
+    if !(1..=60_000).contains(&runtime.wall_tick_ms) {
+        return Err(ConfigError(
+            "runtime.wall_tick_ms must be 1..=60000".to_owned(),
+        ));
+    }
+    runtime
+        .scheduler
+        .validate()
+        .map_err(|error| ConfigError(format!("invalid runtime scheduler: {error}")))?;
+    if scenario.is_some_and(|value| value.run_id != runtime.scheduler.run_id.get())
+        || fix.is_some_and(|value| value.run_id != runtime.scheduler.run_id.get())
+    {
+        return Err(ConfigError(
+            "runtime, scenario and FIX run IDs must match".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_relative(value: &mut String, base: &Path) {
@@ -322,6 +446,7 @@ mod tests {
             target_comp_id: "CLIENT".to_owned(),
             username: "client".to_owned(),
             password: "long-password".to_owned(),
+            role: ActorRole::Participant,
             participant_id: 1,
             run_id: 1,
             heartbeat_seconds: 30,
@@ -348,6 +473,30 @@ mod tests {
                 .map_err(|error| ConfigError(format!("profile JSON invalid: {error}")))?;
             config.validate()?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn zero_configuration_local_profile_is_bounded_and_valid() -> Result<(), ConfigError> {
+        let config = ServerConfig::local_default();
+        config.validate()?;
+        assert_eq!(config.profile, DeploymentProfile::Local);
+        assert_eq!(config.fix.as_ref().map(|fix| fix.max_connections), Some(1));
+        assert_eq!(config.storage.kind, StorageKind::Memory);
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_sessions_require_durable_isolated_state() -> Result<(), ConfigError> {
+        let mut config: ServerConfig =
+            serde_json::from_str(include_str!("../config/hosted-native.json"))
+                .map_err(|error| ConfigError(error.to_string()))?;
+        config.storage.kind = StorageKind::Memory;
+        config.storage.path = None;
+        let Err(error) = config.validate() else {
+            return Err(ConfigError("memory-hosted profile was accepted".to_owned()));
+        };
+        assert!(error.0.contains("bounded file storage"));
         Ok(())
     }
 

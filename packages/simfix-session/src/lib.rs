@@ -2,7 +2,7 @@
 //! Deterministic FIX session state behind explicit clock, store, and transport traits.
 
 use serde::{Deserialize, Serialize};
-use simfix_wire::{Decoder, Field, FixMessage, WireError, WireLimits};
+use simfix_wire::{Decoder, FIX_50_SP2_APPL_VER_ID, Field, FixMessage, WireError, WireLimits};
 use std::collections::BTreeMap;
 
 pub trait SessionClock {
@@ -72,6 +72,8 @@ pub struct SessionSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionAction {
     Send(Vec<u8>),
+    /// Reports the validated peer Logon after the session becomes established.
+    PeerLogon(FixMessage),
     Application(FixMessage),
     Persist(SessionSnapshot),
     Disconnect,
@@ -84,6 +86,7 @@ pub enum SessionError {
     MissingSequence,
     InvalidSequence,
     InvalidCompId,
+    InvalidApplicationVersion,
     InvalidSnapshot,
     JournalFull,
     PendingInboundFull,
@@ -111,7 +114,7 @@ impl FixSession {
     pub fn try_new(config: SessionConfig) -> Result<Self, SessionError> {
         validate_config(&config)?;
         Ok(Self {
-            decoder: Decoder::new(config.wire_limits),
+            decoder: Decoder::try_new(config.wire_limits)?,
             config,
             snapshot: SessionSnapshot {
                 version: 2,
@@ -144,7 +147,7 @@ impl FixSession {
             return Err(SessionError::InvalidSnapshot);
         }
         Ok(Self {
-            decoder: Decoder::new(config.wire_limits),
+            decoder: Decoder::try_new(config.wire_limits)?,
             config,
             snapshot,
         })
@@ -180,10 +183,11 @@ impl FixSession {
         self.snapshot.state = ConnectionState::AwaitingLogon;
         self.snapshot.last_received_millis = now_millis;
         self.snapshot.last_sent_millis = now_millis;
-        self.decoder = Decoder::new(self.config.wire_limits);
+        self.decoder = Decoder::try_new(self.config.wire_limits)?;
         let mut message = FixMessage::new("A");
         message.push(98, "0");
         message.push(108, self.config.heartbeat_seconds.to_string());
+        message.push(1137, FIX_50_SP2_APPL_VER_ID);
         for field in &self.config.logon_fields {
             message.push(field.tag, field.value.clone());
         }
@@ -410,8 +414,11 @@ impl FixSession {
         self.snapshot.last_received_millis = now_millis;
         match message.msg_type.as_str() {
             "A" => {
+                if message.value(1137) != Some(FIX_50_SP2_APPL_VER_ID) {
+                    return Err(SessionError::InvalidApplicationVersion);
+                }
                 self.snapshot.state = ConnectionState::Established;
-                Ok(Vec::new())
+                Ok(vec![SessionAction::PeerLogon(message)])
             }
             "0" => {
                 if self.snapshot.outstanding_test_request.as_deref() == message.value(112) {
@@ -510,8 +517,10 @@ fn validate_config(config: &SessionConfig) -> Result<(), SessionError> {
         || config.max_pending_inbound == 0
         || config.logon_fields.len() > 16
         || config.logon_fields.iter().any(|field| {
-            matches!(field.tag, 8 | 9 | 10 | 34 | 35 | 49 | 52 | 56 | 98 | 108)
-                || field.value.len() > config.wire_limits.max_field_bytes
+            matches!(
+                field.tag,
+                8 | 9 | 10 | 34 | 35 | 49 | 52 | 56 | 98 | 108 | 1137
+            ) || field.value.len() > config.wire_limits.max_field_bytes
         })
     {
         return Err(SessionError::InvalidConfig);
@@ -529,7 +538,7 @@ fn validate_config(config: &SessionConfig) -> Result<(), SessionError> {
 }
 
 fn decode_one(frame: &[u8], limits: WireLimits) -> Result<FixMessage, SessionError> {
-    Decoder::new(limits)
+    Decoder::try_new(limits)?
         .push(frame)?
         .into_iter()
         .next()
@@ -563,7 +572,7 @@ mod tests {
         config.logon_fields = vec![
             Field::new(553, "participant"),
             Field::new(554, "secret"),
-            Field::new(10000, "bunting.fix44.competition.v1"),
+            Field::new(10000, "bunting.fixlatest.competition.v1"),
         ];
         let mut session = FixSession::try_new(config).unwrap();
         let actions = session.connected_at("20260713-12:00:00.000", 0).unwrap();
@@ -577,7 +586,8 @@ mod tests {
         let logon = decode_one(frame, WireLimits::default()).unwrap();
         assert_eq!(logon.value(553), Some("participant"));
         assert_eq!(logon.value(554), Some("secret"));
-        assert_eq!(logon.value(10000), Some("bunting.fix44.competition.v1"));
+        assert_eq!(logon.value(1137), Some(FIX_50_SP2_APPL_VER_ID));
+        assert_eq!(logon.value(10000), Some("bunting.fixlatest.competition.v1"));
     }
 
     #[test]
@@ -599,6 +609,9 @@ mod tests {
 
     fn inbound(msg_type: &str, sequence: u64) -> Vec<u8> {
         let mut message = FixMessage::new(msg_type);
+        if msg_type == "A" {
+            message.push(1137, FIX_50_SP2_APPL_VER_ID);
+        }
         message.push(49, "ACCEPTOR");
         message.push(56, "BUNTING");
         message.push(34, sequence.to_string());
@@ -608,6 +621,9 @@ mod tests {
 
     fn inbound_with(msg_type: &str, sequence: u64, fields: &[(u32, &str)]) -> Vec<u8> {
         let mut message = FixMessage::new(msg_type);
+        if msg_type == "A" {
+            message.push(1137, FIX_50_SP2_APPL_VER_ID);
+        }
         for (tag, value) in fields {
             message.push(*tag, *value);
         }
@@ -746,5 +762,36 @@ mod tests {
             .unwrap();
         assert_eq!(restored.snapshot().outgoing_sequence, before + 1);
         assert_eq!(restored.snapshot().reconnect_generation, 2);
+    }
+
+    #[test]
+    fn fixt_upgrade_preserves_the_legacy_bounded_recovery_transition() {
+        let mut session = FixSession::try_new(config()).unwrap();
+        establish(&mut session);
+        session
+            .receive_bytes_at(&inbound("D", 3), "20260713-12:00:01.000", 1_000)
+            .unwrap();
+
+        let pending = session.snapshot();
+        let legacy_golden = (2, 3, Some(2), vec![3], vec![1, 2]);
+        assert_eq!(
+            (
+                pending.incoming_sequence,
+                pending.outgoing_sequence,
+                pending.pending_resend_begin,
+                pending.pending_inbound.keys().copied().collect::<Vec<_>>(),
+                pending.journal.keys().copied().collect::<Vec<_>>(),
+            ),
+            legacy_golden
+        );
+
+        let mut restored = FixSession::restore(config(), pending).unwrap();
+        restored
+            .receive_bytes_at(&inbound("0", 2), "20260713-12:00:02.000", 2_000)
+            .unwrap();
+        let recovered = restored.snapshot();
+        assert_eq!(recovered.incoming_sequence, 4);
+        assert!(recovered.pending_inbound.is_empty());
+        assert_eq!(recovered.pending_resend_begin, None);
     }
 }

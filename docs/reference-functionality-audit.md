@@ -514,6 +514,27 @@ Layering, parser/error, and conformance reference. Do not import bundled specifi
 
 Evidence: upstream `README.md`, root `Cargo.toml`.
 
+### 2026-07-16 FIX adoption spike
+
+Observed: the pinned gitlink and checkout both resolve to
+`ca2bbe4c6461108646f35f7cc9245bf1848ec368`, with a clean checkout and an
+MIT OR Apache-2.0 root manifest. The released `fefix 0.7.0` crate pulls a
+native async/database/TLS graph even with default features disabled and fails
+the `wasm32-unknown-unknown` build at `getrandom`. It is not adopted.
+
+Observed: released RustyFIX `0.7.4` comes from source commit
+`2f0ef7830553d482765c14e3c4b32be3432d57b0` under Apache-2.0. Its complete
+engine needs downstream feature repairs for native and Wasm builds, retains an
+unbounded `VecDeque` pending queue, has no serializable session snapshot, and
+does not consume Orchestra. The complete engine is not adopted.
+
+Observed: `rustyfix-dictionary 0.7.4` with only `fix50sp2` and `fixt11`
+features compiles unchanged for native and `wasm32-unknown-unknown` on Rust
+1.88. It provides standard message, field and datatype lookup for the two
+selected versions. Its bundled QuickFIX resources remain implementation data;
+Bunting does not copy, edit or present them as the normative FIX Latest
+Orchestra repository.
+
 ## `ref/quickfixj` — QuickFIX/J
 
 ### Observed functionality
@@ -530,6 +551,25 @@ A mature Java FIX messaging/session engine with:
 High-value external conformance oracle and fixture generator for FIX session/message behavior. It is not a Bunting runtime dependency or market engine.
 
 Evidence: upstream `README.md` and modules.
+
+## `tests/interop/quickfixgo` — QuickFIX/Go oracle
+
+### Observed functionality
+
+The exact released Go module `github.com/quickfixgo/quickfix v0.9.10` provides
+FIX message serialization with computed BodyLength/CheckSum and parsing with
+BodyLength validation. Its project documents FIXT.1.1 and FIX 5.0 SP2 support
+under the QuickFIX Software License 1.0.
+
+### Bunting disposition
+
+Development-only external interoperability oracle. QuickFIX/Go serializes a
+Logon and SecurityListRequest into Bunting's real native TCP acceptor, then
+parses the Bunting Logon and SecurityList responses. It is not a Cargo,
+production, Worker, market-engine, or copied-source dependency.
+
+Evidence: `tests/interop/quickfixgo/go.mod`, upstream package documentation and
+the executable interop test.
 
 ## `ref/ironsbe` — IronSBE
 
@@ -719,7 +759,7 @@ At commit `f814697c6159d76b2dfb503ba5201b8c3fb702ad`, the MIT-licensed Rust appl
 
 ## `longbridge/longbridge-terminal`
 
-At commit `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3`, the Apache-2.0 Rust application separates TUI application state, input, key bindings, navigation, popups, dirty rendering, views, UI helpers and widgets around its trading client. The same tree carries its MIT-licensed `cli-candlestick-chart` package as version `0.24.0` and demonstrates adapting that package's ANSI output into a TUI buffer. Bunting copies the complete `src/tui` tree as the adaptation input for `apps/bunting-tui/src/tui`, pins the chart package at the same commit, then removes the Longbridge account, quote, watchlist and brokerage systems and modifies the retained component hierarchy for Bunting's FIX/TCP session, engine-owned order book, human order actions, execution reports and bounded raw FIX logs. The chart receives only Bunting-added, bounded projections of committed FIX market-data snapshots: midpoint open/close, bid/ask low/high and displayed depth volume. Changed files carry prominent modification notices; the application retains the Apache-2.0 and chart MIT licenses plus the Longbridge attribution notice.
+At commit `05c9bbf7fd1c4ab5c34d5316fedf6e1ed5f1fcc3`, the Apache-2.0 Rust application separates TUI application state, input, key bindings, navigation, popups, dirty rendering, views, UI helpers and widgets around its trading client. The same tree carries its MIT-licensed `cli-candlestick-chart` package as version `0.24.0` and demonstrates adapting that package's ANSI output into a TUI buffer. Bunting copies the complete `src/tui` tree as the adaptation input for `apps/bunting-tui/src/tui` and the chart package's required library modules into `apps/bunting-tui/src/chart`, excluding its CLI, examples, optional integrations, and network-bound git dependency. It removes the Longbridge account, quote, watchlist and brokerage systems and modifies the retained component hierarchy for Bunting's FIX/TCP session, engine-owned order book, human order actions, execution reports and bounded raw FIX logs. The chart receives only Bunting-added, bounded projections of committed FIX market-data snapshots: midpoint open/close, bid/ask low/high and displayed depth volume. Changed files carry prominent modification notices; the application retains the Apache-2.0 and chart MIT licenses plus the Longbridge attribution notice.
 
 Evidence classification: the upstream tree, dependency versions and commit are **observed** from the fetched source; mapping its presentation and interaction components to Bunting protocol and engine state is **Bunting-added**. Longbridge brokerage behavior is neither copied as Bunting market behavior nor treated as an execution oracle.
 

@@ -72,6 +72,10 @@ User strategy source
 - `bunting-engine::compatibility::nbc`: NBC configuration, scheduler, synchronization, and provenance; the old matcher remains only under `tests/oracles`.
 - `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: participant execution and browser bindings.
 - `bunting-agents`: policies composed with mandatory QUARCC execution.
+- `bunting-runtime`: deterministic sans-I/O wake scheduling, authenticated
+  built-in participant identities, bounded action cascades, and portable
+  scheduler snapshots. Hosts remain responsible for the single authoritative
+  application writer and persistence.
 - `simfix-wire`, `simfix-session`, and `simfix-mapping`: transport-neutral FIX protocol layers.
 - `worker-cache`: immutable Workers Cache key and snapshot operations.
 - later engine modules: scenario clock, agents, products, news, tenders, assets, scoring and complete recovery. Extract a focused package only when a second real consumer proves a reusable non-authoritative boundary; FIX and native report/export tooling remain outside the engine.
@@ -132,7 +136,7 @@ ADR 0020 supersedes the universal RPC boundary. One native Rust Worker parses a 
 
 The Rust contract generates client schemas. The current browser envelope retains a development-only differential record against pinned tRPC fixtures, but tRPC is no longer an architecture or runtime dependency. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011. A Rust Durable Object may coordinate committed fan-out only after the explicit ADR 0016 gate.
 
-FIX compatibility is implemented by a Worker Durable Object that initiates outbound TCP and owns the bidirectional FIX 4.4 session. It never accepts inbound raw TCP, and FIX sequences never replace Bunting event sequences.
+FIX compatibility is implemented by a Worker Durable Object that initiates outbound TCP and owns the bidirectional FIXT.1.1 session with FIX 5.0 SP2 application semantics. It never accepts inbound raw TCP, and FIX sequences never replace Bunting event sequences.
 
 ## 7. Command transaction
 

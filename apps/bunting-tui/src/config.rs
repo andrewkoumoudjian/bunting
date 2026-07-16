@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, env, fs, io, path::PathBuf};
 
-pub const FIX_PROFILE_VERSION: &str = "bunting.fix44.competition.v1";
+pub const FIX_PROFILE_VERSION: &str = "bunting.fixlatest.competition.v1";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
