@@ -6,7 +6,7 @@ use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginEr
 use serde::Deserialize;
 use worker::{D1Database, D1PreparedStatement, D1Type};
 
-const INSERT_GUARD: &str = "INSERT INTO command_guards(run_id, command_id, fingerprint, expected_version) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND version = ?)";
+const INSERT_GUARD: &str = "INSERT INTO command_guards(run_id, command_id, fingerprint, expected_version, actor_id, session_id, local_command_id, local_order_id) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND version = ?)";
 const INSERT_EVENT: &str = "INSERT INTO events(run_id, sequence, command_id, event_json) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
 const INSERT_COMMAND: &str = "INSERT INTO commands(run_id, command_id, fingerprint, payload_json, result_json, committed_version) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
 const INSERT_SNAPSHOT: &str = "INSERT INTO snapshots(run_id, venue_id, instrument_id, represented_sequence, checksum, package_json) SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM command_guards WHERE run_id = ? AND command_id = ? AND fingerprint = ?)";
@@ -140,6 +140,18 @@ pub async fn commit(
     let command_id = request.command_id.to_string();
     let expected = request.expected_version.to_string();
     let fingerprint = request.fingerprint.clone();
+    let (actor_id, session_id, local_command_id, local_order_id) = request.client_key.map_or_else(
+        || (String::new(), String::new(), String::new(), String::new()),
+        |key| {
+            (
+                key.actor.to_string(),
+                key.session_id.to_string(),
+                key.local_command_id.to_string(),
+                key.local_order_id
+                    .map_or_else(String::new, |id| id.to_string()),
+            )
+        },
+    );
     let mut statements =
         Vec::with_capacity(request.events.len() + request.candidate.listings().len() + 3);
     statements.push(
@@ -151,6 +163,10 @@ pub async fn commit(
                 command_id.clone(),
                 fingerprint.clone(),
                 expected.clone(),
+                actor_id,
+                session_id,
+                local_command_id,
+                local_order_id,
                 run_id.clone(),
                 expected.clone(),
             ],

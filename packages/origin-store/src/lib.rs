@@ -4,7 +4,7 @@
 
 pub use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
-use bunting_market_types::{CommandId, EventSequence, OrderId, RunId};
+use bunting_market_types::{CommandId, EventSequence, OrderId, ParticipantId, RunId, SessionId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,11 +27,22 @@ pub struct CommitRequest {
     pub run_id: RunId,
     pub command_id: CommandId,
     pub fingerprint: String,
+    /// Persisted transport idempotency namespace. The canonical command ID is
+    /// derived from these components before engine execution.
+    pub client_key: Option<ClientCommandKey>,
     pub expected_version: EventSequence,
     pub events: Vec<EventEnvelope>,
     pub result: CommandResult,
     /// Complete candidate state produced only by `bunting-engine`.
     pub candidate: RunState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClientCommandKey {
+    pub actor: ParticipantId,
+    pub session_id: SessionId,
+    pub local_command_id: u128,
+    pub local_order_id: Option<u128>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -227,6 +238,7 @@ mod tests {
             run_id: command.run_id,
             command_id: command.command_id,
             fingerprint: command_id.to_string(),
+            client_key: None,
             expected_version: command.expected_sequence,
             events,
             result: CommandResult {

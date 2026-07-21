@@ -2,6 +2,11 @@
 
 Status: active, persisted 2026-07-13; product-alignment sequence accepted 2026-07-15
 
+The production hardening sequence is tracked in
+[`production-readiness-plan.md`](production-readiness-plan.md). Its Phase 1
+safety slice is the active milestone; it preserves ADR 0013 authority and ADR
+0016's measured, non-authoritative stream-coordinator gate.
+
 ## Product-alignment execution sequence
 
 This sequence reconciles the RIT-class product contract with the narrower

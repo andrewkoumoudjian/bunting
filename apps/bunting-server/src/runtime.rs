@@ -23,7 +23,8 @@ use bunting_runtime::{DeterministicRuntime, RuntimeError, RuntimeHost};
 use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{
-    CompetitionRequest, TenderAction, business_reject, competition_report, market_snapshot,
+    ApplyFinePayload, CompetitionRequest, PublishNewsPayload, RunAdvancePayload, RunReasonPayload,
+    TenderAction, business_reject, competition_report, market_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
@@ -558,27 +559,6 @@ const fn competition_command_id(sequence: u128) -> CommandId {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AdvancePayload {
-    steps: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReasonPayload {
-    reason: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublishNewsPayload {
-    news_id: bunting_market_types::NewsId,
-    audience: bunting_market_events::NewsAudience,
-    headline: String,
-    body: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct OpenTenderPayload {
     tender_id: TenderId,
     participant_id: ParticipantId,
@@ -589,25 +569,16 @@ struct OpenTenderPayload {
     expires_at: LogicalTimeNs,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FinePayload {
-    participant_id: ParticipantId,
-    currency_id: bunting_market_types::CurrencyId,
-    amount: bunting_market_types::MoneyMinor,
-    reason: String,
-}
-
 fn operator_command(action: &str, payload_json: Option<&str>) -> Result<SimulationCommand, String> {
     let payload = payload_json.unwrap_or("{}");
     match action {
         "start" => Ok(SimulationCommand::StartRun),
         "pause" => Ok(SimulationCommand::PauseRun),
         "resume" => Ok(SimulationCommand::ResumeRun),
-        "advance" => serde_json::from_str::<AdvancePayload>(payload)
+        "advance" => serde_json::from_str::<RunAdvancePayload>(payload)
             .map(|value| SimulationCommand::Advance { steps: value.steps })
             .map_err(|error| format!("invalid advance payload: {error}")),
-        "terminate" => serde_json::from_str::<ReasonPayload>(payload)
+        "terminate" => serde_json::from_str::<RunReasonPayload>(payload)
             .map(|value| SimulationCommand::Terminate {
                 reason: value.reason,
             })
@@ -632,7 +603,7 @@ fn operator_command(action: &str, payload_json: Option<&str>) -> Result<Simulati
             })
             .map_err(|error| format!("invalid tender payload: {error}")),
         "score" => Ok(SimulationCommand::ScoreIteration),
-        "fine" => serde_json::from_str::<FinePayload>(payload)
+        "fine" => serde_json::from_str::<ApplyFinePayload>(payload)
             .map(|value| SimulationCommand::ApplyFine {
                 participant_id: value.participant_id,
                 currency_id: value.currency_id,

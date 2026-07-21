@@ -2,15 +2,19 @@ use crate::{
     execute_command_detailed, execute_simulation_detailed, load_run, snapshot_output,
     verified_participant,
 };
-use bunting_application::competition::{account, discovery, news_tenders, risk_score};
+use bunting_application::{
+    competition::{account, discovery, news_tenders, risk_score},
+    derive_session_id, namespace_command_id, namespace_order_id,
+};
 use bunting_market_events::{
     CancelOrder, Command, CommandPayload, EventPayload, SimulationCommand,
     SimulationCommandRequest, SubmitOrder, TenderDecision,
 };
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId,
-    RunId, TenderId,
+    CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId, RunId,
+    SessionId, TenderId,
 };
+use bunting_origin_store::ClientCommandKey;
 use quarcc_execution_engine::event::ExecutionAction;
 use quarcc_execution_engine::ids::{IntentId, LocalOrderId, ReportId, VenueOrderId};
 use quarcc_execution_engine::{
@@ -72,10 +76,16 @@ struct StoredFixSession {
     execution: Option<ExecutionSnapshot>,
     run_id: RunId,
     participant_id: ParticipantId,
+    #[serde(default)]
+    session_id: SessionId,
     next_intent_id: u128,
+    #[serde(default)]
+    last_local_command_id: u128,
     logical_time_ns: u64,
     bunting_recovery_cursor: EventSequence,
     order_instruments: BTreeMap<OrderId, InstrumentId>,
+    #[serde(default)]
+    client_order_ids: BTreeMap<OrderId, u128>,
 }
 
 #[durable_object]
@@ -117,6 +127,10 @@ impl DurableObject for FixSessionObject {
 }
 
 impl FixSessionObject {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "connection validation and persisted session construction remain one audited boundary"
+    )]
     async fn connect(&self, input: ConnectRequest) -> Result<Response> {
         if input.hostname.is_empty()
             || input.hostname.len() > 253
@@ -154,12 +168,14 @@ impl FixSessionObject {
             ],
         };
         let previous: Option<StoredFixSession> = self.state.storage().get(STORAGE_KEY).await?;
+        let session_id = derive_session_id(self.state.id().to_string().as_bytes());
         if previous.as_ref().is_some_and(|stored| {
             stored.run_id != run_id
                 || stored.participant_id != participant_id
                 || stored.hostname != input.hostname
                 || stored.port != input.port
                 || stored.execution_mode != input.execution_mode
+                || (stored.session_id.get() != 0 && stored.session_id != session_id)
                 || stored.config.sender_comp_id != config.sender_comp_id
                 || stored.config.target_comp_id != config.target_comp_id
                 || stored.bunting_recovery_cursor != authoritative_run.sequence()
@@ -198,7 +214,11 @@ impl FixSessionObject {
             execution,
             run_id,
             participant_id,
+            session_id,
             next_intent_id: previous.as_ref().map_or(1, |value| value.next_intent_id),
+            last_local_command_id: previous
+                .as_ref()
+                .map_or(0, |value| value.last_local_command_id),
             logical_time_ns: previous.as_ref().map_or(0, |value| value.logical_time_ns),
             bunting_recovery_cursor: previous
                 .as_ref()
@@ -208,6 +228,9 @@ impl FixSessionObject {
             order_instruments: previous
                 .as_ref()
                 .map_or_else(BTreeMap::new, |value| value.order_instruments.clone()),
+            client_order_ids: previous
+                .as_ref()
+                .map_or_else(BTreeMap::new, |value| value.client_order_ids.clone()),
         };
         self.state.storage().put(STORAGE_KEY, &stored).await?;
         write_actions(&mut socket, &logon_actions).await?;
@@ -295,6 +318,7 @@ impl FixSessionObject {
             participant_id: stored.participant_id,
             next_intent_id: IntentId::new(stored.next_intent_id),
         };
+        let local_request_id = stored.next_intent_id;
         stored.next_intent_id = stored.next_intent_id.saturating_add(1);
         let application = match map_inbound(message, context) {
             Ok(application) => application,
@@ -307,7 +331,8 @@ impl FixSessionObject {
         };
         match application {
             InboundApplication::Competition(request) => {
-                self.execute_competition(stored, request).await
+                self.execute_competition(stored, local_request_id, request)
+                    .await
             }
             InboundApplication::MarketDataRequest {
                 request_id,
@@ -360,6 +385,7 @@ impl FixSessionObject {
     async fn execute_competition(
         &self,
         stored: &mut StoredFixSession,
+        local_request_id: u128,
         request: CompetitionRequest,
     ) -> Vec<FixMessage> {
         let Ok(actor) = verified_participant(stored.participant_id) else {
@@ -419,11 +445,16 @@ impl FixSessionObject {
                     } else {
                         TenderDecision::Decline
                     };
-                    let command_id = stored.next_intent_id;
+                    let command_id = namespace_command_id(
+                        stored.run_id,
+                        stored.participant_id,
+                        stored.session_id,
+                        local_request_id,
+                    );
                     let request = SimulationCommandRequest {
                         run_id: stored.run_id,
-                        command_id: CommandId::new(command_id),
-                        correlation_id: CorrelationId::new(command_id),
+                        command_id,
+                        correlation_id: CorrelationId::new(command_id.get()),
                         logical_time: state.simulation().clock.now,
                         expected_sequence: state.sequence(),
                         actor: stored.participant_id,
@@ -432,9 +463,14 @@ impl FixSessionObject {
                             decision,
                         },
                     };
-                    if execute_simulation_detailed(request, &actor, &self.environment)
-                        .await
-                        .is_err()
+                    if execute_simulation_detailed(
+                        request,
+                        &actor,
+                        client_key(stored, local_request_id, None),
+                        &self.environment,
+                    )
+                    .await
+                    .is_err()
                     {
                         return vec![business_reject("U6", "tender decision rejected")];
                     }
@@ -515,10 +551,17 @@ impl FixSessionObject {
                 "instrument identity is unavailable for this order",
             )];
         };
-        match execute_command_detailed(command.clone(), instrument_id, &self.environment).await {
+        match execute_command_detailed(
+            command.clone(),
+            instrument_id,
+            command_client_key(stored, &command),
+            &self.environment,
+        )
+        .await
+        {
             Ok(executed) => {
                 stored.bunting_recovery_cursor = executed.result.committed_sequence;
-                reports_for_command(&command, &executed)
+                reports_for_command(&command, &executed, stored)
                     .iter()
                     .filter_map(|report| map_execution_report(report).ok())
                     .collect()
@@ -576,11 +619,17 @@ impl FixSessionObject {
                 ));
                 continue;
             };
-            match execute_command_detailed(command.clone(), instrument_id, &self.environment).await
+            match execute_command_detailed(
+                command.clone(),
+                instrument_id,
+                command_client_key(stored, &command),
+                &self.environment,
+            )
+            .await
             {
                 Ok(executed) => {
                     stored.bunting_recovery_cursor = executed.result.committed_sequence;
-                    for report in reports_for_command(&command, &executed) {
+                    for report in reports_for_command(&command, &executed, stored) {
                         let mut followups = ExecutionActionBuffer::with_limit(limit);
                         if let Err(error) = engine.apply_venue_report(&report, &mut followups) {
                             responses.push(business_reject(
@@ -720,23 +769,86 @@ fn command_for_action(
 fn command_envelope(
     stored: &mut StoredFixSession,
     id: IntentId,
-    payload: CommandPayload,
+    mut payload: CommandPayload,
 ) -> Command {
+    let local_command_id = id.get();
+    stored.last_local_command_id = local_command_id;
+    let local_order_id = match &payload {
+        CommandPayload::SubmitOrder(order) => Some(order.order_id.get()),
+        CommandPayload::CancelOrder(cancel) => Some(cancel.order_id.get()),
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
+    };
+    match &mut payload {
+        CommandPayload::SubmitOrder(order) => {
+            order.order_id = namespace_order_id(
+                stored.run_id,
+                stored.participant_id,
+                stored.session_id,
+                order.order_id.get(),
+            );
+        }
+        CommandPayload::CancelOrder(cancel) => {
+            cancel.order_id = namespace_order_id(
+                stored.run_id,
+                stored.participant_id,
+                stored.session_id,
+                cancel.order_id.get(),
+            );
+        }
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => {}
+    }
     if let CommandPayload::SubmitOrder(order) = &payload {
         stored
             .order_instruments
             .insert(order.order_id, order.instrument_id);
+        if let Some(local_order_id) = local_order_id {
+            stored
+                .client_order_ids
+                .insert(order.order_id, local_order_id);
+        }
     }
     stored.logical_time_ns = stored.logical_time_ns.saturating_add(1);
+    let command_id = namespace_command_id(
+        stored.run_id,
+        stored.participant_id,
+        stored.session_id,
+        local_command_id,
+    );
     Command {
         run_id: stored.run_id,
-        command_id: CommandId::new(id.get()),
-        correlation_id: CorrelationId::new(id.get()),
+        command_id,
+        correlation_id: CorrelationId::new(command_id.get()),
         logical_time: LogicalTimeNs::new(stored.logical_time_ns),
         expected_sequence: stored.bunting_recovery_cursor,
         actor: stored.participant_id,
         payload,
     }
+}
+
+fn client_key(
+    stored: &StoredFixSession,
+    local_command_id: u128,
+    local_order_id: Option<u128>,
+) -> ClientCommandKey {
+    ClientCommandKey {
+        actor: stored.participant_id,
+        session_id: stored.session_id,
+        local_command_id,
+        local_order_id,
+    }
+}
+
+fn command_client_key(stored: &StoredFixSession, command: &Command) -> ClientCommandKey {
+    let canonical_order_id = match &command.payload {
+        CommandPayload::SubmitOrder(order) => Some(order.order_id),
+        CommandPayload::CancelOrder(cancel) => Some(cancel.order_id),
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
+    };
+    client_key(
+        stored,
+        stored.last_local_command_id,
+        canonical_order_id.and_then(|id| stored.client_order_ids.get(&id).copied()),
+    )
 }
 
 fn command_instrument(command: &Command, stored: &StoredFixSession) -> Option<InstrumentId> {
@@ -752,14 +864,20 @@ fn command_instrument(command: &Command, stored: &StoredFixSession) -> Option<In
 fn reports_for_command(
     command: &Command,
     executed: &crate::ExecutedCommand,
+    stored: &StoredFixSession,
 ) -> Vec<NormalizedVenueReport> {
     let order_id = match &command.payload {
         CommandPayload::SubmitOrder(order) => order.order_id,
         CommandPayload::CancelOrder(order) => order.order_id,
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => OrderId::new(0),
     };
-    let local = LocalOrderId::new(order_id.get());
-    let client = quarcc_execution_engine::ids::ClientOrderId::new(order_id.get());
+    let client_order_id = stored
+        .client_order_ids
+        .get(&order_id)
+        .copied()
+        .unwrap_or(order_id.get());
+    let local = LocalOrderId::new(client_order_id);
+    let client = quarcc_execution_engine::ids::ClientOrderId::new(client_order_id);
     let total_quantity = match &command.payload {
         CommandPayload::SubmitOrder(order) => Some(order.quantity.get()),
         _ => None,

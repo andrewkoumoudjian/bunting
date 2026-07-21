@@ -15,7 +15,8 @@ use bunting_api_contract::{
     SignedDecimalString, SubmitOrderInput, UnsignedDecimalString,
 };
 use bunting_application::{
-    VerifiedActor, prepare_authenticated, prepare_authenticated_simulation, project_market,
+    VerifiedActor, derive_session_id, namespace_command_id, namespace_order_id,
+    prepare_authenticated, prepare_authenticated_simulation, project_market,
 };
 use bunting_browser_wire::{
     Call, ErrorCode, Method, ParsedRequest, Request as WireRequest, Response as WireResponse,
@@ -29,10 +30,10 @@ use bunting_market_events::{
     SubmitOrder,
 };
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, OrderId, ParticipantId,
-    PriceTicks, QuantityLots, RunId,
+    CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, ParticipantId, PriceTicks,
+    QuantityLots, RunId, SessionId,
 };
-use bunting_origin_store::{CommandResult, CommitOutcome, OriginError};
+use bunting_origin_store::{ClientCommandKey, CommandResult, CommitOutcome, OriginError};
 use bunting_worker_cache::{CachePolicy, SnapshotCacheKey, cloudflare};
 use serde::de::DeserializeOwned;
 use worker::{Context, Env, Error, Request, Response, ResponseBuilder, Result, event};
@@ -43,6 +44,7 @@ const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Copy)]
 struct VerifiedClaims {
     participant_id: ParticipantId,
+    session_id: SessionId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +113,7 @@ fn authenticate(request: &Request, environment: &Env) -> Result<VerifiedClaims> 
         .map_err(|_| Error::RustError("invalid configured participant claim".to_string()))?;
     Ok(VerifiedClaims {
         participant_id: ParticipantId::new(participant_id),
+        session_id: derive_session_id(provided.as_bytes()),
     })
 }
 
@@ -283,16 +286,20 @@ fn health() -> HealthOutput {
     }
 }
 
-fn build_submit(input: &SubmitOrderInput, actor: ParticipantId) -> Command {
-    Command {
-        run_id: RunId::new(input.run_id.get()),
-        command_id: CommandId::new(input.command_id.get()),
-        correlation_id: CorrelationId::new(input.correlation_id.get()),
+fn build_submit(input: &SubmitOrderInput, claims: VerifiedClaims) -> (Command, ClientCommandKey) {
+    let run_id = RunId::new(input.run_id.get());
+    let actor = claims.participant_id;
+    let local_command_id = input.command_id.get();
+    let command_id = namespace_command_id(run_id, actor, claims.session_id, local_command_id);
+    let command = Command {
+        run_id,
+        command_id,
+        correlation_id: CorrelationId::new(command_id.get()),
         logical_time: LogicalTimeNs::new(input.logical_time_ns.get()),
         expected_sequence: EventSequence::new(input.expected_sequence.get()),
         actor,
         payload: CommandPayload::SubmitOrder(SubmitOrder {
-            order_id: OrderId::new(input.order_id.get()),
+            order_id: namespace_order_id(run_id, actor, claims.session_id, input.order_id.get()),
             instrument_id: InstrumentId::new(input.instrument_id.get()),
             participant_id: actor,
             side: match input.side {
@@ -304,22 +311,44 @@ fn build_submit(input: &SubmitOrderInput, actor: ParticipantId) -> Command {
                 price: PriceTicks(input.price_ticks.get()),
             },
         }),
-    }
+    };
+    (
+        command,
+        ClientCommandKey {
+            actor,
+            session_id: claims.session_id,
+            local_command_id,
+            local_order_id: Some(input.order_id.get()),
+        },
+    )
 }
 
-fn build_cancel(input: &CancelOrderInput, actor: ParticipantId) -> Command {
-    Command {
-        run_id: RunId::new(input.run_id.get()),
-        command_id: CommandId::new(input.command_id.get()),
-        correlation_id: CorrelationId::new(input.correlation_id.get()),
+fn build_cancel(input: &CancelOrderInput, claims: VerifiedClaims) -> (Command, ClientCommandKey) {
+    let run_id = RunId::new(input.run_id.get());
+    let actor = claims.participant_id;
+    let local_command_id = input.command_id.get();
+    let command_id = namespace_command_id(run_id, actor, claims.session_id, local_command_id);
+    let command = Command {
+        run_id,
+        command_id,
+        correlation_id: CorrelationId::new(command_id.get()),
         logical_time: LogicalTimeNs::new(input.logical_time_ns.get()),
         expected_sequence: EventSequence::new(input.expected_sequence.get()),
         actor,
         payload: CommandPayload::CancelOrder(CancelOrder {
-            order_id: OrderId::new(input.order_id.get()),
+            order_id: namespace_order_id(run_id, actor, claims.session_id, input.order_id.get()),
             participant_id: actor,
         }),
-    }
+    };
+    (
+        command,
+        ClientCommandKey {
+            actor,
+            session_id: claims.session_id,
+            local_command_id,
+            local_order_id: Some(input.order_id.get()),
+        },
+    )
 }
 
 async fn load_run(
@@ -368,13 +397,18 @@ fn snapshot_output(
 }
 
 async fn execute_command(
-    command: Command,
+    client_command: (Command, ClientCommandKey),
     instrument_id: InstrumentId,
     environment: &Env,
 ) -> std::result::Result<CommandResult, ProcedureError> {
-    execute_command_detailed(command, instrument_id, environment)
-        .await
-        .map(|executed| executed.result)
+    execute_command_detailed(
+        client_command.0,
+        instrument_id,
+        client_command.1,
+        environment,
+    )
+    .await
+    .map(|executed| executed.result)
 }
 
 pub(crate) struct ExecutedCommand {
@@ -385,6 +419,7 @@ pub(crate) struct ExecutedCommand {
 pub(crate) async fn execute_command_detailed(
     command: Command,
     instrument_id: InstrumentId,
+    client_key: ClientCommandKey,
     environment: &Env,
 ) -> std::result::Result<ExecutedCommand, ProcedureError> {
     let database = environment
@@ -433,7 +468,7 @@ pub(crate) async fn execute_command_detailed(
         Ok(None) | Err(_) => None,
     };
     let actor = verified_participant(command.actor)?;
-    let prepared =
+    let mut prepared =
         prepare_authenticated(&actor, &command, &state, cached.as_ref()).map_err(|error| {
             match error {
                 bunting_application::ApplicationError::Transaction(transaction) => {
@@ -448,18 +483,21 @@ pub(crate) async fn execute_command_detailed(
                 _ => ProcedureError::InternalContractMismatch,
             }
         })?;
+    prepared.commit.client_key = Some(client_key);
     let events = prepared.commit.events.clone();
     let command_json =
         serde_json::to_string(&command).map_err(|_| ProcedureError::InternalContractMismatch)?;
     let outcome = d1_origin::commit(&database, &prepared.commit, &command_json)
         .await
         .map_err(|error| map_origin_error(&error))?;
-    let result = match outcome {
-        CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
+    let (result, events, publish_snapshot) = match outcome {
+        CommitOutcome::Committed(result) => (result, events, true),
+        CommitOutcome::Duplicate(result) => (result, Vec::new(), false),
     };
 
     // Origin commit above must succeed before this best-effort cache publication.
-    if let Ok(snapshot) = prepared.commit.candidate.listing_snapshot(listing_key)
+    if publish_snapshot
+        && let Ok(snapshot) = prepared.commit.candidate.listing_snapshot(listing_key)
         && snapshot.represented_sequence == result.committed_sequence
         && let Ok(key) = SnapshotCacheKey::new(
             prepared.commit.run_id,
@@ -477,6 +515,7 @@ pub(crate) async fn execute_command_detailed(
 pub(crate) async fn execute_simulation_detailed(
     request: SimulationCommandRequest,
     actor: &VerifiedActor,
+    client_key: ClientCommandKey,
     environment: &Env,
 ) -> std::result::Result<ExecutedCommand, ProcedureError> {
     let database = environment
@@ -504,7 +543,7 @@ pub(crate) async fn execute_simulation_detailed(
     let state = d1_origin::load_run(&database, &request.run_id.to_string())
         .await
         .map_err(|error| map_origin_error(&error))?;
-    let prepared =
+    let mut prepared =
         prepare_authenticated_simulation(actor, &request, &state).map_err(|error| match error {
             bunting_application::ApplicationError::Transaction(transaction) => {
                 map_transaction_error(transaction)
@@ -517,14 +556,16 @@ pub(crate) async fn execute_simulation_detailed(
             }
             _ => ProcedureError::InternalContractMismatch,
         })?;
+    prepared.commit.client_key = Some(client_key);
     let events = prepared.commit.events.clone();
     let request_json =
         serde_json::to_string(&request).map_err(|_| ProcedureError::InternalContractMismatch)?;
     let outcome = d1_origin::commit(&database, &prepared.commit, &request_json)
         .await
         .map_err(|error| map_origin_error(&error))?;
-    let result = match outcome {
-        CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
+    let (result, events) = match outcome {
+        CommitOutcome::Committed(result) => (result, events),
+        CommitOutcome::Duplicate(result) => (result, Vec::new()),
     };
     Ok(ExecutedCommand { result, events })
 }
@@ -562,13 +603,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 Err(error) => return wire_error(error, &call.path, "invalid procedure input"),
             };
             let instrument_id = InstrumentId::new(input.instrument_id.get());
-            match execute_command(
-                build_submit(&input, claims.participant_id),
-                instrument_id,
-                environment,
-            )
-            .await
-            {
+            match execute_command(build_submit(&input, claims), instrument_id, environment).await {
                 Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }
@@ -586,13 +621,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 Err(error) => return wire_error(error, &call.path, "invalid procedure input"),
             };
             let instrument_id = InstrumentId::new(input.instrument_id.get());
-            match execute_command(
-                build_cancel(&input, claims.participant_id),
-                instrument_id,
-                environment,
-            )
-            .await
-            {
+            match execute_command(build_cancel(&input, claims), instrument_id, environment).await {
                 Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }
@@ -655,6 +684,7 @@ pub async fn main(mut request: Request, environment: Env, _context: Context) -> 
 mod tests {
     use super::*;
     use bunting_browser_wire::WireError;
+    use bunting_market_types::OrderId;
 
     #[test]
     fn route_inventory_is_browser_api_only() {
@@ -702,8 +732,15 @@ mod tests {
             message: "valid contract input expected".to_string(),
             path: Some(call.path.clone()),
         })?;
-        let command = build_cancel(&input, ParticipantId::new(91));
+        let (command, client_key) = build_cancel(
+            &input,
+            VerifiedClaims {
+                participant_id: ParticipantId::new(91),
+                session_id: SessionId::new(12),
+            },
+        );
         assert_eq!(command.actor, ParticipantId::new(91));
+        assert_eq!(client_key.local_command_id, 3);
         let CommandPayload::CancelOrder(cancel) = command.payload else {
             return Err(WireError {
                 code: ErrorCode::BadRequest,

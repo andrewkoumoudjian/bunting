@@ -1,5 +1,6 @@
 //! Bounded plain-Worker subscription planning over committed origin facts.
 
+use bunting_application::{PublicTrade, project_public_event};
 use bunting_market_events::{EventEnvelope, EventPayload};
 use bunting_market_types::{EventSequence, InstrumentId, ParticipantId};
 use serde::Serialize;
@@ -17,30 +18,12 @@ pub enum StreamClass {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Plan {
-    Tail(Vec<EventEnvelope>),
+    PublicTail(Vec<PublicTrade>),
+    PrivateTail(Vec<EventEnvelope>),
     Reset {
         cursor: EventSequence,
         reason: &'static str,
     },
-}
-
-fn is_public(event: &EventEnvelope, instrument_id: InstrumentId) -> bool {
-    match &event.payload {
-        EventPayload::OrderReceived { order } => order.instrument_id == instrument_id,
-        EventPayload::OrderRested {
-            instrument_id: id, ..
-        }
-        | EventPayload::OrderCanceled {
-            instrument_id: id, ..
-        }
-        | EventPayload::TradeExecuted {
-            instrument_id: id, ..
-        }
-        | EventPayload::PositionChanged {
-            instrument_id: id, ..
-        } => *id == instrument_id,
-        _ => false,
-    }
 }
 
 fn is_private(event: &EventEnvelope, participant_id: ParticipantId) -> bool {
@@ -78,24 +61,36 @@ pub fn plan(events: Vec<EventEnvelope>, current: EventSequence, class: StreamCla
         StreamClass::Public { .. } => PUBLIC_EVENT_LIMIT,
         StreamClass::Private { .. } => PRIVATE_EVENT_LIMIT,
     };
-    let filtered: Vec<_> = events
-        .into_iter()
-        .filter(|event| match class {
-            StreamClass::Public { instrument_id } => is_public(event, instrument_id),
-            StreamClass::Private { participant_id } => is_private(event, participant_id),
-        })
-        .collect();
-    if filtered.len() > limit {
-        return Plan::Reset {
-            cursor: current,
-            reason: if matches!(class, StreamClass::Public { .. }) {
-                "public_tail_coalesced_to_snapshot"
+    match class {
+        StreamClass::Public { instrument_id } => {
+            let projected: Vec<_> = events
+                .iter()
+                .filter_map(|event| project_public_event(event, instrument_id))
+                .collect();
+            if projected.len() > limit {
+                Plan::Reset {
+                    cursor: current,
+                    reason: "public_tail_coalesced_to_snapshot",
+                }
             } else {
-                "private_slow_consumer_disconnected"
-            },
-        };
+                Plan::PublicTail(projected)
+            }
+        }
+        StreamClass::Private { participant_id } => {
+            let filtered: Vec<_> = events
+                .into_iter()
+                .filter(|event| is_private(event, participant_id))
+                .collect();
+            if filtered.len() > limit {
+                Plan::Reset {
+                    cursor: current,
+                    reason: "private_slow_consumer_disconnected",
+                }
+            } else {
+                Plan::PrivateTail(filtered)
+            }
+        }
     }
-    Plan::Tail(filtered)
 }
 
 fn frame(event: Option<&str>, id: Option<EventSequence>, data: &Value) -> Vec<u8> {
@@ -123,7 +118,14 @@ pub fn encode<T: Serialize>(
 ) -> Vec<Vec<u8>> {
     let mut frames = vec![frame(Some("connected"), None, &json!({}))];
     match plan {
-        Plan::Tail(events) => frames.extend(events.into_iter().map(|event| {
+        Plan::PublicTail(events) => frames.extend(events.into_iter().map(|event| {
+            frame(
+                Some("market.trade"),
+                Some(event.sequence),
+                &json!({"kind":"market.trade","trade":event}),
+            )
+        })),
+        Plan::PrivateTail(events) => frames.extend(events.into_iter().map(|event| {
             frame(
                 Some("committed.event"),
                 Some(event.sequence),
@@ -152,8 +154,12 @@ pub fn encode<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bunting_market_events::Side;
     use bunting_market_events::{EVENT_SCHEMA_VERSION, EventPayload};
-    use bunting_market_types::{CommandId, CorrelationId, EventId, LogicalTimeNs, RunId};
+    use bunting_market_types::{
+        CommandId, CorrelationId, EventId, InstrumentId, LogicalTimeNs, OrderId, PriceTicks,
+        QuantityLots, RunId,
+    };
 
     fn event(sequence: u64, actor: u128) -> EventEnvelope {
         EventEnvelope {
@@ -190,8 +196,63 @@ mod tests {
 
     #[test]
     fn response_is_bounded_and_closes_with_recovery_cursor() {
-        let frames = encode::<Value>(Plan::Tail(Vec::new()), None, EventSequence::new(9));
+        let frames = encode::<Value>(Plan::PublicTail(Vec::new()), None, EventSequence::new(9));
         assert_eq!(frames.len(), 2);
         assert!(String::from_utf8_lossy(&frames[1]).contains("event: close\nid: 9"));
+    }
+
+    #[test]
+    fn public_output_contains_only_allowlisted_trade_facts()
+    -> Result<(), std::string::FromUtf8Error> {
+        let mut trade = event(8, 700);
+        trade.payload = EventPayload::TradeExecuted {
+            instrument_id: InstrumentId::new(9),
+            maker_order_id: OrderId::new(101),
+            taker_order_id: OrderId::new(102),
+            buyer_id: ParticipantId::new(700),
+            seller_id: ParticipantId::new(800),
+            price: PriceTicks::new(42),
+            quantity: QuantityLots::new(3),
+            upstream_engine_sequence: 17,
+        };
+        let mut rested = event(9, 700);
+        rested.payload = EventPayload::OrderRested {
+            order_id: OrderId::new(103),
+            participant_id: ParticipantId::new(700),
+            instrument_id: InstrumentId::new(9),
+            side: Side::Buy,
+            price: PriceTicks::new(41),
+            remaining: QuantityLots::new(99),
+        };
+        let frames = encode::<Value>(
+            plan(
+                vec![trade, rested],
+                EventSequence::new(9),
+                StreamClass::Public {
+                    instrument_id: InstrumentId::new(9),
+                },
+            ),
+            None,
+            EventSequence::new(9),
+        );
+        let output = String::from_utf8(frames.concat())?;
+        assert!(output.contains("market.trade"));
+        for forbidden in [
+            "actor",
+            "participant",
+            "order_id",
+            "command_id",
+            "correlation_id",
+            "remaining",
+            "position",
+            "101",
+            "102",
+            "700",
+            "800",
+            "99",
+        ] {
+            assert!(!output.contains(forbidden), "leaked {forbidden}: {output}");
+        }
+        Ok(())
     }
 }

@@ -133,6 +133,7 @@ identifier!(TenderId);
 identifier!(NegotiationId);
 identifier!(NewsId);
 identifier!(AgentId);
+identifier!(SessionId);
 
 macro_rules! checked_identifier {
     ($name:ident) => {

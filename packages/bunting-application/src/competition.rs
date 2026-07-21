@@ -293,8 +293,6 @@ fn news_visible(audience: &NewsAudience, actor: &VerifiedActor) -> bool {
             .team_id
             .as_ref()
             .is_some_and(|id| id.get() == *team),
-        NewsAudience::Role(role) => {
-            format!("{:?}", actor.identity().role).eq_ignore_ascii_case(role)
-        }
+        NewsAudience::Role(role) => actor.identity().role.as_str().eq_ignore_ascii_case(role),
     }
 }

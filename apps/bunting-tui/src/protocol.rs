@@ -674,22 +674,6 @@ pub fn cancel(id: u128, replacement_id: u128) -> FixMessage {
     message
 }
 
-pub fn replace(old_id: u128, new_id: u128, quantity: i64, price: i64) -> FixMessage {
-    let mut message = FixMessage::new("G");
-    message.push(11, new_id.to_string());
-    message.push(41, old_id.to_string());
-    message.push(38, quantity.to_string());
-    message.push(40, "2");
-    message.push(44, price.to_string());
-    message
-}
-
-pub fn status(id: u128) -> FixMessage {
-    let mut message = FixMessage::new("H");
-    message.push(37, id.to_string());
-    message
-}
-
 pub fn book_request(id: u128) -> FixMessage {
     let mut message = FixMessage::new("V");
     message.push(262, format!("book-{id}"));

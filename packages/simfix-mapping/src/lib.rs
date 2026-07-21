@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 //! FIX 5.0 SP2 application mapping with session concerns kept outside market authority.
 
-use bunting_market_events::{OrderKind, Side};
-use bunting_market_types::{InstrumentId, ParticipantId, PriceTicks, QuantityLots};
+use bunting_market_events::{NewsAudience, OrderKind, Side};
+use bunting_market_types::{
+    CurrencyId, InstrumentId, MoneyMinor, NewsId, ParticipantId, PriceTicks, QuantityLots,
+};
 use quarcc_execution_engine::{
     ExecutionIntent, NormalizedVenueReport, VenueReportKind,
     ids::{ClientOrderId, IntentId, LocalOrderId},
@@ -57,6 +59,36 @@ pub enum TenderAction {
     List,
     Accept,
     Decline,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunAdvancePayload {
+    pub steps: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunReasonPayload {
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishNewsPayload {
+    pub news_id: NewsId,
+    pub audience: NewsAudience,
+    pub headline: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyFinePayload {
+    pub participant_id: ParticipantId,
+    pub currency_id: CurrencyId,
+    pub amount: MoneyMinor,
+    pub reason: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

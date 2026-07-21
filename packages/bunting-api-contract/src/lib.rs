@@ -213,6 +213,19 @@ pub enum ActorRole {
     BuiltInAgent,
 }
 
+impl ActorRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Participant => "participant",
+            Self::Team => "team",
+            Self::Instructor => "instructor",
+            Self::Administrator => "administrator",
+            Self::BuiltInAgent => "built_in_agent",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActorIdentity {

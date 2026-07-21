@@ -46,10 +46,10 @@ pub fn render(frame: &mut Frame, area: Rect, client: &FixClient) {
                 Span::styled("B", styles::bid()),
                 Span::raw(" buy  ·  "),
                 Span::styled("S", styles::ask()),
-                Span::raw(" sell  ·  C cancel  ·  M replace  ·  / any command"),
+                Span::raw(" sell  ·  C cancel  ·  / any command"),
             ]),
             Line::from("buy PRICE QTY | sell PRICE QTY | market buy|sell QTY"),
-            Line::from("cancel ORDER_ID | replace OLD NEW PRICE QTY | status ORDER_ID"),
+            Line::from("cancel ORDER_ID"),
             Line::from(
                 "bulk cancel and special policies remain unavailable until capability discovery",
             ),

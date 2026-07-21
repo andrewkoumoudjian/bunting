@@ -141,6 +141,7 @@ dependencies = [
  "quarcc-bunting-adapter",
  "quarcc-execution-engine",
  "serde",
+ "sha2",
  "simfix-mapping",
  "simfix-wire",
 ]

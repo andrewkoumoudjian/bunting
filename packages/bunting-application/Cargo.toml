@@ -18,6 +18,7 @@ bunting-risk-engine = { path = "../risk-engine" }
 quarcc-bunting-adapter.workspace = true
 quarcc-execution-engine.workspace = true
 serde.workspace = true
+sha2.workspace = true
 simfix-mapping.workspace = true
 simfix-wire.workspace = true
 

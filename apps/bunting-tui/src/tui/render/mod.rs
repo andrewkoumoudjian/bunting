@@ -72,7 +72,7 @@ mod tests {
             FixClient::new("local".to_owned(), profile, Some("test-only".to_owned())).unwrap();
         let snapshots = [
             (Tab::Market, 2_860_379_810_998_369_312_u64),
-            (Tab::Orders, 6_963_824_031_582_916_210),
+            (Tab::Orders, 15_298_884_515_992_764_846),
             (Tab::Account, 6_625_834_207_265_573_254),
             (Tab::Simulation, 17_137_701_615_183_501_023),
             (Tab::Collaboration, 521_444_836_489_403_141),

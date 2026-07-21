@@ -10,9 +10,13 @@ use bunting_command_transaction::{
     TransactionError, prepare_command, prepare_simulation_command,
 };
 use bunting_engine::RunState;
-use bunting_market_events::{Command, CommandPayload, SimulationCommand, SimulationCommandRequest};
+use bunting_market_events::{
+    Command, CommandPayload, EventEnvelope, EventPayload, SimulationCommand,
+    SimulationCommandRequest,
+};
 use bunting_market_types::{
-    CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId, RunId,
+    CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId,
+    PriceTicks, QuantityLots, RunId, SessionId,
 };
 use bunting_origin_store::OriginStore;
 use quarcc_bunting_adapter::{AdapterError, BuntingCommandContext, BuntingExecutionAdapter};
@@ -22,6 +26,7 @@ use quarcc_execution_engine::{
     ids::{ClientOrderId, IntentId, LocalOrderId},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use simfix_mapping::{
     CompetitionRequest, InboundApplication, MappingContext, MappingError, map_inbound,
 };
@@ -244,6 +249,100 @@ pub struct MarketProjection {
     pub sequence: EventSequence,
     pub bids: Vec<(i64, i64)>,
     pub asks: Vec<(i64, i64)>,
+}
+
+/// Allowlisted public fact. Canonical envelopes and participant/order identity
+/// deliberately cannot cross this transport-neutral projection boundary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublicTrade {
+    pub sequence: EventSequence,
+    pub logical_time: LogicalTimeNs,
+    pub instrument_id: InstrumentId,
+    pub price: PriceTicks,
+    pub quantity: QuantityLots,
+    pub upstream_engine_sequence: u64,
+}
+
+/// Projects only facts that are safe to publish without participant, order,
+/// command, correlation, position, or reserve-quantity metadata.
+#[must_use]
+pub fn project_public_event(
+    event: &EventEnvelope,
+    instrument_id: InstrumentId,
+) -> Option<PublicTrade> {
+    match event.payload {
+        EventPayload::TradeExecuted {
+            instrument_id: event_instrument,
+            price,
+            quantity,
+            upstream_engine_sequence,
+            ..
+        } if event_instrument == instrument_id => Some(PublicTrade {
+            sequence: event.sequence,
+            logical_time: event.logical_time,
+            instrument_id,
+            price,
+            quantity,
+            upstream_engine_sequence,
+        }),
+        _ => None,
+    }
+}
+
+/// Derives an opaque stable session identifier without persisting bearer or
+/// transport credentials.
+#[must_use]
+pub fn derive_session_id(authenticated_session: &[u8]) -> SessionId {
+    let digest = Sha256::digest(authenticated_session);
+    SessionId::new(nonzero_u128(&digest))
+}
+
+/// Maps one transport-local command ID into the authoritative `u128` domain.
+#[must_use]
+pub fn namespace_command_id(
+    run_id: RunId,
+    actor: ParticipantId,
+    session_id: SessionId,
+    local_id: u128,
+) -> bunting_market_types::CommandId {
+    bunting_market_types::CommandId::new(namespace_id(
+        b"command", run_id, actor, session_id, local_id,
+    ))
+}
+
+/// Maps one transport-local order ID into the authoritative `u128` domain.
+#[must_use]
+pub fn namespace_order_id(
+    run_id: RunId,
+    actor: ParticipantId,
+    session_id: SessionId,
+    local_id: u128,
+) -> bunting_market_types::OrderId {
+    bunting_market_types::OrderId::new(namespace_id(b"order", run_id, actor, session_id, local_id))
+}
+
+fn namespace_id(
+    domain: &[u8],
+    run_id: RunId,
+    actor: ParticipantId,
+    session_id: SessionId,
+    local_id: u128,
+) -> u128 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"bunting.client-identity.v1");
+    hasher.update(domain);
+    hasher.update(run_id.get().to_be_bytes());
+    hasher.update(actor.get().to_be_bytes());
+    hasher.update(session_id.get().to_be_bytes());
+    hasher.update(local_id.to_be_bytes());
+    nonzero_u128(&hasher.finalize())
+}
+
+fn nonzero_u128(bytes: &[u8]) -> u128 {
+    let mut value = [0_u8; 16];
+    value.copy_from_slice(&bytes[..16]);
+    u128::from_be_bytes(value).max(1)
 }
 
 pub fn project_market(
@@ -581,5 +680,30 @@ mod tests {
         let account = competition::account(&private, &actor(7)).unwrap();
         assert_eq!(account.participant_id, ParticipantId::new(7));
         assert_eq!(account.policies.score, "bunting.score.nlv-rank.v1");
+    }
+
+    #[test]
+    fn client_ids_are_stable_within_a_session_and_distinct_across_sessions() {
+        let run = RunId::new(1);
+        let actor = ParticipantId::new(7);
+        let first = derive_session_id(b"authenticated-session-a");
+        let second = derive_session_id(b"authenticated-session-b");
+
+        assert_eq!(
+            namespace_command_id(run, actor, first, 1),
+            namespace_command_id(run, actor, first, 1)
+        );
+        assert_ne!(
+            namespace_command_id(run, actor, first, 1),
+            namespace_command_id(run, actor, second, 1)
+        );
+        assert_ne!(
+            namespace_order_id(run, actor, first, 1),
+            namespace_order_id(run, actor, second, 1)
+        );
+        assert_ne!(
+            namespace_command_id(run, actor, first, 1).get(),
+            namespace_order_id(run, actor, first, 1).get()
+        );
     }
 }

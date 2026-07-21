@@ -257,19 +257,25 @@ where
             .collect();
         let events = prepared.commit.events.clone();
         let committed_state = prepared.commit.candidate.clone();
-        let outcome = self.origin.commit(prepared.commit)?;
-        let committed = match outcome {
-            CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
-        };
-        for (key, snapshot) in changed_snapshots {
-            let _cache_put = self.cache.put(key, &snapshot);
+        match self.origin.commit(prepared.commit)? {
+            CommitOutcome::Committed(result) => {
+                for (key, snapshot) in changed_snapshots {
+                    let _cache_put = self.cache.put(key, &snapshot);
+                }
+                Ok(ExecutedTransaction {
+                    result,
+                    events,
+                    state: committed_state,
+                    duplicate: false,
+                })
+            }
+            CommitOutcome::Duplicate(result) => Ok(ExecutedTransaction {
+                result,
+                events: Vec::new(),
+                state: self.origin.load_run(command.run_id)?,
+                duplicate: true,
+            }),
         }
-        Ok(ExecutedTransaction {
-            result: committed,
-            events,
-            state: committed_state,
-            duplicate: false,
-        })
     }
 
     /// Executes one simulation-domain command through the same atomic origin boundary.
@@ -302,16 +308,20 @@ where
         let prepared = prepare_simulation_command(request, &state)?;
         let events = prepared.commit.events.clone();
         let committed_state = prepared.commit.candidate.clone();
-        let outcome = self.origin.commit(prepared.commit)?;
-        let result = match outcome {
-            CommitOutcome::Committed(result) | CommitOutcome::Duplicate(result) => result,
-        };
-        Ok(ExecutedTransaction {
-            result,
-            events,
-            state: committed_state,
-            duplicate: false,
-        })
+        match self.origin.commit(prepared.commit)? {
+            CommitOutcome::Committed(result) => Ok(ExecutedTransaction {
+                result,
+                events,
+                state: committed_state,
+                duplicate: false,
+            }),
+            CommitOutcome::Duplicate(result) => Ok(ExecutedTransaction {
+                result,
+                events: Vec::new(),
+                state: self.origin.load_run(request.run_id)?,
+                duplicate: true,
+            }),
+        }
     }
 }
 
@@ -342,6 +352,7 @@ pub fn prepare_command(
             run_id: command.run_id,
             command_id: command.command_id,
             fingerprint: command_fingerprint(command)?,
+            client_key: None,
             expected_version: command.expected_sequence,
             events,
             result,
@@ -376,6 +387,7 @@ pub fn prepare_simulation_command(
             run_id: request.run_id,
             command_id: request.command_id,
             fingerprint: simulation_command_fingerprint(request)?,
+            client_key: None,
             expected_version: request.expected_sequence,
             events,
             result,
@@ -438,6 +450,37 @@ mod tests {
     };
     use bunting_origin_store::{InMemoryOrigin, OriginStore};
     use bunting_risk_engine::RiskLimits;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct CommitRaceOrigin {
+        committed: InMemoryOrigin,
+        stale: RunState,
+        commit_attempted: AtomicBool,
+    }
+
+    impl OriginStore for CommitRaceOrigin {
+        fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
+            if self.commit_attempted.load(Ordering::SeqCst) {
+                self.committed.load_run(run_id)
+            } else {
+                Ok(self.stale.clone())
+            }
+        }
+
+        fn find_command(
+            &self,
+            _run_id: RunId,
+            _command_id: CommandId,
+        ) -> Result<Option<(String, CommandResult)>, OriginError> {
+            Ok(None)
+        }
+
+        fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
+            let outcome = self.committed.commit(request);
+            self.commit_attempted.store(true, Ordering::SeqCst);
+            outcome
+        }
+    }
 
     fn setup() -> (InMemoryOrigin, InMemorySnapshotCache) {
         let participant = |id| {
@@ -576,5 +619,30 @@ mod tests {
             origin.load_run(RunId::new(1)).unwrap().sequence(),
             EventSequence::new(1)
         );
+    }
+
+    #[test]
+    fn duplicate_commit_race_discards_local_events_and_reloads_origin_state() {
+        let (origin, _) = setup();
+        let stale = origin.load_run(RunId::new(1)).unwrap();
+        let command = submit(EventSequence::new(0), 10, 1, 1, Side::Buy, 100, 1);
+        CommandTransaction::new(&origin, &InMemorySnapshotCache::new())
+            .execute_detailed(&command)
+            .unwrap();
+
+        let race = CommitRaceOrigin {
+            committed: origin,
+            stale,
+            commit_attempted: AtomicBool::new(false),
+        };
+        let cache = InMemorySnapshotCache::new();
+        let duplicate = CommandTransaction::new(&race, &cache)
+            .execute_detailed(&command)
+            .unwrap();
+
+        assert!(duplicate.duplicate);
+        assert!(duplicate.events.is_empty());
+        assert_eq!(duplicate.state.sequence(), EventSequence::new(1));
+        assert!(cache.is_empty().unwrap());
     }
 }
