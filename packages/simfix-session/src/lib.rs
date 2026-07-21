@@ -52,6 +52,9 @@ pub enum ConnectionState {
 pub struct JournalEntry {
     pub sequence: u64,
     pub frame: Vec<u8>,
+    /// Identifies application state whose older resend copies may be gap-filled.
+    #[serde(default)]
+    pub replacement_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -88,7 +91,7 @@ pub enum SessionError {
     InvalidCompId,
     InvalidApplicationVersion,
     InvalidSnapshot,
-    JournalFull,
+    InvalidReplacementKey,
     PendingInboundFull,
     NotEstablished,
     ArithmeticOverflow,
@@ -140,6 +143,12 @@ impl FixSession {
         validate_config(&config)?;
         if snapshot.version != 2
             || snapshot.journal.len() > config.max_journal_messages
+            || snapshot.journal.iter().any(|(sequence, entry)| {
+                entry.sequence != *sequence
+                    || entry.replacement_key.as_ref().is_some_and(|key| {
+                        key.is_empty() || key.len() > config.wire_limits.max_field_bytes
+                    })
+            })
             || snapshot.pending_inbound.len() > config.max_pending_inbound
             || snapshot.incoming_sequence == 0
             || snapshot.outgoing_sequence == 0
@@ -161,7 +170,7 @@ impl FixSession {
     /// Emits Logon for a newly established outbound TCP connection.
     ///
     /// # Errors
-    /// Returns an error for overflow, framing, or journal bounds.
+    /// Returns an error for overflow or framing.
     pub fn connected(&mut self, timestamp: &str) -> Result<Vec<SessionAction>, SessionError> {
         self.connected_at(timestamp, self.snapshot.last_received_millis)
     }
@@ -169,7 +178,7 @@ impl FixSession {
     /// Emits Logon and records the explicit host clock value.
     ///
     /// # Errors
-    /// Returns an error for overflow, framing, or journal bounds.
+    /// Returns an error for overflow or framing.
     pub fn connected_at(
         &mut self,
         timestamp: &str,
@@ -191,7 +200,7 @@ impl FixSession {
         for field in &self.config.logon_fields {
             message.push(field.tag, field.value.clone());
         }
-        self.send_new(message, timestamp, now_millis, true)
+        self.send_new(message, timestamp, now_millis, true, None)
     }
 
     /// Decodes and applies every complete message in one socket read.
@@ -236,7 +245,45 @@ impl FixSession {
         if self.snapshot.state != ConnectionState::Established {
             return Err(SessionError::NotEstablished);
         }
-        self.send_new(message, timestamp, self.snapshot.last_sent_millis, true)
+        self.send_new(
+            message,
+            timestamp,
+            self.snapshot.last_sent_millis,
+            true,
+            None,
+        )
+    }
+
+    /// Emits one sequenced application message and retains only its latest
+    /// resend copy for the supplied logical stream key.
+    ///
+    /// Sequence numbers remain monotonic. A resend spanning a superseded copy
+    /// receives a SequenceReset-GapFill before the newest retained copy.
+    ///
+    /// # Errors
+    /// Returns an error unless Logon has established the session or the key is
+    /// empty or exceeds the configured field bound.
+    pub fn send_replaceable_application(
+        &mut self,
+        message: FixMessage,
+        timestamp: &str,
+        replacement_key: &str,
+    ) -> Result<Vec<SessionAction>, SessionError> {
+        if self.snapshot.state != ConnectionState::Established {
+            return Err(SessionError::NotEstablished);
+        }
+        if replacement_key.is_empty()
+            || replacement_key.len() > self.config.wire_limits.max_field_bytes
+        {
+            return Err(SessionError::InvalidReplacementKey);
+        }
+        self.send_new(
+            message,
+            timestamp,
+            self.snapshot.last_sent_millis,
+            true,
+            Some(replacement_key),
+        )
     }
 
     /// Initiates an orderly FIX logout handshake.
@@ -256,13 +303,19 @@ impl FixSession {
         if let Some(reason) = reason {
             logout.push(58, reason);
         }
-        self.send_new(logout, timestamp, self.snapshot.last_sent_millis, true)
+        self.send_new(
+            logout,
+            timestamp,
+            self.snapshot.last_sent_millis,
+            true,
+            None,
+        )
     }
 
     /// Emits heartbeat, test-request, or disconnect actions from explicit time.
     ///
     /// # Errors
-    /// Returns an error for arithmetic, framing, or journal bounds.
+    /// Returns an error for arithmetic or framing.
     pub fn poll(
         &mut self,
         now_millis: u64,
@@ -290,10 +343,10 @@ impl FixSession {
             self.snapshot.outstanding_test_request = Some(id.clone());
             let mut request = FixMessage::new("1");
             request.push(112, id);
-            return self.send_new(request, timestamp, now_millis, true);
+            return self.send_new(request, timestamp, now_millis, true, None);
         }
         if now_millis.saturating_sub(self.snapshot.last_sent_millis) >= interval {
-            return self.send_new(FixMessage::new("0"), timestamp, now_millis, true);
+            return self.send_new(FixMessage::new("0"), timestamp, now_millis, true, None);
         }
         Ok(Vec::new())
     }
@@ -304,24 +357,37 @@ impl FixSession {
         timestamp: &str,
         now_millis: u64,
         journal: bool,
+        replacement_key: Option<&str>,
     ) -> Result<Vec<SessionAction>, SessionError> {
         let sequence = self.snapshot.outgoing_sequence;
+        let next_sequence = sequence
+            .checked_add(1)
+            .ok_or(SessionError::ArithmeticOverflow)?;
         let frame = self.encode_at(message, sequence, timestamp, None)?;
+
         if journal {
-            if self.snapshot.journal.len() >= self.config.max_journal_messages {
-                return Err(SessionError::JournalFull);
+            if let Some(key) = replacement_key {
+                self.snapshot
+                    .journal
+                    .retain(|_, entry| entry.replacement_key.as_deref() != Some(key));
+            }
+            while self.snapshot.journal.len() >= self.config.max_journal_messages {
+                let Some(oldest) = self.snapshot.journal.first_key_value().map(|(key, _)| *key)
+                else {
+                    break;
+                };
+                self.snapshot.journal.remove(&oldest);
             }
             self.snapshot.journal.insert(
                 sequence,
                 JournalEntry {
                     sequence,
                     frame: frame.clone(),
+                    replacement_key: replacement_key.map(ToOwned::to_owned),
                 },
             );
         }
-        self.snapshot.outgoing_sequence = sequence
-            .checked_add(1)
-            .ok_or(SessionError::ArithmeticOverflow)?;
+        self.snapshot.outgoing_sequence = next_sequence;
         self.snapshot.last_sent_millis = now_millis;
         Ok(vec![
             SessionAction::Send(frame),
@@ -377,7 +443,7 @@ impl FixSession {
             let mut resend = FixMessage::new("2");
             resend.push(7, self.snapshot.incoming_sequence.to_string());
             resend.push(16, "0");
-            return self.send_new(resend, timestamp, now_millis, true);
+            return self.send_new(resend, timestamp, now_millis, true, None);
         }
         if sequence < self.snapshot.incoming_sequence {
             return if message.value(43) == Some("Y") && message.value(122).is_some() {
@@ -431,7 +497,7 @@ impl FixSession {
                 if let Some(id) = message.value(112) {
                     heartbeat.push(112, id);
                 }
-                self.send_new(heartbeat, timestamp, now_millis, true)
+                self.send_new(heartbeat, timestamp, now_millis, true, None)
             }
             "2" => self.replay_requested(&message, timestamp, now_millis),
             "4" => {
@@ -446,7 +512,7 @@ impl FixSession {
                 self.snapshot.state = ConnectionState::Disconnected;
                 let mut logout = FixMessage::new("5");
                 logout.push(58, "logout acknowledged");
-                let mut output = self.send_new(logout, timestamp, now_millis, false)?;
+                let mut output = self.send_new(logout, timestamp, now_millis, false, None)?;
                 output.push(SessionAction::Disconnect);
                 Ok(output)
             }
@@ -691,6 +757,107 @@ mod tests {
         );
         let second = session.poll(60_001, "20260713-12:01:00.001").unwrap();
         assert!(second.contains(&SessionAction::Disconnect));
+    }
+
+    #[test]
+    fn full_journal_evicts_oldest_and_gap_fills_resend() {
+        let mut bounded = config();
+        bounded.max_journal_messages = 4;
+        let mut session = FixSession::try_new(bounded).unwrap();
+        establish(&mut session);
+        for id in 0..20 {
+            let mut message = FixMessage::new("8");
+            message.push(17, id.to_string());
+            session
+                .send_application(message, "20260713-12:00:01.000")
+                .unwrap();
+        }
+
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot.journal.len(), 4);
+        assert_eq!(
+            snapshot.journal.keys().copied().collect::<Vec<_>>(),
+            vec![18, 19, 20, 21]
+        );
+
+        let request = inbound_with("2", 2, &[(7, "1"), (16, "0")]);
+        let actions = session
+            .receive_bytes_at(&request, "20260713-12:00:02.000", 2_000)
+            .unwrap();
+        let replayed = actions
+            .iter()
+            .filter_map(|action| match action {
+                SessionAction::Send(frame) => {
+                    Some(decode_one(frame, WireLimits::default()).unwrap())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(replayed.len(), 5);
+        assert_eq!(replayed[0].msg_type, "4");
+        assert_eq!(replayed[0].value(34), Some("1"));
+        assert_eq!(replayed[0].value(123), Some("Y"));
+        assert_eq!(replayed[0].value(36), Some("18"));
+        assert_eq!(replayed[1].value(34), Some("18"));
+        assert_eq!(replayed[4].value(34), Some("21"));
+    }
+
+    #[test]
+    fn replaceable_application_retains_only_latest_resend_copy() {
+        let mut session = FixSession::try_new(config()).unwrap();
+        establish(&mut session);
+        let mut old_book = FixMessage::new("W");
+        old_book.push(262, "book-agents");
+        old_book.push(270, "100");
+        session
+            .send_replaceable_application(
+                old_book,
+                "20260713-12:00:01.000",
+                "market-data:book-agents",
+            )
+            .unwrap();
+        session
+            .send_application(FixMessage::new("8"), "20260713-12:00:01.100")
+            .unwrap();
+        let mut new_book = FixMessage::new("W");
+        new_book.push(262, "book-agents");
+        new_book.push(270, "101");
+        session
+            .send_replaceable_application(
+                new_book,
+                "20260713-12:00:01.200",
+                "market-data:book-agents",
+            )
+            .unwrap();
+
+        assert_eq!(
+            session
+                .snapshot()
+                .journal
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1, 3, 4]
+        );
+        let request = inbound_with("2", 2, &[(7, "2"), (16, "4")]);
+        let actions = session
+            .receive_bytes_at(&request, "20260713-12:00:02.000", 2_000)
+            .unwrap();
+        let replayed = actions
+            .iter()
+            .filter_map(|action| match action {
+                SessionAction::Send(frame) => {
+                    Some(decode_one(frame, WireLimits::default()).unwrap())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(replayed.len(), 3);
+        assert_eq!(replayed[0].msg_type, "4");
+        assert_eq!(replayed[0].value(36), Some("3"));
+        assert_eq!(replayed[1].msg_type, "8");
+        assert_eq!(replayed[2].msg_type, "W");
+        assert_eq!(replayed[2].value(270), Some("101"));
     }
 
     #[test]

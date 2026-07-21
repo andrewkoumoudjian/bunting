@@ -114,13 +114,18 @@ struct Market {
 
 pub async fn spawn(address: &str, config: LocalScenarioConfig) -> io::Result<JoinHandle<()>> {
     let listener = TcpListener::bind(address).await?;
-    Ok(tokio::spawn(async move {
-        if let Ok((stream, _)) = listener.accept().await {
-            if let Err(error) = Box::pin(serve(stream, config)).await {
-                eprintln!("bunting-tui: embedded market connection closed: {error}");
-            }
+    Ok(tokio::spawn(serve_connections(listener, config)))
+}
+
+async fn serve_connections(listener: TcpListener, config: LocalScenarioConfig) {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        if let Err(error) = Box::pin(serve(stream, config.clone())).await {
+            eprintln!("bunting-tui: embedded market connection closed: {error}");
         }
-    }))
+    }
 }
 
 async fn serve(mut stream: TcpStream, config: LocalScenarioConfig) -> io::Result<()> {
@@ -197,9 +202,19 @@ async fn write_application(
     session: &mut FixSession,
     message: FixMessage,
 ) -> io::Result<bool> {
-    let actions = session
-        .send_application(message, &timestamp())
-        .map_err(|error| session_error(&error))?;
+    let request_id = (message.msg_type == "W")
+        .then(|| message.value(262).map(str::to_owned))
+        .flatten();
+    let actions = if let Some(request_id) = request_id {
+        session.send_replaceable_application(
+            message,
+            &timestamp(),
+            &format!("market-data:{request_id}"),
+        )
+    } else {
+        session.send_application(message, &timestamp())
+    }
+    .map_err(|error| session_error(&error))?;
     write_actions(stream, actions).await
 }
 
@@ -913,6 +928,26 @@ mod tests {
                 .is_err(),
             "embedded market closed before the client sent FIX Logon"
         );
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn embedded_market_accepts_a_new_connection_after_disconnect() -> io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(serve_connections(
+            listener,
+            LocalScenarioConfig::from_names(&["static_liquidity_provider".to_owned()], 10)?,
+        ));
+
+        for _ in 0..2 {
+            let mut stream = TcpStream::connect(address).await?;
+            let mut bytes = [0_u8; 16_384];
+            assert!(stream.read(&mut bytes).await? > 0);
+            drop(stream);
+        }
+
         server.abort();
         Ok(())
     }
