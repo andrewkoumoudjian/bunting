@@ -26,18 +26,23 @@ impl YAxis {
 
     pub fn price_to_height(&self, price: f64) -> f64 {
         let chart_data = self.chart_data.borrow();
-        let height = chart_data.height;
-
         let min_value = chart_data.visible_candle_set.min_price;
         let max_value = chart_data.visible_candle_set.max_price;
+        let (bottom, top) = drawable_bounds(chart_data.height);
+        let price_range = max_value - min_value;
 
-        (price - min_value) / (max_value - min_value) * height as f64
+        if price_range.abs() <= f64::EPSILON {
+            return bottom.midpoint(top);
+        }
+        bottom + ((price - min_value) / price_range).clamp(0.0, 1.0) * (top - bottom)
     }
 
     pub fn render_line(&self, y: u16) -> String {
-        match y % 4 {
-            0 => self.render_tick(y),
-            _ => self.render_empty(),
+        let top = self.chart_data.borrow().height.saturating_sub(1).max(1) as u16;
+        if y == 1 || y == top || y.is_multiple_of(4) {
+            self.render_tick(y)
+        } else {
+            self.render_empty()
         }
     }
 
@@ -45,9 +50,10 @@ impl YAxis {
         let chart_data = self.chart_data.borrow();
         let min_value = chart_data.visible_candle_set.min_price;
         let max_value = chart_data.visible_candle_set.max_price;
-        let height = chart_data.height;
-
-        let price = min_value + (y as f64 * (max_value - min_value) / height as f64);
+        let (bottom, top) = drawable_bounds(chart_data.height);
+        let span = (top - bottom).max(1.0);
+        let normalized = ((f64::from(y) - bottom) / span).clamp(0.0, 1.0);
+        let price = min_value + normalized * (max_value - min_value);
         let cell_min_length = (YAxis::CHAR_PRECISION + YAxis::DEC_PRECISION + 1) as usize;
 
         format!(
@@ -63,5 +69,43 @@ impl YAxis {
         let margin = " ".repeat((YAxis::MARGIN_RIGHT + 1).try_into().unwrap());
 
         format!("{}│{}", cell, margin)
+    }
+}
+
+fn drawable_bounds(height: i64) -> (f64, f64) {
+    (1.0, height.saturating_sub(1).max(1) as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chart::{Candle, chart_data::ChartData};
+
+    fn axis(height: i64, low: f64, high: f64) -> YAxis {
+        let data = Rc::new(RefCell::new(ChartData::new(
+            vec![Candle::new(100.0, high, low, 101.0, None, None)],
+            (40, u16::try_from(height).unwrap()),
+        )));
+        data.borrow_mut().height = height;
+        YAxis::new(data)
+    }
+
+    #[test]
+    fn extrema_scale_to_dynamic_drawable_rows() {
+        let short = axis(8, 97.0, 127.0);
+        assert_eq!(short.price_to_height(97.0), 1.0);
+        assert_eq!(short.price_to_height(127.0), 7.0);
+        assert!(short.render_line(1).starts_with("97.00"));
+        assert!(short.render_line(7).starts_with("127.00"));
+
+        let tall = axis(20, 97.0, 127.0);
+        assert_eq!(tall.price_to_height(97.0), 1.0);
+        assert_eq!(tall.price_to_height(127.0), 19.0);
+    }
+
+    #[test]
+    fn flat_market_uses_the_dynamic_vertical_midpoint() {
+        let axis = axis(10, 100.0, 100.0);
+        assert_eq!(axis.price_to_height(100.0), 5.0);
     }
 }
