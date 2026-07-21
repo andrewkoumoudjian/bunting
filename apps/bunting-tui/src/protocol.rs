@@ -357,6 +357,16 @@ impl FixClient {
         self.session.snapshot()
     }
 
+    #[cfg(test)]
+    pub(crate) fn restore_session_for_test(&mut self, snapshot: SessionSnapshot) -> io::Result<()> {
+        self.session = FixSession::restore(
+            profile_session_config(&self.profile, self.credential_override.as_deref(), false)?,
+            snapshot,
+        )
+        .map_err(|error| session_error(&error))?;
+        Ok(())
+    }
+
     pub(crate) fn view_clone(&self) -> io::Result<Self> {
         let mut config = session_config(&self.profile.sender_comp_id, &self.profile.target_comp_id);
         config.heartbeat_seconds = self.profile.heartbeat_seconds;

@@ -29,7 +29,11 @@ pub enum OutboundCmd {
 }
 
 pub enum UiEvent {
-    Snapshot(Box<FixClient>),
+    Snapshot {
+        client: Box<FixClient>,
+        recovery_request: bool,
+        competition_request: bool,
+    },
 }
 
 pub struct IoTask {
@@ -68,7 +72,7 @@ async fn run(
     events: mpsc::Sender<UiEvent>,
 ) {
     let _ = client.reconnect().await;
-    if publish(snapshot_event(&client), &events, true)
+    if publish(snapshot_event(&mut client), &events, true)
         .await
         .is_err()
     {
@@ -147,7 +151,7 @@ async fn run(
         };
 
         let critical = critical || before_state != client.connection_state();
-        if publish(snapshot_event(&client), &events, critical)
+        if publish(snapshot_event(&mut client), &events, critical)
             .await
             .is_err()
         {
@@ -156,11 +160,16 @@ async fn run(
     }
 }
 
-fn snapshot_event(client: &FixClient) -> Result<UiEvent, ()> {
-    client
-        .view_clone()
-        .map(|snapshot| UiEvent::Snapshot(Box::new(snapshot)))
-        .map_err(|_| ())
+fn snapshot_event(client: &mut FixClient) -> Result<UiEvent, ()> {
+    let snapshot = client.view_clone().map_err(|_| ())?;
+    let established = client.connection_state() == simfix_session::ConnectionState::Established;
+    let recovery_request = established && client.take_recovery_request();
+    let competition_request = established && client.take_competition_request();
+    Ok(UiEvent::Snapshot {
+        client: Box::new(snapshot),
+        recovery_request,
+        competition_request,
+    })
 }
 
 async fn publish(
@@ -195,19 +204,22 @@ mod tests {
     async fn saturated_queue_drops_market_snapshots_but_waits_for_critical_state() {
         let config = TerminalConfig::default();
         let profile = config.profiles.get("local").cloned().unwrap();
-        let client = FixClient::new("local".to_owned(), profile, Some("test".to_owned())).unwrap();
+        let mut client =
+            FixClient::new("local".to_owned(), profile, Some("test".to_owned())).unwrap();
         let (sender, mut receiver) = mpsc::channel(1);
 
-        sender.try_send(snapshot_event(&client).unwrap()).unwrap();
+        sender
+            .try_send(snapshot_event(&mut client).unwrap())
+            .unwrap();
         assert!(
-            publish(snapshot_event(&client), &sender, false)
+            publish(snapshot_event(&mut client), &sender, false)
                 .await
                 .is_ok()
         );
 
         let critical = tokio::spawn({
             let sender = sender.clone();
-            let event = snapshot_event(&client);
+            let event = snapshot_event(&mut client);
             async move { publish(event, &sender, true).await }
         });
         tokio::task::yield_now().await;
@@ -215,5 +227,35 @@ mod tests {
         assert!(receiver.recv().await.is_some());
         assert!(critical.await.unwrap().is_ok());
         assert!(receiver.recv().await.is_some());
+    }
+
+    #[test]
+    fn established_startup_requests_are_emitted_once_by_the_io_owner() {
+        let config = TerminalConfig::default();
+        let profile = config.profiles.get("local").cloned().unwrap();
+        let mut client =
+            FixClient::new("local".to_owned(), profile, Some("test".to_owned())).unwrap();
+        let mut snapshot = client.session_snapshot();
+        snapshot.state = simfix_session::ConnectionState::Established;
+        client.restore_session_for_test(snapshot).unwrap();
+
+        let first = snapshot_event(&mut client).unwrap();
+        let second = snapshot_event(&mut client).unwrap();
+        assert!(matches!(
+            first,
+            UiEvent::Snapshot {
+                recovery_request: true,
+                competition_request: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            second,
+            UiEvent::Snapshot {
+                recovery_request: false,
+                competition_request: false,
+                ..
+            }
+        ));
     }
 }

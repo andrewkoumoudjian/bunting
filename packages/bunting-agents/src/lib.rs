@@ -100,6 +100,16 @@ impl PolicyKind {
                 | Self::MultiVenueParentOrder
         )
     }
+
+    fn crosses_spread(self) -> bool {
+        matches!(
+            self,
+            Self::LongMomentum
+                | Self::ShortMomentum
+                | Self::MeanReversion
+                | Self::OrderFlowMomentum
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -470,13 +480,15 @@ impl AgentPolicy for BuiltInPolicy {
                     .saturating_add(1 + (random % 3));
             }
             let displacement = i64::try_from(random % 3).unwrap_or(0);
-            let price = match side {
-                Side::Buy => observation
+            let price = match (self.state.config.kind.crosses_spread(), side) {
+                (true, Side::Buy) => observation.best_ask.get(),
+                (true, Side::Sell) => observation.best_bid.get(),
+                (false, Side::Buy) => observation
                     .best_bid
                     .get()
                     .saturating_sub(displacement)
                     .max(1),
-                Side::Sell => observation.best_ask.get().saturating_add(displacement),
+                (false, Side::Sell) => observation.best_ask.get().saturating_add(displacement),
             };
             self.submit(side, quantity, PriceTicks::new(price), output)?;
         }
@@ -1179,6 +1191,26 @@ mod tests {
         second.on_wake(&context, &observation(), &mut right)?;
         assert_eq!(left.intents, right.intents);
         assert_eq!(first.snapshot(), second.snapshot());
+        Ok(())
+    }
+
+    #[test]
+    fn built_in_momentum_crosses_the_observed_spread() -> Result<(), AgentError> {
+        let mut policy = BuiltInPolicy::new(config(PolicyKind::LongMomentum));
+        let context = AgentContext {
+            logical_time: LogicalTimeNs::new(10),
+            current_position: QuantityLots::new(0),
+            remaining_parent_quantity: QuantityLots::new(20),
+        };
+        let observation = observation();
+        let mut output = IntentBuffer::with_limit(1);
+        policy.on_wake(&context, &observation, &mut output)?;
+        assert!(matches!(
+            output.intents.as_slice(),
+            [ExecutionIntent::Submit { order, .. }]
+                if order.side == Side::Buy
+                    && order.kind == OrderKind::Limit { price: observation.best_ask }
+        ));
         Ok(())
     }
 

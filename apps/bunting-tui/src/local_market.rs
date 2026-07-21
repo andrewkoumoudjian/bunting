@@ -845,6 +845,35 @@ mod tests {
     }
 
     #[test]
+    fn default_agents_move_the_top_of_book_price() -> io::Result<()> {
+        let mut market = Market::new(&[
+            PolicyKind::StaticLiquidityProvider,
+            PolicyKind::ZeroIntelligenceNoise,
+            PolicyKind::LongMomentum,
+        ])?;
+        let key = ListingKey::new(VenueId::new(1), INSTRUMENT_ID);
+        let mut observed = Vec::new();
+        for _ in 0..128 {
+            assert!(market.advance_agents()?);
+            let (bids, asks) = market
+                .state
+                .visible_levels(key)
+                .map_err(|error| io::Error::other(format!("{error:?}")))?;
+            observed.push((bids.first().copied(), asks.first().copied()));
+        }
+        observed.dedup();
+        let prices = observed
+            .iter()
+            .map(|(bid, ask)| (bid.map(|level| level.0), ask.map(|level| level.0)))
+            .collect::<Vec<_>>();
+        assert!(
+            prices.windows(2).any(|pair| pair[0] != pair[1]),
+            "default agents changed quantities but never moved a best price: {observed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn crossing_limit_order_returns_acceptance_and_fill_reports() -> io::Result<()> {
         let mut market = Market::new(&[])?;
         let messages = market.handle(&new_order(3, "buy", 5, Some(101)));

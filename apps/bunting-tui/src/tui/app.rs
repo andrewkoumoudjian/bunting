@@ -15,7 +15,6 @@ use crossterm::{
 };
 use futures_util::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use simfix_session::ConnectionState;
 use std::{io, path::PathBuf, time::Duration};
 use tokio::time::{MissedTickBehavior, interval};
 
@@ -325,22 +324,28 @@ pub async fn run(
                 None => break,
             },
             event = io_task.events.recv() => {
-                let Some(UiEvent::Snapshot(snapshot)) = event else {
+                let Some(UiEvent::Snapshot {
+                    client: snapshot,
+                    mut recovery_request,
+                    mut competition_request,
+                }) = event else {
                     break;
                 };
                 client = *snapshot;
-                while let Ok(UiEvent::Snapshot(snapshot)) = io_task.events.try_recv() {
+                while let Ok(UiEvent::Snapshot {
+                    client: snapshot,
+                    recovery_request: next_recovery,
+                    competition_request: next_competition,
+                }) = io_task.events.try_recv() {
                     client = *snapshot;
+                    recovery_request |= next_recovery;
+                    competition_request |= next_competition;
                 }
-                if client.connection_state() == ConnectionState::Established
-                    && client.take_recovery_request()
-                {
+                if recovery_request {
                     let request_id = app.allocate_id();
                     enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(book_request(request_id)));
                 }
-                if client.connection_state() == ConnectionState::Established
-                    && client.take_competition_request()
-                {
+                if competition_request {
                     let request_id = app.allocate_id();
                     for request in competition_requests(request_id) {
                         enqueue(&mut app, &io_task.outbound, OutboundCmd::Send(request));
