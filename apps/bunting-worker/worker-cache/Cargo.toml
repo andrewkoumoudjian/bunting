@@ -7,7 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-bunting-market-types = { path = "../market-types" }
+bunting-market-types = { path = "../../../packages/market-types" }
 worker.workspace = true
 
 [lints]

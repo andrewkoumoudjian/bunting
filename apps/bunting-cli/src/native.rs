@@ -1,5 +1,5 @@
 use bunting_api_contract::{FIX_COMPETITION_PROFILE_VERSION, PRODUCT_CONTRACT_VERSION};
-use bunting_server::config::{DeploymentProfile, ServerConfig};
+use bunting_server::config::ServerConfig;
 use bunting_tui::TuiOptions;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 const LOCAL_CONFIG: &str = include_str!("../../bunting-server/config/local.json");
 const HOSTED_CONFIG: &str = include_str!("../../bunting-server/config/hosted-native.json");
-const CLOUDFLARE_CONFIG: &str = include_str!("../../bunting-server/config/cloudflare.json");
 const SCENARIO_CONFIG: &str = include_str!("../../bunting-server/config/scenario.json");
 
 #[derive(Debug, Parser)]
@@ -34,11 +33,6 @@ enum Command {
         #[command(flatten)]
         options: TuiOptions,
     },
-    /// Run the external participant-to-Cloudflare FIX relay.
-    Relay {
-        /// Cloudflare relay configuration JSON.
-        config: PathBuf,
-    },
     /// Install versioned configuration templates without overwriting files.
     Init {
         /// Destination directory. Defaults to the platform Bunting config directory.
@@ -62,7 +56,6 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
     match cli.command {
         Command::Server { config } => run_server(config.as_deref()),
         Command::Tui { options } => bunting_tui::run(options).await,
-        Command::Relay { config } => run_relay(&config),
         Command::Init { config_dir } => init(config_dir.as_deref()),
         Command::Version => {
             println!(
@@ -102,23 +95,7 @@ fn run_server(path: Option<&Path>) -> Result<(), String> {
         || Ok(ServerConfig::local_default()),
         |path| ServerConfig::from_file(path).map_err(|error| error.to_string()),
     )?;
-    if config.profile == DeploymentProfile::Cloudflare {
-        return Err("use `bunting relay` for a Cloudflare relay profile".to_owned());
-    }
     bunting_server::runtime::run(&config)
-}
-
-fn run_relay(path: &Path) -> Result<(), String> {
-    let config = ServerConfig::from_file(path).map_err(|error| error.to_string())?;
-    if config.profile != DeploymentProfile::Cloudflare {
-        return Err("relay requires a Cloudflare deployment profile".to_owned());
-    }
-    bunting_server::relay::run(
-        config
-            .relay
-            .as_ref()
-            .ok_or_else(|| "Cloudflare profile requires relay configuration".to_owned())?,
-    )
 }
 
 fn init(config_dir: Option<&Path>) -> Result<(), String> {
@@ -132,7 +109,6 @@ fn init(config_dir: Option<&Path>) -> Result<(), String> {
     for (name, contents) in [
         ("local.json", LOCAL_CONFIG),
         ("hosted-native.json", HOSTED_CONFIG),
-        ("cloudflare.json", CLOUDFLARE_CONFIG),
         ("scenario.json", SCENARIO_CONFIG),
     ] {
         let path = destination.join(name);
@@ -178,7 +154,6 @@ mod tests {
             vec!["bunting", "server", "local.json"],
             vec!["bunting", "server"],
             vec!["bunting", "tui", "--fixture"],
-            vec!["bunting", "relay", "cloudflare.json"],
             vec!["bunting", "init"],
             vec!["bunting", "version"],
         ] {

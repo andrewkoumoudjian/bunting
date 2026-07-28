@@ -190,7 +190,6 @@ dependencies = [
  "bunting-market-events",
  "bunting-market-types",
  "bunting-risk-engine",
- "getrandom 0.3.4",
  "orderbook-rs",
  "pricelevel",
  "serde",
@@ -341,6 +340,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-origin-store",
  "bunting-worker-cache",
+ "getrandom 0.3.4",
  "quarcc-execution-engine",
  "serde",
  "serde_json",
@@ -348,6 +348,7 @@ dependencies = [
  "simfix-session",
  "simfix-wire",
  "tokio",
+ "uuid",
  "wasm-bindgen",
  "worker",
 ]
@@ -2282,7 +2283,17 @@ dependencies = [
  "js-sys",
  "serde_core",
  "sha1_smol",
+ "uuid-rng-internal",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid-rng-internal"
+version = "1.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dff7387287837acf196f2596a6216f94c555d947d5331e1cc48393131020119"
+dependencies = [
+ "getrandom 0.4.3",
 ]
 
 [[package]]

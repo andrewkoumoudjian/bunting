@@ -38,8 +38,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
   "fix": {"bind":%q,"sender_comp_id":"BUNTING","target_comp_id":"HUMAN","username":"participant","password":"bunting-local-dev","role":"participant","participant_id":1,"run_id":1,"heartbeat_seconds":30,"max_connections":1,"max_message_bytes":16384,"max_journal_messages":512,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
   "admin": null,
   "scenario": null,
-  "runtime": null,
-  "relay": null
+  "runtime": null
 }`, endpoint)
 	if err := os.WriteFile(config, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)

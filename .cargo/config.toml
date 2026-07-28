@@ -1,2 +1,5 @@
+# `wasm32-unknown-unknown` has no host entropy API. Host-neutral packages must
+# compile without silently selecting a browser backend; deployments that
+# provide entropy override this in their app-local Cargo configuration.
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", 'getrandom_backend="wasm_js"']
+rustflags = ["--cfg", 'getrandom_backend="unsupported"']

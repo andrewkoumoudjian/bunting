@@ -13,7 +13,6 @@ use std::path::Path;
 pub enum DeploymentProfile {
     Local,
     HostedNative,
-    Cloudflare,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,23 +91,6 @@ pub struct ScenarioRuntimeConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RelayConfig {
-    pub participant_bind: String,
-    pub worker_bind: String,
-    pub participant_sender_comp_id: String,
-    pub worker_sender_comp_id: String,
-    pub target_comp_id: String,
-    pub participant_username: String,
-    pub participant_password: String,
-    pub journal_path: String,
-    pub max_message_bytes: usize,
-    pub max_journal_bytes: usize,
-    pub max_pending_bytes: usize,
-    pub tls: TlsConfig,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub version: u16,
     pub profile: DeploymentProfile,
@@ -118,7 +100,6 @@ pub struct ServerConfig {
     pub scenario: Option<ScenarioConfig>,
     #[serde(default)]
     pub runtime: Option<ScenarioRuntimeConfig>,
-    pub relay: Option<RelayConfig>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,7 +169,6 @@ impl ServerConfig {
                     }],
                 },
             }),
-            relay: None,
         }
     }
 
@@ -212,9 +192,6 @@ impl ServerConfig {
         }
         if let Some(scenario) = self.scenario.as_mut() {
             resolve_relative(&mut scenario.path, base);
-        }
-        if let Some(relay) = self.relay.as_mut() {
-            resolve_relative(&mut relay.journal_path, base);
         }
     }
 
@@ -247,30 +224,12 @@ impl ServerConfig {
             }
             StorageKind::Memory | StorageKind::File => {}
         }
-        if self.profile == DeploymentProfile::Cloudflare {
-            if self.fix.is_some() {
-                return Err(ConfigError(
-                    "Cloudflare profile cannot accept inbound FIX; configure relay only".to_owned(),
-                ));
-            }
-            if self.relay.is_none() {
-                return Err(ConfigError(
-                    "Cloudflare profile requires an external relay configuration".to_owned(),
-                ));
-            }
-        }
-        if self.profile == DeploymentProfile::HostedNative {
-            if self.storage.kind != StorageKind::File || self.scenario.is_none() {
-                return Err(ConfigError(
-                    "hosted-native requires bounded file storage and an immutable scenario"
-                        .to_owned(),
-                ));
-            }
-            if self.relay.is_some() {
-                return Err(ConfigError(
-                    "hosted-native cannot configure the Cloudflare relay".to_owned(),
-                ));
-            }
+        if self.profile == DeploymentProfile::HostedNative
+            && (self.storage.kind != StorageKind::File || self.scenario.is_none())
+        {
+            return Err(ConfigError(
+                "hosted-native requires bounded file storage and an immutable scenario".to_owned(),
+            ));
         }
         if let Some(fix) = &self.fix {
             validate_fix(fix, self.profile)?;
@@ -293,9 +252,6 @@ impl ServerConfig {
                     "admin.max_request_bytes must be 1024..=65536".to_owned(),
                 ));
             }
-        }
-        if let Some(relay) = &self.relay {
-            validate_relay(relay)?;
         }
         if let Some(runtime) = &self.runtime {
             validate_runtime(runtime, self.scenario.as_ref(), self.fix.as_ref())?;
@@ -403,37 +359,6 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
     Ok(())
 }
 
-fn validate_relay(relay: &RelayConfig) -> Result<(), ConfigError> {
-    let participant = parse_socket("relay.participant_bind", &relay.participant_bind)?;
-    let worker = parse_socket("relay.worker_bind", &relay.worker_bind)?;
-    if participant == worker {
-        return Err(ConfigError(
-            "relay participant_bind and worker_bind must differ".to_owned(),
-        ));
-    }
-    validate_tls(participant, &relay.tls, "relay")?;
-    if relay.participant_sender_comp_id.is_empty()
-        || relay.worker_sender_comp_id.is_empty()
-        || relay.target_comp_id.is_empty()
-        || relay.participant_username.is_empty()
-        || relay.participant_password.len() < 12
-    {
-        return Err(ConfigError(
-            "relay CompIDs/username must be non-empty and participant_password must contain at least 12 bytes"
-                .to_owned(),
-        ));
-    }
-    if !(256..=1_048_576).contains(&relay.max_message_bytes)
-        || relay.max_journal_bytes < relay.max_message_bytes
-        || relay.max_pending_bytes < relay.max_message_bytes
-    {
-        return Err(ConfigError(
-            "relay message/journal/pending byte bounds are inconsistent".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,7 +392,6 @@ mod tests {
         for value in [
             include_str!("../config/local.json"),
             include_str!("../config/hosted-native.json"),
-            include_str!("../config/cloudflare.json"),
         ] {
             let config: ServerConfig = serde_json::from_str(value)
                 .map_err(|error| ConfigError(format!("profile JSON invalid: {error}")))?;

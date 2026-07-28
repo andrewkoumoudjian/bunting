@@ -1,9 +1,8 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Native storage, configuration, FIX acceptor, and relay adapters.
+//! Native storage, configuration, and FIX acceptor adapters.
 
 pub mod config;
-pub mod relay;
 pub mod runtime;
 pub mod storage;
 

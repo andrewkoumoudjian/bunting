@@ -18,7 +18,8 @@ bunting-market-events.workspace = true
 bunting-market-types = { path = "../../packages/market-types" }
 bunting-origin-store = { path = "../../packages/origin-store" }
 bunting-browser-wire = { path = "../../packages/browser-wire" }
-bunting-worker-cache = { path = "../../packages/worker-cache" }
+bunting-worker-cache = { path = "worker-cache" }
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 serde.workspace = true
 serde_json.workspace = true
 worker = { workspace = true, features = ["d1"] }
@@ -28,6 +29,7 @@ simfix-wire.workspace = true
 quarcc-execution-engine.workspace = true
 tokio.workspace = true
 wasm-bindgen.workspace = true
+uuid = { version = "=1.23.4", features = ["js"] }
 
 [lints]
 workspace = true
