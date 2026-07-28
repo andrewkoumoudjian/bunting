@@ -2,7 +2,7 @@
 
 ## Input corpus
 
-The supplied corpus was found under repository-local `temp/`, not filesystem-root `/temp/`. The files were treated as read-only and copied byte-for-byte to the external analysis workspace before extraction.
+The supplied corpus was found under repository-local `temp/`, not filesystem-root `/temp/`. The files were treated as read-only and copied byte-for-byte to the external analysis workspace before extraction. On 2026-07-28 the repository-local originals were relocated outside the worktree to `../bunting-reference-inputs/rit/originals/`; that local preservation path is not a production dependency.
 
 | Source | Bytes | Source modification time | SHA-256 | SHA-512 | Classification |
 |---|---:|---|---|---|---|

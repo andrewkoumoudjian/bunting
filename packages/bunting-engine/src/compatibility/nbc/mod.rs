@@ -4,7 +4,6 @@ mod config;
 mod profile;
 mod scheduler;
 mod synchronization;
-mod translation;
 
 pub use config::{
     ConfigError, ConfigHash, ExactDecimal, LegacyParameters, MarketConfig, Provenance,
@@ -13,7 +12,8 @@ pub use config::{
 pub use profile::NbcProfileCapabilities;
 pub use scheduler::{Advance, KernelError, RunKernel, RunStatus, ScheduledEvent};
 pub use synchronization::{DoneBarrier, SynchronizationError};
-pub use translation::{NBC_JAR_SHA256, NBC_TRANSLATION_VERSION};
+pub const NBC_JAR_SHA256: &str = "80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254";
+pub const NBC_TRANSLATION_VERSION: u16 = 1;
 
 use bunting_market_types::ParticipantId;
 use serde::{Deserialize, Serialize};

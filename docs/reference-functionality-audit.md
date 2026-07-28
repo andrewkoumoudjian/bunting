@@ -629,6 +629,8 @@ Event-sourcing vocabulary, aggregate tests, and persistence-boundary reference. 
 
 Evidence: upstream `README.md`, root `Cargo.toml`.
 
+The repository mirror was deregistered on 2026-07-28 because the published crate and upstream repository remain sufficient. The retained evidence identity is `https://github.com/serverlesstechnology/cqrs.git` at `b13692ce3db62b3b7fea19dddeec90a9d8af3180`.
+
 ## `ref/nexosim` — NeXosim
 
 ### Observed functionality
@@ -651,6 +653,8 @@ Simulation-runtime and save/restore design reference. Its custom native executor
 
 Evidence: upstream `README.md`, root `Cargo.toml`.
 
+The repository mirror was deregistered on 2026-07-28 because the published crate and upstream repository remain sufficient. The retained evidence identity is `https://github.com/asynchronics/nexosim.git` at `42eb361c9c553e50b763524cf9087bb64f31af6c`.
+
 ## `ref/wirefilter` — Wirefilter
 
 ### Observed functionality
@@ -669,6 +673,8 @@ Potential policy/scenario/admin predicate component. It does not supply matching
 
 Evidence: upstream `README.md`, `engine/Cargo.toml`.
 
+The repository mirror was deregistered on 2026-07-28 because the published crate and upstream repository remain sufficient. The retained evidence identity is `https://github.com/cloudflare/wirefilter.git` at `61936e5f38523df3f80880bbc662e490b52e7f86`.
+
 ---
 
 # E. Generic Rust utilities and test infrastructure
@@ -679,11 +685,15 @@ Generational/stable-key containers (`SlotMap`, `HopSlotMap`, `DenseSlotMap`) wit
 
 Evidence: upstream `README.md`, `Cargo.toml`.
 
+Mirror deregistered on 2026-07-28; retain `https://github.com/orlp/slotmap.git` at `0d130ed5bbd6e51fbb64a6b6cd80d3adfbb04294` as the evidence identity.
+
 ## `ref/intrusive-rs` — intrusive-collections
 
 Intrusive singly/doubly linked lists and red-black trees with cursor-based mutation, optional allocation support, and `no_std` compatibility. A data-structure reference, not an order book or scheduler.
 
 Evidence: upstream `README.md`, `Cargo.toml`.
+
+Mirror deregistered on 2026-07-28; retain `https://github.com/Amanieu/intrusive-rs.git` at `e7b27a0ea9a23084a62c5896161b8805db72e5b9` as the evidence identity.
 
 ## `ref/rand` — Rand
 
@@ -691,17 +701,34 @@ RNG traits, system/thread/seeded generators, distributions, sequence operations,
 
 Evidence: upstream `README.md`, `Cargo.toml`.
 
+Mirror deregistered on 2026-07-28; retain `https://github.com/rust-random/rand.git` at `8272d49f03b4900b648df39b24d9a0343cbd45b5` as the evidence identity.
+
 ## `ref/postcard` — Postcard
 
 A compact Serde serializer/deserializer designed for constrained and `no_std` environments, with a documented stable wire format, varint integer encoding, and configurable serialization flavors. It is a format candidate, not a snapshot/versioning policy by itself.
 
 Evidence: upstream `README.md`, workspace `Cargo.toml`.
 
+Mirror deregistered on 2026-07-28; retain `https://github.com/jamesmunns/postcard.git` at `de182557cff45f2ca9b2b67a6b93be5917612a44` as the evidence identity.
+
 ## `ref/proptest` — Proptest
 
 Property-based test generation and per-value shrinking, failure minimization/persistence, strategies, and optional fork/timeout features. It is a dev/test dependency for invariants, not production engine code.
 
 Evidence: upstream `README.md`, `proptest/Cargo.toml`.
+
+Mirror deregistered on 2026-07-28; retain `https://github.com/proptest-rs/proptest.git` at `85a3de393331b951e20c5da1cdac9d342fc36a6f` as the evidence identity.
+
+## Competition-platform reference tracks
+
+The competition reorganization retains source only where it provides implementation or conformance evidence that is not replaced by a published crate:
+
+- matching and venue mechanics: `orderbook-rs`, `pricelevel`, `liquibook`, `exchange-core`, `abides`, and NBC evidence;
+- participant execution and strategies: `quarcc-trading-engine`, `ritc_mm`, `market-maker-rs`, and `nautilus-trader`;
+- FIX conformance pending the codec decision: `quickfixj`, `ferrumfix`, `fixer`, and `ironfix`;
+- Cloudflare publication: `workers-rs`.
+
+These tracks are evidence classifications, not authorization to copy source. Adoption still follows `reference-adoption.md`.
 
 ---
 

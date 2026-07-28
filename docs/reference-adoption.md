@@ -93,19 +93,19 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
 | `workers-rs` | Official Rust bindings, macros and build tooling for Cloudflare Workers | Production platform dependency |
-| `cqrs` | Generic CQRS/event-sourcing aggregate and persistence framework | Concept/test/persistence-boundary reference; not a D1 implementation |
-| `nexosim` | General component-based discrete-event simulator with custom async executor and save/restore | Simulation-runtime design reference; target-specific spike required |
-| `wirefilter` | Typed filter parser, compiler and execution engine | Optional policy/predicate candidate |
+| `cqrs` | Generic CQRS/event-sourcing aggregate and persistence framework | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
+| `nexosim` | General component-based discrete-event simulator with custom async executor and save/restore | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
+| `wirefilter` | Typed filter parser, compiler and execution engine | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
 
 ### Generic utility and test references
 
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
-| `slotmap` | Stable generational-key containers and secondary maps | Use only for a concrete ownership/arena requirement |
-| `intrusive-rs` | Intrusive lists and red-black trees | Data-structure reference; no current production need |
-| `rand` | RNG traits, generators, distributions and sampling | Dependency candidate, but simulation algorithms/streams must be explicitly versioned |
-| `postcard` | Compact stable-format Serde serializer/deserializer | Snapshot/wire experiment only after versioning and compatibility design |
-| `proptest` | Property-based generation, shrinking and failure persistence | Development/test dependency |
+| `slotmap` | Stable generational-key containers and secondary maps | Mirror deregistered; use the published crate only for a concrete ownership requirement |
+| `intrusive-rs` | Intrusive lists and red-black trees | Mirror deregistered; no current production need |
+| `rand` | RNG traits, generators, distributions and sampling | Mirror deregistered; any dependency still requires a versioned algorithm/stream contract |
+| `postcard` | Compact stable-format Serde serializer/deserializer | Mirror deregistered; evaluate the published crate only after snapshot versioning design |
+| `proptest` | Property-based generation, shrinking and failure persistence | Mirror deregistered; use the published dev dependency when tests justify it |
 
 ### Terminal UI references
 

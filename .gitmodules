@@ -22,10 +22,6 @@
 	path = ref/nautilus-trader
 	url = https://github.com/nautechsystems/nautilus_trader.git
 	branch = develop
-[submodule "ref/wirefilter"]
-	path = ref/wirefilter
-	url = https://github.com/cloudflare/wirefilter.git
-	branch = master
 [submodule "ref/orderbook-rs"]
 	path = ref/orderbook-rs
 	url = https://github.com/joaquinbejar/OrderBook-rs.git
@@ -38,14 +34,6 @@
 	path = ref/exchange-core
 	url = https://github.com/exchange-core/exchange-core.git
 	branch = master
-[submodule "ref/cqrs"]
-	path = ref/cqrs
-	url = https://github.com/serverlesstechnology/cqrs.git
-	branch = main
-[submodule "ref/nexosim"]
-	path = ref/nexosim
-	url = https://github.com/asynchronics/nexosim.git
-	branch = main
 [submodule "ref/abides"]
 	path = ref/abides
 	url = https://github.com/abides-sim/abides.git
@@ -61,26 +49,6 @@
 [submodule "ref/barter-rs"]
 	path = ref/barter-rs
 	url = https://github.com/barter-rs/barter-rs.git
-	branch = main
-[submodule "ref/slotmap"]
-	path = ref/slotmap
-	url = https://github.com/orlp/slotmap.git
-	branch = master
-[submodule "ref/intrusive-rs"]
-	path = ref/intrusive-rs
-	url = https://github.com/Amanieu/intrusive-rs.git
-	branch = master
-[submodule "ref/rand"]
-	path = ref/rand
-	url = https://github.com/rust-random/rand.git
-	branch = master
-[submodule "ref/postcard"]
-	path = ref/postcard
-	url = https://github.com/jamesmunns/postcard.git
-	branch = main
-[submodule "ref/proptest"]
-	path = ref/proptest
-	url = https://github.com/proptest-rs/proptest.git
 	branch = main
 [submodule "ref/pricelevel"]
 	path = ref/pricelevel
