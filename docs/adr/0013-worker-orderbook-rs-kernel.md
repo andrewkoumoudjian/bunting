@@ -1,6 +1,6 @@
 # ADR 0013: Plain Worker runtime, OrderBook-rs kernel, and Workers Cache snapshots
 
-- Status: Accepted
+- Status: Superseded by ADR 0018 and ADR 0019
 - Date: 2026-07-12
 - Supersedes: ADR 0002, the active-book portions of ADR 0008, and the Durable Object ownership portions of ADR 0011
 

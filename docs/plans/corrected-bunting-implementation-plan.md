@@ -1,6 +1,6 @@
 # Corrected Bunting implementation plan
 
-Status: active, persisted 2026-07-13; product-alignment sequence accepted 2026-07-15
+Status: completed historical execution plan; deployment target superseded by ADR 0022 and [`competition-platform-reorganization.md`](competition-platform-reorganization.md)
 
 The production hardening sequence is tracked in
 [`production-readiness-plan.md`](production-readiness-plan.md). Its Phase 1

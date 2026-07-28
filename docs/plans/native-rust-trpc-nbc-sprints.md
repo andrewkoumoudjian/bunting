@@ -1,6 +1,6 @@
 # Native Rust tRPC and NBC implementation sprints
 
-> **SUPERSEDED:** This is historical execution evidence. New work follows ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); do not revive the tRPC-era product layout.
+> **SUPERSEDED:** This is historical execution evidence. ADR 0022 and [`competition-platform-reorganization.md`](competition-platform-reorganization.md) now govern deployment; do not revive the tRPC-era or Worker-first product layout.
 
 Status: fully superseded for active sequencing by ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); retained for completed tRPC/NBC evidence history
 

@@ -17,7 +17,7 @@ the committed result. Adapters cannot receive mutable engine state or invent
 facts, sequence numbers, fills, balances or scores.
 
 The service boundary is the public Rust contract consumed in process by native
-servers, the Worker, FIX mapping, browser handlers and built-in agents. Transport
+servers, FIX mapping, browser handlers and built-in agents. Transport
 sessions, origin persistence and cache adapters remain outside `bunting-engine`.
 FIX sequence numbers remain distinct from committed Bunting event sequences.
 
@@ -30,29 +30,19 @@ semantics over TCP or TLS. The acceptor
 owns sockets, TLS, FIX sessions, bounded journals and reconnect policy, then
 calls the application service in process. It is not a second exchange service.
 
-### Cloudflare deployment
+### Cloudflare publication deployment
 
-The native Rust Worker accepts browser-compatible HTTPS fetch/stream traffic.
-D1 is the origin for accepted commands, canonical events, idempotency, versions
-and recovery projections. Workers Cache contains only immutable,
-checksum-addressed public snapshots and never coordinates a transaction.
-
-Cloudflare Workers do not accept inbound raw TCP. Each Worker FIX session is an
-outbound TCP initiator connecting to an allowlisted external FIX acceptor. Once
-established, the connection is bidirectional and the external acceptor relays
-participant messages to the Worker session. An internet user therefore reaches
-a Cloudflare deployment through this topology:
+The native Rust Worker accepts browser-compatible HTTPS reads for immutable
+public snapshots, run archives, and leaderboards exported by the native venue.
+Workers Cache contains checksum-addressed public artifacts and never
+coordinates a transaction. Cloudflare owns no participant session, command,
+event sequence, or recovery root.
 
 ```text
-participant FIX initiator -> external FIX gateway/session relay (acceptor)
-                         <- Worker-initiated outbound TCP/TLS FIX session
-                                      -> in-process Bunting application service
-                                      -> bunting-engine -> D1 commit
+participant FIX client -> native competition venue -> committed run archive
+                                                  -> public projection
+                                                  -> Cloudflare publication
 ```
-
-The relay authenticates network/session peers, applies bounded backpressure and
-persists its side of the FIX session. It does not translate market semantics,
-acknowledge venue commands, own origin state or change Bunting/FIX sequences.
 
 ## Identities and authorization
 

@@ -1,6 +1,6 @@
 # ADR 0004: FIX 4.4 session semantics over WebSocket with a native TCP bridge
 
-- Status: Superseded by ADR 0016
+- Status: Superseded by ADR 0020
 - Date: 2026-07-11
 
 Historical note: ADR 0020 supersedes the later tRPC/FIX bridge topology as well; this ADR is not active implementation guidance.

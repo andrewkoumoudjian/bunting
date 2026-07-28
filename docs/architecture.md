@@ -2,15 +2,15 @@
 
 ## 1. Purpose
 
-Bunting is a stock-market simulation and exchange-testing platform implemented primarily in Rust for a plain Cloudflare Worker. It supports human and automated participants, configurable scenarios, standard protocol adapters, streaming market data, deterministic recovery, and isolated user strategies.
+Bunting is a stock-market simulation and exchange-testing platform implemented primarily in Rust. Its primary deployment is a native competition venue; Cloudflare is a read-only publication wrapper. It supports human and automated participants, configurable scenarios, standard protocol adapters, streaming market data, deterministic recovery, and isolated user strategies.
 
 The system is an education, research, and integration environment. It is not a colocated real-money exchange.
 
 ## 2. Binding principles
 
 1. **Use OrderBook-rs:** matching and book capabilities come from the released upstream crate rather than a parallel implementation.
-2. **Plain Worker authority:** Durable Objects may own outbound FIX session state, but no Durable Object owns market authority.
-3. **Workers Cache required:** checksum-protected upstream snapshot packages are cached under immutable content-addressed keys.
+2. **Native venue authority:** the native process accepts bounded inbound FIX/TCP sessions and owns the one in-process command path into `bunting-engine`.
+3. **Publication edge:** Cloudflare may cache immutable checksum-addressed public snapshots, archives, and leaderboards, but it does not own competition authority.
 4. **Origin versioning:** accepted commands and canonical events use an origin store with optimistic expected-version checks.
 5. **Warm memory is optional:** an isolate may retain reconstructed books, but recovery cannot depend on isolate affinity.
 6. **Bunting owns the exchange boundary:** authentication, participants, canonical events, ledger, scenarios, protocols, persistence orchestration, and streaming recovery remain Bunting concerns.
@@ -23,31 +23,24 @@ The system is an education, research, and integration environment. It is not a c
 ## 3. Topology
 
 ```text
-Rust/WASM browser client -- bounded fetch/stream -->
-       Native Rust Cloudflare Worker
-       - browser-compatible fetch/stream dispatch
-       - outbound FIX/TCP session Durable Objects
+FIX clients -- bounded authenticated inbound TCP -->
+       Native Rust competition venue
+       - concurrent participant sessions
        - direct in-process Rust application calls
        - auth, schemas and protocol bounds
-       - expected-version command handling
+       - one authoritative writer
        - unified bunting-engine
          - private OrderBook-rs matching adapter
        - scenario and NBC-compatibility profiles
        - Bunting risk/ledger/events
-       - snapshot and stream responses
-          |                 |
-          |                 +--> optional Rust RunStreamCoordinator DO
-          |                      committed fan-out only after ADR 0016 gate
-          |                 |
-          |                 +--> Workers Cache
-          |                      immutable OrderBook-rs
-          |                      snapshot packages
+       - run archive and replay
           |
-          +--> Origin event/version store
+          +--> Native origin event/version store
                accepted commands, canonical events,
                idempotency, run metadata, recovery tail
 
-External FIX acceptor <-- bidirectional session -- outbound TCP initiator
+Committed public artifacts --> Cloudflare publication Worker
+                            --> immutable edge cache
 
 User strategy source
        -> TypeScript Worker Loader boundary
@@ -77,7 +70,7 @@ User strategy source
   scheduler snapshots. Hosts remain responsible for the single authoritative
   application writer and persistence.
 - `simfix-wire`, `simfix-session`, and `simfix-mapping`: transport-neutral FIX protocol layers.
-- `worker-cache`: immutable Workers Cache key and snapshot operations.
+- Cloudflare cache adapters live under `apps/bunting-worker`; reusable packages remain host-neutral.
 - later engine modules: scenario clock, agents, products, news, tenders, assets, scoring and complete recovery. Extract a focused package only when a second real consumer proves a reusable non-authoritative boundary; FIX and native report/export tooling remain outside the engine.
 - `bunting-rs`: thin portable composition boundary with curated stable re-exports and product metadata.
 
@@ -134,9 +127,9 @@ The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a
 
 ADR 0020 supersedes the universal RPC boundary. One native Rust Worker parses a bounded browser JSON contract and invokes the in-process Rust command transaction; internal Worker composition never crosses a protocol hop.
 
-The Rust contract generates client schemas. The current browser envelope retains a development-only differential record against pinned tRPC fixtures, but tRPC is no longer an architecture or runtime dependency. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011. A Rust Durable Object may coordinate committed fan-out only after the explicit ADR 0016 gate.
+The Rust contract generates client schemas. tRPC is no longer an architecture, runtime, or differential-oracle dependency. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011.
 
-FIX compatibility is implemented by a Worker Durable Object that initiates outbound TCP and owns the bidirectional FIXT.1.1 session with FIX 5.0 SP2 application semantics. It never accepts inbound raw TCP, and FIX sequences never replace Bunting event sequences.
+FIX compatibility is implemented by the native venue's bounded inbound acceptor using FIXT.1.1 session semantics with the FIX 5.0 SP2 application profile. FIX sequences never replace Bunting event sequences. The existing Worker-initiated FIX path is transitional until ADR 0022's publication cutover is complete.
 
 ## 7. Command transaction
 

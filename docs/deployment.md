@@ -1,9 +1,10 @@
 # Bunting deployment guide
 
-This guide covers the implemented native server and Cloudflare Worker/relay
-topologies. It does not claim a live staging deployment: the local gate is
-automated in CI, while the hosted gates require operator-owned DNS, D1,
-certificates, secrets and a publicly reachable FIX acceptor.
+The native server is the primary competition venue. This guide covers its
+implemented single-session baseline and the transition to the concurrent venue
+defined by ADR 0023. Cloudflare is being narrowed to read-only publication
+under ADR 0022; the existing Worker mutation and outbound-FIX paths remain
+transitional until that cutover is complete.
 
 ## Zero-configuration local server
 
@@ -57,41 +58,20 @@ committed, and a restart returns the acknowledged run sequence from the same
 origin file. A plaintext public bind or shared origin file fails the deployment
 contract.
 
-## Cloudflare Worker and external FIX relay
+## Cloudflare publication wrapper
 
 Cloudflare supports Rust Workers through `workers-rs` and `worker-build`, with
-Wrangler deploying the generated bundle. Workers can initiate outbound TCP,
-but cannot accept an inbound raw TCP connection, so Bunting uses the external
-relay topology recorded in ADR 0020. See the official
+Wrangler deploying the generated bundle. Under ADR 0022 it publishes immutable
+public snapshots, run archives and leaderboards committed by the native venue;
+it does not accept participant commands or own origin truth. See the official
 [Rust Worker guide](https://developers.cloudflare.com/workers/languages/rust/)
 and [TCP sockets contract](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/).
 
-1. Replace the D1 database ID and `BUNTING_FIX_DESTINATIONS` placeholder in an
-   environment-specific copy of `apps/bunting-worker/wrangler.toml`.
-2. Install `BUNTING_API_TOKEN`, `BUNTING_API_PARTICIPANT_ID`, and any FIX
-   credentials through Wrangler secrets; never place them in TOML or JSON.
-3. Apply the checked-in D1 migrations before deploy. Cloudflare records applied
-   migrations and applies pending files in order; the authoritative command
-   path must not run against an older schema. See the official
-   [D1 migrations guide](https://developers.cloudflare.com/d1/reference/migrations/).
-4. Deploy the Rust Worker, then run `bunting relay <cloudflare.json>` on a
-   public host behind a mutually authenticated TLS terminator. The Worker
-   destination must be the relay's public Worker listener, never localhost or a
-   private address.
-
-```bash
-npx wrangler d1 migrations apply bunting-origin \
-  --config apps/bunting-worker/wrangler.toml --remote
-npx wrangler deploy --config apps/bunting-worker/wrangler.toml
-bunting relay ~/.config/bunting/server/cloudflare.json
-```
-
-The Cloudflare smoke gate requires the deployed `/api/system.health` response, an
-authenticated browser projection, a Worker-initiated outbound FIX Logon at the
-relay, one committed order/execution report, duplicate-command idempotency, and
-recovery after FIX-session-object restart. A local relay handshake proves only
-configuration and byte forwarding; it is not evidence of Worker network
-interoperability.
+The publication cutover is not complete while the Worker still exposes command,
+D1-origin, or outbound-FIX routes. Those routes are compatibility debt and must
+not be used for new competition deployments. The publication smoke gate will
+require checksum-addressed reads of a snapshot, archive, and leaderboard after
+Phase 4 supplies those artifacts.
 
 ### Raw Workerd gate
 

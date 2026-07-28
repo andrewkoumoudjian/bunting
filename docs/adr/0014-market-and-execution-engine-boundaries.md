@@ -1,6 +1,6 @@
 # ADR 0014: Market-engine and execution-engine boundaries
 
-- Status: Accepted; NBC source/translation authority amended by ADR 0017
+- Status: Superseded by ADR 0018 and ADR 0019; NBC source/translation authority amended by ADR 0017
 - Date: 2026-07-12
 - Evidence baseline: `docs/reference-functionality-audit.md`
 - Supersedes: documentation that describes NBC only as scenario data or describes the QUARCC trading engine only as compatibility DTOs

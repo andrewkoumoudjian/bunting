@@ -1,6 +1,6 @@
 # Bunting
 
-Bunting is a Rust market-simulation and exchange-testing platform designed to run in a plain Cloudflare Worker.
+Bunting is a Rust market-simulation and exchange-testing platform with a native FIX/TCP competition venue and an optional Cloudflare publication edge.
 
 ## Install
 
@@ -106,11 +106,11 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `bunting-agents`: deterministic built-in policies composed with mandatory QUARCC execution;
 - `bunting-runtime`: deterministic built-in participant scheduling shared by the server and local FIX fixture;
 - `simfix-wire`, `simfix-session`, and `simfix-mapping`: FIX framing, session recovery, and application mapping;
-- `worker-cache`: immutable Workers Cache snapshot adapter;
+- `apps/bunting-worker/worker-cache`: immutable Cloudflare Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
-- `apps/bunting-cli`: unified `bunting server|tui|relay|init|version` native command.
-- `apps/bunting-server`: native FIX/TCP server, durable local origin, admin health surface, and external Cloudflare FIX relay.
+- `apps/bunting-cli`: unified `bunting server|tui|init|version` native command.
+- `apps/bunting-server`: native FIX/TCP server, durable local origin, and admin health surface.
 - `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
 
 ## Native Worker transports
