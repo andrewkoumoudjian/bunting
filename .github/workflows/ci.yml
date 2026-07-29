@@ -85,6 +85,15 @@ jobs:
             http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
           grep -Fq '"runId":"1"' /tmp/bunting-run.json
 
+      - name: Enforce replay and onboarding budget
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          cargo run --locked -q -p bunting-rs --example competition_archive > /tmp/competition.archive.json
+          cargo run --locked -q -p bunting-cli -- replay /tmp/competition.archive.json
+          cargo run --locked -q -p bunting-cli -- score /tmp/competition.archive.json > /tmp/competition.score.json
+          test $(( $(date +%s) - started )) -le 120
+
       - name: Verify upstream dependency
         run: cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
 

@@ -38,7 +38,14 @@ jobs:
         run: rustup target add "${{ matrix.target }}"
       - name: Build unified native application
         shell: bash
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p bunting-cli
+        run: |
+          cargo build --locked --release --target "${{ matrix.target }}" -p bunting-cli --features tui
+          cargo build --locked --release --target "${{ matrix.target }}" -p bunting-ffi -p bunting-cpp
+      - name: Build stable-ABI Python wheel
+        shell: bash
+        run: |
+          python -m pip install maturin==1.9.4
+          maturin build --locked --release --target "${{ matrix.target }}" --manifest-path bindings/bunting-py/Cargo.toml --interpreter python
       - name: Package native application
         shell: bash
         run: |
@@ -55,12 +62,19 @@ jobs:
             ln -s bunting "stage/${package}/bin/bunting-tui"
           fi
           cp apps/bunting-server/config/*.json "stage/${package}/config/"
-          cp README.md "stage/${package}/"
+          cp README.md PROTOCOL.md RULES.md SCORING.md RUNBOOK.md "stage/${package}/"
+          mkdir -p "stage/${package}/include" "stage/${package}/lib"
+          cp bindings/bunting-ffi/include/bunting.h "stage/${package}/include/"
+          find "target/${{ matrix.target }}/release" -maxdepth 1 -type f \
+            \( -name 'libbunting_ffi.*' -o -name 'bunting_ffi.*' -o -name 'libbunting_cpp.*' -o -name 'bunting_cpp.*' \) \
+            -exec cp {} "stage/${package}/lib/" \;
           tar -C stage -czf "dist/${package}.tar.gz" "${package}"
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            target/wheels/*.whl
           if-no-files-found: error
 
   publish:
@@ -75,7 +89,7 @@ jobs:
           merge-multiple: true
       - name: Create checksums
         working-directory: dist
-        run: sha256sum bunting-*.tar.gz > SHA256SUMS
+        run: find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
