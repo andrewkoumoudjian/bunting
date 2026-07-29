@@ -135,11 +135,11 @@ jobs:
               sleep 0.25
             done
             grep -Fq '"contractCompatible":true' /tmp/bunting-workerd-health.json
-            curl --fail --silent \
-              -H 'Authorization: Bearer workerd-smoke-token' \
-              http://127.0.0.1:8787/fix-sessions/smoke/snapshot \
-              > /tmp/bunting-workerd-fix.json
-            test "$(cat /tmp/bunting-workerd-fix.json)" = null
+            status=$(curl --silent --output /tmp/bunting-workerd-fix.txt \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:8787/fix-sessions/smoke/snapshot)
+            test "$status" = 405
+            grep -Fq 'publication wrapper is read-only' /tmp/bunting-workerd-fix.txt
             status=$(curl --silent --output /tmp/bunting-workerd-d1.json \
               --write-out '%{http_code}' \
               'http://127.0.0.1:8787/api/market.snapshot?input=%7B%22runId%22%3A%221%22%2C%22instrumentId%22%3A%221%22%7D')

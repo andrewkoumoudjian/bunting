@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Native Rust Worker entrypoint for browser and outbound FIX clients.
+//! Read-only Cloudflare publication wrapper for native competition venues.
 //!
 //! Browser requests use bounded `/api/<procedure>` dispatch.
 
@@ -642,16 +642,8 @@ fn method(request: &Request) -> Method {
 pub async fn main(mut request: Request, environment: Env, _context: Context) -> Result<Response> {
     let url = request.url()?;
     let path = url.path().to_string();
-    if let Some(session_path) = path.strip_prefix("/fix-sessions/") {
-        let _claims = authenticate(&request, &environment)?;
-        let session_id = session_path
-            .split('/')
-            .next()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| Error::RustError("missing FIX session identity".to_owned()))?;
-        let namespace = environment.durable_object("FIX_SESSIONS")?;
-        let stub = namespace.id_from_name(session_id)?.get_stub()?;
-        return stub.fetch_with_request(request).await;
+    if path.starts_with("/fix-sessions/") {
+        return Response::error("publication wrapper is read-only", 405);
     }
     let query = url.query().map(str::to_string);
     let request_method = method(&request);
@@ -672,9 +664,12 @@ pub async fn main(mut request: Request, environment: Env, _context: Context) -> 
         Err(error) => return worker_response(bunting_browser_wire::error(&error)),
     };
     let response = match parsed {
-        ParsedRequest::Query(call) | ParsedRequest::Mutation(call) => {
-            dispatch_call(&call, &request, &environment).await
-        }
+        ParsedRequest::Query(call) => dispatch_call(&call, &request, &environment).await,
+        ParsedRequest::Mutation(call) => wire_error(
+            ProcedureError::NotFound,
+            &call.path,
+            "publication wrapper is read-only",
+        ),
         ParsedRequest::Subscription(call) => return subscribe(&call, &request, &environment).await,
     };
     worker_response(response)
