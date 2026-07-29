@@ -1,5 +1,6 @@
 use bunting_api_contract::{FIX_COMPETITION_PROFILE_VERSION, PRODUCT_CONTRACT_VERSION};
 use bunting_server::config::ServerConfig;
+#[cfg(feature = "tui")]
 use bunting_tui::TuiOptions;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -29,6 +30,7 @@ enum Command {
         config: Option<PathBuf>,
     },
     /// Run the native FIX participant/operator terminal.
+    #[cfg(feature = "tui")]
     Tui {
         #[command(flatten)]
         options: TuiOptions,
@@ -55,6 +57,7 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
     let cli = Cli::try_parse_from(arguments).map_err(|error| error.to_string())?;
     match cli.command {
         Command::Server { config } => run_server(config.as_deref()),
+        #[cfg(feature = "tui")]
         Command::Tui { options } => bunting_tui::run(options).await,
         Command::Init { config_dir } => init(config_dir.as_deref()),
         Command::Version => {
@@ -153,11 +156,12 @@ mod tests {
         for arguments in [
             vec!["bunting", "server", "local.json"],
             vec!["bunting", "server"],
-            vec!["bunting", "tui", "--fixture"],
             vec!["bunting", "init"],
             vec!["bunting", "version"],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
+        #[cfg(feature = "tui")]
+        assert!(Cli::try_parse_from(["bunting", "tui", "--fixture"]).is_ok());
     }
 }
