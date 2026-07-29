@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Curated, portable entry point for Bunting's stable first-party contracts.
 
+mod archive;
+
+pub use archive::{
+    ArchiveError, ArchivePolicy, COMPETITION_ARCHIVE_VERSION, CompetitionArchive, ReplayResult,
+};
 pub use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationState, MarketProjection,
     VerifiedActor, project_market,

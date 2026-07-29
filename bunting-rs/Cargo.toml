@@ -11,6 +11,8 @@ bunting-application.workspace = true
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

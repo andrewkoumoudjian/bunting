@@ -21,6 +21,7 @@ bunting-rs = { path = "../../bunting-rs" }
 bunting-server = { path = "../bunting-server" }
 bunting-tui = { path = "../bunting-tui", optional = true }
 clap = { version = "4.6.1", features = ["derive"] }
+serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]

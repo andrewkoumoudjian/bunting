@@ -43,6 +43,15 @@ enum Command {
     },
     /// Print executable and protocol contract versions.
     Version,
+    /// Replay and verify one deterministic competition archive.
+    Replay { archive: PathBuf },
+    /// Print the settled score report from a verified archive.
+    Score { archive: PathBuf },
+    /// Verify archives and write leaderboard.json plus leaderboard.html.
+    Judge {
+        #[arg(required = true)]
+        archives: Vec<PathBuf>,
+    },
 }
 
 pub async fn run() {
@@ -69,7 +78,70 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
             );
             Ok(())
         }
+        Command::Replay { archive } => {
+            let result = load_archive(&archive)?
+                .replay()
+                .map_err(|error| error.to_string())?;
+            println!(
+                "verified {} commands, {} events, final hash {}",
+                result.command_count, result.event_count, result.final_state_hash
+            );
+            Ok(())
+        }
+        Command::Score { archive } => {
+            let result = load_archive(&archive)?
+                .replay()
+                .map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result.scores)
+                    .map_err(|error| format!("cannot encode scores: {error}"))?
+            );
+            Ok(())
+        }
+        Command::Judge { archives } => judge(&archives),
     }
+}
+
+fn load_archive(path: &Path) -> Result<bunting_rs::CompetitionArchive, String> {
+    let json = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read archive {}: {error}", path.display()))?;
+    bunting_rs::CompetitionArchive::from_json(&json)
+        .map_err(|error| format!("invalid archive {}: {error}", path.display()))
+}
+
+fn judge(paths: &[PathBuf]) -> Result<(), String> {
+    let mut entries = Vec::new();
+    for path in paths {
+        let result = load_archive(path)?
+            .replay()
+            .map_err(|error| format!("archive {} failed replay: {error}", path.display()))?;
+        entries.extend(result.scores);
+    }
+    entries.sort_by_key(|entry| (std::cmp::Reverse(entry.score), entry.participant_id));
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|error| format!("cannot encode leaderboard: {error}"))?;
+    fs::write("leaderboard.json", &json)
+        .map_err(|error| format!("cannot write leaderboard.json: {error}"))?;
+    let rows = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                index.saturating_add(1),
+                entry.participant_id,
+                entry.score
+            )
+        })
+        .collect::<String>();
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>Bunting leaderboard</title><h1>Bunting leaderboard</h1><table><thead><tr><th>Rank</th><th>Participant</th><th>Score</th></tr></thead><tbody>{rows}</tbody></table>"
+    );
+    fs::write("leaderboard.html", html)
+        .map_err(|error| format!("cannot write leaderboard.html: {error}"))?;
+    println!("wrote leaderboard.json and leaderboard.html");
+    Ok(())
 }
 
 fn compatibility_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
@@ -158,6 +230,9 @@ mod tests {
             vec!["bunting", "server"],
             vec!["bunting", "init"],
             vec!["bunting", "version"],
+            vec!["bunting", "replay", "archive.json"],
+            vec!["bunting", "score", "archive.json"],
+            vec!["bunting", "judge", "a.json", "b.json"],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
