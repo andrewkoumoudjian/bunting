@@ -2,6 +2,7 @@
 //! Curated, portable entry point for Bunting's stable first-party contracts.
 
 mod archive;
+mod handle;
 
 pub use archive::{
     ArchiveError, ArchivePolicy, COMPETITION_ARCHIVE_VERSION, CompetitionArchive, ReplayResult,
@@ -10,6 +11,7 @@ pub use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationState, MarketProjection,
     VerifiedActor, project_market,
 };
+pub use handle::BuntingHandle;
 
 pub use bunting_engine::{
     EngineConfig, EngineSnapshotEnvelope, ListingDefinition, ParticipantDefinition, RunState,

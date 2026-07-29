@@ -1,0 +1,29 @@
+[package]
+name = "bunting-cpp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bunting-rs = { path = "../../bunting-rs" }
+cxx = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.build-dependencies]
+cxx-build = "1.0"
+
+[lints.rust]
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

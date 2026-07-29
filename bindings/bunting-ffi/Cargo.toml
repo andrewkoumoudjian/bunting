@@ -1,0 +1,27 @@
+[package]
+name = "bunting-ffi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+bunting-rs = { path = "../../bunting-rs" }
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[lints.rust]
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

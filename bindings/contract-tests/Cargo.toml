@@ -1,5 +1,5 @@
 [package]
-name = "bunting-rs"
+name = "bunting-binding-contract-tests"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,13 +7,13 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
-bunting-application.workspace = true
-bunting-command-transaction = { path = "../packages/command-transaction" }
+bunting-cpp = { path = "../bunting-cpp" }
+bunting-ffi = { path = "../bunting-ffi" }
+bunting-py = { path = "../bunting-py", package = "bunting-py" }
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
-bunting-origin-store = { path = "../packages/origin-store" }
-serde.workspace = true
+bunting-rs = { path = "../../bunting-rs" }
 serde_json.workspace = true
 
 [lints]

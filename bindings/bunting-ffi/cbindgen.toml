@@ -1,0 +1,4 @@
+language = "C"
+include_guard = "BUNTING_H"
+documentation = true
+usize_is_size_t = true
