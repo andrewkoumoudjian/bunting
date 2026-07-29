@@ -52,6 +52,13 @@ enum Command {
         #[arg(required = true)]
         archives: Vec<PathBuf>,
     },
+    /// Validate the local venue configuration and installed contracts.
+    Doctor { config: Option<PathBuf> },
+    /// Run a participant program's self-reported conformance probe.
+    Conformance {
+        #[arg(long)]
+        agent: String,
+    },
 }
 
 pub async fn run() {
@@ -100,7 +107,53 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
             Ok(())
         }
         Command::Judge { archives } => judge(&archives),
+        Command::Doctor { config } => doctor(config.as_deref()),
+        Command::Conformance { agent } => conformance(&agent),
     }
+}
+
+fn doctor(path: Option<&Path>) -> Result<(), String> {
+    let config = path.map_or_else(
+        || Ok(ServerConfig::local_default()),
+        |path| ServerConfig::from_file(path).map_err(|error| error.to_string()),
+    )?;
+    config.validate().map_err(|error| error.to_string())?;
+    let fix = config
+        .fix
+        .as_ref()
+        .ok_or_else(|| "configuration has no native FIX listener".to_owned())?;
+    println!(
+        "ok: product={} fix={} roster={} interval_ms={} max_connections={}",
+        PRODUCT_CONTRACT_VERSION,
+        FIX_COMPETITION_PROFILE_VERSION,
+        fix.roster.len(),
+        fix.matching_interval_ms,
+        fix.max_connections
+    );
+    Ok(())
+}
+
+fn conformance(agent: &str) -> Result<(), String> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", agent])
+        .env("BUNTING_CONFORMANCE", "1")
+        .output()
+        .map_err(|error| format!("cannot start agent conformance command: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "agent conformance command exited with {}",
+            output.status
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "agent conformance output is not UTF-8".to_owned())?;
+    let value: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|error| format!("agent conformance output is not JSON: {error}"))?;
+    if value.get("contract").and_then(serde_json::Value::as_str) != Some("bunting.conformance.v1") {
+        return Err("agent must report contract=bunting.conformance.v1".to_owned());
+    }
+    println!("agent conformance: ok");
+    Ok(())
 }
 
 fn load_archive(path: &Path) -> Result<bunting_rs::CompetitionArchive, String> {
@@ -233,6 +286,8 @@ mod tests {
             vec!["bunting", "replay", "archive.json"],
             vec!["bunting", "score", "archive.json"],
             vec!["bunting", "judge", "a.json", "b.json"],
+            vec!["bunting", "doctor"],
+            vec!["bunting", "conformance", "--agent", "python client.py"],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }

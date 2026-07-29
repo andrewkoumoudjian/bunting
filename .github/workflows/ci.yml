@@ -43,7 +43,10 @@ jobs:
           ! cargo tree --locked | grep -q '^worker '
 
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: |
+          cargo fmt --all --check
+          python3 tools/generate_protocol.py
+          git diff --exit-code -- PROTOCOL.md
 
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
