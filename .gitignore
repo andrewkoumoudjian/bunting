@@ -30,6 +30,8 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+/apps/bunting-server/config/bunting-local-state.json
+/apps/bunting-server/config/bunting-local-state.fix-session.json
 
 # Generated diagnostics
 coverage/
