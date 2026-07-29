@@ -59,6 +59,8 @@ enum Command {
         #[arg(long)]
         agent: String,
     },
+    /// Export the configured participant roster to a new protected JSON file.
+    ExportRoster { config: PathBuf, output: PathBuf },
 }
 
 pub async fn run() {
@@ -109,7 +111,37 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
         Command::Judge { archives } => judge(&archives),
         Command::Doctor { config } => doctor(config.as_deref()),
         Command::Conformance { agent } => conformance(&agent),
+        Command::ExportRoster { config, output } => export_roster(&config, &output),
     }
+}
+
+fn export_roster(config_path: &Path, output_path: &Path) -> Result<(), String> {
+    let config = ServerConfig::from_file(config_path).map_err(|error| error.to_string())?;
+    let roster = config
+        .fix
+        .ok_or_else(|| "configuration has no native FIX roster".to_owned())?
+        .roster;
+    let bytes = serde_json::to_vec_pretty(&roster)
+        .map_err(|error| format!("cannot encode roster: {error}"))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write as _;
+    let mut file = options.open(output_path).map_err(|error| {
+        format!(
+            "cannot create protected roster {}: {error}",
+            output_path.display()
+        )
+    })?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("cannot persist roster {}: {error}", output_path.display()))?;
+    println!("exported {} roster entries", roster.len());
+    Ok(())
 }
 
 fn doctor(path: Option<&Path>) -> Result<(), String> {
@@ -288,6 +320,12 @@ mod tests {
             vec!["bunting", "judge", "a.json", "b.json"],
             vec!["bunting", "doctor"],
             vec!["bunting", "conformance", "--agent", "python client.py"],
+            vec![
+                "bunting",
+                "export-roster",
+                "server.json",
+                "credentials.json",
+            ],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }

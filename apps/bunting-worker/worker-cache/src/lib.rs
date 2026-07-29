@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Cloudflare Workers Cache adapter for immutable `OrderBook-rs` snapshots.
+//! Cloudflare Workers Cache adapter for immutable public competition artifacts.
 //!
-//! Cache entries are content-addressed by run, instrument, event sequence and the
-//! upstream snapshot checksum. The Cache API is a mandatory recovery accelerator,
-//! not the only authoritative copy of accepted commands or participant balances.
+//! Cache entries are content-addressed publications produced by the native
+//! authoritative venue. The Worker can read and publish snapshots, archives and
+//! leaderboards; it never accepts market commands or owns participant balances.
 
 use bunting_market_types::{EventSequence, InstrumentId, RunId};
 use core::fmt;
@@ -37,6 +37,55 @@ pub struct SnapshotCacheKey {
     instrument_id: InstrumentId,
     sequence: EventSequence,
     checksum: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PublicationKind {
+    Archive,
+    Leaderboard,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PublicationCacheKey {
+    run_id: RunId,
+    kind: PublicationKind,
+    checksum: String,
+}
+
+impl PublicationCacheKey {
+    pub fn new(
+        run_id: RunId,
+        kind: PublicationKind,
+        checksum: impl Into<String>,
+    ) -> Result<Self, CacheKeyError> {
+        let checksum = checksum.into();
+        if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CacheKeyError::InvalidChecksum);
+        }
+        Ok(Self {
+            run_id,
+            kind,
+            checksum,
+        })
+    }
+
+    #[must_use]
+    pub fn url(&self) -> String {
+        let kind = match self.kind {
+            PublicationKind::Archive => "archives",
+            PublicationKind::Leaderboard => "leaderboards",
+        };
+        format!(
+            "{CACHE_ORIGIN}/v1/{kind}/{}/{}",
+            self.run_id.get(),
+            self.checksum
+        )
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> String {
+        format!("\"{}\"", self.checksum)
+    }
 }
 
 impl SnapshotCacheKey {
@@ -119,7 +168,7 @@ impl Default for CachePolicy {
 
 /// Workers Cache API operations.
 pub mod cloudflare {
-    use super::{CachePolicy, SnapshotCacheKey};
+    use super::{CachePolicy, PublicationCacheKey, SnapshotCacheKey};
     use worker::{Cache, CacheDeletionOutcome, ResponseBuilder, Result};
 
     /// Reads an immutable snapshot package without making an origin subrequest.
@@ -142,6 +191,27 @@ pub mod cloudflare {
                 "x-bunting-event-sequence",
                 &key.sequence().get().to_string(),
             )?
+            .fixed(json.into_bytes());
+        Cache::default().put(key.url(), response).await
+    }
+
+    pub async fn get_publication_json(key: &PublicationCacheKey) -> Result<Option<String>> {
+        let cache = Cache::default();
+        let Some(mut response) = cache.get(key.url(), true).await? else {
+            return Ok(None);
+        };
+        response.text().await.map(Some)
+    }
+
+    pub async fn put_publication_json(
+        key: &PublicationCacheKey,
+        json: String,
+        policy: CachePolicy,
+    ) -> Result<()> {
+        let response = ResponseBuilder::new()
+            .with_header("cache-control", &policy.cache_control())?
+            .with_header("content-type", "application/json")?
+            .with_header("etag", &key.etag())?
             .fixed(json.into_bytes());
         Cache::default().put(key.url(), response).await
     }
@@ -183,5 +253,18 @@ mod tests {
             ),
             Err(CacheKeyError::InvalidChecksum)
         );
+    }
+
+    #[test]
+    fn archive_and_leaderboard_keys_are_content_addressed() {
+        let checksum = "b".repeat(64);
+        let archive =
+            PublicationCacheKey::new(RunId::new(7), PublicationKind::Archive, checksum.clone())
+                .expect("valid test key");
+        let leaderboard =
+            PublicationCacheKey::new(RunId::new(7), PublicationKind::Leaderboard, checksum)
+                .expect("valid test key");
+        assert!(archive.url().contains("/archives/7/"));
+        assert!(leaderboard.url().contains("/leaderboards/7/"));
     }
 }
