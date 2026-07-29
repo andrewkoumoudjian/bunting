@@ -2,7 +2,6 @@
 
 use bunting_server::config::ServerConfig;
 use std::net::TcpListener;
-use std::thread;
 use std::time::Duration;
 
 #[tokio::test]
@@ -15,8 +14,10 @@ async fn tui_and_native_server_complete_the_competition_profile_over_real_tcp() 
     config.admin = None;
     config.runtime = None;
     config.fix.as_mut().expect("local FIX config").bind = endpoint.to_string();
-    thread::spawn(move || {
-        bunting_server::runtime::run(&config).expect("native server should remain available");
+    tokio::spawn(async move {
+        bunting_server::runtime::run(&config)
+            .await
+            .expect("native server should remain available");
     });
 
     let mut validation = None;

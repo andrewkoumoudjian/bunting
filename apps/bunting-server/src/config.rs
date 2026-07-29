@@ -143,9 +143,9 @@ impl ServerConfig {
                 run_id: 1,
                 roster: vec![
                     RosterEntry {
-                        target_comp_id: "TEAM1".to_owned(),
-                        username: "team1".to_owned(),
-                        password: "bunting-team1-dev".to_owned(),
+                        target_comp_id: "HUMAN".to_owned(),
+                        username: "participant".to_owned(),
+                        password: "bunting-local-dev".to_owned(),
                         role: ActorRole::Participant,
                         participant_id: 1,
                     },

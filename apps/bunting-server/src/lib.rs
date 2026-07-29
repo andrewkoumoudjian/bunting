@@ -3,8 +3,10 @@
 //! Native storage, configuration, and FIX acceptor adapters.
 
 mod acceptor;
+mod admin;
 pub mod config;
 pub mod runtime;
+mod scenario;
 pub mod storage;
 mod writer;
 

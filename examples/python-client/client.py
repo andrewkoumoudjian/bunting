@@ -23,15 +23,15 @@ with socket.create_connection(("127.0.0.1", 9880), timeout=5) as connection:
         frame(
             [
                 (35, "A"),
-                (49, "TEAM1"),
+                (49, "HUMAN"),
                 (56, "BUNTING"),
                 (34, 1),
                 (52, timestamp()),
                 (98, 0),
                 (108, 30),
                 (1137, 9),
-                (553, "team1"),
-                (554, "bunting-team1-dev"),
+                (553, "participant"),
+                (554, "bunting-local-dev"),
                 (10000, "bunting.fixlatest.competition.v1"),
                 (10004, "participant"),
             ]

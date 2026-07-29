@@ -1,4 +1,4 @@
-use crate::config::{AdminConfig, FixConfig, RosterEntry, ScenarioRuntimeConfig, ServerConfig};
+use crate::config::{FixConfig, RosterEntry, ServerConfig};
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_api_contract::{
@@ -11,7 +11,7 @@ use bunting_application::{
     project_market,
 };
 use bunting_command_transaction::InMemorySnapshotCache;
-use bunting_engine::{RunState, ScenarioDefinition};
+use bunting_engine::RunState;
 use bunting_market_events::{
     CommandPayload, SimulationCommand, SimulationCommandRequest, TenderDecision,
 };
@@ -20,7 +20,6 @@ use bunting_market_types::{
     RunId, TenderId,
 };
 use bunting_origin_store::{OriginError, OriginStore};
-use bunting_runtime::{DeterministicRuntime, RuntimeError, RuntimeHost};
 use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{
@@ -32,10 +31,9 @@ use simfix_wire::{Decoder, FixMessage, WireLimits};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,7 +47,7 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
-    if let Some((run_id, iteration_id, definition)) = bootstrap_scenario(config)? {
+    if let Some((run_id, iteration_id, definition)) = crate::scenario::bootstrap(config)? {
         definition
             .validate()
             .map_err(|error| format!("scenario validation failed: {error:?}"))?;
@@ -105,7 +103,7 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
     if let Some(admin) = config.admin.clone() {
         let origin = origin.clone();
         tasks.push(tokio::task::spawn_blocking(move || {
-            run_admin(&admin, &origin)
+            crate::admin::run(&admin, &origin)
         }));
     }
     if let Some(runtime) = config.runtime.clone() {
@@ -113,7 +111,7 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
         let cache = cache.clone();
         let writer = writer.clone();
         tasks.push(tokio::task::spawn_blocking(move || {
-            run_scenario_runtime(&runtime, &origin, &cache, &writer)
+            crate::scenario::run(&runtime, &origin, &cache, &writer)
         }));
     }
     if let Some(fix) = config.fix.clone() {
@@ -134,27 +132,6 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
             .map_err(|_| "server listener task panicked".to_owned())??;
     }
     Ok(())
-}
-
-fn bootstrap_scenario(
-    config: &ServerConfig,
-) -> Result<Option<(u128, u128, ScenarioDefinition)>, String> {
-    let (run_id, iteration_id, bytes) = if let Some(scenario) = &config.scenario {
-        let bytes = fs::read(&scenario.path).map_err(|error| {
-            format!("cannot read immutable scenario {}: {error}", scenario.path)
-        })?;
-        (scenario.run_id, scenario.iteration_id, bytes)
-    } else if config.profile == crate::config::DeploymentProfile::Local {
-        (1, 1, include_bytes!("../config/scenario.json").to_vec())
-    } else {
-        return Ok(None);
-    };
-    if bytes.len() > 4 * 1_024 * 1_024 {
-        return Err("scenario exceeds 4194304 bytes".to_owned());
-    }
-    let definition = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("invalid scenario JSON: {error}"))?;
-    Ok(Some((run_id, iteration_id, definition)))
 }
 
 #[expect(
@@ -600,52 +577,6 @@ fn operator_command(action: &str, payload_json: Option<&str>) -> Result<Simulati
     }
 }
 
-struct NativeRuntimeHost<'a> {
-    origin: &'a NativeOrigin,
-    cache: &'a InMemorySnapshotCache,
-}
-
-impl RuntimeHost for NativeRuntimeHost<'_> {
-    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
-        self.origin
-            .load_run(run_id)
-            .map_err(|error| RuntimeError::Host(origin_error(&error)))
-    }
-
-    fn commit(
-        &mut self,
-        actor: &VerifiedActor,
-        command: &bunting_market_events::Command,
-    ) -> Result<Vec<bunting_market_events::EventEnvelope>, RuntimeError> {
-        ApplicationService::new(self.origin, self.cache)
-            .execute(actor, command)
-            .map(|executed| executed.events)
-            .map_err(|error| RuntimeError::Host(format!("runtime command failed: {error}")))
-    }
-}
-
-fn run_scenario_runtime(
-    config: &ScenarioRuntimeConfig,
-    origin: &NativeOrigin,
-    cache: &InMemorySnapshotCache,
-    writer: &AuthoritativeWriter,
-) -> Result<(), String> {
-    let mut runtime = DeterministicRuntime::new(config.scheduler.clone())
-        .map_err(|error| format!("invalid deterministic runtime: {error}"))?;
-    let mut host = NativeRuntimeHost { origin, cache };
-    let cadence = Duration::from_millis(config.wall_tick_ms);
-    loop {
-        let started = std::time::Instant::now();
-        {
-            let _writer_guard = writer.lock()?;
-            runtime
-                .advance(&mut host)
-                .map_err(|error| format!("deterministic runtime failed: {error}"))?;
-        }
-        thread::sleep(cadence.saturating_sub(started.elapsed()));
-    }
-}
-
 fn typed_levels(levels: &[(i64, i64)], depth: usize) -> Vec<(PriceTicks, QuantityLots)> {
     levels
         .iter()
@@ -718,7 +649,7 @@ const fn actor_role_name(role: ActorRole) -> &'static str {
     }
 }
 
-fn constant_time_eq(left: &str, right: &str) -> bool {
+pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
     let mut difference = left.len() ^ right.len();
     for index in 0..256 {
         difference |= usize::from(
@@ -806,89 +737,6 @@ fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
         .map_err(|error| format!("invalid FIX snapshot: {error}"))
 }
 
-fn run_admin(config: &AdminConfig, origin: &NativeOrigin) -> Result<(), String> {
-    let listener = TcpListener::bind(&config.bind)
-        .map_err(|error| format!("cannot bind admin listener {}: {error}", config.bind))?;
-    for accepted in listener.incoming() {
-        let mut stream = accepted.map_err(|error| format!("admin accept failed: {error}"))?;
-        handle_admin(&mut stream, config, origin)?;
-    }
-    Ok(())
-}
-
-fn handle_admin(
-    stream: &mut TcpStream,
-    config: &AdminConfig,
-    origin: &NativeOrigin,
-) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|error| format!("cannot set admin timeout: {error}"))?;
-    let mut bytes = vec![0; config.max_request_bytes];
-    let count = stream
-        .read(&mut bytes)
-        .map_err(|error| format!("cannot read admin request: {error}"))?;
-    let request = std::str::from_utf8(&bytes[..count]).unwrap_or_default();
-    let first = request.lines().next().unwrap_or_default();
-    if first == "GET /health HTTP/1.1" {
-        return write_http(
-            stream,
-            200,
-            &serde_json::json!({"status":"ok","service":crate::SERVICE_NAME}),
-        );
-    }
-    if let Some(run) = first
-        .strip_prefix("GET /admin/runs/")
-        .and_then(|value| value.strip_suffix(" HTTP/1.1"))
-    {
-        let authorized = request.lines().any(|line| {
-            line.strip_prefix("Authorization: Bearer ")
-                .is_some_and(|value| constant_time_eq(value, &config.bearer_token))
-        });
-        if !authorized {
-            return write_http(stream, 401, &serde_json::json!({"error":"unauthorized"}));
-        }
-        let run_id = run
-            .parse::<u128>()
-            .map_err(|_| "invalid admin run ID".to_owned())?;
-        return match origin.load_run(RunId::new(run_id)) {
-            Ok(state) => write_http(
-                stream,
-                200,
-                &serde_json::json!({
-                    "runId": state.run_id().to_string(),
-                    "committedSequence": state.sequence().to_string(),
-                    "eventSequence": state.event_sequence().to_string()
-                }),
-            ),
-            Err(OriginError::UnknownRun) => {
-                write_http(stream, 404, &serde_json::json!({"error":"unknown_run"}))
-            }
-            Err(error) => Err(origin_error(&error)),
-        };
-    }
-    write_http(stream, 404, &serde_json::json!({"error":"not_found"}))
-}
-
-fn write_http(stream: &mut TcpStream, status: u16, body: &serde_json::Value) -> Result<(), String> {
-    let body =
-        serde_json::to_vec(body).map_err(|error| format!("cannot encode response: {error}"))?;
-    let reason = match status {
-        200 => "OK",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        _ => "Error",
-    };
-    let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|()| stream.write_all(&body))
-        .map_err(|error| format!("cannot write admin response: {error}"))
-}
-
 fn epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -908,24 +756,4 @@ fn fix_timestamp() -> String {
 
 fn origin_error(error: &OriginError) -> String {
     format!("origin store error: {error}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zero_configuration_profile_bootstraps_the_canonical_scenario() -> Result<(), String> {
-        let (run_id, iteration_id, scenario) = bootstrap_scenario(&ServerConfig::local_default())?
-            .ok_or_else(|| "local scenario missing".to_owned())?;
-        assert_eq!((run_id, iteration_id), (1, 1));
-        assert_eq!(scenario.listings().len(), 1);
-        assert_eq!(scenario.participants().len(), 3);
-        assert!(
-            scenario
-                .participants()
-                .contains_key(&ParticipantId::new(10))
-        );
-        Ok(())
-    }
 }
