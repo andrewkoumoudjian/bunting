@@ -1,5 +1,5 @@
 use crate::config::AdminConfig;
-use crate::runtime::constant_time_eq;
+use crate::session_host::constant_time_eq;
 use crate::storage::NativeOrigin;
 use bunting_market_types::RunId;
 use bunting_origin_store::{OriginError, OriginStore};

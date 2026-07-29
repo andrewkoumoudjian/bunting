@@ -7,6 +7,7 @@ mod admin;
 pub mod config;
 pub mod runtime;
 mod scenario;
+mod session_host;
 pub mod storage;
 mod writer;
 
