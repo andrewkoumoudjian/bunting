@@ -2,14 +2,18 @@
 
 ## 1. Purpose
 
-Bunting is a stock-market simulation and exchange-testing platform implemented primarily in Rust. Its primary deployment is a native competition venue; Cloudflare is a read-only publication wrapper. It supports human and automated participants, configurable scenarios, standard protocol adapters, streaming market data, deterministic recovery, and isolated user strategies.
+Bunting is a stock-market simulation and exchange-testing platform implemented
+primarily in Rust. Its primary deployment is a Wasmer-hosted WASI competition
+venue; Cloudflare is a read-only publication wrapper. It supports human and
+automated participants, configurable scenarios, standard protocol adapters,
+streaming market data, deterministic recovery, and isolated user strategies.
 
 The system is an education, research, and integration environment. It is not a colocated real-money exchange.
 
 ## 2. Binding principles
 
 1. **Use OrderBook-rs:** matching and book capabilities come from the released upstream crate rather than a parallel implementation.
-2. **Native venue authority:** the native process accepts bounded inbound FIX/TCP sessions and owns the one in-process command path into `bunting-engine`.
+2. **WASI venue authority:** the Wasmer-hosted server accepts bounded inbound FIX/TCP sessions through WASIX and owns the one in-process command path into `bunting-engine`.
 3. **Publication edge:** Cloudflare may cache immutable checksum-addressed public snapshots, archives, and leaderboards, but it does not own competition authority.
 4. **Origin versioning:** accepted commands and canonical events use an origin store with optimistic expected-version checks.
 5. **Warm memory is optional:** an isolate may retain reconstructed books, but recovery cannot depend on isolate affinity.
@@ -24,7 +28,7 @@ The system is an education, research, and integration environment. It is not a c
 
 ```text
 FIX clients -- bounded authenticated inbound TCP -->
-       Native Rust competition venue
+       Wasmer-hosted Rust WASI competition venue
        - concurrent participant sessions
        - direct in-process Rust application calls
        - auth, schemas and protocol bounds

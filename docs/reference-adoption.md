@@ -40,6 +40,7 @@ For every reference or vendored component, record:
 | `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; excluded from the Worker dependency graph and no market semantics |
 | `rustls` / `tokio-rustls` / `rustls-native-certs` / `rustls-pemfile` | `0.23.42` / `0.26.4` / `0.8.4` / `2.2.0`; native FIX initiator TLS, platform trust roots and optional PEM CA loading | Native `bunting-tui` transport only; excluded from the Worker dependency graph, no FIX sequencing and no market semantics |
 | `rustyfix-dictionary` | exact crates.io release `0.7.4`, Apache-2.0, upstream source commit `2f0ef7830553d482765c14e3c4b32be3432d57b0`; features `fix50sp2`, `fixt11` only | Production standard message/field/datatype lookup in `simfix-wire`; no engine, session, transport or copied dictionary resources, and FIX Latest Orchestra remains normative |
+| Wasmer / cargo-wasix / WASIX Rust | Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`; cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`; toolchain `v2026-07-07.3+rust-1.96` | Production build and runtime for the WASI competition server under ADR 0027; no market semantics, no Worker dependency, and filesystem/network capabilities remain explicit |
 
 The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
 

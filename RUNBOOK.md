@@ -4,8 +4,9 @@
    add the event roster, and run `bunting doctor <config>`.
 2. Publish `RULES.md`, `SCORING.md`, the matching interval, and all configured
    limits unchanged before credentials are distributed.
-3. Start `bunting server <config>`, verify `/health`, export credentials through
-   a protected channel, and let every team complete Logon plus discovery.
+3. Start `bunting-server <config>` through Wasmer, verify `/health`, export
+   credentials through a protected channel, and let every team complete Logon
+   plus discovery.
 4. Arm and start the round through an administrator FIX session. Pause/resume,
    news, tenders, fines, scoring, and termination are committed simulation
    commands and therefore appear in replay.

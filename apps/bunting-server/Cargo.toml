@@ -24,12 +24,11 @@ simfix-mapping.workspace = true
 simfix-session.workspace = true
 simfix-wire.workspace = true
 time = { version = "0.3.47", features = ["formatting", "macros"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 bunting-tui = { path = "../bunting-tui" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

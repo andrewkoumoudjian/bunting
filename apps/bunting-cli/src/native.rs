@@ -26,9 +26,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the native FIX and administration server.
+    /// Explain how to start the Wasmer-hosted WASI server.
     Server {
-        /// Versioned server configuration JSON. Omit for an ephemeral loopback server.
+        /// Versioned server configuration JSON.
         config: Option<PathBuf>,
     },
     /// Run the native FIX participant/operator terminal.
@@ -72,11 +72,12 @@ pub async fn run() {
     }
 }
 
+#[cfg_attr(not(feature = "tui"), allow(clippy::unused_async))]
 async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     let arguments = compatibility_arguments(arguments);
     let cli = Cli::try_parse_from(arguments).map_err(|error| error.to_string())?;
     match cli.command {
-        Command::Server { config } => run_server(config.as_deref()).await,
+        Command::Server { config } => run_server(config.as_deref()),
         #[cfg(feature = "tui")]
         Command::Tui { options } => bunting_tui::run(options).await,
         Command::Init { config_dir } => init(config_dir.as_deref()),
@@ -252,12 +253,15 @@ fn compatibility_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec
     normalized
 }
 
-async fn run_server(path: Option<&Path>) -> Result<(), String> {
+fn run_server(path: Option<&Path>) -> Result<(), String> {
     let config = path.map_or_else(
-        || Ok(ServerConfig::local_default()),
-        |path| ServerConfig::from_file(path).map_err(|error| error.to_string()),
-    )?;
-    bunting_server::runtime::run(&config).await
+        || default_config_dir().join("local.json"),
+        Path::to_path_buf,
+    );
+    Err(format!(
+        "the competition server runs under Wasmer; use `bunting-server {}`",
+        config.display()
+    ))
 }
 
 fn init(config_dir: Option<&Path>) -> Result<(), String> {

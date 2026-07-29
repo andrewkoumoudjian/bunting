@@ -5,7 +5,7 @@ dependency order on 2026-07-29. The selected organizer rules are discrete
 100-millisecond matching intervals, one shared market, the existing Bunting FIX
 codec while QuickFIX-Go remains green, and resting orders surviving disconnect.
 
-The implementation includes the Tokio acceptor, rostered isolated sessions,
+The implementation includes the bounded WASI thread/socket acceptor, rostered isolated sessions,
 one interval-ordered writer, per-session limits, participant-scoped recovery,
 archive replay/scoring/judging, protected roster export, read-only Worker
 publication, generated protocol/rules/scoring/runbook material, a timed replay
@@ -16,6 +16,11 @@ Wasm checks, generated protocol/header drift checks, Python abi3 wheel build and
 import smoke all passed locally. `worker-build` and `workerd` are not installed
 on this host, so the deployable Worker/Workerd release smoke remains a CI-only
 gate rather than locally verified evidence.
+
+The production server runtime was subsequently moved under ADR 0027 to Wasmer
+`7.2.1` and WASIX. The locked `wasm32-wasmer-wasi-dl` module, Wasmer Cranelift
+compilation, health/admin smoke, and two-client QuickFIX-Go path pass locally;
+native TUI and binding artifacts remain platform-specific.
 
 Inputs:
 

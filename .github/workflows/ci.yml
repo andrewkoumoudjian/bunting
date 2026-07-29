@@ -33,6 +33,19 @@ jobs:
           rustup show
           rustup target add wasm32-unknown-unknown
 
+      - name: Install pinned WASIX toolchain
+        uses: wasix-org/cargo-wasix@v0.1.28
+        with:
+          version: "0.1.28"
+          toolchain-version: "v2026-07-07.3+rust-1.96"
+          locked: "true"
+
+      - name: Install pinned Wasmer runtime
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
+            sh -s "v 7.2.1"
+          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
+
       - name: Enforce architecture dependency policy
         run: |
           test -f Cargo.lock
@@ -61,16 +74,20 @@ jobs:
           cache-dependency-path: tests/interop/quickfixgo/go.sum
 
       - name: Run QuickFIX-Go FIXT.1.1 and FIX 5.0 SP2 interop
+        env:
+          BUNTING_SERVER_ARTIFACT: ${{ github.workspace }}/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu
+          WASMER_BIN: /home/runner/.wasmer/bin/wasmer
         run: |
-          cargo build --locked -p bunting-server
+          tools/build_wasi_server.sh
           cd tests/interop/quickfixgo
-          BUNTING_SERVER_BIN="$GITHUB_WORKSPACE/target/debug/bunting-server" go test .
+          go test -count=1 .
 
-      - name: Smoke zero-configuration native server
+      - name: Smoke Wasmer-hosted WASI server
         run: |
           set -euo pipefail
-          cargo build --locked -p bunting-cli
-          target/debug/bunting server > /tmp/bunting-server.log 2>&1 &
+          BUNTING_SERVER_ARTIFACT="$GITHUB_WORKSPACE/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu" \
+            tools/run_wasi_server.py apps/bunting-server/config/local.json \
+            > /tmp/bunting-server.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 40); do
@@ -81,7 +98,7 @@ jobs:
           done
           grep -Fq '"status":"ok"' /tmp/bunting-health.json
           curl --fail --silent \
-            -H 'Authorization: Bearer bunting-local-admin-token' \
+            -H 'Authorization: Bearer replace-admin-token' \
             http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
           grep -Fq '"runId":"1"' /tmp/bunting-run.json
 

@@ -3,68 +3,75 @@ use crate::session_host::handle_fix_connection;
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_command_transaction::InMemorySnapshotCache;
+use std::io::Write;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
-pub(crate) async fn run(
-    config: FixConfig,
+pub(crate) fn run(
+    config: &FixConfig,
     storage_kind: StorageKind,
-    storage_path: Option<String>,
-    origin: Arc<NativeOrigin>,
-    cache: Arc<InMemorySnapshotCache>,
-    writer: Arc<AuthoritativeWriter>,
+    storage_path: Option<&str>,
+    origin: &Arc<NativeOrigin>,
+    cache: &Arc<InMemorySnapshotCache>,
+    writer: &Arc<AuthoritativeWriter>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
-        .await
         .map_err(|error| format!("cannot bind FIX listener {}: {error}", config.bind))?;
-    let capacity = Arc::new(Semaphore::new(config.max_connections));
+    let active_connections = Arc::new(AtomicUsize::new(0));
     let session_path = match storage_kind {
-        StorageKind::File => storage_path
-            .as_deref()
-            .map(|path| PathBuf::from(path).with_extension("fix-session.json")),
+        StorageKind::File => {
+            storage_path.map(|path| PathBuf::from(path).with_extension("fix-session.json"))
+        }
         StorageKind::Memory => None,
     };
     loop {
         let (mut stream, _) = listener
             .accept()
-            .await
             .map_err(|error| format!("FIX accept failed: {error}"))?;
         verify_terminated_peer(&stream, &config.tls, "FIX")?;
-        let Ok(permit) = capacity.clone().try_acquire_owned() else {
+        if active_connections.fetch_add(1, Ordering::AcqRel) >= config.max_connections {
+            active_connections.fetch_sub(1, Ordering::AcqRel);
             let rejection = format!(
                 "FIX connection rejected: max_connections limit {}\n",
                 config.max_connections
             );
-            let _ = stream.write_all(rejection.as_bytes()).await;
+            let _ = stream.write_all(rejection.as_bytes());
             continue;
-        };
-        let standard = stream
-            .into_std()
-            .map_err(|error| format!("cannot adopt FIX socket: {error}"))?;
-        standard
-            .set_nonblocking(false)
-            .map_err(|error| format!("cannot configure FIX socket: {error}"))?;
-        let config = config.clone();
+        }
+        let config = (*config).clone();
         let origin = origin.clone();
         let cache = cache.clone();
         let writer = writer.clone();
         let session_path = session_path.clone();
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            if let Err(error) = handle_fix_connection(
-                standard,
-                &config,
-                &origin,
-                &cache,
-                &writer,
-                session_path.as_deref(),
-            ) {
-                eprintln!("bunting-server: FIX connection closed: {error}");
-            }
-        });
+        let active_connections = active_connections.clone();
+        std::thread::Builder::new()
+            .name("bunting-fix-session".to_owned())
+            .spawn(move || {
+                let _connection = ConnectionGuard(active_connections);
+                if let Err(error) = handle_fix_connection(
+                    stream,
+                    &config,
+                    &origin,
+                    &cache,
+                    &writer,
+                    session_path.as_deref(),
+                ) {
+                    eprintln!("bunting-server: FIX connection closed: {error}");
+                }
+            })
+            .map_err(|error| format!("cannot spawn FIX session: {error}"))?;
+    }
+}
+
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

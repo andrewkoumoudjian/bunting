@@ -151,6 +151,9 @@ Create narrowly named packages only with real implementation and tests. Do not c
 
 - expose curated Rust APIs through `bunting-rs`;
 - keep independently versioned language SDKs in clearly named packages when implemented;
+- build the production server with the pinned cargo-wasix toolchain, validate
+  and compile it with Wasmer, and release the portable `.wasm` separately from
+  host-specific native TUI/binding archives;
 - produce the complete Worker shim/Wasm bundle under ignored `out/` paths;
 - attach checksums and build metadata to versioned releases;
 - keep native gRPC/Python QUARCC packaging blocked until license/provenance requirements are resolved.

@@ -2,7 +2,7 @@
 
 Status: authoritative classification baseline for repository planning
 
-Last reviewed: 2026-07-12
+Last reviewed: 2026-07-29
 
 ## Purpose
 
@@ -13,6 +13,35 @@ This document records what each checked-in or submodule reference actually imple
 3. **Bunting disposition**: dependency, port target, adapter model, conformance oracle, design reference, test utility, or no current use.
 
 No architecture or port plan may classify a reference without consulting this audit and the cited source paths.
+
+## Wasmer and cargo-wasix runtime toolchain
+
+### Pin, license, and selected surface
+
+The production server toolchain uses Wasmer `7.2.1`, source commit
+`c14032594b893b40e9b71456d504cf55c141c8f6`, under the MIT license, plus
+cargo-wasix `0.1.28`, source commit
+`b2d0e1c874fc6ac5dbaf71715b12c6809104767f`, under Apache-2.0 with the LLVM
+exception. The selected WASIX Rust toolchain is
+`v2026-07-07.3+rust-1.96`.
+
+### Observed functionality
+
+Wasmer's WASIX runtime extends the WASI ABI with socket creation, bind/listen,
+polling, threads, and explicitly granted filesystem volumes. The Wasmer CLI
+validates portable modules, compiles host-specific Cranelift artifacts, and
+runs WASI/WASIX commands with network and volume capability flags.
+cargo-wasix installs and selects the `wasm32-wasmer-wasi` family of Rust
+targets. The `-dl` target is required here because the pinned PriceLevel crate
+emits both `rlib` and `cdylib` artifacts.
+
+### Bunting disposition
+
+These are production build/runtime tools for `apps/bunting-server`; they own no
+market, FIX, persistence, or scoring semantics. Bunting releases the portable
+server `.wasm`, while ignored `.wasmu` output is a host-specific compilation
+cache. Wasmer networking and only the configuration-derived directories are
+granted at launch.
 
 ## Inventory and pin discipline
 

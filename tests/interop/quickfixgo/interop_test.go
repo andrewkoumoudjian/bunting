@@ -20,8 +20,9 @@ const soh = byte(1)
 
 func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	binary := os.Getenv("BUNTING_SERVER_BIN")
-	if binary == "" {
-		t.Fatal("BUNTING_SERVER_BIN must name the built bunting-server binary")
+	artifact := os.Getenv("BUNTING_SERVER_ARTIFACT")
+	if binary == "" && artifact == "" {
+		t.Fatal("BUNTING_SERVER_BIN or BUNTING_SERVER_ARTIFACT must name the built server")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -43,7 +44,27 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if err := os.WriteFile(config, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(binary, config)
+	var command *exec.Cmd
+	if artifact == "" {
+		command = exec.Command(binary, config)
+	} else {
+		wasmer := os.Getenv("WASMER_BIN")
+		if wasmer == "" {
+			wasmer = "wasmer"
+		}
+		command = exec.Command(
+			wasmer,
+			"run",
+			artifact,
+			"--net",
+			"--volume",
+			filepath.Dir(config)+":"+filepath.Dir(config),
+			"--cwd",
+			filepath.Dir(config),
+			"--",
+			config,
+		)
+	}
 	var serverLog bytes.Buffer
 	command.Stderr = &serverLog
 	if err := command.Start(); err != nil {

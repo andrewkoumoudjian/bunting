@@ -1,12 +1,15 @@
 # Bunting
 
-Bunting is a Rust market-simulation and exchange-testing platform with a native FIX/TCP competition venue and an optional Cloudflare publication edge.
+Bunting is a Rust market-simulation and exchange-testing platform with a
+Wasmer-hosted WASI FIX/TCP competition venue and an optional Cloudflare
+publication edge.
 
 ## Install
 
-Release archives contain one native `bunting` executable
-for macOS Apple Silicon, macOS Intel, Linux x86_64, and Windows x86_64. macOS
-and Linux users can install the latest release into `~/.local/bin`:
+Release archives contain one portable WASI server plus native TUI and binding
+artifacts for macOS Apple Silicon, macOS Intel, Linux x86_64, and Windows
+x86_64. Install [Wasmer 7.2.1](https://docs.wasmer.io/install/) first. macOS
+and Linux users can then install the latest release into `~/.local/bin`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | sh
@@ -34,18 +37,29 @@ Start a self-contained terminal fixture:
 bunting tui --fixture
 ```
 
-To run the native FIX server, review the installed credentials and network
-settings, then start it with:
+To run the Wasmer-hosted FIX server, review the installed credentials and
+network settings, then start it with:
 
 ```bash
-bunting server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
+bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
 ```
 
-The server and TUI modes are native because they use TCP, filesystem, TLS, and
-terminal APIs. `bunting-server` and `bunting-tui` remain one-release aliases to
-the same executable. GitHub Releases contain only this locally installable
-application. Build and deploy the Cloudflare Worker from source using its
-Wrangler configuration and D1 migrations under `apps/bunting-worker`.
+`bunting-server` grants Wasmer networking and only the directories referenced
+by the selected configuration. `bunting` and `bunting-tui` remain native
+because terminal and language-binding APIs are platform-specific. Build and
+deploy the Cloudflare publication Worker separately using its Wrangler
+configuration under `apps/bunting-worker`.
+
+From a checkout, build the portable module and a host-specific Wasmer artifact,
+then run it:
+
+```bash
+tools/build_wasi_server.sh
+tools/run_wasi_server.py apps/bunting-server/config/local.json
+```
+
+The pinned build uses cargo-wasix `0.1.28`, WASIX toolchain
+`v2026-07-07.3+rust-1.96`, target `wasm32-wasmer-wasi-dl`, and Wasmer `7.2.1`.
 
 ## Engine model
 
@@ -109,8 +123,8 @@ Read the complete move map and Codex execution contract in [`docs/repository-reo
 - `apps/bunting-worker/worker-cache`: immutable Cloudflare Cache snapshot adapter;
 - `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
 - `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
-- `apps/bunting-cli`: unified `bunting server|tui|init|version` native command.
-- `apps/bunting-server`: native FIX/TCP server, durable local origin, and admin health surface.
+- `apps/bunting-cli`: native TUI, initialization, replay, scoring, and compatibility command.
+- `apps/bunting-server`: Wasmer-hosted WASI FIX/TCP server, durable origin, and admin health surface.
 - `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
 
 ## Native Worker transports

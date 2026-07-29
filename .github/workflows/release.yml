@@ -9,6 +9,43 @@ permissions:
   contents: write
 
 jobs:
+  wasi-server:
+    name: Wasmer WASI server
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: wasix-org/cargo-wasix@v0.1.28
+        with:
+          version: "0.1.28"
+          toolchain-version: "v2026-07-07.3+rust-1.96"
+          locked: "true"
+      - name: Install pinned Wasmer runtime
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
+            sh -s "v 7.2.1"
+          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
+      - name: Build and package portable WASI server
+        run: |
+          set -euo pipefail
+          tools/build_wasi_server.sh
+          tag="$GITHUB_REF_NAME"
+          package="bunting-${tag}-wasi"
+          mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
+          cp target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm "stage/${package}/bin/"
+          cp tools/run_wasi_server.py "stage/${package}/bin/bunting-server"
+          cp apps/bunting-server/config/*.json "stage/${package}/config/"
+          cp README.md PROTOCOL.md RULES.md SCORING.md RUNBOOK.md "stage/${package}/"
+          tar -C stage -czf "dist/${package}.tar.gz" "${package}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasi-server
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   native:
     name: Native ${{ matrix.target }}
     strategy:
@@ -55,10 +92,8 @@ jobs:
           mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
           cp "target/${{ matrix.target }}/release/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/"
           if [ -n "${{ matrix.executable_suffix }}" ]; then
-            cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/bunting-server${{ matrix.executable_suffix }}"
             cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/bunting-tui${{ matrix.executable_suffix }}"
           else
-            ln -s bunting "stage/${package}/bin/bunting-server"
             ln -s bunting "stage/${package}/bin/bunting-tui"
           fi
           cp apps/bunting-server/config/*.json "stage/${package}/config/"
@@ -79,7 +114,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: native
+    needs: [native, wasi-server]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -96,13 +131,13 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           printf '%s\n' \
-            'Install the native server and terminal on macOS or Linux:' \
+            'Install the Wasmer-hosted WASI server and native terminal on macOS or Linux:' \
             '' \
             '```bash' \
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
             '```' \
             '' \
-            'The installer adds the unified `bunting` executable, one-release `bunting-server` and `bunting-tui` compatibility aliases, and server configuration templates without overwriting existing configuration. Releases contain only the locally installable native application. Verify manual downloads with `SHA256SUMS`.' \
+            'The installer adds the portable WASI server module and Wasmer launcher, the native `bunting` executable and `bunting-tui` alias, and server configuration templates without overwriting existing configuration. Verify manual downloads with `SHA256SUMS`.' \
             '' \
             'See the repository README for server configuration and platform details.' \
             > release-notes.md

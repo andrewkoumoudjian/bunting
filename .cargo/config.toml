@@ -3,3 +3,20 @@
 # provide entropy override this in their app-local Cargo configuration.
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", 'getrandom_backend="unsupported"']
+
+# The WASIX target currently identifies itself as WASI without a preview
+# environment. Its ABI includes WASI preview 1 random_get, so identify that
+# preview explicitly until the upstream target reports target_env = "p1".
+[target.wasm32-wasmer-wasi]
+rustflags = [
+  "-Aexplicit_builtin_cfgs_in_flags",
+  "--cfg",
+  'target_env="p1"',
+]
+
+[target.wasm32-wasmer-wasi-dl]
+rustflags = [
+  "-Aexplicit_builtin_cfgs_in_flags",
+  "--cfg",
+  'target_env="p1"',
+]

@@ -5,10 +5,14 @@ use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::RunState;
 use bunting_market_types::{IterationId, RunId};
 use bunting_origin_store::{OriginError, OriginStore};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-pub async fn run(config: &ServerConfig) -> Result<(), String> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "startup keeps scenario bootstrap and listener supervision in one fail-fast path"
+)]
+pub fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
@@ -64,20 +68,25 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
         Duration::from_millis(matching_interval_ms),
         max_interval_queue,
     ));
-    let mut tasks = Vec::new();
+    let (completed, listener) = mpsc::channel();
+    let mut task_count = 0_usize;
     if let Some(admin) = config.admin.clone() {
         let origin = origin.clone();
-        tasks.push(tokio::task::spawn_blocking(move || {
+        let completed = completed.clone();
+        spawn_host("bunting-admin", completed, move || {
             crate::admin::run(&admin, &origin)
-        }));
+        })?;
+        task_count = task_count.saturating_add(1);
     }
     if let Some(runtime) = config.runtime.clone() {
         let origin = origin.clone();
         let cache = cache.clone();
         let writer = writer.clone();
-        tasks.push(tokio::task::spawn_blocking(move || {
+        let completed = completed.clone();
+        spawn_host("bunting-scenario", completed, move || {
             crate::scenario::run(&runtime, &origin, &cache, &writer)
-        }));
+        })?;
+        task_count = task_count.saturating_add(1);
     }
     if let Some(fix) = config.fix.clone() {
         let origin = origin.clone();
@@ -85,18 +94,40 @@ pub async fn run(config: &ServerConfig) -> Result<(), String> {
         let writer = writer.clone();
         let storage_kind = config.storage.kind;
         let storage_path = config.storage.path.clone();
-        tasks.push(tokio::spawn(async move {
-            crate::acceptor::run(fix, storage_kind, storage_path, origin, cache, writer).await
-        }));
+        let completed = completed.clone();
+        spawn_host("bunting-fix-acceptor", completed, move || {
+            crate::acceptor::run(
+                &fix,
+                storage_kind,
+                storage_path.as_deref(),
+                &origin,
+                &cache,
+                &writer,
+            )
+        })?;
+        task_count = task_count.saturating_add(1);
     }
-    if tasks.is_empty() {
+    drop(completed);
+    if task_count == 0 {
         return Err("native profile requires at least one FIX or admin listener".to_owned());
     }
-    for task in tasks {
-        task.await
-            .map_err(|_| "server listener task panicked".to_owned())??;
-    }
-    Ok(())
+    listener
+        .recv()
+        .map_err(|_| "server listener task panicked".to_owned())?
+}
+
+fn spawn_host(
+    name: &str,
+    completed: mpsc::Sender<Result<(), String>>,
+    host: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            let _ = completed.send(host());
+        })
+        .map(|_| ())
+        .map_err(|error| format!("cannot spawn {name}: {error}"))
 }
 
 fn origin_error(error: &OriginError) -> String {

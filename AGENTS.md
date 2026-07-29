@@ -2,7 +2,7 @@
 
 ## Mission
 
-Build a Rust market-simulation and exchange-testing platform composed from reusable packages. The native competition venue is the primary deployment target; Cloudflare is a read-only publication wrapper.
+Build a Rust market-simulation and exchange-testing platform composed from reusable packages. The Wasmer-hosted WASI competition venue is the primary deployment target; Cloudflare is a read-only publication wrapper.
 
 ## Instruction precedence
 
@@ -84,7 +84,7 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 - NBC may require compatibility behavior around the shared matcher, but a separate production matching implementation is prohibited unless a later ADR changes ADR 0018 with documented evidence and differential tests.
 - The former `packages/orderbook` adapter now lives as a private `bunting-engine` module; the transitional crate is removed and no production caller may bypass the engine.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
-- The primary deployment target is one native Rust competition venue that accepts bounded inbound FIX/TCP sessions and calls application functions in-process. Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts inbound raw TCP or owns market commands or origin truth. The current Worker mutation path is transitional until ADR 0022's publication cutover is complete.
+- The primary deployment target is one Wasmer-hosted Rust WASI competition venue that accepts bounded inbound FIX/TCP sessions and calls application functions in-process. WASIX supplies the required socket/thread extensions under ADR 0027. Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts inbound raw TCP or owns market commands or origin truth.
 - Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
 - Commit authoritative state before acknowledgement, cache publication, or stream publication.
