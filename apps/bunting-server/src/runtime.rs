@@ -1,7 +1,4 @@
-use crate::config::{
-    AdminConfig, FixConfig, RosterEntry, ScenarioRuntimeConfig, ServerConfig, StorageKind,
-    TlsConfig,
-};
+use crate::config::{AdminConfig, FixConfig, RosterEntry, ScenarioRuntimeConfig, ServerConfig};
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_api_contract::{
@@ -36,9 +33,8 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,7 +45,7 @@ struct NativeFixSnapshot {
     application: FixApplicationSnapshot,
 }
 
-pub fn run(config: &ServerConfig) -> Result<(), String> {
+pub async fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
@@ -105,16 +101,18 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         Duration::from_millis(matching_interval_ms),
         max_interval_queue,
     ));
-    let mut threads = Vec::new();
+    let mut tasks = Vec::new();
     if let Some(admin) = config.admin.clone() {
         let origin = origin.clone();
-        threads.push(thread::spawn(move || run_admin(&admin, &origin)));
+        tasks.push(tokio::task::spawn_blocking(move || {
+            run_admin(&admin, &origin)
+        }));
     }
     if let Some(runtime) = config.runtime.clone() {
         let origin = origin.clone();
         let cache = cache.clone();
         let writer = writer.clone();
-        threads.push(thread::spawn(move || {
+        tasks.push(tokio::task::spawn_blocking(move || {
             run_scenario_runtime(&runtime, &origin, &cache, &writer)
         }));
     }
@@ -122,25 +120,18 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let origin = origin.clone();
         let cache = cache.clone();
         let writer = writer.clone();
-        let session_path = match config.storage.kind {
-            StorageKind::File => config
-                .storage
-                .path
-                .as_deref()
-                .map(|path| PathBuf::from(path).with_extension("fix-session.json")),
-            StorageKind::Memory => None,
-        };
-        threads.push(thread::spawn(move || {
-            run_fix_acceptor(&fix, &origin, &cache, &writer, session_path.as_deref())
+        let storage_kind = config.storage.kind;
+        let storage_path = config.storage.path.clone();
+        tasks.push(tokio::spawn(async move {
+            crate::acceptor::run(fix, storage_kind, storage_path, origin, cache, writer).await
         }));
     }
-    if threads.is_empty() {
+    if tasks.is_empty() {
         return Err("native profile requires at least one FIX or admin listener".to_owned());
     }
-    for handle in threads {
-        handle
-            .join()
-            .map_err(|_| "server listener thread panicked".to_owned())??;
+    for task in tasks {
+        task.await
+            .map_err(|_| "server listener task panicked".to_owned())??;
     }
     Ok(())
 }
@@ -166,76 +157,11 @@ fn bootstrap_scenario(
     Ok(Some((run_id, iteration_id, definition)))
 }
 
-fn run_fix_acceptor(
-    config: &FixConfig,
-    origin: &Arc<NativeOrigin>,
-    cache: &Arc<InMemorySnapshotCache>,
-    writer: &Arc<AuthoritativeWriter>,
-    session_path: Option<&Path>,
-) -> Result<(), String> {
-    let listener = TcpListener::bind(&config.bind)
-        .map_err(|error| format!("cannot bind FIX listener {}: {error}", config.bind))?;
-    let active = Arc::new(AtomicUsize::new(0));
-    for accepted in listener.incoming() {
-        let stream = accepted.map_err(|error| format!("FIX accept failed: {error}"))?;
-        verify_terminated_peer(&stream, &config.tls, "FIX")?;
-        let prior = active.fetch_add(1, Ordering::AcqRel);
-        if prior >= config.max_connections {
-            active.fetch_sub(1, Ordering::AcqRel);
-            drop(stream);
-            continue;
-        }
-        let config = config.clone();
-        let origin = origin.clone();
-        let cache = cache.clone();
-        let writer = writer.clone();
-        let active = active.clone();
-        let session_path = session_path.map(Path::to_path_buf);
-        thread::spawn(move || {
-            if let Err(error) = handle_fix_connection(
-                stream,
-                &config,
-                &origin,
-                &cache,
-                &writer,
-                session_path.as_deref(),
-            ) {
-                eprintln!("bunting-server: FIX connection closed: {error}");
-            }
-            active.fetch_sub(1, Ordering::AcqRel);
-        });
-    }
-    Ok(())
-}
-
-fn verify_terminated_peer(
-    stream: &TcpStream,
-    tls: &TlsConfig,
-    listener: &str,
-) -> Result<(), String> {
-    let TlsConfig::Terminated { trusted_proxy, .. } = tls else {
-        return Ok(());
-    };
-    let expected = trusted_proxy
-        .parse::<std::net::IpAddr>()
-        .map_err(|_| format!("invalid trusted proxy for {listener}"))?;
-    let actual = stream
-        .peer_addr()
-        .map_err(|error| format!("cannot inspect {listener} peer: {error}"))?
-        .ip();
-    if actual != expected {
-        return Err(format!(
-            "{listener} peer {actual} is not configured TLS terminator {expected}"
-        ));
-    }
-    Ok(())
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the socket/session/application loop keeps commit-before-response ordering visible"
 )]
-fn handle_fix_connection(
+pub(crate) fn handle_fix_connection(
     mut stream: TcpStream,
     config: &FixConfig,
     origin: &NativeOrigin,
@@ -971,33 +897,13 @@ fn epoch_millis() -> u64 {
 }
 
 fn fix_timestamp() -> String {
-    let millis = epoch_millis();
-    let seconds = millis / 1_000;
-    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
-    let (year, month, day) = civil_from_days(days);
-    let day_seconds = seconds % 86_400;
-    format!(
-        "{year:04}{month:02}{day:02}-{:02}:{:02}:{:02}.{:03}",
-        day_seconds / 3_600,
-        (day_seconds % 3_600) / 60,
-        day_seconds % 60,
-        millis % 1_000
-    )
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    (year, month, day)
+    let format = time::macros::format_description!(
+        "[year][month][day]-[hour]:[minute]:[second].[subsecond digits:3]"
+    );
+    match time::OffsetDateTime::now_utc().format(format) {
+        Ok(value) => value,
+        Err(_) => "19700101-00:00:00.000".to_owned(),
+    }
 }
 
 fn origin_error(error: &OriginError) -> String {
@@ -1007,12 +913,6 @@ fn origin_error(error: &OriginError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn timestamp_calendar_conversion_is_stable() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(20_000), (2024, 10, 4));
-    }
 
     #[test]
     fn zero_configuration_profile_bootstraps_the_canonical_scenario() -> Result<(), String> {

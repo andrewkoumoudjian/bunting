@@ -72,7 +72,7 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
     let arguments = compatibility_arguments(arguments);
     let cli = Cli::try_parse_from(arguments).map_err(|error| error.to_string())?;
     match cli.command {
-        Command::Server { config } => run_server(config.as_deref()),
+        Command::Server { config } => run_server(config.as_deref()).await,
         #[cfg(feature = "tui")]
         Command::Tui { options } => bunting_tui::run(options).await,
         Command::Init { config_dir } => init(config_dir.as_deref()),
@@ -218,12 +218,12 @@ fn compatibility_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec
     normalized
 }
 
-fn run_server(path: Option<&Path>) -> Result<(), String> {
+async fn run_server(path: Option<&Path>) -> Result<(), String> {
     let config = path.map_or_else(
         || Ok(ServerConfig::local_default()),
         |path| ServerConfig::from_file(path).map_err(|error| error.to_string()),
     )?;
-    bunting_server::runtime::run(&config)
+    bunting_server::runtime::run(&config).await
 }
 
 fn init(config_dir: Option<&Path>) -> Result<(), String> {

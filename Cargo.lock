@@ -335,6 +335,7 @@ dependencies = [
  "simfix-mapping",
  "simfix-session",
  "simfix-wire",
+ "time",
  "tokio",
 ]
 

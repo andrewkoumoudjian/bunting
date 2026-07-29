@@ -95,7 +95,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	assertField(t, &parseInbound(t, readFrame(t, secondReader)).Header.FieldMap, 35, "A")
 
 	order := outbound("D", 3)
-	order.Body.SetString(11, "team1-1")
+	order.Body.SetString(11, "1")
 	order.Body.SetString(48, "1")
 	order.Body.SetString(54, "1")
 	order.Body.SetString(38, "5")
@@ -111,6 +111,12 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	book.Body.SetString(48, "1")
 	book.Body.SetString(263, "0")
 	book.Body.SetInt(264, 10)
+	entryTypes := quickfix.NewRepeatingGroup(267, quickfix.GroupTemplate{
+		quickfix.GroupElement(269),
+	})
+	entryTypes.Add().SetString(269, "0")
+	entryTypes.Add().SetString(269, "1")
+	book.Body.SetGroup(entryTypes)
 	if _, err := second.Write(book.Bytes()); err != nil {
 		t.Fatal(err)
 	}
