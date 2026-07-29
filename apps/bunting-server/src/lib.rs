@@ -5,5 +5,6 @@
 pub mod config;
 pub mod runtime;
 pub mod storage;
+mod writer;
 
 pub const SERVICE_NAME: &str = "bunting-server";

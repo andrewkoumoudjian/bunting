@@ -47,19 +47,29 @@ pub enum TlsConfig {
 pub struct FixConfig {
     pub bind: String,
     pub sender_comp_id: String,
+    pub run_id: u128,
+    pub roster: Vec<RosterEntry>,
+    pub heartbeat_seconds: u32,
+    pub max_connections: usize,
+    pub matching_interval_ms: u64,
+    pub max_messages_per_interval: usize,
+    pub max_open_orders: usize,
+    pub max_interval_queue: usize,
+    pub max_message_bytes: usize,
+    pub max_journal_messages: usize,
+    pub max_pending_inbound: usize,
+    pub tls: TlsConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterEntry {
     pub target_comp_id: String,
     pub username: String,
     pub password: String,
     #[serde(default = "participant_role")]
     pub role: ActorRole,
     pub participant_id: u128,
-    pub run_id: u128,
-    pub heartbeat_seconds: u32,
-    pub max_connections: usize,
-    pub max_message_bytes: usize,
-    pub max_journal_messages: usize,
-    pub max_pending_inbound: usize,
-    pub tls: TlsConfig,
 }
 
 const fn participant_role() -> ActorRole {
@@ -130,14 +140,29 @@ impl ServerConfig {
             fix: Some(FixConfig {
                 bind: "127.0.0.1:9880".to_owned(),
                 sender_comp_id: "BUNTING".to_owned(),
-                target_comp_id: "HUMAN".to_owned(),
-                username: "participant".to_owned(),
-                password: "bunting-local-dev".to_owned(),
-                role: ActorRole::Participant,
-                participant_id: 1,
                 run_id: 1,
+                roster: vec![
+                    RosterEntry {
+                        target_comp_id: "TEAM1".to_owned(),
+                        username: "team1".to_owned(),
+                        password: "bunting-team1-dev".to_owned(),
+                        role: ActorRole::Participant,
+                        participant_id: 1,
+                    },
+                    RosterEntry {
+                        target_comp_id: "TEAM2".to_owned(),
+                        username: "team2".to_owned(),
+                        password: "bunting-team2-dev".to_owned(),
+                        role: ActorRole::Participant,
+                        participant_id: 2,
+                    },
+                ],
                 heartbeat_seconds: 30,
-                max_connections: 1,
+                max_connections: 2,
+                matching_interval_ms: 100,
+                max_messages_per_interval: 64,
+                max_open_orders: 256,
+                max_interval_queue: 256,
                 max_message_bytes: 16_384,
                 max_journal_messages: 4_096,
                 max_pending_inbound: 64,
@@ -327,29 +352,45 @@ fn validate_tls(bind: SocketAddr, tls: &TlsConfig, field: &str) -> Result<(), Co
 
 fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), ConfigError> {
     let bind = parse_socket("fix.bind", &fix.bind)?;
-    if fix.sender_comp_id.is_empty()
-        || fix.target_comp_id.is_empty()
-        || fix.username.is_empty()
-        || fix.password.len() < 12
-    {
+    if fix.sender_comp_id.is_empty() || fix.roster.is_empty() {
         return Err(ConfigError(
-            "FIX CompIDs/username must be non-empty and password must contain at least 12 bytes"
-                .to_owned(),
+            "fix.sender_comp_id and fix.roster must be non-empty".to_owned(),
         ));
     }
-    if fix.participant_id == 0 || fix.run_id == 0 {
-        return Err(ConfigError(
-            "fix participant_id and run_id must be non-zero".to_owned(),
-        ));
+    let mut participants = std::collections::BTreeSet::new();
+    let mut usernames = std::collections::BTreeSet::new();
+    let mut comp_ids = std::collections::BTreeSet::new();
+    for entry in &fix.roster {
+        if entry.target_comp_id.is_empty()
+            || entry.username.is_empty()
+            || entry.password.len() < 12
+            || entry.participant_id == 0
+            || !participants.insert(entry.participant_id)
+            || !usernames.insert(entry.username.as_str())
+            || !comp_ids.insert(entry.target_comp_id.as_str())
+        {
+            return Err(ConfigError(
+                "fix.roster requires unique non-zero participant IDs, unique non-empty usernames/CompIDs and passwords of at least 12 bytes"
+                    .to_owned(),
+            ));
+        }
     }
-    if fix.max_connections != 1
+    if fix.run_id == 0 {
+        return Err(ConfigError("fix.run_id must be non-zero".to_owned()));
+    }
+    if fix.max_connections == 0
+        || fix.max_connections > fix.roster.len()
+        || !(1..=60_000).contains(&fix.matching_interval_ms)
+        || fix.max_messages_per_interval == 0
+        || fix.max_open_orders == 0
+        || fix.max_interval_queue == 0
         || !(256..=1_048_576).contains(&fix.max_message_bytes)
         || fix.max_journal_messages == 0
         || fix.max_pending_inbound == 0
         || fix.heartbeat_seconds == 0
     {
         return Err(ConfigError(
-            "FIX bounds are invalid; the static identity/session binding requires max_connections=1, message bytes must be 256..=1048576, and heartbeat/journal/pending must be positive"
+            "FIX bounds are invalid; max_connections must fit the roster, matching_interval_ms must be 1..=60000, and message, order, interval queue, wire, heartbeat, journal and pending limits must be positive"
                 .to_owned(),
         ));
     }
@@ -368,14 +409,20 @@ mod tests {
         let fix = FixConfig {
             bind: "0.0.0.0:9876".to_owned(),
             sender_comp_id: "BUNTING".to_owned(),
-            target_comp_id: "CLIENT".to_owned(),
-            username: "client".to_owned(),
-            password: "long-password".to_owned(),
-            role: ActorRole::Participant,
-            participant_id: 1,
             run_id: 1,
+            roster: vec![RosterEntry {
+                target_comp_id: "CLIENT".to_owned(),
+                username: "client".to_owned(),
+                password: "long-password".to_owned(),
+                role: ActorRole::Participant,
+                participant_id: 1,
+            }],
             heartbeat_seconds: 30,
             max_connections: 1,
+            matching_interval_ms: 100,
+            max_messages_per_interval: 64,
+            max_open_orders: 256,
+            max_interval_queue: 256,
             max_message_bytes: 16_384,
             max_journal_messages: 1_024,
             max_pending_inbound: 32,
@@ -405,7 +452,7 @@ mod tests {
         let config = ServerConfig::local_default();
         config.validate()?;
         assert_eq!(config.profile, DeploymentProfile::Local);
-        assert_eq!(config.fix.as_ref().map(|fix| fix.max_connections), Some(1));
+        assert_eq!(config.fix.as_ref().map(|fix| fix.max_connections), Some(2));
         assert_eq!(config.storage.kind, StorageKind::Memory);
         Ok(())
     }

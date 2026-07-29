@@ -35,7 +35,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
   "version": 1,
   "profile": "local",
   "storage": {"kind":"memory","path":null,"max_runs":4,"max_commands":1000,"max_events_per_run":10000},
-  "fix": {"bind":%q,"sender_comp_id":"BUNTING","target_comp_id":"HUMAN","username":"participant","password":"bunting-local-dev","role":"participant","participant_id":1,"run_id":1,"heartbeat_seconds":30,"max_connections":1,"max_message_bytes":16384,"max_journal_messages":512,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
+  "fix": {"bind":%q,"sender_comp_id":"BUNTING","run_id":1,"roster":[{"target_comp_id":"TEAM1","username":"team1","password":"bunting-team1-dev","role":"participant","participant_id":1},{"target_comp_id":"TEAM2","username":"team2","password":"bunting-team2-dev","role":"participant","participant_id":2}],"heartbeat_seconds":30,"max_connections":2,"matching_interval_ms":100,"max_messages_per_interval":64,"max_open_orders":256,"max_interval_queue":256,"max_message_bytes":16384,"max_journal_messages":512,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
   "admin": null,
   "scenario": null,
   "runtime": null
@@ -85,13 +85,49 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if decoded["run_id"] != float64(1) {
 		t.Fatalf("unexpected run_id: %v", decoded["run_id"])
 	}
+
+	second := dialBounded(t, endpoint, &serverLog)
+	defer second.Close()
+	secondReader := bufio.NewReader(second)
+	if _, err := second.Write(outboundFor("A", 1, "TEAM2", "team2", "bunting-team2-dev").Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	assertField(t, &parseInbound(t, readFrame(t, secondReader)).Header.FieldMap, 35, "A")
+
+	order := outbound("D", 3)
+	order.Body.SetString(11, "team1-1")
+	order.Body.SetString(48, "1")
+	order.Body.SetString(54, "1")
+	order.Body.SetString(38, "5")
+	order.Body.SetString(40, "2")
+	order.Body.SetString(44, "99")
+	if _, err := connection.Write(order.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	assertField(t, &parseInbound(t, readFrame(t, reader)).Header.FieldMap, 35, "8")
+
+	book := outboundFor("V", 2, "TEAM2", "team2", "bunting-team2-dev")
+	book.Body.SetString(262, "shared-book")
+	book.Body.SetString(48, "1")
+	book.Body.SetString(263, "0")
+	book.Body.SetInt(264, 10)
+	if _, err := second.Write(book.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := parseInbound(t, readFrame(t, secondReader))
+	assertField(t, &snapshot.Header.FieldMap, 35, "W")
+	assertField(t, &snapshot.Body.FieldMap, 270, "99")
 }
 
 func outbound(messageType string, sequence int) *quickfix.Message {
+	return outboundFor(messageType, sequence, "TEAM1", "team1", "bunting-team1-dev")
+}
+
+func outboundFor(messageType string, sequence int, compID, username, password string) *quickfix.Message {
 	message := quickfix.NewMessage()
 	message.Header.SetString(8, "FIXT.1.1")
 	message.Header.SetString(35, messageType)
-	message.Header.SetString(49, "HUMAN")
+	message.Header.SetString(49, compID)
 	message.Header.SetString(56, "BUNTING")
 	message.Header.SetInt(34, sequence)
 	message.Header.SetString(52, "20260716-12:00:00")
@@ -99,8 +135,8 @@ func outbound(messageType string, sequence int) *quickfix.Message {
 		message.Body.SetInt(98, 0)
 		message.Body.SetInt(108, 30)
 		message.Body.SetString(1137, "9")
-		message.Body.SetString(553, "participant")
-		message.Body.SetString(554, "bunting-local-dev")
+		message.Body.SetString(553, username)
+		message.Body.SetString(554, password)
 		message.Body.SetString(10000, "bunting.fixlatest.competition.v1")
 		message.Body.SetString(10004, "participant")
 	}

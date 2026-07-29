@@ -1,7 +1,9 @@
 use crate::config::{
-    AdminConfig, FixConfig, ScenarioRuntimeConfig, ServerConfig, StorageKind, TlsConfig,
+    AdminConfig, FixConfig, RosterEntry, ScenarioRuntimeConfig, ServerConfig, StorageKind,
+    TlsConfig,
 };
 use crate::storage::NativeOrigin;
+use crate::writer::AuthoritativeWriter;
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
 };
@@ -13,7 +15,9 @@ use bunting_application::{
 };
 use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::{RunState, ScenarioDefinition};
-use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
+use bunting_market_events::{
+    CommandPayload, SimulationCommand, SimulationCommandRequest, TenderDecision,
+};
 use bunting_market_types::{
     CommandId, CorrelationId, IterationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots,
     RunId, TenderId,
@@ -28,14 +32,15 @@ use simfix_mapping::{
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct NativeFixSnapshot {
@@ -92,7 +97,14 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     }
     let origin = Arc::new(origin);
     let cache = Arc::new(InMemorySnapshotCache::new());
-    let writer = Arc::new(Mutex::new(()));
+    let (matching_interval_ms, max_interval_queue) =
+        config.fix.as_ref().map_or((1, 1_024), |fix| {
+            (fix.matching_interval_ms, fix.max_interval_queue)
+        });
+    let writer = Arc::new(AuthoritativeWriter::new(
+        Duration::from_millis(matching_interval_ms),
+        max_interval_queue,
+    ));
     let mut threads = Vec::new();
     if let Some(admin) = config.admin.clone() {
         let origin = origin.clone();
@@ -158,7 +170,7 @@ fn run_fix_acceptor(
     config: &FixConfig,
     origin: &Arc<NativeOrigin>,
     cache: &Arc<InMemorySnapshotCache>,
-    writer: &Arc<Mutex<()>>,
+    writer: &Arc<AuthoritativeWriter>,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
@@ -228,7 +240,7 @@ fn handle_fix_connection(
     config: &FixConfig,
     origin: &NativeOrigin,
     cache: &InMemorySnapshotCache,
-    writer: &Mutex<()>,
+    writer: &AuthoritativeWriter,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
     stream
@@ -239,9 +251,14 @@ fn handle_fix_connection(
         max_buffer_bytes: config.max_message_bytes.saturating_mul(2),
         ..WireLimits::default()
     };
+    let (logon_bytes, logon) = read_first_message(&mut stream, wire_limits)?;
+    let credential = authenticate_logon(&logon, config)?;
+    let session_path = session_path
+        .map(|base| base.with_extension(format!("fix-session-{}.json", credential.participant_id)));
+    let session_path = session_path.as_deref();
     let session_config = SessionConfig {
         sender_comp_id: config.sender_comp_id.clone(),
-        target_comp_id: config.target_comp_id.clone(),
+        target_comp_id: credential.target_comp_id.clone(),
         heartbeat_seconds: config.heartbeat_seconds,
         max_journal_messages: config.max_journal_messages,
         max_pending_inbound: config.max_pending_inbound,
@@ -269,8 +286,6 @@ fn handle_fix_connection(
             ))
         },
     )?;
-    let (logon_bytes, logon) = read_first_message(&mut stream, wire_limits)?;
-    authenticate_logon(&logon, config)?;
     let timestamp = fix_timestamp();
     let millis = epoch_millis();
     let actions = session
@@ -282,7 +297,7 @@ fn handle_fix_connection(
     response.push(108, config.heartbeat_seconds.to_string());
     response.push(1137, simfix_wire::FIX_50_SP2_APPL_VER_ID);
     response.push(10000, FIX_COMPETITION_PROFILE_VERSION);
-    response.push(10004, actor_role_name(config.role));
+    response.push(10004, actor_role_name(credential.role));
     send_messages(
         &mut session,
         &mut stream,
@@ -291,18 +306,22 @@ fn handle_fix_connection(
         &application,
     )?;
     let actor = VerifiedActor::try_from_identity(ActorIdentity {
-        actor_id: UnsignedDecimalString::new(config.participant_id),
-        role: config.role,
+        actor_id: UnsignedDecimalString::new(credential.participant_id),
+        role: credential.role,
         participant_id: matches!(
-            config.role,
+            credential.role,
             ActorRole::Participant | ActorRole::BuiltInAgent
         )
-        .then(|| UnsignedDecimalString::new(config.participant_id)),
+        .then(|| UnsignedDecimalString::new(credential.participant_id)),
         team_id: None,
     })
     .map_err(|error| format!("invalid configured actor: {error}"))?;
     let service = ApplicationService::new(origin, cache);
     let mut buffer = vec![0; config.max_message_bytes.min(16_384)];
+    let mut interval_started = Instant::now();
+    let interval = Duration::from_millis(config.matching_interval_ms);
+    let mut interval_messages = 0_usize;
+    let mut open_orders = BTreeSet::new();
     loop {
         let count = match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
@@ -345,17 +364,35 @@ fn handle_fix_connection(
             }
         }
         for message in applications {
-            let outbound = {
-                let _writer_guard = writer
-                    .lock()
-                    .map_err(|_| "authoritative writer lock is unavailable".to_owned())?;
+            if interval_started.elapsed() >= interval {
+                interval_started = Instant::now();
+                interval_messages = 0;
+            }
+            if interval_messages >= config.max_messages_per_interval {
+                send_messages(
+                    &mut session,
+                    &mut stream,
+                    [business_reject(
+                        &message.msg_type,
+                        &format!(
+                            "max_messages_per_interval limit {}",
+                            config.max_messages_per_interval
+                        ),
+                    )],
+                    session_path,
+                    &application,
+                )?;
+                continue;
+            }
+            interval_messages = interval_messages.saturating_add(1);
+            let outbound = writer.execute_interval(|| {
                 let state = service
                     .recover(RunId::new(config.run_id))
                     .map_err(|error| format!("run recovery failed: {error}"))?;
                 let request = application.map_message(
                     &message,
                     &FixCommandContext {
-                        actor: ParticipantId::new(config.participant_id),
+                        actor: ParticipantId::new(credential.participant_id),
                         run_id: RunId::new(config.run_id),
                         expected_sequence: state.sequence(),
                         logical_time: LogicalTimeNs::new(epoch_millis().saturating_mul(1_000_000)),
@@ -364,17 +401,38 @@ fn handle_fix_connection(
                         )),
                     },
                 );
-                match request {
+                let outbound = match request {
                     Ok(FixApplicationRequest::Command(command)) => {
-                        let executed = service
-                            .execute(&actor, &command)
-                            .map_err(|error| format!("application command failed: {error}"))?;
-                        application
-                            .committed_messages(
-                                ParticipantId::new(config.participant_id),
-                                &executed.events,
-                            )
-                            .map_err(|error| format!("FIX report mapping failed: {error}"))?
+                        if matches!(command.payload, CommandPayload::SubmitOrder(_))
+                            && open_orders.len() >= config.max_open_orders
+                        {
+                            vec![business_reject(
+                                &message.msg_type,
+                                &format!("max_open_orders limit {}", config.max_open_orders),
+                            )]
+                        } else {
+                            let executed = service
+                                .execute(&actor, &command)
+                                .map_err(|error| format!("application command failed: {error}"))?;
+                            if executed.result.accepted {
+                                match &command.payload {
+                                    CommandPayload::SubmitOrder(order) => {
+                                        open_orders.insert(order.order_id);
+                                    }
+                                    CommandPayload::CancelOrder(cancel) => {
+                                        open_orders.remove(&cancel.order_id);
+                                    }
+                                    CommandPayload::ActivateKillSwitch
+                                    | CommandPayload::NbcDone(_) => {}
+                                }
+                            }
+                            application
+                                .committed_messages(
+                                    ParticipantId::new(credential.participant_id),
+                                    &executed.events,
+                                )
+                                .map_err(|error| format!("FIX report mapping failed: {error}"))?
+                        }
                     }
                     Ok(FixApplicationRequest::MarketData {
                         request_id,
@@ -396,8 +454,9 @@ fn handle_fix_connection(
                         u128::from(session.snapshot().incoming_sequence),
                     )?,
                     Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
-                }
-            };
+                };
+                Ok(outbound)
+            })?;
             send_messages(
                 &mut session,
                 &mut stream,
@@ -643,7 +702,7 @@ fn run_scenario_runtime(
     config: &ScenarioRuntimeConfig,
     origin: &NativeOrigin,
     cache: &InMemorySnapshotCache,
-    writer: &Mutex<()>,
+    writer: &AuthoritativeWriter,
 ) -> Result<(), String> {
     let mut runtime = DeterministicRuntime::new(config.scheduler.clone())
         .map_err(|error| format!("invalid deterministic runtime: {error}"))?;
@@ -652,9 +711,7 @@ fn run_scenario_runtime(
     loop {
         let started = std::time::Instant::now();
         {
-            let _writer_guard = writer
-                .lock()
-                .map_err(|_| "authoritative writer lock is unavailable".to_owned())?;
+            let _writer_guard = writer.lock()?;
             runtime
                 .advance(&mut host)
                 .map_err(|error| format!("deterministic runtime failed: {error}"))?;
@@ -699,22 +756,30 @@ fn read_first_message(
     }
 }
 
-fn authenticate_logon(message: &FixMessage, config: &FixConfig) -> Result<(), String> {
+fn authenticate_logon<'a>(
+    message: &FixMessage,
+    config: &'a FixConfig,
+) -> Result<&'a RosterEntry, String> {
+    let credential = config
+        .roster
+        .iter()
+        .find(|entry| {
+            message.value(49) == Some(entry.target_comp_id.as_str())
+                && constant_time_eq(message.value(553).unwrap_or_default(), &entry.username)
+        })
+        .ok_or_else(|| "FIX Logon credentials rejected".to_owned())?;
     if message.msg_type != "A"
-        || message.value(49) != Some(config.target_comp_id.as_str())
         || message.value(56) != Some(config.sender_comp_id.as_str())
         || message.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
         || message.value(10000) != Some(FIX_COMPETITION_PROFILE_VERSION)
-        || message.value(10004) != Some(actor_role_name(config.role))
+        || message.value(10004) != Some(actor_role_name(credential.role))
     {
         return Err("FIX Logon identity or Bunting profile is invalid".to_owned());
     }
-    if !constant_time_eq(message.value(553).unwrap_or_default(), &config.username)
-        || !constant_time_eq(message.value(554).unwrap_or_default(), &config.password)
-    {
+    if !constant_time_eq(message.value(554).unwrap_or_default(), &credential.password) {
         return Err("FIX Logon credentials rejected".to_owned());
     }
-    Ok(())
+    Ok(credential)
 }
 
 const fn actor_role_name(role: ActorRole) -> &'static str {
@@ -955,7 +1020,7 @@ mod tests {
             .ok_or_else(|| "local scenario missing".to_owned())?;
         assert_eq!((run_id, iteration_id), (1, 1));
         assert_eq!(scenario.listings().len(), 1);
-        assert_eq!(scenario.participants().len(), 2);
+        assert_eq!(scenario.participants().len(), 3);
         assert!(
             scenario
                 .participants()
