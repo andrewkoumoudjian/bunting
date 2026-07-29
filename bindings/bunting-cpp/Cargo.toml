@@ -27,3 +27,5 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+unnecessary_box_returns = "allow"
+unused_self = "allow"

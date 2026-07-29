@@ -58,16 +58,30 @@ impl fmt::Display for ArchiveError {
 impl std::error::Error for ArchiveError {}
 
 impl CompetitionArchive {
+    /// Parses and validates one versioned archive.
+    ///
+    /// # Errors
+    /// Returns an archive error for malformed JSON, unsupported versions,
+    /// invalid policy values, or an invalid initial snapshot.
     pub fn from_json(json: &str) -> Result<Self, ArchiveError> {
         let archive: Self = serde_json::from_str(json).map_err(|_| ArchiveError::Serialization)?;
         archive.validate()?;
         Ok(archive)
     }
 
+    /// Serializes the archive as stable, human-reviewable JSON.
+    ///
+    /// # Errors
+    /// Returns `Serialization` if a contained value cannot be encoded.
     pub fn to_json(&self) -> Result<String, ArchiveError> {
         serde_json::to_string_pretty(self).map_err(|_| ArchiveError::Serialization)
     }
 
+    /// Validates the archive envelope and competition policy.
+    ///
+    /// # Errors
+    /// Returns an archive error when the version, policy, or initial snapshot
+    /// violates the versioned contract.
     pub fn validate(&self) -> Result<(), ArchiveError> {
         if self.schema_version != COMPETITION_ARCHIVE_VERSION {
             return Err(ArchiveError::UnsupportedVersion);
@@ -89,6 +103,11 @@ impl CompetitionArchive {
         Ok(())
     }
 
+    /// Replays accepted commands and compares canonical events and final state.
+    ///
+    /// # Errors
+    /// Returns an archive error on validation failure, command rejection,
+    /// canonical event drift, or a final checksum mismatch.
     pub fn replay(&self) -> Result<ReplayResult, ArchiveError> {
         self.validate()?;
         let mut state: RunState = self.initial.state.clone();

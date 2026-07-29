@@ -1,6 +1,10 @@
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Replays an archive through the same safe façade used by the Python module.
+///
+/// # Errors
+/// Returns a text error for oversized, invalid, or non-replayable archives.
 pub fn replay_contract(archive_json: &str) -> Result<String, String> {
     if archive_json.len() > 64 * 1_024 * 1_024 {
         return Err("archive exceeds 67108864 bytes".to_owned());

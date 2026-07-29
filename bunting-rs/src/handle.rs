@@ -13,6 +13,10 @@ pub struct BuntingHandle {
 }
 
 impl BuntingHandle {
+    /// Creates a concrete in-memory embedding from one authoritative state.
+    ///
+    /// # Errors
+    /// Returns an origin error if the initial run cannot be installed.
     pub fn new(initial: RunState) -> Result<Self, OriginError> {
         let origin = InMemoryOrigin::new();
         origin.insert_run(initial)?;
@@ -22,10 +26,19 @@ impl BuntingHandle {
         })
     }
 
+    /// Recovers one run from the owned origin.
+    ///
+    /// # Errors
+    /// Returns an application error when the run is unavailable.
     pub fn recover(&self, run_id: RunId) -> Result<RunState, ApplicationError> {
         ApplicationService::new(&self.origin, &self.cache).recover(run_id)
     }
 
+    /// Executes one authenticated participant command.
+    ///
+    /// # Errors
+    /// Returns an application error when authorization, validation, execution,
+    /// or commit fails.
     pub fn execute(
         &self,
         actor: &VerifiedActor,
@@ -36,6 +49,11 @@ impl BuntingHandle {
             .map(|executed| executed.state)
     }
 
+    /// Executes one authenticated operator/simulation command.
+    ///
+    /// # Errors
+    /// Returns an application error when authorization, validation, execution,
+    /// or commit fails.
     pub fn execute_simulation(
         &self,
         actor: &VerifiedActor,
@@ -46,6 +64,11 @@ impl BuntingHandle {
             .map(|executed| executed.state)
     }
 
+    /// Replays a JSON archive and returns the canonical result JSON.
+    ///
+    /// # Errors
+    /// Returns a stable text error when archive parsing, replay, or result
+    /// serialization fails.
     pub fn replay_archive_json(json: &str) -> Result<String, String> {
         let archive =
             crate::CompetitionArchive::from_json(json).map_err(|error| error.to_string())?;

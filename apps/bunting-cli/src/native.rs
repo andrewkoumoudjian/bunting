@@ -4,7 +4,9 @@ use bunting_server::config::ServerConfig;
 use bunting_tui::TuiOptions;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
+use std::fmt::Write as FmtWrite;
 use std::fs;
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
 const LOCAL_CONFIG: &str = include_str!("../../bunting-server/config/local.json");
@@ -130,14 +132,13 @@ fn export_roster(config_path: &Path, output_path: &Path) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    use std::io::Write as _;
     let mut file = options.open(output_path).map_err(|error| {
         format!(
             "cannot create protected roster {}: {error}",
             output_path.display()
         )
     })?;
-    file.write_all(&bytes)
+    IoWrite::write_all(&mut file, &bytes)
         .and_then(|()| file.sync_all())
         .map_err(|error| format!("cannot persist roster {}: {error}", output_path.display()))?;
     println!("exported {} roster entries", roster.len());
@@ -208,18 +209,19 @@ fn judge(paths: &[PathBuf]) -> Result<(), String> {
         .map_err(|error| format!("cannot encode leaderboard: {error}"))?;
     fs::write("leaderboard.json", &json)
         .map_err(|error| format!("cannot write leaderboard.json: {error}"))?;
-    let rows = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            format!(
+    let mut rows = String::new();
+    for (index, entry) in entries.iter().enumerate() {
+        FmtWrite::write_fmt(
+            &mut rows,
+            format_args!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
                 index.saturating_add(1),
                 entry.participant_id,
                 entry.score
-            )
-        })
-        .collect::<String>();
+            ),
+        )
+        .map_err(|error| format!("cannot encode leaderboard HTML: {error}"))?;
+    }
     let html = format!(
         "<!doctype html><meta charset=\"utf-8\"><title>Bunting leaderboard</title><h1>Bunting leaderboard</h1><table><thead><tr><th>Rank</th><th>Participant</th><th>Score</th></tr></thead><tbody>{rows}</tbody></table>"
     );

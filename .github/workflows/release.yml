@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install maturin==1.9.4
-          maturin build --locked --release --target "${{ matrix.target }}" --manifest-path bindings/bunting-py/Cargo.toml --interpreter python
+          maturin build --locked --release --target "${{ matrix.target }}" --manifest-path bindings/bunting-py/Cargo.toml --features extension-module --interpreter python3
       - name: Package native application
         shell: bash
         run: |

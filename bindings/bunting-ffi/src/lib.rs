@@ -3,6 +3,10 @@ use std::ptr;
 
 const MAX_ARCHIVE_BYTES: usize = 64 * 1_024 * 1_024;
 
+/// Replays an archive through the same safe façade used by the C ABI.
+///
+/// # Errors
+/// Returns a text error for oversized, invalid, or non-replayable archives.
 pub fn replay_contract(archive_json: &str) -> Result<String, String> {
     if archive_json.len() > MAX_ARCHIVE_BYTES {
         return Err("archive exceeds 67108864 bytes".to_owned());
@@ -61,13 +65,10 @@ pub unsafe extern "C" fn bunting_replay_archive(
         unsafe { set_error(error, 2, "archive exceeds 67108864 bytes") };
         return 2;
     }
-    let json = match std::str::from_utf8(bytes) {
-        Ok(value) => value,
-        Err(_) => {
-            // SAFETY: `error` is checked before it is written.
-            unsafe { set_error(error, 3, "archive is not UTF-8") };
-            return 3;
-        }
+    let Ok(json) = std::str::from_utf8(bytes) else {
+        // SAFETY: `error` is checked before it is written.
+        unsafe { set_error(error, 3, "archive is not UTF-8") };
+        return 3;
     };
     match replay_contract(json)
         .and_then(|value| CString::new(value).map_err(|_| "replay output contains NUL".to_owned()))

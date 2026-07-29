@@ -44,13 +44,13 @@ mod tests {
             },
             initial: initial
                 .snapshot_envelope()
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| format!("{error:?}"))?,
             accepted_commands: vec![command],
             canonical_events: outcome.events,
             final_state_hash: outcome
                 .candidate
                 .state_hash()
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| format!("{error:?}"))?,
         }
         .to_json()
         .map_err(|error| error.to_string())

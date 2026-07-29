@@ -16,6 +16,10 @@ mod ffi {
 pub struct Bunting;
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Replays an archive through the same safe façade used by the C++ bridge.
+///
+/// # Errors
+/// Returns a text error for oversized, invalid, or non-replayable archives.
 pub fn replay_contract(archive_json: &str) -> Result<String, String> {
     if archive_json.len() > 64 * 1_024 * 1_024 {
         return Err("archive exceeds 67108864 bytes".to_owned());
@@ -24,6 +28,7 @@ pub fn replay_contract(archive_json: &str) -> Result<String, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[must_use]
 pub fn new_bunting() -> Box<Bunting> {
     Box::new(Bunting)
 }
