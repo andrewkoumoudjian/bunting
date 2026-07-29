@@ -1,8 +1,21 @@
 # Competition-platform reorganization plan
 
-Status: accepted execution plan. Phases 0–2 implemented on 2026-07-28; Phases
-3–5 remain gated by the organizer decisions below, and Phase 6 remains last in
-the declared sequence.
+Status: implemented. Phases 0–2 landed on 2026-07-28 and Phases 3–6 landed in
+dependency order on 2026-07-29. The selected organizer rules are discrete
+100-millisecond matching intervals, one shared market, the existing Bunting FIX
+codec while QuickFIX-Go remains green, and resting orders surviving disconnect.
+
+The implementation includes the Tokio acceptor, rostered isolated sessions,
+one interval-ordered writer, per-session limits, participant-scoped recovery,
+archive replay/scoring/judging, protected roster export, read-only Worker
+publication, generated protocol/rules/scoring/runbook material, a timed replay
+onboarding gate, the concrete Rust façade, and C/Python/C++ bindings.
+
+The Rust workspace, focused Clippy/tests, two-client QuickFIX-Go black-box path,
+Wasm checks, generated protocol/header drift checks, Python abi3 wheel build and
+import smoke all passed locally. `worker-build` and `workerd` are not installed
+on this host, so the deployable Worker/Workerd release smoke remains a CI-only
+gate rather than locally verified evidence.
 
 Inputs:
 
@@ -38,16 +51,32 @@ These come from the repository's own instructions and shape every phase.
 6. **`git mv` preserves Cargo package names during reorganization.** Renames are
    separate, later, and optional.
 
-### Decisions that block work
+### Organizer decisions
 
 | Decision | Blocks | Where discussed |
 | --- | --- | --- |
-| Fairness / latency model | ADR 0024, `PROTOCOL.md`, Phase 3 acceptor design | hackathon-base-plan §2, §13 |
-| Market topology (one shared market vs parallel markets) | Phase 3 session cap, Phase 4 round model | hackathon-base-plan §13 |
-| FIX codec: keep the hand-rolled 2,171 lines or adopt a library | Phase 5 `PROTOCOL.md`, conformance harness | audit §6, hackathon-base-plan §13 |
-| Reconnect policy: do resting orders survive a session drop | Phase 3 session host, `RULES.md` | hackathon-base-plan §13 |
+| Fairness / latency model | **Discrete 100 ms matching intervals**, recorded by ADR 0024 | hackathon-base-plan §2, §13 |
+| Market topology | **One shared market** for every rostered team | hackathon-base-plan §13 |
+| FIX codec | **Keep the existing codec while the independent QuickFIX-Go gate remains green** | audit §6, hackathon-base-plan §13 |
+| Reconnect policy | **Resting orders survive disconnect**; session/application state resumes per participant | hackathon-base-plan §13 |
 
-Phases 0–2 do not depend on any of these. Start there regardless.
+These decisions are now implemented and published in `PROTOCOL.md` and
+`RULES.md`.
+
+### Implementation reconciliation
+
+The Phase 5 proposal to move every existing `docs/` file under
+`docs/internals/` was not executed. It is a mechanical path reorganization
+embedded in a feature-plus-documentation phase, which conflicts with governing
+constraint 1 and would churn accepted ADR links without changing competition
+behavior. Competitor and organizer documents instead live at the repository
+root, while the existing internal tree and its scoped authority remain stable.
+
+The hand-written bounded HTTP admin reader is frozen and isolated in
+`apps/bunting-server/src/admin.rs`; no framework was added. The remaining native
+runtime responsibilities are split across `acceptor.rs`, `session_host.rs`,
+`writer.rs`, `scenario.rs`, and `admin.rs`, with `runtime.rs` limited to
+composition and task supervision.
 
 ### Explicitly *not* in this plan
 
