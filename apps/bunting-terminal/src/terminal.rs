@@ -18,7 +18,8 @@ use bunting_tui::client::{
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rgb,
 };
 use gpui_component::{
     Root,
@@ -73,10 +74,16 @@ impl Terminal {
                 .placeholder("FUNCTION / SYMBOL / COMMAND")
                 .default_value("BNT")
         });
-        let quantity_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Quantity").default_value("10"));
-        let price_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Price ticks").default_value("100"));
+        let quantity_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Quantity")
+                .default_value("10")
+        });
+        let price_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Price ticks")
+                .default_value("100")
+        });
         let cancel_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Order ID to cancel"));
 
@@ -148,27 +155,26 @@ impl Terminal {
     }
 
     fn schedule_poll(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(33))
-                .await;
-            let Some(this) = this.upgrade() else {
-                break;
-            };
-            this.update(cx, |terminal, cx| {
-                terminal.drain_io();
-                cx.notify();
-            });
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+                this.update(cx, |terminal, cx| {
+                    terminal.drain_io();
+                    cx.notify();
+                });
+            }
         })
         .detach();
     }
 
     fn drain_io(&mut self) {
         loop {
-            let event = self
-                .io
-                .as_mut()
-                .and_then(|io| io.events.try_recv().ok());
+            let event = self.io.as_mut().and_then(|io| io.events.try_recv().ok());
             let Some(UiEvent::Snapshot {
                 client,
                 recovery_request,
@@ -373,10 +379,7 @@ impl Terminal {
         };
         let request_id = self.allocate_request_id();
         self.enqueue(OutboundCmd::Send(new_order(
-            request_id,
-            side,
-            quantity,
-            price,
+            request_id, side, quantity, price,
         )));
         self.status = format!(
             "{} {} QTY={} PRICE={}",
@@ -414,7 +417,13 @@ impl Terminal {
             quantity,
             Some(price),
         )));
-        self.status = format!("QUICK {} {} @ {}", side.to_ascii_uppercase(), quantity, price).into();
+        self.status = format!(
+            "QUICK {} {} @ {}",
+            side.to_ascii_uppercase(),
+            quantity,
+            price
+        )
+        .into();
         cx.notify();
     }
 
@@ -537,11 +546,7 @@ impl Terminal {
                     .text_color(rgb(TEXT))
                     .child("BUNTING//TERMINAL"),
             )
-            .child(
-                div()
-                    .w(px(330.))
-                    .child(Input::new(&self.command_input)),
-            )
+            .child(div().w(px(330.)).child(Input::new(&self.command_input)))
             .child(
                 Button::new("command-go")
                     .primary()
@@ -669,16 +674,13 @@ impl Terminal {
                             terminal.begin_move(id, event.position, cx);
                         }),
                     )
-                    .child(
-                        div()
-                            .size(px(7.))
-                            .rounded_full()
-                            .bg(if self.client.as_ref().is_some_and(|client| !client.stale) {
-                                rgb(GREEN)
-                            } else {
-                                rgb(RED)
-                            }),
-                    )
+                    .child(div().size(px(7.)).rounded_full().bg(
+                        if self.client.as_ref().is_some_and(|client| !client.stale) {
+                            rgb(GREEN)
+                        } else {
+                            rgb(RED)
+                        },
+                    ))
                     .child(
                         div()
                             .text_xs()
@@ -829,7 +831,10 @@ impl Terminal {
                     .bg(rgb(SURFACE_ALT))
                     .text_xs()
                     .text_color(rgb(AMBER))
-                    .child(format!("SEQ {} / COMMIT {}", client.book_sequence, client.committed_sequence)),
+                    .child(format!(
+                        "SEQ {} / COMMIT {}",
+                        client.book_sequence, client.committed_sequence
+                    )),
             );
             for (price, quantity) in client.book.bids.iter().take(10) {
                 rows = rows.child(book_row("BID", *price, *quantity, GREEN));
@@ -1033,19 +1038,18 @@ impl Terminal {
             }
         } else if let Some(client) = &self.client {
             holdings = holdings.child(
-                div()
-                    .p_3()
-                    .text_color(rgb(MUTED))
-                    .child(format!(
-                        "Local fill projection: position={} cash={} marked={}",
-                        client.portfolio.position,
-                        client.portfolio.cash,
-                        client
-                            .book
-                            .bids
-                            .first()
-                            .map_or(client.portfolio.cash, |level| client.portfolio.marked_value(level.0))
-                    )),
+                div().p_3().text_color(rgb(MUTED)).child(format!(
+                    "Local fill projection: position={} cash={} marked={}",
+                    client.portfolio.position,
+                    client.portfolio.cash,
+                    client
+                        .book
+                        .bids
+                        .first()
+                        .map_or(client.portfolio.cash, |level| client
+                            .portfolio
+                            .marked_value(level.0))
+                )),
             );
         }
         div()
@@ -1055,7 +1059,11 @@ impl Terminal {
             .p_2()
             .gap_2()
             .child(table_header(&[
-                "INSTR", "POSITION", "RESERVED", "REALIZED", "UNREALIZED",
+                "INSTR",
+                "POSITION",
+                "RESERVED",
+                "REALIZED",
+                "UNREALIZED",
             ]))
             .child(holdings)
             .child(
@@ -1100,7 +1108,13 @@ impl Terminal {
     }
 
     fn render_tenders(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = div().size_full().flex().flex_col().gap_2().p_2().overflow_hidden();
+        let mut list = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_2()
+            .overflow_hidden();
         if let Some(client) = &self.client {
             for tender in client.tenders.iter().take(8) {
                 let tender_id = tender.tender_id.get();
@@ -1189,7 +1203,15 @@ impl Terminal {
             .as_ref()
             .and_then(|client| client.discovery.as_ref());
         let (run, scenario, lifecycle, logical_time, listings) = discovery.map_or_else(
-            || ("-".to_owned(), "-".to_owned(), "-".to_owned(), "-".to_owned(), "-".to_owned()),
+            || {
+                (
+                    "-".to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                )
+            },
             |view| {
                 (
                     view.run_id.to_string(),
@@ -1386,12 +1408,7 @@ fn metric(label: &'static str, value: impl Into<SharedString>, color: u32) -> An
         .flex()
         .flex_col()
         .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(MUTED))
-                .child(label),
-        )
+        .child(div().text_xs().text_color(rgb(MUTED)).child(label))
         .child(
             div()
                 .text_sm()
