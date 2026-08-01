@@ -25,7 +25,7 @@ impl AppShell {
 
         let mut shell = Self {
             terminal,
-            dock_area,
+            dock_area: dock_area,
             panels,
             snapshot,
             _terminal_observer,
@@ -91,7 +91,7 @@ impl AppShell {
                     window,
                     cx,
                 ),
-                px(330.),
+                px(330.)),
                 px(380.),
                 px(280.),
             ),
@@ -168,7 +168,6 @@ impl AppShell {
                 cx,
             );
         });
-        cx.notify();
     }
 
     fn execute_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -198,5 +197,4 @@ impl AppShell {
     ) {
         self.reset_workspace(preset, window, cx);
     }
-
 }

@@ -130,7 +130,7 @@ impl Terminal {
         let profile_name = env::var("BUNTING_TERMINAL_PROFILE")
             .unwrap_or_else(|_| config.selected_profile.clone());
         let mut profile = config.profile(&profile_name)?;
-        if let Ok(endpoint) = env::var_os("BUNTING_TERMINAL_ENDPOINT") {
+        if let Ok(endpoint) = env::var("BUNTING_TERMINAL_ENDPOINT") {
             if !endpoint.trim().is_empty() {
                 profile.endpoint = endpoint;
             }

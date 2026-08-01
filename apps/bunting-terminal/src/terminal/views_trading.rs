@@ -96,6 +96,7 @@ fn render_order_book(terminal: Entity<Terminal>, cx: &mut Context<MarketPanel>) 
                 (
                     client
                         .book
+                        .asks
                         .iter()
                         .take(12)
                         .rev()
@@ -141,7 +142,7 @@ fn render_order_book(terminal: Entity<Terminal>, cx: &mut Context<MarketPanel>) 
             div()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .child(
                     Table::new()
                         .border_0()
@@ -348,7 +349,7 @@ fn render_orders(terminal: Entity<Terminal>, cx: &mut Context<MarketPanel>) -> A
             div()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .child(
                     Table::new()
                         .border_0()

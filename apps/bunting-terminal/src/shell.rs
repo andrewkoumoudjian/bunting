@@ -3,6 +3,7 @@ use crate::{
     terminal::{MarketPanel, Terminal, TerminalSnapshot},
 };
 use gpui::{
+    prelude::FluentBuilder as _,
     App, AppContext as _, Context, Edges, Entity, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
     px,

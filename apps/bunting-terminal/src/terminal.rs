@@ -1,6 +1,6 @@
 //! Shared FIX client state and gpui-component market panels.
 //!
-//! The shell intendionally follows Zed's workspace translation: one native
+//! The shell intentionally follows Zed's workspace translation: one native
 //! title bar, a dock-managed pane tree, compact status chrome, and panels that
 //! own only presentation. Bunting's existing FIX/session client remains the
 //! sole transport and projection boundary.
@@ -11,12 +11,13 @@ use bunting_tui::client::{
     competition_action, competition_requests, new_order,
 };
 use gpui::{
+    InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _,
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     Hsla, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription,
     Window, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, ScrollableElement as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     chart::CandlestickChart,
     dock::{Panel, PanelControl, PanelEvent},
