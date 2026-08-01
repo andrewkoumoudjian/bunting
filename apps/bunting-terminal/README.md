@@ -4,6 +4,7 @@ A native GPUI desktop client for the Bunting FIX server. It uses one native appl
 
 ## Implemented terminal surface
 
+- component-based cross-platform title bar and outer application shell;
 - live quote-candlestick chart backed by bounded FIX L1 snapshots;
 - aggregated bid/ask order book with best-price actions;
 - limit and market order entry;
@@ -19,9 +20,15 @@ A native GPUI desktop client for the Bunting FIX server. It uses one native appl
 
 The application does not contain a matcher or a second account model. It imports the same native profile, TLS, FIX-session, recovery, bounded-channel and projection reducer used by `bunting-tui`.
 
+## Component system
+
+The terminal directly pins `longbridge/gpui-component@88f102d13654fe25aa2fede076274b6b751a3704`. Its full Apache-2.0 `crates/ui/src` surface is approved for use, including title/status bars, docks, resizable panes, tables, charts, plots, inputs, menus, dialogs, notifications, sidebars, skeletons, progress indicators, tabs, tooltips, badges, lists, trees and themes. Custom UI code is reserved for Bunting market composition and true free-floating internal windows.
+
+Coop and Zorite are useful GPUI interaction references, but both are GPL-3.0-or-later. Their source is not copied into this Apache-2.0 application.
+
 ## Build
 
-The GPUI revision used by `gpui-component 0.5.2` requires Rust 1.95, so this standalone app carries a local toolchain file and is intentionally excluded from the repository's Rust 1.88 workspace.
+The pinned GPUI/component source requires Rust 1.95, so this standalone app carries a local toolchain file and is intentionally excluded from the repository's Rust 1.88 workspace.
 
 ```bash
 cargo run --manifest-path apps/bunting-terminal/Cargo.toml
@@ -48,6 +55,10 @@ The top field currently accepts `TRADING`, `RESEARCH`, `COMP`, `REFRESH`, `RECON
 
 Prices are displayed in Bunting price ticks, quantity in lots, and account values in exact minor units. Quote candles summarize bid/ask snapshots; they are not represented as authoritative trade OHLC bars. All commands remain subject to server-side authentication, role, risk, run lifecycle, idempotency and FIX sequence rules.
 
+## Validation
+
+The macOS workflow supplies compiler, test, Clippy and formatting diagnostics. It is not a delivery gate for this implementation; unverified or failing checks are reported explicitly while development continues.
+
 ## Source provenance
 
-See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`../../docs/gpui-terminal-reference-inventory.md`](../../docs/gpui-terminal-reference-inventory.md). The application uses Apache-2.0 GPUI and gpui-component code/API patterns and an MIT Comet shell pattern. GPL/AGPL applications are reference-only.
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and [`../../docs/gpui-terminal-reference-inventory.md`](../../docs/gpui-terminal-reference-inventory.md). The application uses Apache-2.0 GPUI and the complete approved gpui-component surface, plus an MIT Comet shell pattern. GPL/AGPL applications are reference-only.
