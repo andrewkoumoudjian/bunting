@@ -1,6 +1,7 @@
 use crate::terminal::Terminal;
 use gpui::{
-    App, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window, div, px,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+    Window, div, px,
 };
 use gpui_component::{Root, TitleBar};
 
