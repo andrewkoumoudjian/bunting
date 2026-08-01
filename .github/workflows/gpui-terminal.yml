@@ -49,7 +49,7 @@ jobs:
       - name: Install pinned Wasmer runtime
         run: |
           set -o pipefail
-          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io | sh -s -- v 7.2.1
+          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io | sh -s -- v7.2.1
           "$HOME/.wasmer/bin/wasmer" --version | grep -Fq 'wasmer 7.2.1'
           echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
       - name: Build and validate portable server module
