@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod model;
+mod shell;
 mod terminal;
 
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component::TitleBar;
 use gpui_component_assets::Assets;
 use gpui_platform::application;
+use shell::AppShell;
 use terminal::Terminal;
 
 fn main() {
@@ -25,7 +27,8 @@ fn main() {
             },
             |window, cx| {
                 let terminal = cx.new(|cx| Terminal::new(window, cx));
-                terminal::root(terminal, window, cx)
+                let shell = cx.new(|_| AppShell::new(terminal));
+                shell::root(shell, window, cx)
             },
         )
         .expect("failed to open the Bunting terminal window");
