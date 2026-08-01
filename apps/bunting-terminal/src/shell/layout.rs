@@ -23,14 +23,19 @@ impl AppShell {
             cx.notify();
         });
 
+        let local_server = LocalServerController::new();
+        let server_snapshot = local_server.snapshot();
         let mut shell = Self {
             terminal,
             dock_area,
             panels,
             snapshot,
+            local_server,
+            server_snapshot,
             _terminal_observer,
         };
         shell.reset_workspace(WorkspacePreset::Trading, window, cx);
+        shell.schedule_local_server_poll(cx);
         shell
     }
 
@@ -170,6 +175,71 @@ impl AppShell {
         });
     }
 
+    fn schedule_local_server_poll(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+                this.update(cx, |shell, cx| {
+                    let became_ready = shell.local_server.poll();
+                    shell.server_snapshot = shell.local_server.snapshot();
+                    if became_ready {
+                        shell.terminal.update(cx, |terminal, cx| {
+                            terminal.set_status(
+                                "Local WASM server ready; reconnecting the FIX session",
+                                cx,
+                            );
+                            terminal.reconnect(cx);
+                        });
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn start_local_server(&mut self, cx: &mut Context<Self>) {
+        let result = self.local_server.start();
+        self.server_snapshot = self.local_server.snapshot();
+        match result {
+            Ok(status) => {
+                self.terminal
+                    .update(cx, |terminal, cx| terminal.set_status(status, cx));
+                if self.local_server.is_ready() {
+                    self.terminal
+                        .update(cx, |terminal, cx| terminal.reconnect(cx));
+                }
+            }
+            Err(error) => {
+                self.terminal
+                    .update(cx, |terminal, cx| terminal.set_status(error, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    fn stop_local_server(&mut self, cx: &mut Context<Self>) {
+        let result = self.local_server.stop();
+        self.server_snapshot = self.local_server.snapshot();
+        let status = result.unwrap_or_else(|error| error);
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_status(status, cx));
+        cx.notify();
+    }
+
+    fn toggle_local_server(&mut self, cx: &mut Context<Self>) {
+        if self.local_server.is_owned() {
+            self.stop_local_server(cx);
+        } else {
+            self.start_local_server(cx);
+        }
+    }
+
     fn execute_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self.terminal.read(cx).command_input();
         let command = input.read(cx).value().trim().to_ascii_uppercase();
@@ -179,6 +249,10 @@ impl AppShell {
             "COMPETITION" | "COMP" | "RIT" => {
                 self.reset_workspace(WorkspacePreset::Competition, window, cx);
             }
+            "SERVER" | "START SERVER" | "SERVER START" | "WASM" => {
+                self.start_local_server(cx);
+            }
+            "STOP SERVER" | "SERVER STOP" => self.stop_local_server(cx),
             "RECONNECT" => self.terminal.update(cx, |terminal, cx| terminal.reconnect(cx)),
             "REFRESH" | "GO" | "BNT" | "BOOK" => {
                 self.terminal.update(cx, |terminal, cx| terminal.refresh(cx));
@@ -197,5 +271,4 @@ impl AppShell {
     ) {
         self.reset_workspace(preset, window, cx);
     }
-
 }

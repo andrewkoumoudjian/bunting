@@ -1,4 +1,5 @@
 use crate::{
+    local_server::{LocalServerController, LocalServerSnapshot},
     model::{PanelKind, WorkspacePreset},
     terminal::{MarketPanel, Terminal, TerminalSnapshot},
 };
@@ -17,7 +18,7 @@ use gpui_component::{
     status_bar::StatusBar,
     v_flex,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 const DOCK_VERSION: usize = 2;
 
@@ -26,9 +27,10 @@ pub struct AppShell {
     dock_area: Entity<DockArea>,
     panels: HashMap<PanelKind, Entity<MarketPanel>>,
     snapshot: TerminalSnapshot,
+    local_server: LocalServerController,
+    server_snapshot: LocalServerSnapshot,
     _terminal_observer: Subscription,
 }
-
 
 include!("shell/layout.rs");
 include!("shell/view.rs");

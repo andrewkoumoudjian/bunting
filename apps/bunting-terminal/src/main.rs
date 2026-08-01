@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod local_server;
 mod model;
 mod shell;
 mod terminal;

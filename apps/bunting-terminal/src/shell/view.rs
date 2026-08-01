@@ -2,6 +2,15 @@ impl AppShell {
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let command_input = self.terminal.read(cx).command_input();
         let active_preset = self.terminal.read(cx).active_preset();
+        let server_label: SharedString = if self.server_snapshot.owned {
+            "Stop Server".into()
+        } else if self.server_snapshot.ready {
+            "Server Ready".into()
+        } else {
+            "Start Server".into()
+        };
+        let server_ready = self.server_snapshot.ready;
+        let server_owned = self.server_snapshot.owned;
 
         TitleBar::new()
             .child(
@@ -64,6 +73,18 @@ impl AppShell {
                             }))
                     }))
                     .child(
+                        Button::new("toggle-local-server")
+                            .xsmall()
+                            .when(server_owned, |button| button.danger())
+                            .when(!server_owned && server_ready, |button| button.success())
+                            .when(!server_owned && !server_ready, |button| button.secondary())
+                            .label(server_label)
+                            .tooltip(self.server_snapshot.detail.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_local_server(cx);
+                            })),
+                    )
+                    .child(
                         Button::new("refresh-market")
                             .xsmall()
                             .ghost()
@@ -107,8 +128,23 @@ impl AppShell {
                 div()
                     .flex_1()
                     .text_color(cx.theme().muted_foreground)
-                    .child(self.snapshot.status.clone()),
+                    .child(if self.server_snapshot.ready {
+                        self.snapshot.status.clone()
+                    } else {
+                        self.server_snapshot.detail.clone().into()
+                    }),
             )
+            .when(!self.server_snapshot.ready, |banner| {
+                banner.child(
+                    Button::new("banner-start-server")
+                        .xsmall()
+                        .secondary()
+                        .label("Start Local Server")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_local_server(cx);
+                        })),
+                )
+            })
             .child(
                 Button::new("banner-reconnect")
                     .xsmall()
@@ -190,6 +226,7 @@ impl AppShell {
             .right(
                 h_flex()
                     .gap_3()
+                    .child(format!("WASM {}", self.server_snapshot.label))
                     .child(format!("PROFILE {}", self.snapshot.profile))
                     .child(format!("ROLE {}", self.snapshot.role))
                     .child(format!("FIX {}", self.snapshot.connection))
