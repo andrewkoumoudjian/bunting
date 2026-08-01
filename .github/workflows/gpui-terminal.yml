@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: gpui-terminal-${{ github.ref }}
@@ -47,65 +47,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             apps/bunting-terminal/target
-          key: gpui-terminal-${{ runner.os }}-${{ hashFiles('apps/bunting-terminal/Cargo.toml', '.github/workflows/gpui-terminal.yml') }}
+          key: gpui-terminal-${{ runner.os }}-${{ hashFiles('apps/bunting-terminal/Cargo.lock') }}
 
-      - name: Pin the audited GPUI source graph
+      - name: Verify the audited GPUI source graph
         run: |
-          cargo +1.95.0 generate-lockfile --manifest-path apps/bunting-terminal/Cargo.toml
-          cargo +1.95.0 update --manifest-path apps/bunting-terminal/Cargo.toml -p gpui --precise 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba
           grep -q 'zed#1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba' apps/bunting-terminal/Cargo.lock
-
-      - name: Normalize the terminal module and persist the resolved lock
-        if: github.event_name == 'push' && github.ref_name == 'feat/gpui-market-terminal'
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          main_path = Path("apps/bunting-terminal/src/main.rs")
-          main = main_path.read_text()
-          main = re.sub(
-              r'mod terminal \{\n.*?\n\}\n\nuse gpui',
-              'mod terminal;\n\nuse gpui',
-              main,
-              count=1,
-              flags=re.S,
-          )
-          main_path.write_text(main)
-
-          terminal_path = Path("apps/bunting-terminal/src/terminal.rs")
-          terminal = terminal_path.read_text()
-          if "StatefulInteractiveElement as _" not in terminal:
-              old = (
-                  "    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,\n"
-                  "    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,\n"
-              )
-              new = (
-                  "    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, SharedString,\n"
-                  "    StatefulInteractiveElement as _, Styled as _, Window, div,\n"
-                  "    prelude::FluentBuilder as _, px, rgb,\n"
-              )
-              if old not in terminal:
-                  raise SystemExit("terminal GPUI import block changed; refusing an unbounded edit")
-              terminal = terminal.replace(old, new, 1)
-              terminal_path.write_text(terminal)
-          PY
-
-          cargo +1.95.0 fmt --manifest-path apps/bunting-terminal/Cargo.toml
-          git add apps/bunting-terminal/Cargo.lock apps/bunting-terminal/src/main.rs apps/bunting-terminal/src/terminal.rs
-          if ! git diff --cached --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "build(gpui): pin and normalize the desktop source graph"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
-          fi
-
-      - name: Preserve the resolved desktop lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: bunting-terminal-cargo-lock
-          path: apps/bunting-terminal/Cargo.lock
-          if-no-files-found: error
+          grep -q 'gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d1' apps/bunting-terminal/Cargo.lock
 
       - name: Check desktop client
         run: cargo +1.95.0 check --locked --manifest-path apps/bunting-terminal/Cargo.toml
