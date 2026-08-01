@@ -40,14 +40,27 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
 
+      - name: Pin the audited GPUI source graph
+        run: |
+          cargo +1.95.0 generate-lockfile --manifest-path apps/bunting-terminal/Cargo.toml
+          cargo +1.95.0 update --manifest-path apps/bunting-terminal/Cargo.toml -p gpui --precise 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba
+          grep -q 'zed#1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba' apps/bunting-terminal/Cargo.lock
+
+      - name: Preserve the resolved desktop lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: bunting-terminal-cargo-lock
+          path: apps/bunting-terminal/Cargo.lock
+          if-no-files-found: error
+
       - name: Check desktop client
-        run: cargo +1.95.0 check --manifest-path apps/bunting-terminal/Cargo.toml
+        run: cargo +1.95.0 check --locked --manifest-path apps/bunting-terminal/Cargo.toml
 
       - name: Run desktop client tests
-        run: cargo +1.95.0 test --manifest-path apps/bunting-terminal/Cargo.toml
+        run: cargo +1.95.0 test --locked --manifest-path apps/bunting-terminal/Cargo.toml
 
       - name: Lint desktop client
-        run: cargo +1.95.0 clippy --manifest-path apps/bunting-terminal/Cargo.toml --all-targets -- -D warnings
+        run: cargo +1.95.0 clippy --locked --manifest-path apps/bunting-terminal/Cargo.toml --all-targets -- -D warnings
 
       - name: Check formatting
         run: cargo +1.95.0 fmt --manifest-path apps/bunting-terminal/Cargo.toml --check
