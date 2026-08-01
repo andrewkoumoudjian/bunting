@@ -5,7 +5,7 @@ mod shell;
 mod terminal;
 
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
-use gpui_component::TitleBar;
+use gpui_component::{Theme, ThemeMode, TitleBar};
 use gpui_component_assets::Assets;
 use gpui_platform::application;
 use shell::AppShell;
@@ -15,6 +15,7 @@ fn main() {
     let app = application().with_assets(Assets);
     app.run(|cx: &mut App| {
         gpui_component::init(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
 
         let bounds = Bounds::centered(None, size(px(1680.), px(980.)), cx);
         cx.open_window(
