@@ -2,7 +2,14 @@
 
 mod model;
 mod shell;
-mod terminal;
+mod terminal {
+    include!("terminal.rs");
+
+    // GPUI keeps click handling for stateful elements on a dedicated trait.
+    // Keeping this import in the module wrapper avoids coupling the terminal
+    // implementation file to GPUI's prelude layout.
+    use gpui::StatefulInteractiveElement as _;
+}
 
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component::{Theme, ThemeMode, TitleBar};
