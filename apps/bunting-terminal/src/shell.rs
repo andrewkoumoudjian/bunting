@@ -1,52 +1,33 @@
-use crate::terminal::Terminal;
-use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    Window, div, px,
+use crate::{
+    model::{PanelKind, WorkspacePreset},
+    terminal::{MarketPanel, Terminal, TerminalSnapshot},
 };
-use gpui_component::{Root, TitleBar};
+use gpui::{
+    App, AppContext as _, Context, Edges, Entity, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    px,
+};
+use gpui_component::{
+    ActiveTheme as _, IconName, Root, Sizable as _, TitleBar,
+    button::{Button, ButtonVariants as _},
+    dock::{DockArea, DockItem, DockPlacement, PanelView},
+    h_flex,
+    input::Input,
+    status_bar::StatusBar,
+    v_flex,
+};
+use std::{collections::HashMap, sync::Arc};
+
+const DOCK_VERSION: usize = 2;
 
 pub struct AppShell {
     terminal: Entity<Terminal>,
+    dock_area: Entity<DockArea>,
+    panels: HashMap<PanelKind, Entity<MarketPanel>>,
+    snapshot: TerminalSnapshot,
+    _terminal_observer: Subscription,
 }
 
-impl AppShell {
-    pub fn new(terminal: Entity<Terminal>) -> Self {
-        Self { terminal }
-    }
-}
 
-impl Render for AppShell {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                TitleBar::new()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .child("BUNTING MARKET TERMINAL"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .mr_3()
-                            .text_xs()
-                            .child("GPUI  •  FIXT.1.1 / FIX 5.0 SP2"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .child(self.terminal.clone()),
-            )
-    }
-}
-
-pub fn root(shell: Entity<AppShell>, window: &mut Window, cx: &mut App) -> Entity<Root> {
-    cx.new(|cx| Root::new(shell, window, cx))
-}
+include!("shell/layout.rs");
+include!("shell/view.rs");
