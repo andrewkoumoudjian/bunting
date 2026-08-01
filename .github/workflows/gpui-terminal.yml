@@ -153,7 +153,7 @@ jobs:
           DMG="apps/bunting-terminal/dist/Bunting-Market-Terminal-v0.1.0-macos-arm64.dmg"
           CHECKSUM="${DMG}.sha256"
           RELEASE_SHA="$(git rev-parse HEAD)"
-          cat > release-notes.md <<EOF
+          cat > release-notes.md <<'EOF'
           Native Apple Silicon GPUI preview with a bundled portable Bunting WASM server.
 
           - Apple Silicon arm64; minimum macOS 13.0
@@ -163,10 +163,11 @@ jobs:
           - State/logs: `~/Library/Application Support/Bunting Market Terminal/server`
           - The app stops only the Wasmer child process it owns
           - Ad-hoc signed; not Apple-notarized
-          - Source: `${RELEASE_SHA}` on `feat/gpui-market-terminal`; draft PR #19
+          - Source branch: `feat/gpui-market-terminal`; draft PR #19
 
           The helper invokes Wasmer without a shell, grants config-derived directories, detects external listeners, reconnects FIX on readiness, and preserves operator-edited local files.
           EOF
+          printf '\n- Source commit: `%s`\n' "$RELEASE_SHA" >> release-notes.md
           if gh release view "${TERMINAL_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TERMINAL_TAG}" "${DMG}" "${CHECKSUM}" --repo "${GITHUB_REPOSITORY}" --clobber
             gh release edit "${TERMINAL_TAG}" --repo "${GITHUB_REPOSITORY}" \
