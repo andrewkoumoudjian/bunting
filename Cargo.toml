@@ -56,7 +56,7 @@ default-members = [
   "apps/bunting-tui",
   "apps/bunting-cli",
 ]
-exclude = ["ref", "vendor", "out"]
+exclude = ["ref", "vendor", "out", "apps/bunting-terminal"]
 
 [workspace.package]
 edition = "2024"
