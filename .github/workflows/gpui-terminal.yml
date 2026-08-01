@@ -100,7 +100,7 @@ jobs:
           - Source: `${RELEASE_SHA}` on `feat/gpui-market-terminal`
           - Draft PR: #19
 
-          Included terminal surfaces: floating/resizable internal market windows, quote chart, order book, limit/market order entry, cancellation, fills, account and positions, news, tenders, risk and score, competition controls, FIX diagnostics, and Trading/Research/Competition workspaces.
+          Included terminal surfaces: a native Zed-style dock workspace with resizable edge docks and tab groups, quote chart, order book, limit/market order entry, cancellation, fills, account and positions, news, tenders, risk and score, competition controls, FIX diagnostics, and deterministic Trading/Research/Competition workspace presets.
 
           On first launch, macOS may require Control-clicking the app and choosing **Open** because this preview is not notarized.
           EOF
