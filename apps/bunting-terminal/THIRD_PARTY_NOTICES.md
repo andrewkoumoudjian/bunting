@@ -17,15 +17,19 @@ Zed's separate `crates/ui` package is GPL-3.0-or-later. Its implementation is no
 ## GPUI Component
 
 - Repository: `https://github.com/longbridge/gpui-component`
-- Audited commit: `88f102d13654fe25aa2fede076274b6b751a3704`
-- Dependency releases: `gpui-component = 0.5.2`, `gpui-component-assets = 0.5.1`
+- Commit and direct git dependency: `88f102d13654fe25aa2fede076274b6b751a3704`
+- Packages: `gpui-component` (`crates/ui`, package version `0.5.2`) and `gpui-component-assets` (`crates/assets`, package version `0.5.1`)
 - License: Apache-2.0
-- Referenced/adapted paths:
-  - `examples/hello_world/src/main.rs` for `gpui_component::init` and `Root` initialization;
-  - `examples/input/src/main.rs` and `crates/story/src/stories/input_story.rs` for `InputState`/`Input` ownership;
-  - `docs/docs/components/chart.md` for `CandlestickChart` construction;
-  - public Button variants and theme-compatible component APIs.
-- Local divergence: components are composed into Bunting-specific market panels and operate only on shared Bunting FIX projections and commands.
+- Approved source surface: the complete `crates/ui/src` tree, including title bar, status bar, dock, resizable, table, chart, plot, input, button, menu, popover, dialog, notification, sidebar, skeleton, progress, tabs, tooltips, badges, lists, trees, theme, virtual-list and window helpers.
+- Currently used/adapted paths:
+  - `crates/ui/src/lib.rs` for component initialization and exported component surface;
+  - `crates/ui/src/root.rs` for application root ownership;
+  - `crates/ui/src/input/**` and `crates/story/src/stories/input_story.rs` for `InputState`/`Input` ownership;
+  - `crates/ui/src/button.rs` for button variants;
+  - `crates/ui/src/chart/**` for `CandlestickChart`;
+  - `crates/ui/src/status_bar.rs`, `crates/ui/src/title_bar.rs`, `crates/ui/src/menu/**`, `crates/ui/src/tooltip.rs`, and `crates/ui/src/badge.rs` as the preferred terminal chrome surface;
+  - `crates/ui/src/dock/**`, `crates/ui/src/resizable/**`, and `crates/story/examples/dock.rs` as the preferred saved-layout and split-pane source when a docked mode is added.
+- Local divergence: components are composed into Bunting-specific market panels and operate only on shared Bunting FIX projections and commands. The floating-window geometry and authority boundary remain first-party Bunting code.
 
 ## Comet
 
@@ -34,11 +38,13 @@ Zed's separate `crates/ui` package is GPL-3.0-or-later. Its implementation is no
 - License: MIT
 - Referenced path: `crates/ui/src/lib.rs`
 - Retained behavior: a single native GPUI application window with a minimum size and a first-party root shell.
-- Local divergence: Bunting uses standard native titlebar chrome and an internal floating market-window canvas instead of Comet's agent workspace.
+- Local divergence: Bunting uses a professional terminal shell and an internal floating market-window canvas instead of Comet's agent workspace.
 
 ## Additional audited design references not copied
 
 - `https://github.com/vicanso/zedis` — Apache-2.0; data-heavy connection, tabs, status and command-palette organization.
 - `https://github.com/futureboard/Futureboard` — Apache-2.0; spatial canvas, dragging, selection and status-bar organization.
+- `https://github.com/lumehq/coop@bb455871e536273d3366ce2ac9578cdcb65aab85` — GPL-3.0-or-later; polished cross-platform GPUI shell, theme switching, conversation navigation and responsive layout concepts only. No source copied.
+- `https://github.com/packetThrower/zorite@86a52230cbc6d1cd75f4d0a635643a5c9402b021` — GPL-3.0-or-later; tabs, persisted workspace state, search/command interaction, theme tokens, virtualized long-form views and infinite-canvas concepts only. No source copied.
 - `https://github.com/zealsprince/rox` — AGPL-3.0; panel-composition concept only. No source copied.
 - `https://github.com/zed-industries/zed/tree/main/crates/ui/src` — GPL-3.0-or-later; public design/API reference only. No source copied.
