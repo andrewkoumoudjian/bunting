@@ -36,6 +36,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: false
+      - name: Install WASIX host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes binutils lld
       - name: Install cargo-wasix bootstrap toolchain
         run: rustup toolchain install 1.95.0 --profile minimal
       - name: Install pinned WASIX toolchain
