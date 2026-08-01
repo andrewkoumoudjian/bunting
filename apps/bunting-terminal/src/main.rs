@@ -3,7 +3,8 @@
 mod model;
 mod terminal;
 
-use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_component::TitleBar;
 use gpui_component_assets::Assets;
 use gpui_platform::application;
 use terminal::Terminal;
@@ -18,11 +19,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(1180.), px(720.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Bunting Market Terminal".into()),
-                    appears_transparent: false,
-                    ..Default::default()
-                }),
+                titlebar: Some(TitleBar::title_bar_options()),
                 app_id: Some("bunting-terminal".into()),
                 ..Default::default()
             },
