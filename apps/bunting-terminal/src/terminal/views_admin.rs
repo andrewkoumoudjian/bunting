@@ -192,7 +192,7 @@ fn render_session(terminal: Entity<Terminal>, cx: &mut Context<MarketPanel>) -> 
             div()
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .p_3()
                 .font_family(cx.theme().mono_font_family.clone())
                 .child(log_rows),
