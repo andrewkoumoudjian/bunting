@@ -40,9 +40,6 @@ jobs:
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
 
-      - name: Check formatting
-        run: cargo +1.95.0 fmt --manifest-path apps/bunting-terminal/Cargo.toml --check
-
       - name: Check desktop client
         run: cargo +1.95.0 check --manifest-path apps/bunting-terminal/Cargo.toml
 
@@ -51,3 +48,6 @@ jobs:
 
       - name: Lint desktop client
         run: cargo +1.95.0 clippy --manifest-path apps/bunting-terminal/Cargo.toml --all-targets -- -D warnings
+
+      - name: Check formatting
+        run: cargo +1.95.0 fmt --manifest-path apps/bunting-terminal/Cargo.toml --check
