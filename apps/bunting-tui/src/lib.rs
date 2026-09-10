@@ -15,6 +15,24 @@ mod transport;
 #[cfg(not(target_arch = "wasm32"))]
 mod tui;
 
+/// Native Bunting terminal client boundary shared by alternate presentation layers.
+///
+/// This module exposes profiles, bounded FIX I/O ownership, projections and
+/// message constructors without exposing or duplicating authoritative market
+/// state. Desktop and terminal UIs must continue to submit commands through the
+/// same server-verified session.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod client {
+    pub use crate::config::{
+        ActorRole, ConnectionProfile, TerminalConfig, TransportConfig, WorkspaceLayout,
+    };
+    pub use crate::io_task::{IoTask, OutboundCmd, UiEvent};
+    pub use crate::protocol::{
+        Book, Execution, FixClient, Portfolio, PriceSample, book_request, cancel,
+        competition_action, competition_requests, new_order,
+    };
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Args;
 #[cfg(not(target_arch = "wasm32"))]
