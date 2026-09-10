@@ -1,7 +1,7 @@
 # Bunting canonical RIT-style GPUI terminal and multiplayer design
 
 Date: 2026-09-10
-Status: approved design, implementation pending plan/review
+Status: approved in chat; written specification pending final user review
 
 ## Goal
 
@@ -20,7 +20,7 @@ The exchange, origin, matching, risk, account, run-control, and competition stat
 5. The current quote-derived pseudo-candles are removed from the canonical market-history surface. Historical charts consume authoritative server-backed trades/OHLC/time-and-sales once that projection exists.
 6. Multiplayer collaboration is separated from market authority. Collaborative state may replicate workspace metadata, annotations, watchlists, chat, shared research, cursor/selection state, and similar non-authoritative artifacts; orders, fills, balances, positions, risk, run lifecycle, and market state never use a CRDT as their authority.
 7. DeltaDB is an optional future collaboration backend, not a current hard dependency. The public Zed repository does not currently expose the DeltaDB implementation as a reusable public crate/repository that Bunting can safely adopt. Zed's existing collaboration/server crates are GPL-3.0-or-later and may be used as architectural reference only unless Bunting's licensing strategy is deliberately changed.
-8. The collaboration layer therefore uses a Bunting-owned interface boundary so DeltaDB can be plugged in later if Zed publishes it under terms compatible with this project. The first implementation may use a permissively licensed CRDT/event-sync substrate or remain local-only until such a backend is selected.
+8. The collaboration layer uses a Bunting-owned interface boundary so DeltaDB can be plugged in later if Zed publishes it under terms compatible with this project. The initial terminal cutover implements the interface boundary and local collaboration model only; it does not select or ship a production CRDT backend. If multiplayer must ship before DeltaDB becomes reusable, backend selection is a separate design decision.
 
 ## Product information architecture
 
@@ -83,7 +83,7 @@ Quote-derived synthetic candles cannot be labeled or presented as trade OHLC. If
 
 ## Client extraction
 
-The current `bunting-tui::client` module is extracted into a UI-independent package, tentatively `packages/bunting-client`.
+The current `bunting-tui::client` module is extracted into `packages/bunting-client`.
 
 That package owns:
 
@@ -113,7 +113,7 @@ The archive schema must make command kind explicit and versioned. Replay must re
 
 ### Local server readiness and diagnostics
 
-The desktop launcher must stop probing readiness by opening the FIX participant socket. Readiness uses a versioned health/admin handshake that proves the peer is a compatible Bunting server without consuming a participant session.
+The desktop launcher must stop probing readiness by opening the FIX participant socket. Readiness uses `GET /health` on the admin HTTP listener, extended to return a versioned Bunting service identity, product/contract versions, and the configured run identity. The launcher rejects a responder whose identity, contract versions, or run do not match the selected terminal profile. No participant FIX connection is opened for readiness probing.
 
 Launcher failures return structured diagnostics containing phase, stable error code, human-readable detail, server log path, and process exit status where relevant. The UI surfaces the root cause rather than only `exit code 2`.
 
@@ -123,7 +123,7 @@ Discovered Wasmer executables are version-checked against the supported runtime 
 
 Malformed admin requests, bad FIX peers, TLS/terminator mismatches, participant disconnects, and per-session protocol errors must terminate or reject only the affected request/session. They must not bring down unrelated venue listeners or the scenario runtime.
 
-The top-level supervisor reports fatal listener/runtime failures distinctly and continues independent services where policy permits.
+The top-level supervisor distinguishes fatal listener/runtime failures from per-request/session failures. A fatal failure is reported with its service identity and shuts down the process cleanly rather than being confused with an ordinary participant disconnect.
 
 ### Authoritative reconnect accounting
 
@@ -171,7 +171,7 @@ The collaboration layer stores references to authoritative market facts, not cop
 
 ### Collaboration backend interface
 
-A UI-independent `CollaborationBackend` boundary should expose operations such as join/leave workspace, subscribe to replicated document changes, publish a local document operation, presence updates, and durable snapshot/recovery metadata.
+A UI-independent `CollaborationBackend` boundary exposes join/leave workspace, subscribe to replicated document changes, publish a local document operation, presence updates, and durable snapshot/recovery metadata.
 
 The domain model uses Bunting-owned types so the UI is independent of a specific CRDT vendor. A future `DeltaDbBackend` can implement this contract without changing exchange packages or the GPUI views.
 
@@ -187,7 +187,7 @@ Zed's currently public `collab` and `text` crates are GPL-3.0-or-later. Bunting 
 
 ## State and data flow
 
-1. The native client establishes a FIX session through the extracted client package.
+1. The native client establishes a FIX session through `packages/bunting-client`.
 2. The server authenticates the participant/role and remains the only command authority.
 3. Public/private committed projections update the client reducer with committed sequence/cursor information.
 4. GPUI entities own local view state and render typed projections.
@@ -239,11 +239,13 @@ Use GPUI Kit UI integration tests for real component interaction, focus, selecti
 
 ### Collaboration
 
-- two peers converge on the same non-authoritative shared document state;
+- two peers converge on the same non-authoritative shared document state once a production backend is selected;
 - reconnect/replay converges after missed operations;
 - presence loss does not alter document or market state;
 - collaboration messages cannot submit market commands or mutate account/order projections;
 - references to Bunting event/command IDs remain stable across collaboration edits.
+
+The initial cutover tests the interface with an in-memory deterministic collaboration backend; production network convergence tests begin only after a backend is separately selected.
 
 ## Migration sequence
 
@@ -252,11 +254,11 @@ Use GPUI Kit UI integration tests for real component interaction, focus, selecti
 3. Extend archive/replay to the complete competition command stream.
 4. Remove Cloudflare's obsolete command-authority implementation and bindings.
 5. Add authoritative trade/OHLC/time-and-sales projection primitives.
-6. Extract the UI-independent native FIX client package from `bunting-tui`.
+6. Extract the UI-independent native FIX client package from `bunting-tui` into `packages/bunting-client`.
 7. Migrate `bunting-terminal` to `gpui-kit` and remove independent old GPUI/component pins.
 8. Rebuild the default terminal composition as the RIT-style workstation and migrate every chart to GPUI Kit.
 9. Remove local fill/account fallback and make unavailable authority explicit.
-10. Add the collaboration interface seam, initially without coupling exchange correctness to any CRDT backend.
+10. Add `CollaborationBackend` plus an in-memory deterministic implementation for architecture and UI integration testing; do not ship networked CRDT collaboration in this cutover.
 11. Validate functional parity, accessibility/keyboard behavior, packaging, macOS release, and representative live competition flows.
 12. Retire Ratatui from canonical user-facing packaging/documentation once the GPUI terminal satisfies the parity gate.
 
@@ -278,4 +280,4 @@ The GPUI terminal becomes canonical only when:
 
 ## Non-goals
 
-This change does not attempt to recreate RIT's proprietary visual styling pixel-for-pixel, infer undocumented RIT formulas, make collaborative CRDT state authoritative for trading, copy GPL Zed collaboration code into Bunting, or depend on unpublished DeltaDB internals.
+This change does not attempt to recreate RIT's proprietary visual styling pixel-for-pixel, infer undocumented RIT formulas, make collaborative CRDT state authoritative for trading, copy GPL Zed collaboration code into Bunting, depend on unpublished DeltaDB internals, or choose a production collaboration backend before its source/license/protocol are audited.
