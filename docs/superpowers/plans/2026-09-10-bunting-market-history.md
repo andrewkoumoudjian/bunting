@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add bounded, deterministic, server-authoritative recent trade, time-and-sales, and OHLC projections so the GPUI terminal never fabricates market history from L1 quote snapshots.
+**Goal:** Add bounded, deterministic, server-authoritative recent OHLC and time-and-sales projections so the GPUI terminal never fabricates market history from L1 quote snapshots.
 
-**Architecture:** Extend the origin boundary with a bounded committed-event tail read, project `TradeExecuted` events into a versioned history model in `bunting-application`, expose that projection through the existing FIX competition-report channel, and reduce it into the native client. Bars are derived from committed trades using logical time, a versioned half-open interval policy, and explicit event-window metadata. This first slice is a bounded recent-history window; older-history pagination remains outside this implementation and the RIT ledger stays partial for deep historical analytics.
+**Architecture:** Read a bounded tail of committed events from the authoritative origin, derive trade prints and bars from `TradeExecuted` using logical time, and expose two separate bounded resource projections through the existing `BE` competition-resource message shape. Separating `market_history` bars from `time_and_sales` keeps each FIX payload below the profile's existing 16,384-byte payload/message budget. The native client reduces both projections and the GPUI chart consumes only authoritative bars.
 
 **Tech Stack:** Rust 1.88, origin-store, market-events, bunting-application, simfix-mapping, native FIX server/client, serde JSON reports.
 
@@ -12,19 +12,19 @@
 
 ## Global Constraints
 
-- History source is committed `EventPayload::TradeExecuted`; L1 quotes are not OHLC input.
-- Bar policy version is 1.
-- Bar buckets are anchored at logical time 0 and use half-open ranges `[start_ns, end_ns)`.
-- Empty buckets are omitted in v1; the API never fabricates zero-volume bars.
-- `open` is first committed trade in event-sequence order, `close` is last, `high`/`low` are extrema, and `volume_lots` is checked sum of trade quantities.
-- Every response includes the committed sequence and exact event-window sequence bounds used to build the projection.
-- Reads are bounded; default event-tail limit is 4096 and hard maximum is 16384 events per request.
-- Event tails are returned in ascending committed event-sequence order even though selection is from the most recent end of the run.
-- FIX custom message type `UC` is reserved for the market-history request/report; `simfix-wire` already recognizes `UC` as an allowed Bunting extension.
+- Source data is committed `EventPayload::TradeExecuted`; L1 quote samples never become OHLC or time-and-sales.
+- Bar policy version is 1. Buckets are anchored at logical time 0 and use half-open ranges `[start_ns, end_ns)`.
+- Empty buckets are omitted.
+- `open` is first committed trade in sequence order, `close` is last, `high`/`low` are extrema, and volume is a checked quantity sum.
+- Origin event-tail default is 4,096 events; hard maximum is 16,384 events per read.
+- Market-history response hard maximum is 48 bars. Time-and-sales response hard maximum is 64 trades.
+- Each serialized `10020=BuntingPayloadJSON` response must be at most 16,384 bytes; maximum-shape tests enforce this.
+- Existing `BE` resource messages remain the transport envelope. `10016` distinguishes `news`, `market_history`, and `time_and_sales`; no new FIX message type or profile version is invented for this slice.
+- This is recent bounded history. Older-history pagination remains unsupported and the RIT parity ledger must say so.
 
 ---
 
-### Task 1: Add a bounded committed-event tail to every `OriginStore` implementation
+### Task 1: Add bounded committed-event tail reads to every origin implementation
 
 **Files:**
 - Modify: `packages/origin-store/src/lib.rs`
@@ -35,7 +35,6 @@
 - Test: `packages/command-transaction/src/lib.rs`
 
 **Interfaces:**
-- Produces:
 
 ```rust
 pub const MAX_EVENT_READ_LIMIT: usize = 16_384;
@@ -56,21 +55,20 @@ pub trait OriginStore {
 }
 ```
 
-`load_event_tail` requires `limit > 0`, caps selection at `MAX_EVENT_READ_LIMIT`, selects the newest events, and returns them in ascending sequence order. Unknown run returns `OriginError::UnknownRun`.
+`load_event_tail` rejects zero, caps to 16,384, selects newest committed events, and returns them in ascending event-sequence order.
 
-- [ ] **Step 1: Write failing in-memory tail tests**
+- [ ] **Step 1: Write failing `InMemoryOrigin` tail tests**
 
-Commit enough commands to create at least four events, then assert:
+After creating at least four committed events:
 
 ```rust
 let tail = origin.load_event_tail(run_id, 2).unwrap();
-assert_eq!(tail.len(), 2);
-assert!(tail[0].sequence < tail[1].sequence);
 let all = origin.events(run_id).unwrap();
 assert_eq!(tail, all[all.len() - 2..]);
+assert!(tail[0].sequence < tail[1].sequence);
 ```
 
-Add a zero-limit test returning `OriginError::InvalidCommit` or introduce a more specific `OriginError::InvalidRead` and use that consistently. Add a hard-cap test against a populated synthetic event vector or a small helper that proves requested limits above 16384 are normalized to 16384 before slicing.
+Add a zero-limit error test and a limit-normalization unit test proving any requested limit above `MAX_EVENT_READ_LIMIT` becomes exactly 16,384 before slicing.
 
 - [ ] **Step 2: Run red**
 
@@ -78,11 +76,11 @@ Add a zero-limit test returning `OriginError::InvalidCommit` or introduce a more
 cargo test -p bunting-origin-store load_event_tail
 ```
 
-Expected: FAIL because the trait method does not exist.
+Expected: FAIL because the trait method is absent.
 
 - [ ] **Step 3: Implement `InMemoryOrigin::load_event_tail`**
 
-Under the existing mutex, require that the run exists, obtain its event vector, compute:
+Under the existing origin mutex, reject zero, require the run, then:
 
 ```rust
 let bounded = limit.min(MAX_EVENT_READ_LIMIT);
@@ -90,17 +88,23 @@ let start = events.len().saturating_sub(bounded);
 Ok(events[start..].to_vec())
 ```
 
-Reject zero before the slice.
+- [ ] **Step 4: Implement file/native origin support**
 
-- [ ] **Step 4: Implement `FileOriginStore::load_event_tail`**
+In `apps/bunting-server/src/storage.rs`, add the same method to `FileOriginStore`, reading the persisted per-run event vector under the same state lock as `load_run`. Delegate through `NativeOrigin` if it wraps memory/file variants.
 
-In `apps/bunting-server/src/storage.rs`, read the already persisted per-run event vector while holding the same state lock used by `load_run`; apply identical newest-tail/ascending-order semantics and hard bound.
+- [ ] **Step 5: Update `CommitRaceOrigin` test mock**
 
-If `NativeOrigin` is an enum/wrapper rather than another trait implementation, delegate to its memory/file variant in the same file.
+`packages/command-transaction/src/lib.rs` has:
 
-- [ ] **Step 5: Update the command-transaction test mock**
+```rust
+struct CommitRaceOrigin {
+    committed: InMemoryOrigin,
+    stale: RunState,
+    commit_attempted: AtomicBool,
+}
+```
 
-`packages/command-transaction/src/lib.rs` contains `CommitRaceOrigin: OriginStore`. Add:
+Add exactly:
 
 ```rust
 fn load_event_tail(
@@ -112,9 +116,7 @@ fn load_event_tail(
 }
 ```
 
-The forwarding target is the `InMemoryOrigin` already used by that mock. If the backing field has a different identifier in the branch when executing, rename only the receiver expression; do not return an empty vector just to satisfy the trait.
-
-- [ ] **Step 6: Run all trait-implementor tests**
+- [ ] **Step 6: Run all affected tests**
 
 ```bash
 cargo test -p bunting-origin-store
@@ -122,7 +124,7 @@ cargo test -p bunting-command-transaction
 cargo test -p bunting-server storage
 ```
 
-Expected: PASS and no `OriginStore` implementation is missing the new method.
+Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -133,7 +135,7 @@ git commit -m "feat: add bounded origin event tail"
 
 ---
 
-### Task 2: Define deterministic trade and OHLC projection types
+### Task 2: Define deterministic trade, time-and-sales, and OHLC projections
 
 **Files:**
 - Modify: `packages/bunting-application/src/competition.rs`
@@ -141,11 +143,12 @@ git commit -m "feat: add bounded origin event tail"
 - Test: `packages/bunting-application/src/competition.rs`
 
 **Interfaces:**
-- Produces:
 
 ```rust
 pub const MARKET_HISTORY_POLICY_VERSION: u16 = 1;
 pub const DEFAULT_HISTORY_EVENT_LIMIT: usize = 4_096;
+pub const MAX_HISTORY_BARS: usize = 48;
+pub const MAX_TIME_AND_SALES_TRADES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TradePrint {
@@ -178,8 +181,18 @@ pub struct MarketHistoryProjection {
     pub window_first_sequence: Option<EventSequence>,
     pub window_last_sequence: Option<EventSequence>,
     pub truncated_before_window: bool,
-    pub trades: Vec<TradePrint>,
     pub bars: Vec<OhlcBar>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimeAndSalesProjection {
+    pub run_id: RunId,
+    pub instrument_id: InstrumentId,
+    pub committed_sequence: EventSequence,
+    pub window_first_sequence: Option<EventSequence>,
+    pub window_last_sequence: Option<EventSequence>,
+    pub truncated_before_window: bool,
+    pub trades: Vec<TradePrint>,
 }
 
 pub fn project_market_history(
@@ -187,75 +200,77 @@ pub fn project_market_history(
     events: &[EventEnvelope],
     instrument_id: InstrumentId,
     bar_interval_ns: u64,
+    bar_limit: usize,
 ) -> Result<MarketHistoryProjection, ApplicationError>;
+
+pub fn project_time_and_sales(
+    state: &RunState,
+    events: &[EventEnvelope],
+    instrument_id: InstrumentId,
+    trade_limit: usize,
+) -> Result<TimeAndSalesProjection, ApplicationError>;
 ```
 
-- [ ] **Step 1: Write failing golden-vector tests**
+- [ ] **Step 1: Write failing bar golden-vector test**
 
-Construct three committed `TradeExecuted` envelopes for one instrument at logical times 1, 40, and 100 with prices 10, 12, 11, quantities 2, 3, 4, and interval 100 ns. Assert the first two create:
+Create three `TradeExecuted` events for one instrument at logical times 1, 40, 100 with prices 10, 12, 11 and quantities 2, 3, 4. For interval 100 assert first bar is `[0,100)` with OHLC `10/12/10/12`, volume 5, count 2; the trade at exactly 100 begins the next bar.
 
-```rust
-assert_eq!(bars[0].start_ns, LogicalTimeNs::new(0));
-assert_eq!(bars[0].end_ns, LogicalTimeNs::new(100));
-assert_eq!(bars[0].open, PriceTicks::new(10));
-assert_eq!(bars[0].high, PriceTicks::new(12));
-assert_eq!(bars[0].low, PriceTicks::new(10));
-assert_eq!(bars[0].close, PriceTicks::new(12));
-assert_eq!(bars[0].volume_lots, QuantityLots::new(5));
-assert_eq!(bars[0].trade_count, 2);
-```
+- [ ] **Step 2: Write failing time-and-sales ordering/limit test**
 
-Assert the trade at exactly 100 starts the next bucket. Include another instrument event and prove it is excluded from trades/bars but still contributes to event-window bounds.
+With 70 matching trades and one other-instrument trade, call `project_time_and_sales(..., 64)` and assert exactly the newest 64 matching trades remain in ascending committed sequence order. Call with 65 and require a validation error rather than silent widening beyond `MAX_TIME_AND_SALES_TRADES`.
 
-- [ ] **Step 2: Run red**
+- [ ] **Step 3: Run red**
 
 ```bash
 cargo test -p bunting-application project_market_history
+cargo test -p bunting-application project_time_and_sales
 ```
 
-Expected: FAIL because history types/function do not exist.
+Expected: FAIL because projection types/functions are absent.
 
-- [ ] **Step 3: Validate the supplied committed window**
+- [ ] **Step 4: Implement shared committed-window validation**
 
-Reject zero `bar_interval_ns`. Require every envelope's run ID to equal `state.run_id()`, sequence to be strictly increasing, and last sequence not exceed `state.event_sequence()`. Set window bounds from the first/last supplied envelope regardless of whether that envelope is a trade.
-
-Set:
+Reject zero limits and limits over their respective hard maxima. Require all supplied events to match `state.run_id()`, have strictly increasing sequence, and not exceed `state.event_sequence()`. Compute `window_first_sequence`/`window_last_sequence` from supplied events, and:
 
 ```rust
-truncated_before_window = events
+let truncated_before_window = events
     .first()
     .is_some_and(|event| event.sequence.get() > 1);
 ```
 
-This explicitly tells the client that the bounded tail is not the full run transcript.
+- [ ] **Step 5: Implement trade extraction and bars**
 
-- [ ] **Step 4: Extract authoritative trades**
+Preserve committed sequence/logical time for matching `TradeExecuted`. Time-and-sales keeps the newest `trade_limit` matching prints. Bar aggregation uses logical-time bucket arithmetic with checked multiply/add, checked volume sum and checked trade count. After building bars, retain only the newest `bar_limit` bars while preserving ascending start time.
 
-Select only matching-instrument `EventPayload::TradeExecuted` and preserve the envelope's committed event sequence/logical time unchanged.
+- [ ] **Step 6: Add maximum serialized-size tests**
 
-- [ ] **Step 5: Aggregate bars**
+Construct worst-case numeric values and maximum counts, serialize each projection independently, and assert:
 
-Compute each bucket from `logical_time / bar_interval_ns`, use checked multiply/add for boundaries, checked quantity sum, and checked `trade_count`. Event order determines open/close. Logical-time regression across selected trades is an error; do not sort corrupt input silently.
+```rust
+assert!(serde_json::to_vec(&history).unwrap().len() <= 16_384);
+assert!(serde_json::to_vec(&time_and_sales).unwrap().len() <= 16_384);
+```
 
-- [ ] **Step 6: Run application tests**
+If either assertion fails, reduce its hard count constant in this task until the worst-case payload is under 16,384; do not raise the FIX profile payload limit.
+
+- [ ] **Step 7: Run package tests**
 
 ```bash
-cargo test -p bunting-application project_market_history
 cargo test -p bunting-application
 ```
 
-Expected: PASS.
+Expected: PASS including payload-size tests.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/bunting-application/src/competition.rs packages/bunting-application/src/lib.rs
-git commit -m "feat: project authoritative trade history"
+git commit -m "feat: project authoritative recent market history"
 ```
 
 ---
 
-### Task 3: Add the `UC` FIX market-history request/report
+### Task 3: Add `BE` resource requests for bars and time-and-sales
 
 **Files:**
 - Modify: `packages/simfix-mapping/src/lib.rs`
@@ -266,67 +281,70 @@ git commit -m "feat: project authoritative trade history"
 - Test: `apps/bunting-server/src/session_host.rs`
 
 **Interfaces:**
-- Extends `CompetitionRequest` with:
 
 ```rust
-MarketHistory {
-    instrument_id: u128,
-    event_limit: usize,
-    bar_interval_ns: u64,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarketHistoryRequestPayload {
+    pub instrument_id: InstrumentId,
+    pub event_limit: usize,
+    pub bar_interval_ns: u64,
+    pub bar_limit: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeAndSalesRequestPayload {
+    pub instrument_id: InstrumentId,
+    pub event_limit: usize,
+    pub trade_limit: usize,
 }
 ```
 
-The exact wire message type is `UC`, the action/resource name is `market_history`, and the server returns a public competition report whose JSON payload is `MarketHistoryProjection`.
-
-- [ ] **Step 1: Write failing mapping round-trip test**
-
-Build a `FixMessage::new("UC")` carrying the Bunting extension tags used by other competition requests and assert:
+`CompetitionRequest` adds:
 
 ```rust
-CompetitionRequest::MarketHistory {
-    instrument_id: 1,
-    event_limit: 4096,
-    bar_interval_ns: 60_000_000_000,
-}
+MarketHistory(MarketHistoryRequestPayload),
+TimeAndSales(TimeAndSalesRequestPayload),
 ```
 
-Use dedicated Bunting extension tags for the three numeric inputs in the same 10010-10020 reserved range without reusing a tag with a conflicting meaning inside the same message. Update `tools/generate_protocol.py` in Step 3 with those exact chosen tags so the generated registry is the authority for the mapping test.
+Wire requests use:
+
+```text
+35=BE
+10016=market_history | time_and_sales
+10018=query
+10020=<bounded JSON request payload>
+```
+
+Responses use the same `BE` envelope with `10018=snapshot` and the resource projection in `10020`.
+
+- [ ] **Step 1: Write failing mapping tests**
+
+Build two `FixMessage::new("BE")` requests. For history, set `10016=market_history`, `10018=query`, and payload JSON for instrument 1/event_limit 4096/bar_interval 60_000_000_000/bar_limit 48. For time-and-sales, use `10016=time_and_sales`, event_limit 4096/trade_limit 64. Assert exact `CompetitionRequest` variants.
 
 - [ ] **Step 2: Run red**
 
 ```bash
 cargo test -p simfix-mapping market_history
+cargo test -p simfix-mapping time_and_sales
 ```
 
-Expected: FAIL because `UC` is allowed by `simfix-wire` but not currently mapped to a `CompetitionRequest`.
+Expected: FAIL because current `BE` mapping recognizes only `10016=news`.
 
-- [ ] **Step 3: Define the exact `UC` tag contract and implement mapping**
+- [ ] **Step 3: Implement exact `BE` resource mapping**
 
-Use these fields:
+Preserve the current news branch, then add resource-kind branches for `market_history` and `time_and_sales`. Require `10018=query`, require tag 10020, deserialize with `serde_json`, and validate all limits against constants from `bunting-application`. Any unknown BE resource kind returns `MappingError::UnsupportedMessage`; malformed/oversized JSON returns the existing serialization/payload error class or a new exact `InvalidPayload` variant used by both resources.
 
-```text
-35=UC      MsgType
-48=<id>    SecurityID / instrument_id
-10016=market_history
-10021=<n>  event_limit
-10022=<ns> bar_interval_ns
-```
+- [ ] **Step 4: Implement server resource handling**
 
-Add tags 10021 and 10022 to the Bunting extension registry in `tools/generate_protocol.py` and regenerate `PROTOCOL.md`. In `simfix-mapping`, map `UC` only when `10016=market_history`; parse 48, 10021, and 10022 as unsigned values.
-
-Reject `event_limit == 0`, reject values above `MAX_EVENT_READ_LIMIT`, and reject `bar_interval_ns == 0`.
-
-- [ ] **Step 4: Implement server projection and `UC` response**
-
-For `CompetitionRequest::MarketHistory`, load current authoritative run state, call `origin.load_event_tail(run_id, event_limit)`, then `project_market_history(&state, &events, InstrumentId::new(instrument_id), bar_interval_ns)`.
-
-Return:
+For either request, load the current authoritative run state once and `origin.load_event_tail(run_id, event_limit)`. Call the corresponding projection function. Return through:
 
 ```rust
 competition_report(
-    "UC",
+    "BE",
     "public",
-    "market_history",
+    "market_history", // or "time_and_sales"
     "snapshot",
     "ok",
     state.sequence().get(),
@@ -334,29 +352,35 @@ competition_report(
 )
 ```
 
-Add a test that the generated/custom message registry contains `UC` exactly once and the mapping rejects `UC` with any other `10016` resource kind.
+`competition_report`'s existing 16,384-byte payload check remains unchanged and acts as a second defense after the maximum-shape tests.
 
-- [ ] **Step 5: Generate protocol docs and run tests**
+- [ ] **Step 5: Update generated protocol documentation**
+
+Do not add a new message type/tag. Update the generator/source schema description so `BE` is documented as the current Bunting bounded resource envelope for `news`, `market_history`, and `time_and_sales`, with resource-specific JSON schemas in 10020.
+
+- [ ] **Step 6: Run mapping/server/protocol tests**
 
 ```bash
 cargo test -p simfix-mapping market_history
+cargo test -p simfix-mapping time_and_sales
 cargo test -p bunting-server market_history
+cargo test -p bunting-server time_and_sales
 python3 tools/generate_protocol.py
 git diff --check
 ```
 
-Expected: PASS; protocol docs contain `UC`, tags 48/10016/10021/10022, and the market-history report semantics.
+Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/simfix-mapping/src/lib.rs apps/bunting-server/src/session_host.rs tools/generate_protocol.py PROTOCOL.md
-git commit -m "feat: expose bounded market history over FIX"
+git add packages/simfix-mapping/src/lib.rs apps/bunting-server/src/session_host.rs tools/generate_protocol.py PROTOCOL.md schemas/fix
+git commit -m "feat: expose authoritative market history resources"
 ```
 
 ---
 
-### Task 4: Reduce authoritative history in the native FIX client
+### Task 4: Reduce both history resources in the native client
 
 **Files:**
 - Modify: `apps/bunting-tui/src/protocol.rs`
@@ -365,43 +389,51 @@ git commit -m "feat: expose bounded market history over FIX"
 - Test: `apps/bunting-tui/src/protocol.rs`
 
 **Interfaces:**
-- Produces:
 
 ```rust
 pub market_history: Option<MarketHistoryProjection>,
+pub time_and_sales: Option<TimeAndSalesProjection>,
 pub market_history_stale: bool,
+pub time_and_sales_stale: bool,
 
 pub fn market_history_request(
     request_id: u128,
     instrument_id: u128,
     event_limit: usize,
     bar_interval_ns: u64,
+    bar_limit: usize,
+) -> FixMessage;
+
+pub fn time_and_sales_request(
+    request_id: u128,
+    instrument_id: u128,
+    event_limit: usize,
+    trade_limit: usize,
 ) -> FixMessage;
 ```
 
-These move unchanged into `packages/bunting-client` during the client-extraction plan.
-
 - [ ] **Step 1: Write failing reducer tests**
 
-Feed a valid `UC` report whose `committed_sequence` is 12 into `FixClient`, assert trade/bar/window metadata are preserved and `market_history_stale == false` while the client's committed sequence is 12. Advance committed sequence to 13 without a new history report and assert stale becomes true.
+Feed valid `BE` reports with `10016=market_history` and `10016=time_and_sales`, each at committed sequence 12. Assert exact projection preservation and stale flags false at sequence 12. Advance client committed sequence to 13 without fresh resource reports and assert both stale flags true.
 
 - [ ] **Step 2: Run red**
 
 ```bash
 cargo test -p bunting-tui market_history
+cargo test -p bunting-tui time_and_sales
 ```
 
-Expected: FAIL because reducer/constructor do not exist.
+Expected: FAIL because these resource reducers do not exist.
 
-- [ ] **Step 3: Implement constructor and reducer**
+- [ ] **Step 3: Implement request constructors**
 
-Build `35=UC`, `48=<instrument>`, `10016=market_history`, `10021=<event_limit>`, and `10022=<bar_interval_ns>`. Deserialize response `10020` directly into `MarketHistoryProjection`; do not create candle data in the transport layer.
+Both constructors create `FixMessage::new("BE")`, push `10016` resource kind, `10018=query`, and exact serialized request payload at 10020. They do not create a chart-specific type.
 
-- [ ] **Step 4: Request recent history during refresh**
+- [ ] **Step 4: Implement reducers and refresh requests**
 
-After FIX establishment, request the current selected instrument with `event_limit = DEFAULT_HISTORY_EVENT_LIMIT` and `bar_interval_ns = 60_000_000_000` for the initial view. Keep interval/limit arguments explicit so GPUI can request another bounded window later.
+Deserialize response 10020 directly into the corresponding application projection. After FIX establishment/refresh request current selected instrument with default event limit 4096, 60-second bar interval, 48 bars, and 64 trades.
 
-- [ ] **Step 5: Run TUI/client tests**
+- [ ] **Step 5: Run client tests**
 
 ```bash
 cargo test -p bunting-tui
@@ -413,12 +445,12 @@ Expected: PASS.
 
 ```bash
 git add apps/bunting-tui/src/protocol.rs apps/bunting-tui/src/io_task.rs apps/bunting-tui/src/lib.rs
-git commit -m "feat: reduce authoritative market history"
+git commit -m "feat: reduce authoritative market history resources"
 ```
 
 ---
 
-### Task 5: Remove quote-candle history from the GPUI model
+### Task 5: Remove quote-candle authority from the GPUI model
 
 **Files:**
 - Modify: `apps/bunting-terminal/src/terminal.rs`
@@ -427,8 +459,6 @@ git commit -m "feat: reduce authoritative market history"
 - Test: `apps/bunting-terminal/src/terminal/state.rs`
 
 **Interfaces:**
-- Removes `quote_candles()`/quote-to-OHLC history.
-- Produces a typed chart view from `client.market_history` only:
 
 ```rust
 pub struct ChartHistoryView {
@@ -443,24 +473,25 @@ pub struct ChartHistoryView {
 
 - [ ] **Step 1: Write failing model test**
 
-Give the terminal L1 book/quote samples but no market-history report and assert `chart_history().bars.is_empty()`. Then inject one authoritative bar and assert exactly that bar is returned.
+Give the terminal L1 quote/book samples but no `market_history`; assert `chart_history().bars.is_empty()`. Inject one authoritative `OhlcBar` and assert exactly that bar is returned. Add a separate assertion that time-and-sales rows come only from `client.time_and_sales`.
 
 - [ ] **Step 2: Run red**
 
 ```bash
 cd apps/bunting-terminal
 cargo test chart_history
+cargo test time_and_sales
 ```
 
-Expected: FAIL because current quote samples manufacture candles.
+Expected: chart test fails under current `quote_candles()` behavior.
 
-- [ ] **Step 3: Delete quote-candle accumulation**
+- [ ] **Step 3: Delete quote-to-candle state**
 
-Keep current bid/ask/spread L1 metrics, but no quote sample can enter chart-history bars.
+Keep current bid/ask/spread as L1 metrics, but no quote sample may enter chart-history or time-and-sales views.
 
 - [ ] **Step 4: Render explicit pre-GPUI-Kit states**
 
-Until the dedicated GPUI Kit chart plan executes, render `Authoritative trade history unavailable` when missing and `History stale at committed sequence N` when stale. If `truncated_before_window`, label the data `Recent history window`, not full-run history.
+When history is absent, show `Authoritative trade history unavailable`; when stale, include committed sequence; when `truncated_before_window`, label it `Recent history window`. Time-and-sales gets analogous unavailable/stale labels.
 
 - [ ] **Step 5: Run terminal tests**
 
@@ -480,7 +511,7 @@ git commit -m "fix: remove synthetic quote market history"
 
 ---
 
-### Task 6: Add end-to-end venue trade-to-history evidence
+### Task 6: Prove committed trade-to-history behavior end to end
 
 **Files:**
 - Modify: `apps/bunting-server/tests/tui_tcp_black_box.rs`
@@ -489,13 +520,13 @@ git commit -m "fix: remove synthetic quote market history"
 - Modify: `docs/research/rit-binary-audit/market-feature-ledger.md`
 
 **Interfaces:**
-- Proves one committed match appears unchanged in time-and-sales and in the deterministic OHLC projection consumed by the native client.
+- One real native-venue match must appear unchanged in both time-and-sales and its containing deterministic OHLC bar.
 
-- [ ] **Step 1: Add black-box history regression**
+- [ ] **Step 1: Add black-box integration test**
 
-Start native server fixture, create crossing authenticated orders that produce a known `TradeExecuted`, request `market_history`, and assert price, quantity, event sequence, logical time, and OHLC values match the committed trade. Also assert report `committed_sequence` equals the server/client committed sequence observed for that response.
+Start the native server fixture, create crossing authenticated participant orders that produce a known committed `TradeExecuted`, request both BE resources, and assert trade price/quantity/event sequence/logical time plus OHLC open/high/low/close/volume match the committed event. Assert both reports carry the expected committed sequence.
 
-- [ ] **Step 2: Run focused integration test**
+- [ ] **Step 2: Run focused test**
 
 ```bash
 cargo test -p bunting-server --test tui_tcp_black_box market_history
@@ -503,13 +534,13 @@ cargo test -p bunting-server --test tui_tcp_black_box market_history
 
 Expected: PASS.
 
-- [ ] **Step 3: Add focused path to canonical CI**
+- [ ] **Step 3: Add path to CI/local terminal smoke**
 
-Keep the integration test in the root suite and have the GPUI/local-server smoke request history after FIX establishment.
+Keep the test in canonical root CI and have the GPUI/local-server smoke request both history resources after FIX establishment.
 
 - [ ] **Step 4: Update RIT parity conservatively**
 
-Mark recent committed trade/time-and-sales/OHLC sourcing as implemented for the bounded tail contract only. Leave deep historical navigation, proprietary RIT analytics, drawing, and export partial/missing.
+Mark recent committed trade/time-and-sales/OHLC sourcing implemented for this bounded contract only. Leave older-history navigation, proprietary RIT analytics, drawing, and export partial/missing.
 
 - [ ] **Step 5: Run root validation**
 
