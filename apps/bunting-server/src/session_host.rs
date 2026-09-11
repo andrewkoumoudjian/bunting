@@ -6,7 +6,7 @@ use bunting_api_contract::{
 };
 use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationSnapshot, FixApplicationState,
-    FixCommandContext, VerifiedActor,
+    FixCommandContext, VerifiedActor, participant_open_order_count,
     competition::{account, discovery, news_tenders, risk_score},
     project_market,
 };
@@ -28,7 +28,6 @@ use simfix_mapping::{
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
-use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -132,7 +131,6 @@ pub(crate) fn handle_fix_connection(
     let mut interval_started = Instant::now();
     let interval = Duration::from_millis(config.matching_interval_ms);
     let mut interval_messages = 0_usize;
-    let mut open_orders = BTreeSet::new();
     loop {
         let count = match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
@@ -215,7 +213,10 @@ pub(crate) fn handle_fix_connection(
                 let outbound = match request {
                     Ok(FixApplicationRequest::Command(command)) => {
                         if matches!(command.payload, CommandPayload::SubmitOrder(_))
-                            && open_orders.len() >= config.max_open_orders
+                            && participant_open_order_count(
+                                &state,
+                                ParticipantId::new(credential.participant_id),
+                            ) >= config.max_open_orders
                         {
                             vec![business_reject(
                                 &message.msg_type,
@@ -225,18 +226,6 @@ pub(crate) fn handle_fix_connection(
                             let executed = service
                                 .execute(&actor, &command)
                                 .map_err(|error| format!("application command failed: {error}"))?;
-                            if executed.result.accepted {
-                                match &command.payload {
-                                    CommandPayload::SubmitOrder(order) => {
-                                        open_orders.insert(order.order_id);
-                                    }
-                                    CommandPayload::CancelOrder(cancel) => {
-                                        open_orders.remove(&cancel.order_id);
-                                    }
-                                    CommandPayload::ActivateKillSwitch
-                                    | CommandPayload::NbcDone(_) => {}
-                                }
-                            }
                             application
                                 .committed_messages(
                                     ParticipantId::new(credential.participant_id),
@@ -448,11 +437,22 @@ fn operator_command(action: &str, payload_json: Option<&str>) -> Result<Simulati
         "advance" => serde_json::from_str::<RunAdvancePayload>(payload)
             .map(|value| SimulationCommand::Advance { steps: value.steps })
             .map_err(|error| format!("invalid advance payload: {error}")),
+        "end_period" => serde_json::from_str::<RunReasonPayload>(payload)
+            .map(|value| SimulationCommand::EndPeriod {
+                reason: value.reason,
+            })
+            .map_err(|error| format!("invalid end_period payload: {error}")),
         "terminate" => serde_json::from_str::<RunReasonPayload>(payload)
-            .map(|value| SimulationCommand::Terminate {
+            .map(|value| SimulationCommand::TerminateRun {
                 reason: value.reason,
             })
             .map_err(|error| format!("invalid terminate payload: {error}")),
+        "halt" => serde_json::from_str::<bunting_market_types::InstrumentId>(payload)
+            .map(|instrument_id| SimulationCommand::HaltInstrument { instrument_id })
+            .map_err(|error| format!("invalid halt payload: {error}")),
+        "resume_instrument" => serde_json::from_str::<bunting_market_types::InstrumentId>(payload)
+            .map(|instrument_id| SimulationCommand::ResumeInstrument { instrument_id })
+            .map_err(|error| format!("invalid resume payload: {error}")),
         "publish_news" => serde_json::from_str::<PublishNewsPayload>(payload)
             .map(|value| SimulationCommand::PublishNews {
                 news_id: value.news_id,
@@ -460,7 +460,7 @@ fn operator_command(action: &str, payload_json: Option<&str>) -> Result<Simulati
                 headline: value.headline,
                 body: value.body,
             })
-            .map_err(|error| format!("invalid news payload: {error}")),
+            .map_err(|error| format!("invalid publish_news payload: {error}")),
         "open_tender" => serde_json::from_str::<OpenTenderPayload>(payload)
             .map(|value| SimulationCommand::OpenTender {
                 tender_id: value.tender_id,
@@ -471,101 +471,107 @@ fn operator_command(action: &str, payload_json: Option<&str>) -> Result<Simulati
                 price: value.price,
                 expires_at: value.expires_at,
             })
-            .map_err(|error| format!("invalid tender payload: {error}")),
-        "score" => Ok(SimulationCommand::ScoreIteration),
-        "fine" => serde_json::from_str::<ApplyFinePayload>(payload)
+            .map_err(|error| format!("invalid open_tender payload: {error}")),
+        "apply_fine" => serde_json::from_str::<ApplyFinePayload>(payload)
             .map(|value| SimulationCommand::ApplyFine {
                 participant_id: value.participant_id,
-                currency_id: value.currency_id,
                 amount: value.amount,
                 reason: value.reason,
             })
-            .map_err(|error| format!("invalid fine payload: {error}")),
+            .map_err(|error| format!("invalid apply_fine payload: {error}")),
         _ => Err(format!("unsupported operator action {action}")),
     }
 }
 
-fn typed_levels(levels: &[(i64, i64)], depth: usize) -> Vec<(PriceTicks, QuantityLots)> {
+fn typed_levels(
+    levels: &[(i64, i64)],
+    market_depth: usize,
+) -> Vec<(PriceTicks, QuantityLots)> {
     levels
         .iter()
-        .take(depth)
+        .take(market_depth)
         .map(|(price, quantity)| (PriceTicks::new(*price), QuantityLots::new(*quantity)))
         .collect()
 }
 
-fn read_first_message(
-    stream: &mut TcpStream,
-    limits: WireLimits,
-) -> Result<(Vec<u8>, FixMessage), String> {
-    let mut decoder = Decoder::try_new(limits)
-        .map_err(|error| format!("cannot load FIX dictionaries: {error:?}"))?;
-    let mut collected = Vec::new();
-    let mut buffer = vec![0; limits.max_message_bytes.min(8_192)];
-    loop {
-        let count = stream
-            .read(&mut buffer)
-            .map_err(|error| format!("cannot read FIX Logon: {error}"))?;
-        if count == 0 {
-            return Err("peer disconnected before FIX Logon".to_owned());
-        }
-        collected.extend_from_slice(&buffer[..count]);
-        if collected.len() > limits.max_message_bytes {
-            return Err("FIX Logon exceeds max_message_bytes".to_owned());
-        }
-        let messages = decoder
-            .push(&buffer[..count])
-            .map_err(|error| format!("invalid FIX Logon framing: {error:?}"))?;
-        if let Some(message) = messages.into_iter().next() {
-            return Ok((collected, message));
-        }
-    }
-}
-
-fn authenticate_logon<'a>(
-    message: &FixMessage,
-    config: &'a FixConfig,
-) -> Result<&'a RosterEntry, String> {
+fn authenticate_logon<'a>(logon: &FixMessage, config: &'a FixConfig) -> Result<&'a RosterEntry, String> {
+    let username = logon
+        .value(553)
+        .ok_or_else(|| "FIX Logon missing Username(553)".to_owned())?;
+    let password = logon
+        .value(554)
+        .ok_or_else(|| "FIX Logon missing Password(554)".to_owned())?;
+    let sender = logon
+        .value(49)
+        .ok_or_else(|| "FIX Logon missing SenderCompID(49)".to_owned())?;
+    let target = logon
+        .value(56)
+        .ok_or_else(|| "FIX Logon missing TargetCompID(56)".to_owned())?;
     let credential = config
         .roster
         .iter()
-        .find(|entry| {
-            message.value(49) == Some(entry.target_comp_id.as_str())
-                && constant_time_eq(message.value(553).unwrap_or_default(), &entry.username)
-        })
-        .ok_or_else(|| "FIX Logon credentials rejected".to_owned())?;
-    if message.msg_type != "A"
-        || message.value(56) != Some(config.sender_comp_id.as_str())
-        || message.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
-        || message.value(10000) != Some(FIX_COMPETITION_PROFILE_VERSION)
-        || message.value(10004) != Some(actor_role_name(credential.role))
+        .find(|entry| entry.username == username && entry.target_comp_id == sender)
+        .ok_or_else(|| "FIX Logon credentials are not on the configured roster".to_owned())?;
+    if !constant_time_eq(&credential.password, password)
+        || target != config.sender_comp_id
+        || logon.value(1137) != Some(simfix_wire::FIX_50_SP2_APPL_VER_ID)
+        || logon.value(10000) != Some(FIX_COMPETITION_PROFILE_VERSION)
     {
-        return Err("FIX Logon identity or Bunting profile is invalid".to_owned());
-    }
-    if !constant_time_eq(message.value(554).unwrap_or_default(), &credential.password) {
-        return Err("FIX Logon credentials rejected".to_owned());
+        return Err("FIX Logon negotiation or credentials rejected".to_owned());
     }
     Ok(credential)
 }
 
-const fn actor_role_name(role: ActorRole) -> &'static str {
-    match role {
-        ActorRole::Participant => "participant",
-        ActorRole::Team => "team",
-        ActorRole::Instructor => "instructor",
-        ActorRole::Administrator => "administrator",
-        ActorRole::BuiltInAgent => "built_in_agent",
+pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut difference = left.len() ^ right.len();
+    let max = left.len().max(right.len());
+    for index in 0..max {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or(0) ^ right.get(index).copied().unwrap_or(0),
+        );
+    }
+    difference == 0
+}
+
+fn read_first_message(stream: &mut TcpStream, limits: WireLimits) -> Result<(Vec<u8>, FixMessage), String> {
+    let mut decoder = Decoder::new(limits);
+    let mut read_buffer = vec![0_u8; limits.max_message_bytes.min(16_384)];
+    loop {
+        let count = stream
+            .read(&mut read_buffer)
+            .map_err(|error| format!("cannot read FIX Logon: {error}"))?;
+        if count == 0 {
+            return Err("FIX connection closed before Logon".to_owned());
+        }
+        let messages = decoder
+            .push(&read_buffer[..count])
+            .map_err(|error| format!("invalid FIX Logon frame: {error:?}"))?;
+        if let Some(message) = messages.into_iter().next() {
+            return Ok((decoder.take_consumed(), message));
+        }
     }
 }
 
-pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
-    let mut difference = left.len() ^ right.len();
-    for index in 0..256 {
-        difference |= usize::from(
-            left.as_bytes().get(index).copied().unwrap_or_default()
-                ^ right.as_bytes().get(index).copied().unwrap_or_default(),
-        );
+fn process_session_actions(
+    actions: Vec<SessionAction>,
+    stream: &mut TcpStream,
+    session_path: Option<&Path>,
+    session: &FixSession,
+    application: &FixApplicationState,
+) -> Result<(), String> {
+    for action in actions {
+        match action {
+            SessionAction::Send(frame) => stream
+                .write_all(&frame)
+                .map_err(|error| format!("cannot send FIX session response: {error}"))?,
+            SessionAction::Persist(_) => persist_session(session_path, session, application)?,
+            SessionAction::Application(_) | SessionAction::PeerLogon(_) => {}
+            SessionAction::Disconnect => return Err("FIX session requested disconnect".to_owned()),
+        }
     }
-    difference == 0 && left.len() <= 256 && right.len() <= 256
+    Ok(())
 }
 
 fn send_messages(
@@ -584,27 +590,15 @@ fn send_messages(
     persist_session(session_path, session, application)
 }
 
-fn process_session_actions(
-    actions: Vec<SessionAction>,
-    stream: &mut TcpStream,
-    session_path: Option<&Path>,
-    session: &FixSession,
-    application: &FixApplicationState,
-) -> Result<(), String> {
-    for action in actions {
-        match action {
-            SessionAction::Send(frame) => stream
-                .write_all(&frame)
-                .map_err(|error| format!("FIX socket write failed: {error}"))?,
-            SessionAction::Persist(_) => persist_session(session_path, session, application)?,
-            SessionAction::Disconnect => return Err("FIX session requested disconnect".to_owned()),
-            SessionAction::Application(_) => {
-                return Err("application action must be handled by caller".to_owned());
-            }
-            SessionAction::PeerLogon(_) => {}
-        }
+fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
+    if !path.exists() {
+        return Ok(None);
     }
-    Ok(())
+    let bytes = fs::read(path)
+        .map_err(|error| format!("cannot read native FIX session {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("invalid native FIX session {}: {error}", path.display()))
 }
 
 fn persist_session(
@@ -615,9 +609,9 @@ fn persist_session(
     let Some(path) = path else {
         return Ok(());
     };
-    if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create FIX snapshot directory: {error}"))?;
+            .map_err(|error| format!("cannot create FIX session directory: {error}"))?;
     }
     let snapshot = NativeFixSnapshot {
         version: 1,
@@ -625,39 +619,28 @@ fn persist_session(
         application: application.snapshot(),
     };
     let bytes = serde_json::to_vec(&snapshot)
-        .map_err(|error| format!("cannot encode FIX snapshot: {error}"))?;
+        .map_err(|error| format!("cannot encode native FIX session: {error}"))?;
     let temporary = path.with_extension("tmp");
-    let mut file =
-        File::create(&temporary).map_err(|error| format!("cannot create FIX snapshot: {error}"))?;
+    let mut file = File::create(&temporary)
+        .map_err(|error| format!("cannot create FIX session temp file: {error}"))?;
     file.write_all(&bytes)
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("cannot persist FIX snapshot: {error}"))?;
-    fs::rename(&temporary, path).map_err(|error| format!("cannot install FIX snapshot: {error}"))
+        .map_err(|error| format!("cannot persist FIX session: {error}"))?;
+    fs::rename(&temporary, path).map_err(|error| format!("cannot install FIX session: {error}"))
 }
 
-fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = fs::read(path).map_err(|error| format!("cannot read FIX snapshot: {error}"))?;
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| format!("invalid FIX snapshot: {error}"))
+fn fix_timestamp() -> String {
+    let now = time::OffsetDateTime::now_utc();
+    now.format(time::macros::format_description!(
+        "[year][month][day]-[hour]:[minute]:[second]"
+    ))
+    .unwrap_or_else(|_| "19700101-00:00:00".to_owned())
 }
 
 fn epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
-
-fn fix_timestamp() -> String {
-    let format = time::macros::format_description!(
-        "[year][month][day]-[hour]:[minute]:[second].[subsecond digits:3]"
-    );
-    match time::OffsetDateTime::now_utc().format(format) {
-        Ok(value) => value,
-        Err(_) => "19700101-00:00:00.000".to_owned(),
-    }
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
