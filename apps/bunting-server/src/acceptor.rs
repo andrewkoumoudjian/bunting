@@ -83,7 +83,7 @@ impl Drop for ConnectionGuard {
     }
 }
 
-const fn terminated_peer_allowed(expected: IpAddr, actual: IpAddr) -> bool {
+fn terminated_peer_allowed(expected: IpAddr, actual: IpAddr) -> bool {
     expected == actual
 }
 
@@ -148,14 +148,7 @@ mod tests {
         let cache = Arc::new(InMemorySnapshotCache::new());
         let writer = Arc::new(AuthoritativeWriter::new(Duration::from_millis(1), 8));
         let _server = thread::spawn(move || {
-            let _ = run(
-                &config,
-                StorageKind::Memory,
-                None,
-                &origin,
-                &cache,
-                &writer,
-            );
+            let _ = run(&config, StorageKind::Memory, None, &origin, &cache, &writer);
         });
 
         let connect = || -> Result<TcpStream, String> {

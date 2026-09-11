@@ -37,8 +37,10 @@ jobs:
         run: rustc --version | grep -F 'rustc 1.88.'
       - name: Install pinned Wasmer runtime
         run: |
+          set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
-            sh -s "v 7.2.1"
+            sh -s -- v7.2.1
+          "$HOME/.wasmer/bin/wasmer" --version | grep -Fq 'wasmer 7.2.1'
           echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
       - name: Build and package portable WASI server
         run: |
