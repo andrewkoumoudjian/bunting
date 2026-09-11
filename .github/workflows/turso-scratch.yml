@@ -1,0 +1,30 @@
+name: Turso scratch verification
+
+on:
+  push:
+    branches:
+      - "feat/bunting-turso-lockgen"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+      - name: Resolve and test Turso slice
+        run: |
+          set -euo pipefail
+          cargo test -p bunting-server --test turso_recovery
+      - name: Upload resolved lockfile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: turso-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
