@@ -2,6 +2,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ArrivalSequence(pub(crate) u64);
+
 /// Single authoritative commit gate with deterministic interval admission.
 pub(crate) struct AuthoritativeWriter {
     started: Instant,
@@ -36,7 +39,7 @@ impl AuthoritativeWriter {
 
     pub(crate) fn execute_interval<T>(
         &self,
-        action: impl FnOnce() -> Result<T, String>,
+        action: impl FnOnce(ArrivalSequence) -> Result<T, String>,
     ) -> Result<T, String> {
         let prior = self.queued.fetch_add(1, Ordering::AcqRel);
         if prior >= self.max_queue {
@@ -66,7 +69,7 @@ impl AuthoritativeWriter {
                 .map_err(|_| "arrival sequence wait is unavailable".to_owned())?;
         }
         let _gate = self.lock()?;
-        let result = action();
+        let result = action(ArrivalSequence(arrival));
         *next = next.saturating_add(1);
         self.turn.notify_all();
         result
@@ -92,15 +95,15 @@ mod tests {
         let writer = Arc::new(AuthoritativeWriter::new(Duration::from_millis(1), 8));
         let committed = Arc::new(Mutex::new(Vec::new()));
         let mut handles = Vec::new();
-        for value in 0..4 {
+        for value in [30, 20, 10, 0] {
             let writer = writer.clone();
             let committed = committed.clone();
             handles.push(thread::spawn(move || {
-                writer.execute_interval(|| {
+                writer.execute_interval(|arrival| {
                     committed
                         .lock()
                         .map_err(|_| "test lock".to_owned())?
-                        .push(value);
+                        .push((arrival.0, value));
                     Ok(())
                 })
             }));
@@ -111,10 +114,20 @@ mod tests {
                 .join()
                 .map_err(|_| "test thread panicked".to_owned())??;
         }
+        let committed = committed.lock().map_err(|_| "test lock".to_owned())?;
         assert_eq!(
-            *committed.lock().map_err(|_| "test lock".to_owned())?,
+            committed
+                .iter()
+                .map(|(arrival, _)| *arrival)
+                .collect::<Vec<_>>(),
             vec![0, 1, 2, 3]
         );
+        let mut values = committed
+            .iter()
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        assert_eq!(values, vec![0, 10, 20, 30]);
         Ok(())
     }
 }
