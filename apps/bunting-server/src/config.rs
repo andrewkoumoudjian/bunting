@@ -20,6 +20,7 @@ pub enum DeploymentProfile {
 pub enum StorageKind {
     Memory,
     File,
+    Turso,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,7 +125,6 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl ServerConfig {
-    /// Returns a bounded, ephemeral loopback profile suitable for local use.
     #[must_use]
     pub fn local_default() -> Self {
         Self {
@@ -242,18 +242,20 @@ impl ServerConfig {
                     "memory storage must not configure a path".to_owned(),
                 ));
             }
-            StorageKind::File if self.storage.path.as_deref().is_none_or(str::is_empty) => {
+            StorageKind::File | StorageKind::Turso
+                if self.storage.path.as_deref().is_none_or(str::is_empty) =>
+            {
                 return Err(ConfigError(
-                    "file storage requires a non-empty path".to_owned(),
+                    "durable storage requires a non-empty path".to_owned(),
                 ));
             }
-            StorageKind::Memory | StorageKind::File => {}
+            StorageKind::Memory | StorageKind::File | StorageKind::Turso => {}
         }
         if self.profile == DeploymentProfile::HostedNative
-            && (self.storage.kind != StorageKind::File || self.scenario.is_none())
+            && (self.storage.kind == StorageKind::Memory || self.scenario.is_none())
         {
             return Err(ConfigError(
-                "hosted-native requires bounded file storage and an immutable scenario".to_owned(),
+                "hosted-native requires bounded durable storage and an immutable scenario".to_owned(),
             ));
         }
         if let Some(fix) = &self.fix {
@@ -467,7 +469,7 @@ mod tests {
         let Err(error) = config.validate() else {
             return Err(ConfigError("memory-hosted profile was accepted".to_owned()));
         };
-        assert!(error.0.contains("bounded file storage"));
+        assert!(error.0.contains("bounded durable storage"));
         Ok(())
     }
 
