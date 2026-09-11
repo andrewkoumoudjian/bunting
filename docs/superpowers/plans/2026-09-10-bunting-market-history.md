@@ -20,6 +20,7 @@
 - Every response includes the committed sequence and exact event-window sequence bounds used to build the projection.
 - Reads are bounded; default event-tail limit is 4096 and hard maximum is 16384 events per request.
 - Event tails are returned in ascending committed event-sequence order even though selection is from the most recent end of the run.
+- FIX custom message type `UC` is reserved for the market-history request/report; `simfix-wire` already recognizes `UC` as an allowed Bunting extension.
 
 ---
 
@@ -111,7 +112,7 @@ fn load_event_tail(
 }
 ```
 
-Use the mock's actual backing field name if it differs at implementation time; the forwarding target is the `InMemoryOrigin` already used by that mock. Do not return an empty vector just to satisfy the trait.
+The forwarding target is the `InMemoryOrigin` already used by that mock. If the backing field has a different identifier in the branch when executing, rename only the receiver expression; do not return an empty vector just to satisfy the trait.
 
 - [ ] **Step 6: Run all trait-implementor tests**
 
@@ -254,7 +255,7 @@ git commit -m "feat: project authoritative trade history"
 
 ---
 
-### Task 3: Add a bounded FIX market-history request/report
+### Task 3: Add the `UC` FIX market-history request/report
 
 **Files:**
 - Modify: `packages/simfix-mapping/src/lib.rs`
@@ -275,11 +276,11 @@ MarketHistory {
 }
 ```
 
-Wire action name: `market_history`. The server returns a public competition report with projection name `market_history` and JSON body `MarketHistoryProjection`.
+The exact wire message type is `UC`, the action/resource name is `market_history`, and the server returns a public competition report whose JSON payload is `MarketHistoryProjection`.
 
 - [ ] **Step 1: Write failing mapping round-trip test**
 
-Build the request through the existing competition action constructor and assert:
+Build a `FixMessage::new("UC")` carrying the Bunting extension tags used by other competition requests and assert:
 
 ```rust
 CompetitionRequest::MarketHistory {
@@ -289,23 +290,51 @@ CompetitionRequest::MarketHistory {
 }
 ```
 
+Use dedicated Bunting extension tags for the three numeric inputs in the same 10010-10020 reserved range without reusing a tag with a conflicting meaning inside the same message. Update `tools/generate_protocol.py` in Step 3 with those exact chosen tags so the generated registry is the authority for the mapping test.
+
 - [ ] **Step 2: Run red**
 
 ```bash
 cargo test -p simfix-mapping market_history
 ```
 
-Expected: FAIL because action is unknown.
+Expected: FAIL because `UC` is allowed by `simfix-wire` but not currently mapped to a `CompetitionRequest`.
 
-- [ ] **Step 3: Implement strict request bounds**
+- [ ] **Step 3: Define the exact `UC` tag contract and implement mapping**
 
-Reject `event_limit == 0`, reject values above `MAX_EVENT_READ_LIMIT`, reject zero bar interval, and parse numeric fields using existing unsigned-integer competition mapping conventions. Do not silently accept an unbounded request.
+Use these fields:
 
-- [ ] **Step 4: Implement server projection**
+```text
+35=UC      MsgType
+48=<id>    SecurityID / instrument_id
+10016=market_history
+10021=<n>  event_limit
+10022=<ns> bar_interval_ns
+```
 
-For `MarketHistory`, load current authoritative run state, call `origin.load_event_tail(run_id, event_limit)`, and call `project_market_history(&state, &events, InstrumentId::new(instrument_id), bar_interval_ns)`.
+Add tags 10021 and 10022 to the Bunting extension registry in `tools/generate_protocol.py` and regenerate `PROTOCOL.md`. In `simfix-mapping`, map `UC` only when `10016=market_history`; parse 48, 10021, and 10022 as unsigned values.
 
-Return the report through the existing `competition_report` helper and choose the next currently unused custom message type from the repository's FIX profile. Determine it by inspecting the registry in `simfix-mapping` before editing; add an assertion that the chosen message type is unique in the registry. Do not hard-code `U7` if it is already assigned.
+Reject `event_limit == 0`, reject values above `MAX_EVENT_READ_LIMIT`, and reject `bar_interval_ns == 0`.
+
+- [ ] **Step 4: Implement server projection and `UC` response**
+
+For `CompetitionRequest::MarketHistory`, load current authoritative run state, call `origin.load_event_tail(run_id, event_limit)`, then `project_market_history(&state, &events, InstrumentId::new(instrument_id), bar_interval_ns)`.
+
+Return:
+
+```rust
+competition_report(
+    "UC",
+    "public",
+    "market_history",
+    "snapshot",
+    "ok",
+    state.sequence().get(),
+    &projection,
+)
+```
+
+Add a test that the generated/custom message registry contains `UC` exactly once and the mapping rejects `UC` with any other `10016` resource kind.
 
 - [ ] **Step 5: Generate protocol docs and run tests**
 
@@ -316,7 +345,7 @@ python3 tools/generate_protocol.py
 git diff --check
 ```
 
-Expected: PASS; protocol docs contain the exact request fields and market-history report.
+Expected: PASS; protocol docs contain `UC`, tags 48/10016/10021/10022, and the market-history report semantics.
 
 - [ ] **Step 6: Commit**
 
@@ -354,7 +383,7 @@ These move unchanged into `packages/bunting-client` during the client-extraction
 
 - [ ] **Step 1: Write failing reducer tests**
 
-Feed a valid report whose `committed_sequence` is 12 into `FixClient`, assert trade/bar/window metadata are preserved and `market_history_stale == false` while the client's committed sequence is 12. Advance committed sequence to 13 without a new history report and assert stale becomes true.
+Feed a valid `UC` report whose `committed_sequence` is 12 into `FixClient`, assert trade/bar/window metadata are preserved and `market_history_stale == false` while the client's committed sequence is 12. Advance committed sequence to 13 without a new history report and assert stale becomes true.
 
 - [ ] **Step 2: Run red**
 
@@ -366,11 +395,11 @@ Expected: FAIL because reducer/constructor do not exist.
 
 - [ ] **Step 3: Implement constructor and reducer**
 
-Use existing competition-action encoding. Deserialize report JSON directly into `MarketHistoryProjection`; do not create candle data in the transport layer.
+Build `35=UC`, `48=<instrument>`, `10016=market_history`, `10021=<event_limit>`, and `10022=<bar_interval_ns>`. Deserialize response `10020` directly into `MarketHistoryProjection`; do not create candle data in the transport layer.
 
 - [ ] **Step 4: Request recent history during refresh**
 
-After FIX establishment, request instrument 1/current selected instrument with `event_limit = DEFAULT_HISTORY_EVENT_LIMIT` and `bar_interval_ns = 60_000_000_000` for the initial view. Keep interval/limit arguments explicit so GPUI can request another bounded window later.
+After FIX establishment, request the current selected instrument with `event_limit = DEFAULT_HISTORY_EVENT_LIMIT` and `bar_interval_ns = 60_000_000_000` for the initial view. Keep interval/limit arguments explicit so GPUI can request another bounded window later.
 
 - [ ] **Step 5: Run TUI/client tests**
 
