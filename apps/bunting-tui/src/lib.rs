@@ -24,7 +24,8 @@ mod tui;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client {
     pub use crate::config::{
-        ActorRole, ConnectionProfile, TerminalConfig, TransportConfig, WorkspaceLayout,
+        ActorRole, ConnectionProfile, FIX_PROFILE_VERSION, TerminalConfig, TransportConfig,
+        WorkspaceLayout,
     };
     pub use crate::io_task::{IoTask, OutboundCmd, UiEvent};
     pub use crate::protocol::{
