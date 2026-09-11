@@ -110,7 +110,15 @@ jobs:
             fi
             sleep 0.25
           done
-          grep -Fq '"status":"ok"' /tmp/bunting-health.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/bunting-health.json', encoding='utf-8') as fh:
+              health = json.load(fh)
+          assert health['status'] == 'ok'
+          assert health['service'] == 'bunting-server'
+          assert health['healthContractVersion'] == 1
+          assert health['fixCompetitionProfileVersion']
+          PY
           curl --fail --silent \
             -H 'Authorization: Bearer replace-admin-token' \
             http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json

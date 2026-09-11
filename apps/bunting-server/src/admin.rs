@@ -7,6 +7,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+const HEALTH_CONTRACT_VERSION: u16 = 1;
+
 pub(crate) fn run(config: &AdminConfig, origin: &NativeOrigin) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind admin listener {}: {error}", config.bind))?;
@@ -15,6 +17,15 @@ pub(crate) fn run(config: &AdminConfig, origin: &NativeOrigin) -> Result<(), Str
         handle(&mut stream, config, origin)?;
     }
     Ok(())
+}
+
+fn health_body() -> serde_json::Value {
+    serde_json::json!({
+        "status": "ok",
+        "service": crate::SERVICE_NAME,
+        "healthContractVersion": HEALTH_CONTRACT_VERSION,
+        "fixCompetitionProfileVersion": bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION,
+    })
 }
 
 fn handle(
@@ -32,11 +43,7 @@ fn handle(
     let request = std::str::from_utf8(&bytes[..count]).unwrap_or_default();
     let first = request.lines().next().unwrap_or_default();
     if first == "GET /health HTTP/1.1" {
-        return write_http(
-            stream,
-            200,
-            &serde_json::json!({"status":"ok","service":crate::SERVICE_NAME}),
-        );
+        return write_http(stream, 200, &health_body());
     }
     if let Some(run) = first
         .strip_prefix("GET /admin/runs/")
@@ -88,4 +95,21 @@ fn write_http(stream: &mut TcpStream, status: u16, body: &serde_json::Value) -> 
         .write_all(header.as_bytes())
         .and_then(|()| stream.write_all(&body))
         .map_err(|error| format!("cannot write admin response: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_contract_identifies_bunting_and_protocol_version() {
+        let body = health_body();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["service"], crate::SERVICE_NAME);
+        assert_eq!(body["healthContractVersion"], 1);
+        assert_eq!(
+            body["fixCompetitionProfileVersion"],
+            bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION
+        );
+    }
 }
