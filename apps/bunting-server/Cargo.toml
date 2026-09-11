@@ -18,6 +18,7 @@ bunting-market-types.workspace = true
 bunting-runtime.workspace = true
 bunting-origin-store = { path = "../../packages/origin-store" }
 quarcc-execution-engine.workspace = true
+roaring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 simfix-mapping.workspace = true
