@@ -237,7 +237,7 @@ impl TursoOriginStore {
             .map_err(|_| OriginError::Unavailable)?;
         let database_path = path.to_string_lossy().into_owned();
         let connection = runtime.block_on(async {
-            let database = turso::Builder::new_local(database_path)
+            let database = turso::Builder::new_local(&database_path)
                 .build()
                 .await
                 .map_err(|_| OriginError::Unavailable)?;
@@ -274,14 +274,20 @@ impl TursoOriginStore {
                 .map_err(|_| OriginError::Unavailable)?;
             let run_id = run.run_id().get().to_string();
             let mut rows = transaction
-                .query("SELECT snapshot_json FROM bunting_runs WHERE run_id = ?1", [run_id.clone()])
+                .query(
+                    "SELECT snapshot_json FROM bunting_runs WHERE run_id = ?1",
+                    [run_id.clone()],
+                )
                 .await
                 .map_err(|_| OriginError::Unavailable)?;
             if let Some(row) = rows.next().await.map_err(|_| OriginError::Unavailable)? {
                 let encoded: String = row.get(0).map_err(|_| OriginError::Unavailable)?;
                 let existing = decode_run(&encoded)?;
                 return if existing == run {
-                    transaction.rollback().await.map_err(|_| OriginError::Unavailable)?;
+                    transaction
+                        .rollback()
+                        .await
+                        .map_err(|_| OriginError::Unavailable)?;
                     Ok(())
                 } else {
                     Err(OriginError::InvalidCommit)
@@ -299,7 +305,10 @@ impl TursoOriginStore {
                 )
                 .await
                 .map_err(|_| OriginError::Unavailable)?;
-            transaction.commit().await.map_err(|_| OriginError::Unavailable)
+            transaction
+                .commit()
+                .await
+                .map_err(|_| OriginError::Unavailable)
         })
     }
 
@@ -320,7 +329,9 @@ impl TursoOriginStore {
             let mut events = Vec::new();
             while let Some(row) = rows.next().await.map_err(|_| OriginError::Unavailable)? {
                 let encoded: String = row.get(0).map_err(|_| OriginError::Unavailable)?;
-                events.push(serde_json::from_str(&encoded).map_err(|_| OriginError::Unavailable)?);
+                events.push(
+                    serde_json::from_str(&encoded).map_err(|_| OriginError::Unavailable)?,
+                );
             }
             Ok(events)
         })
@@ -414,7 +425,10 @@ impl OriginStore for TursoOriginStore {
                 let result: CommandResult =
                     serde_json::from_str(&encoded).map_err(|_| OriginError::Unavailable)?;
                 return if fingerprint == request.fingerprint {
-                    transaction.rollback().await.map_err(|_| OriginError::Unavailable)?;
+                    transaction
+                        .rollback()
+                        .await
+                        .map_err(|_| OriginError::Unavailable)?;
                     Ok(CommitOutcome::Duplicate(result))
                 } else {
                     Err(OriginError::IdempotencyConflict)
@@ -438,7 +452,8 @@ impl OriginStore for TursoOriginStore {
                 .map_err(|_| OriginError::Unavailable)?;
             validate_commit(&request, current)?;
 
-            let command_count = count_rows(&transaction, "SELECT COUNT(*) FROM bunting_commands").await?;
+            let command_count =
+                count_rows(&transaction, "SELECT COUNT(*) FROM bunting_commands").await?;
             if command_count >= max_commands {
                 return Err(OriginError::Unavailable);
             }
