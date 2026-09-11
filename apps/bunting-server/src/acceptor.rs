@@ -26,7 +26,7 @@ pub(crate) fn run(
         StorageKind::File => {
             storage_path.map(|path| PathBuf::from(path).with_extension("fix-session.json"))
         }
-        StorageKind::Memory => None,
+        StorageKind::Memory | StorageKind::Turso => None,
     };
     loop {
         let (mut stream, _) = match listener.accept() {
