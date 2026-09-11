@@ -9,7 +9,7 @@ use bunting_command_transaction::{
     CachedSnapshot, CommandTransaction, ExecutedTransaction, PreparedCommand, SnapshotCache,
     TransactionError, prepare_command, prepare_simulation_command,
 };
-use bunting_engine::RunState;
+use bunting_engine::{OwnedOrderState, RunState};
 use bunting_market_events::{
     Command, CommandPayload, EventEnvelope, EventPayload, SimulationCommand,
     SimulationCommandRequest,
@@ -143,6 +143,18 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
     Ok(())
 }
 
+/// Returns the number of authoritative live/resting orders owned by one participant.
+#[must_use]
+pub fn participant_open_order_count(state: &RunState, participant_id: ParticipantId) -> usize {
+    state
+        .ownership()
+        .values()
+        .filter(|owned| {
+            owned.participant_id == participant_id && owned.state == OwnedOrderState::Active
+        })
+        .count()
+}
+
 /// Enforces participant versus operator authority for simulation-domain commands.
 pub fn authorize_simulation_command(
     actor: &VerifiedActor,
@@ -222,7 +234,7 @@ where
             .map_err(ApplicationError::from)
     }
 
-    /// Executes one authenticated simulation-domain command and returns committed facts.
+    /// Executes one authenticated simulation command and returns only committed facts.
     pub fn execute_simulation(
         &self,
         actor: &VerifiedActor,
@@ -558,7 +570,8 @@ mod tests {
     use bunting_command_transaction::InMemorySnapshotCache;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
     use bunting_market_events::{
-        NewsAudience, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
+        CancelOrder, NewsAudience, OrderKind, Side, SimulationCommand, SimulationCommandRequest,
+        SubmitOrder,
     };
     use bunting_market_types::{
         CommandId, InstrumentId, IterationId, MoneyMinor, NewsId, OrderId, PriceBounds, PriceTicks,
@@ -623,6 +636,33 @@ mod tests {
                 },
             }),
         }
+    }
+
+    #[test]
+    fn participant_open_order_count_tracks_authoritative_lifecycle() {
+        let participant = ParticipantId::new(7);
+        let submitted = run().transition(&command(), None).unwrap().candidate;
+        assert_eq!(participant_open_order_count(&submitted, participant), 1);
+
+        let canceled = submitted
+            .transition(
+                &Command {
+                    run_id: RunId::new(1),
+                    command_id: CommandId::new(2),
+                    correlation_id: CorrelationId::new(2),
+                    logical_time: LogicalTimeNs::new(2),
+                    expected_sequence: EventSequence::new(1),
+                    actor: participant,
+                    payload: CommandPayload::CancelOrder(CancelOrder {
+                        order_id: OrderId::new(1),
+                        participant_id: participant,
+                    }),
+                },
+                None,
+            )
+            .unwrap()
+            .candidate;
+        assert_eq!(participant_open_order_count(&canceled, participant), 0);
     }
 
     #[test]

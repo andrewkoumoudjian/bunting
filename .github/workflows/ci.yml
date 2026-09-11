@@ -33,17 +33,33 @@ jobs:
           rustup show
           rustup target add wasm32-unknown-unknown
 
+      - name: Verify repository Rust toolchain
+        run: |
+          set -euo pipefail
+          rustc --version | grep -F 'rustc 1.88.'
+          cargo --version
+
+      - name: Install cargo-wasix bootstrap Rust
+        run: rustup toolchain install 1.95.0 --profile minimal
+
       - name: Install pinned WASIX toolchain
         uses: wasix-org/cargo-wasix@v0.1.28
+        env:
+          RUSTUP_TOOLCHAIN: '1.95.0'
         with:
           version: "0.1.28"
           toolchain-version: "v2026-07-07.3+rust-1.96"
           locked: "true"
 
+      - name: Verify root toolchain was not replaced
+        run: rustc --version | grep -F 'rustc 1.88.'
+
       - name: Install pinned Wasmer runtime
         run: |
+          set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
-            sh -s "v 7.2.1"
+            sh -s -- v7.2.1
+          "$HOME/.wasmer/bin/wasmer" --version | grep -Fq 'wasmer 7.2.1'
           echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
 
       - name: Enforce architecture dependency policy
@@ -75,7 +91,7 @@ jobs:
 
       - name: Run QuickFIX-Go FIXT.1.1 and FIX 5.0 SP2 interop
         env:
-          BUNTING_SERVER_ARTIFACT: ${{ github.workspace }}/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu
+          BUNTING_SERVER_ARTIFACT: ${{ github.workspace }}/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm
           WASMER_BIN: /home/runner/.wasmer/bin/wasmer
         run: |
           tools/build_wasi_server.sh
@@ -85,7 +101,7 @@ jobs:
       - name: Smoke Wasmer-hosted WASI server
         run: |
           set -euo pipefail
-          BUNTING_SERVER_ARTIFACT="$GITHUB_WORKSPACE/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu" \
+          BUNTING_SERVER_ARTIFACT="$GITHUB_WORKSPACE/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm" \
             tools/run_wasi_server.py apps/bunting-server/config/local.json \
             > /tmp/bunting-server.log 2>&1 &
           server_pid=$!
@@ -96,7 +112,15 @@ jobs:
             fi
             sleep 0.25
           done
-          grep -Fq '"status":"ok"' /tmp/bunting-health.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/bunting-health.json', encoding='utf-8') as fh:
+              health = json.load(fh)
+          assert health['status'] == 'ok'
+          assert health['service'] == 'bunting-server'
+          assert health['healthContractVersion'] == 1
+          assert health['fixCompetitionProfileVersion']
+          PY
           curl --fail --silent \
             -H 'Authorization: Bearer replace-admin-token' \
             http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
