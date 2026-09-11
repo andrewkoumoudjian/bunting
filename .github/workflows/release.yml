@@ -18,11 +18,23 @@ jobs:
         with:
           submodules: false
       - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: wasix-org/cargo-wasix@v0.1.28
+      - name: Verify repository Rust toolchain
+        run: |
+          set -euo pipefail
+          rustc --version | grep -F 'rustc 1.88.'
+          cargo --version
+      - name: Install cargo-wasix bootstrap Rust
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install pinned WASIX toolchain
+        uses: wasix-org/cargo-wasix@v0.1.28
+        env:
+          RUSTUP_TOOLCHAIN: '1.95.0'
         with:
           version: "0.1.28"
           toolchain-version: "v2026-07-07.3+rust-1.96"
           locked: "true"
+      - name: Verify root toolchain was not replaced
+        run: rustc --version | grep -F 'rustc 1.88.'
       - name: Install pinned Wasmer runtime
         run: |
           curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
