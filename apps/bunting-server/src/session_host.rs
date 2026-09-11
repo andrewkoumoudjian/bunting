@@ -1,6 +1,6 @@
 use crate::config::{FixConfig, RosterEntry};
 use crate::storage::NativeOrigin;
-use crate::writer::AuthoritativeWriter;
+use crate::writer::{ArrivalSequence, AuthoritativeWriter};
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
 };
@@ -12,9 +12,7 @@ use bunting_application::{
 };
 use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::RunState;
-use bunting_market_events::{
-    CommandPayload, SimulationCommand, SimulationCommandRequest, TenderDecision,
-};
+use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
 use bunting_market_types::{
     CommandId, CorrelationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots, RunId,
     TenderId,
@@ -28,7 +26,6 @@ use simfix_mapping::{
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
-use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -132,7 +129,6 @@ pub(crate) fn handle_fix_connection(
     let mut interval_started = Instant::now();
     let interval = Duration::from_millis(config.matching_interval_ms);
     let mut interval_messages = 0_usize;
-    let mut open_orders = BTreeSet::new();
     loop {
         let count = match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
@@ -196,17 +192,26 @@ pub(crate) fn handle_fix_connection(
                 continue;
             }
             interval_messages = interval_messages.saturating_add(1);
-            let outbound = writer.execute_interval(|| {
+            let outbound = writer.execute_interval(|arrival_sequence| {
                 let state = service
                     .recover(RunId::new(config.run_id))
                     .map_err(|error| format!("run recovery failed: {error}"))?;
+                let participant = ParticipantId::new(credential.participant_id);
+                if message.msg_type == "D"
+                    && authoritative_open_order_count(&state, participant) >= config.max_open_orders
+                {
+                    return Ok(vec![business_reject(
+                        &message.msg_type,
+                        &format!("max_open_orders limit {}", config.max_open_orders),
+                    )]);
+                }
                 let request = application.map_message(
                     &message,
                     &FixCommandContext {
-                        actor: ParticipantId::new(credential.participant_id),
+                        actor: participant,
                         run_id: RunId::new(config.run_id),
                         expected_sequence: state.sequence(),
-                        logical_time: LogicalTimeNs::new(epoch_millis().saturating_mul(1_000_000)),
+                        logical_time: state.simulation().clock.now,
                         correlation_id: CorrelationId::new(u128::from(
                             session.snapshot().incoming_sequence,
                         )),
@@ -214,36 +219,15 @@ pub(crate) fn handle_fix_connection(
                 );
                 let outbound = match request {
                     Ok(FixApplicationRequest::Command(command)) => {
-                        if matches!(command.payload, CommandPayload::SubmitOrder(_))
-                            && open_orders.len() >= config.max_open_orders
-                        {
-                            vec![business_reject(
-                                &message.msg_type,
-                                &format!("max_open_orders limit {}", config.max_open_orders),
-                            )]
-                        } else {
-                            let executed = service
-                                .execute(&actor, &command)
-                                .map_err(|error| format!("application command failed: {error}"))?;
-                            if executed.result.accepted {
-                                match &command.payload {
-                                    CommandPayload::SubmitOrder(order) => {
-                                        open_orders.insert(order.order_id);
-                                    }
-                                    CommandPayload::CancelOrder(cancel) => {
-                                        open_orders.remove(&cancel.order_id);
-                                    }
-                                    CommandPayload::ActivateKillSwitch
-                                    | CommandPayload::NbcDone(_) => {}
-                                }
-                            }
-                            application
-                                .committed_messages(
-                                    ParticipantId::new(credential.participant_id),
-                                    &executed.events,
-                                )
-                                .map_err(|error| format!("FIX report mapping failed: {error}"))?
-                        }
+                        let executed = service.execute(&actor, &command).map_err(|error| {
+                            format!(
+                                "application command failed at venue arrival {}: {error}",
+                                arrival_sequence.0
+                            )
+                        })?;
+                        application
+                            .committed_messages(participant, &executed.events)
+                            .map_err(|error| format!("FIX report mapping failed: {error}"))?
                     }
                     Ok(FixApplicationRequest::MarketData {
                         request_id,
@@ -263,6 +247,7 @@ pub(crate) fn handle_fix_connection(
                         &state,
                         request,
                         u128::from(session.snapshot().incoming_sequence),
+                        arrival_sequence,
                     )?,
                     Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
                 };
@@ -279,6 +264,14 @@ pub(crate) fn handle_fix_connection(
     }
 }
 
+fn authoritative_open_order_count(state: &RunState, participant: ParticipantId) -> usize {
+    state
+        .simulation()
+        .private
+        .get(&participant)
+        .map_or(0, |projection| projection.live_orders.len())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the exhaustive competition request router keeps projection and mutation authority visible"
@@ -289,6 +282,7 @@ fn competition_messages<O: OriginStore, C: bunting_command_transaction::Snapshot
     state: &RunState,
     request: CompetitionRequest,
     request_id: u128,
+    arrival_sequence: ArrivalSequence,
 ) -> Result<Vec<FixMessage>, String> {
     let report = match request {
         CompetitionRequest::Discovery => competition_report(
@@ -351,7 +345,12 @@ fn competition_messages<O: OriginStore, C: bunting_command_transaction::Snapshot
                             },
                         },
                     )
-                    .map_err(|error| error.to_string())?
+                    .map_err(|error| {
+                        format!(
+                            "tender command failed at venue arrival {}: {error}",
+                            arrival_sequence.0
+                        )
+                    })?
                     .state
             };
             competition_report(
@@ -407,7 +406,12 @@ fn competition_messages<O: OriginStore, C: bunting_command_transaction::Snapshot
                         payload: operator_command(&action, payload_json.as_deref())?,
                     },
                 )
-                .map_err(|error| format!("operator command failed: {error}"))?;
+                .map_err(|error| {
+                    format!(
+                        "operator command failed at venue arrival {}: {error}",
+                        arrival_sequence.0
+                    )
+                })?;
             competition_report(
                 "UA",
                 "admin",
