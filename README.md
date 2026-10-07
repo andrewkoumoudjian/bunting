@@ -82,6 +82,17 @@ See:
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/deployment.md`](docs/deployment.md)
 
+## Core-first development priorities
+
+The immediate priority is a **robust, deterministic, high-performance Rust market
+simulator**, before further expansion of RIT-class UI or QUARCC competition
+features. The source-backed [core-engine status audit](docs/core-engine-status-2026-10-07.md)
+and [core-first implementation roadmap](docs/plans/core-first-market-simulator.md)
+record the known correctness, multi-venue, multi-day, accounting, persistence
+and replay gaps; they distinguish current code from proposals and include
+milestone acceptance gates. Existing accepted ADRs remain authoritative until
+explicitly superseded.
+
 ## Current architecture
 
 - `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.
