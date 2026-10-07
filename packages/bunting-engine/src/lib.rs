@@ -1718,13 +1718,13 @@ fn apply_trades(
     for transaction in &trade_info.transactions {
         let maker_upstream = sequential_id_from_text(&transaction.maker_order_id)
             .ok_or(EngineError::OwnershipInvariant)?;
-        let maker_id = ownership
-            .values()
-            .find(|owned| owned.upstream_order_id == maker_upstream)
-            .map(|owned| owned.order_id)
-            .ok_or(EngineError::OwnershipInvariant)?;
+        // Bunting reserves upstream sequential order IDs as the exact u64
+        // projection of its canonical OrderId, so the owner map is the index.
+        // Do not scan all historical orders for every fill.
+        let maker_id = OrderId::new(u128::from(maker_upstream));
         let maker = ownership
             .get(&maker_id)
+            .filter(|owned| owned.upstream_order_id == maker_upstream)
             .cloned()
             .ok_or(EngineError::OwnershipInvariant)?;
         let taker = ownership
