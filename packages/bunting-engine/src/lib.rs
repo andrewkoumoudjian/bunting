@@ -563,6 +563,18 @@ impl RunState {
             .collect();
         let mut simulation = SimulationState::from_scenario(&scenario.simulation)
             .map_err(|_| EngineError::InvalidScenario)?;
+        // ParticipantDefinition has one scalar cash balance, so this projection
+        // cannot safely represent initial cash across multiple currencies.
+        if let Some(first) = scenario.simulation.instruments.values().next() {
+            if scenario
+                .simulation
+                .instruments
+                .values()
+                .any(|instrument| instrument.settlement_currency != first.settlement_currency)
+            {
+                return Err(EngineError::InvalidScenario);
+            }
+        }
         if let Some(currency) = scenario
             .simulation
             .instruments
@@ -830,6 +842,7 @@ impl RunState {
                         price_bounds,
                         &book,
                         &mut ledger,
+                        &mut candidate.simulation,
                         &risk,
                         &mut candidate.ownership,
                         &mut payloads,
@@ -1043,6 +1056,45 @@ impl RunState {
         }
         if payloads.len() > MAX_EVENTS_PER_TRANSITION {
             return Err(EngineError::EventBatchTooLarge);
+        }
+        if let Some(currency) = candidate
+            .simulation
+            .instruments
+            .values()
+            .next()
+            .map(|instrument| instrument.settlement_currency)
+        {
+            // The legacy account projection is single-currency. Reject
+            // mismatched instruments until the risk account is multi-currency.
+            if candidate
+                .simulation
+                .instruments
+                .values()
+                .any(|instrument| instrument.settlement_currency != currency)
+            {
+                return Err(EngineError::Accounting);
+            }
+            for participant in candidate.participants.keys() {
+                ledger.set_cash(
+                    *participant,
+                    candidate
+                        .simulation
+                        .portfolio_ledger
+                        .balance(*participant, currency)
+                        .settled,
+                );
+                for instrument in candidate.simulation.instruments.keys() {
+                    ledger.set_position(
+                        *participant,
+                        *instrument,
+                        candidate
+                            .simulation
+                            .portfolio_ledger
+                            .position(*participant, *instrument)
+                            .settled,
+                    );
+                }
+            }
         }
         for payload in &payloads {
             candidate
@@ -1454,6 +1506,7 @@ fn prepare_submit(
     price_bounds: PriceBounds,
     book: &KernelBook,
     ledger: &mut Ledger,
+    simulation: &mut SimulationState,
     risk: &RiskState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
     payloads: &mut Vec<EventPayload>,
@@ -1580,6 +1633,7 @@ fn prepare_submit(
             engine_sequence,
             &trade_info,
             ledger,
+            simulation,
             ownership,
             payloads,
         )?;
@@ -1632,6 +1686,7 @@ fn apply_trades(
     engine_sequence: u64,
     trade_info: &TradeInfo,
     ledger: &mut Ledger,
+    simulation: &mut SimulationState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<(), EngineError> {
@@ -1674,7 +1729,7 @@ fn apply_trades(
                 taker.limit_price,
             )
         };
-        ledger.settle_trade(TradeSettlement {
+        let settlement = TradeSettlement {
             buyer,
             seller,
             instrument: taker.listing_key.instrument_id,
@@ -1682,7 +1737,9 @@ fn apply_trades(
             seller_limit,
             execution_price,
             quantity,
-        })?;
+        };
+        ledger.settle_trade(settlement)?;
+        simulation.post_trade(settlement).map_err(EngineError::Simulation)?;
         reduce_order(maker_id, quantity, ownership, payloads)?;
         reduce_order(taker_order_id, quantity, ownership, &mut Vec::new())?;
         payloads.push(EventPayload::TradeExecuted {

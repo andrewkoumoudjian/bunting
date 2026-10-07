@@ -2,7 +2,7 @@
 
 use bunting_ledger::{
     JournalPosting, JournalTransaction, LedgerError, PortfolioLedger, PostingAccount,
-    TransactionKind,
+    TradeSettlement, TransactionKind,
 };
 use bunting_market_events::{
     ClockMode, CompositeLeg, CompositePolicy, EventPayload, NewsAudience, OtcDecision, Side,
@@ -962,6 +962,27 @@ impl SimulationState {
             SimulationCommand::ScoreIteration => self.score_iteration(),
             SimulationCommand::MassCancel { .. } => Err(SimulationError::RequiresMatchingState),
         }
+    }
+
+    /// Records the financial effects of a matched fill in the simulation journal.
+    /// Minimal matching-only scenarios have no economic-instrument currency contract yet.
+    pub fn post_trade(&mut self, trade: TradeSettlement) -> Result<(), SimulationError> {
+        if self.instruments.is_empty() {
+            return Ok(());
+        }
+        let currency = self
+            .instruments
+            .get(&trade.instrument)
+            .ok_or(SimulationError::UnknownIdentity)?
+            .settlement_currency;
+        let next_id = self
+            .next_transaction_id
+            .checked_add(1)
+            .ok_or(SimulationError::ArithmeticOverflow)?;
+        self.portfolio_ledger
+            .settle_trade(trade, currency, self.next_transaction_id)?;
+        self.next_transaction_id = next_id;
+        Ok(())
     }
 
     /// Projects one committed canonical event into public and private views.

@@ -445,6 +445,59 @@ fn released_post_only_policy_is_matched_and_replayable() {
 }
 
 #[test]
+fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
+    let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    state = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    let submit = |state: &RunState, actor: ParticipantId, order_id: u128, side: Side| Command {
+        run_id: RUN,
+        command_id: CommandId::new(order_id),
+        correlation_id: CorrelationId::new(order_id),
+        logical_time: LogicalTimeNs::new(0),
+        expected_sequence: state.sequence(),
+        actor,
+        payload: CommandPayload::SubmitOrder(SubmitOrder {
+            order_id: OrderId::new(order_id),
+            instrument_id: INSTRUMENT,
+            participant_id: actor,
+            side,
+            quantity: QuantityLots::new(2),
+            kind: OrderKind::Limit { price: PriceTicks::new(10) },
+        }),
+    };
+    let sell = submit(&state, COUNTERPARTY, 101, Side::Sell);
+    state = state.transition(&sell, None).unwrap().candidate;
+    let buy = submit(&state, PARTICIPANT, 102, Side::Buy);
+    state = state.transition(&buy, None).unwrap().candidate;
+    let journal = &state.simulation().portfolio_ledger;
+    assert_eq!(journal.journal().len(), 1);
+    assert_eq!(journal.journal()[0].kind, TransactionKind::Trade);
+    assert_eq!(journal.balance(PARTICIPANT, CURRENCY).settled, MoneyMinor::new(999_980));
+    assert_eq!(journal.balance(COUNTERPARTY, CURRENCY).settled, MoneyMinor::new(1_000_020));
+    assert_eq!(journal.position(PARTICIPANT, INSTRUMENT).settled, QuantityLots::new(1_002));
+    assert_eq!(journal.position(COUNTERPARTY, INSTRUMENT).settled, QuantityLots::new(998));
+    let accounts = state.accounts().iter().collect::<BTreeMap<_, _>>();
+    assert_eq!(accounts[&PARTICIPANT].cash, journal.balance(PARTICIPANT, CURRENCY).settled);
+    assert_eq!(accounts[&COUNTERPARTY].cash, journal.balance(COUNTERPARTY, CURRENCY).settled);
+    let version = state.sequence().get();
+    state = apply(&state, &command(version, 0, ADMIN, SimulationCommand::ApplyFine {
+        participant_id: PARTICIPANT,
+        currency_id: CURRENCY,
+        amount: MoneyMinor::new(5),
+        reason: "test fine".to_owned(),
+    }));
+    let accounts = state.accounts().iter().collect::<BTreeMap<_, _>>();
+    assert_eq!(accounts[&PARTICIPANT].cash, MoneyMinor::new(999_975));
+    assert_eq!(state.simulation().portfolio_ledger.journal().len(), 2);
+    let score_version = state.sequence().get();
+    state = apply(&state, &command(score_version, 0, ADMIN, SimulationCommand::ScoreIteration));
+    assert_eq!(state.simulation().reports.last().unwrap().entries.len(), 3);
+    let replay = bunting_engine::EngineSnapshotEnvelope::from_json(
+        &state.snapshot_envelope().unwrap().to_json().unwrap()
+    ).unwrap();
+    assert_eq!(replay.state.state_hash().unwrap(), state.state_hash().unwrap());
+}
+
+#[test]
 fn full_competition_run_matches_ledger_score_and_transcript_golden() {
     let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     let commands = [
