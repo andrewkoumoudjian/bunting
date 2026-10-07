@@ -1,6 +1,6 @@
 # Core-first Rust market simulator: development plan
 
-Status: **proposed implementation sequence**, 2026-10-07. No code changes or tests are claimed by this plan.
+Status: **historical proposal, superseded as a development sequence** by [the independent evidence-led core roadmap](2026-10-07-evidence-led-core-roadmap.md) following a fresh source audit at main@0fdbd130. The earlier tasks and gates are retained here as decision history, not instructions overriding current research or accepted ADRs. No code changes or tests were claimed by this plan.
 Baseline: `main@a35f18490283c0865120b5bb66cb1132a36e5c00`.
 Evidence and known defects: [`../core-engine-status-2026-10-07.md`](../core-engine-status-2026-10-07.md).
 
