@@ -2031,6 +2031,10 @@ mod tests {
         let primary = ListingKey::new(VenueId::new(1), instrument);
         let secondary = ListingKey::new(VenueId::new(2), instrument);
         let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let mut buyer = participant(1);
+        let mut seller = participant(2);
+        buyer.initial_positions.retain(|asset, _| *asset == instrument);
+        seller.initial_positions.retain(|asset, _| *asset == instrument);
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(21),
             ScenarioVersion::new(1),
@@ -2038,7 +2042,7 @@ mod tests {
                 ListingDefinition::new(primary, "PRIMARY".to_owned(), bounds).unwrap(),
                 ListingDefinition::new(secondary, "SECONDARY".to_owned(), bounds).unwrap(),
             ],
-            [participant(1), participant(2)],
+            [buyer, seller],
         )
         .unwrap();
         let mut state =
