@@ -2033,8 +2033,12 @@ mod tests {
         let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
         let mut buyer = participant(1);
         let mut seller = participant(2);
-        buyer.initial_positions.retain(|asset, _| *asset == instrument);
-        seller.initial_positions.retain(|asset, _| *asset == instrument);
+        buyer
+            .initial_positions
+            .retain(|asset, _| *asset == instrument);
+        seller
+            .initial_positions
+            .retain(|asset, _| *asset == instrument);
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(21),
             ScenarioVersion::new(1),
@@ -2069,9 +2073,12 @@ mod tests {
         let buy_elsewhere = target(&state, secondary, 202, 1, Side::Buy);
         let outcome = state.transition(&buy_elsewhere, None).unwrap();
         assert!(outcome.accepted);
-        assert!(!outcome.events.iter().any(|event| {
-            matches!(event.payload, EventPayload::TradeExecuted { .. })
-        }));
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| { matches!(event.payload, EventPayload::TradeExecuted { .. }) })
+        );
         state = outcome.candidate;
         assert_eq!(
             state.simulation().market_by_listing[&primary].aggregated_asks,
@@ -2095,8 +2102,15 @@ mod tests {
             )
         }));
         state = outcome.candidate;
-        assert_eq!(state.simulation().market_by_listing[&primary].trades.len(), 1);
-        assert!(state.simulation().market_by_listing[&secondary].trades.is_empty());
+        assert_eq!(
+            state.simulation().market_by_listing[&primary].trades.len(),
+            1
+        );
+        assert!(
+            state.simulation().market_by_listing[&secondary]
+                .trades
+                .is_empty()
+        );
         assert_eq!(
             state.simulation().market_by_listing[&secondary].aggregated_bids,
             vec![(PriceTicks::new(120), QuantityLots::new(1))]
@@ -2107,10 +2121,14 @@ mod tests {
                 && *asset == instrument
                 && holding.position == QuantityLots::new(101)
         }));
-        let restored =
-            EngineSnapshotEnvelope::from_json(&state.snapshot_envelope().unwrap().to_json().unwrap())
-                .unwrap();
-        assert_eq!(restored.state.state_hash().unwrap(), state.state_hash().unwrap());
+        let restored = EngineSnapshotEnvelope::from_json(
+            &state.snapshot_envelope().unwrap().to_json().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.state.state_hash().unwrap(),
+            state.state_hash().unwrap()
+        );
     }
 
     #[test]

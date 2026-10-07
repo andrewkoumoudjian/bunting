@@ -218,8 +218,7 @@ pub(crate) fn handle_fix_connection(
                             command.payload,
                             CommandPayload::SubmitOrder(_)
                                 | CommandPayload::SubmitOrderAtListing { .. }
-                        )
-                            && open_orders.len() >= config.max_open_orders
+                        ) && open_orders.len() >= config.max_open_orders
                         {
                             vec![business_reject(
                                 &message.msg_type,

@@ -133,8 +133,9 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
         return Err(ApplicationError::ActorMismatch);
     }
     let payload_participant = match &command.payload {
-        CommandPayload::SubmitOrder(order)
-        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.participant_id),
+        CommandPayload::SubmitOrder(order) | CommandPayload::SubmitOrderAtListing { order, .. } => {
+            Some(order.participant_id)
+        }
         CommandPayload::CancelOrder(cancel) => Some(cancel.participant_id),
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
     };
