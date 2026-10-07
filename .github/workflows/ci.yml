@@ -17,6 +17,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Focused native verification remains available when the WASIX installer
+  # or external runtime distribution is temporarily unavailable.
+  native-core:
+    name: Native accounting and engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Test accounting and engine
+        run: cargo test --locked -p bunting-ledger -p bunting-engine
+      - name: Verify formatting
+        run: cargo fmt --all --check
+      - name: Clippy on affected crates
+        run: cargo clippy --locked -p bunting-ledger -p bunting-engine --all-targets -- -D warnings
+
   rust-kernel:
     name: Rust and Worker kernel
     runs-on: ubuntu-latest
