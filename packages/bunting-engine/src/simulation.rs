@@ -9,8 +9,8 @@ use bunting_market_events::{
     SimulationCommand, SimulationEvent, TenderDecision,
 };
 use bunting_market_types::{
-    CurrencyId, FacilityId, InstrumentId, LogicalTimeNs, MoneyMinor, NegotiationId, NewsId,
-    OrderId, ParticipantId, PriceTicks, QuantityLots, TenderId,
+    CurrencyId, FacilityId, InstrumentId, ListingKey, LogicalTimeNs, MoneyMinor, NegotiationId,
+    NewsId, OrderId, ParticipantId, PriceTicks, QuantityLots, TenderId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -503,6 +503,9 @@ pub struct SimulationState {
     pub scheduled_actions: Vec<ScheduledAction>,
     pub applied_actions: BTreeSet<u128>,
     pub market: BTreeMap<InstrumentId, MarketProjection>,
+    /// Raw depth and tape are scoped to the exchange listing, not the economic asset.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub market_by_listing: BTreeMap<ListingKey, MarketProjection>,
     pub private: BTreeMap<ParticipantId, PrivateProjection>,
     pub portfolio_ledger: PortfolioLedger,
     pub news: Vec<NewsItem>,
@@ -527,6 +530,7 @@ impl Default for SimulationState {
             scheduled_actions: Vec::new(),
             applied_actions: BTreeSet::new(),
             market: BTreeMap::new(),
+            market_by_listing: BTreeMap::new(),
             private: BTreeMap::new(),
             portfolio_ledger: PortfolioLedger::new(),
             news: Vec::new(),
@@ -1020,18 +1024,33 @@ impl SimulationState {
             }
             EventPayload::TradeExecuted {
                 instrument_id,
+                listing_key,
                 price,
                 quantity,
                 ..
             } => {
-                self.market
-                    .entry(*instrument_id)
-                    .or_default()
-                    .record_trade(TradeRecord {
-                        logical_time,
-                        price: *price,
-                        quantity: *quantity,
-                    })?;
+                let trade = TradeRecord {
+                    logical_time,
+                    price: *price,
+                    quantity: *quantity,
+                };
+                // The instrument tape is consolidated; venue L2 is never coalesced.
+                // This cloning is constant-size, not a book or run-state copy.
+                let mut instrument_tape = self.market.get(instrument_id).cloned().unwrap_or_default();
+                instrument_tape.record_trade(trade)?;
+                if let Some(listing) = listing_key {
+                    if listing.instrument_id != *instrument_id {
+                        return Err(SimulationError::UnknownIdentity);
+                    }
+                    let mut listing_tape = self
+                        .market_by_listing
+                        .get(listing)
+                        .cloned()
+                        .unwrap_or_default();
+                    listing_tape.record_trade(trade)?;
+                    self.market_by_listing.insert(*listing, listing_tape);
+                }
+                self.market.insert(*instrument_id, instrument_tape);
             }
             _ => {}
         }
@@ -1041,17 +1060,26 @@ impl SimulationState {
     /// Replaces committed aggregated L2 while preserving deterministic order.
     pub fn set_depth(
         &mut self,
-        instrument_id: InstrumentId,
+        listing_key: ListingKey,
+        unique_listing: bool,
         raw_bids: Vec<(PriceTicks, QuantityLots, OrderId)>,
         raw_asks: Vec<(PriceTicks, QuantityLots, OrderId)>,
         bids: Vec<(PriceTicks, QuantityLots)>,
         asks: Vec<(PriceTicks, QuantityLots)>,
     ) {
-        let projection = self.market.entry(instrument_id).or_default();
-        projection.raw_bids = raw_bids;
-        projection.raw_asks = raw_asks;
-        projection.aggregated_bids = bids;
-        projection.aggregated_asks = asks;
+        let listing = self.market_by_listing.entry(listing_key).or_default();
+        listing.raw_bids = raw_bids.clone();
+        listing.raw_asks = raw_asks.clone();
+        listing.aggregated_bids = bids.clone();
+        listing.aggregated_asks = asks.clone();
+        // The old instrument-keyed view has meaningful depth only when unique.
+        if unique_listing {
+            let projection = self.market.entry(listing_key.instrument_id).or_default();
+            projection.raw_bids = raw_bids;
+            projection.raw_asks = raw_asks;
+            projection.aggregated_bids = bids;
+            projection.aggregated_asks = asks;
+        }
     }
 
     fn advance(&mut self, steps: u32) -> Result<Vec<SimulationEvent>, SimulationError> {

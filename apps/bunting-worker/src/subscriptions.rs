@@ -207,6 +207,7 @@ mod tests {
         let mut trade = event(8, 700);
         trade.payload = EventPayload::TradeExecuted {
             instrument_id: InstrumentId::new(9),
+            listing_key: None,
             maker_order_id: OrderId::new(101),
             taker_order_id: OrderId::new(102),
             buyer_id: ParticipantId::new(700),

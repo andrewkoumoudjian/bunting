@@ -133,7 +133,8 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
         return Err(ApplicationError::ActorMismatch);
     }
     let payload_participant = match &command.payload {
-        CommandPayload::SubmitOrder(order) => Some(order.participant_id),
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.participant_id),
         CommandPayload::CancelOrder(cancel) => Some(cancel.participant_id),
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
     };
@@ -259,6 +260,9 @@ pub struct PublicTrade {
     pub sequence: EventSequence,
     pub logical_time: LogicalTimeNs,
     pub instrument_id: InstrumentId,
+    /// Trading venue is public, while maker/taker identity remains private.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing_key: Option<bunting_market_types::ListingKey>,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
     pub upstream_engine_sequence: u64,
@@ -274,6 +278,7 @@ pub fn project_public_event(
     match event.payload {
         EventPayload::TradeExecuted {
             instrument_id: event_instrument,
+            listing_key,
             price,
             quantity,
             upstream_engine_sequence,
@@ -282,6 +287,7 @@ pub fn project_public_event(
             sequence: event.sequence,
             logical_time: event.logical_time,
             instrument_id,
+            listing_key,
             price,
             quantity,
             upstream_engine_sequence,

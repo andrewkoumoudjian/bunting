@@ -813,8 +813,19 @@ impl RunState {
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let (accepted, reject_code, order_id) = match &command.payload {
-            CommandPayload::SubmitOrder(order) => {
-                let listing_key = self.listing_key_for_instrument(order.instrument_id)?;
+            CommandPayload::SubmitOrder(order)
+            | CommandPayload::SubmitOrderAtListing { order, .. } => {
+                let listing_key = match &command.payload {
+                    CommandPayload::SubmitOrderAtListing { listing_key, .. } => {
+                        if listing_key.instrument_id != order.instrument_id
+                            || !self.listings.contains_key(listing_key)
+                        {
+                            return Err(EngineError::UnknownListing);
+                        }
+                        *listing_key
+                    }
+                    _ => self.listing_key_for_instrument(order.instrument_id)?,
+                };
                 let price_bounds = self
                     .listings
                     .get(&listing_key)
@@ -1191,8 +1202,15 @@ impl RunState {
         }
         raw_bids.sort_by(|left, right| right.0.cmp(&left.0).then(left.2.cmp(&right.2)));
         raw_asks.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
+        let unique_listing = self
+            .listings
+            .keys()
+            .filter(|key| key.instrument_id == listing_key.instrument_id)
+            .count()
+            == 1;
         self.simulation.set_depth(
-            listing_key.instrument_id,
+            listing_key,
+            unique_listing,
             raw_bids,
             raw_asks,
             convert(bids)?,
@@ -1746,6 +1764,7 @@ fn apply_trades(
         reduce_order(taker_order_id, quantity, ownership, &mut Vec::new())?;
         payloads.push(EventPayload::TradeExecuted {
             instrument_id: taker.listing_key.instrument_id,
+            listing_key: Some(taker.listing_key),
             maker_order_id: maker_id,
             taker_order_id,
             buyer_id: buyer,

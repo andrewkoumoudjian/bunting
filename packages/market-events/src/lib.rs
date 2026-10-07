@@ -3,8 +3,8 @@
 
 use bunting_market_types::{
     CommandId, CorrelationId, CurrencyId, EventId, EventSequence, FacilityId, InstrumentId,
-    LogicalTimeNs, MoneyMinor, NegotiationId, NewsId, OrderId, ParticipantId, PriceTicks,
-    QuantityLots, RunId, TenderId,
+    ListingKey, LogicalTimeNs, MoneyMinor, NegotiationId, NewsId, OrderId, ParticipantId,
+    PriceTicks, QuantityLots, RunId, TenderId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -272,6 +272,11 @@ pub enum SimulationCommand {
 #[serde(rename_all = "snake_case")]
 pub enum CommandPayload {
     SubmitOrder(SubmitOrder),
+    /// Explicitly directs this order to one venue without changing legacy v1 inputs.
+    SubmitOrderAtListing {
+        listing_key: ListingKey,
+        order: SubmitOrder,
+    },
     CancelOrder(CancelOrder),
     ActivateKillSwitch,
     NbcDone(NbcDone),
@@ -438,6 +443,9 @@ pub enum EventPayload {
     },
     TradeExecuted {
         instrument_id: InstrumentId,
+        /// Legacy event records may have no listing; newly committed trades always do.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listing_key: Option<ListingKey>,
         maker_order_id: OrderId,
         taker_order_id: OrderId,
         buyer_id: ParticipantId,
