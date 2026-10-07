@@ -86,12 +86,15 @@ See:
 
 The immediate priority is a **robust, deterministic, high-performance Rust market
 simulator**, before further expansion of RIT-class UI or QUARCC competition
-features. The source-backed [core-engine status audit](docs/core-engine-status-2026-10-07.md)
-and [core-first implementation roadmap](docs/plans/core-first-market-simulator.md)
-record the known correctness, multi-venue, multi-day, accounting, persistence
-and replay gaps; they distinguish current code from proposals and include
-milestone acceptance gates. Existing accepted ADRs remain authoritative until
-explicitly superseded.
+features. The [independent October 7 architecture audit](docs/research/2026-10-07-independent-core-architecture-audit.md)
+verifies the implementation at `0fdbd130` and compares architectural alternatives;
+the [revised implementation roadmap](docs/plans/2026-10-07-evidence-led-core-roadmap.md)
+orders concrete correctness, performance, recovery and multi-day work.
+[Proposed ADR 0028](docs/adr/0028-proposed-headless-run-authority.md) records
+potential changes without superseding accepted decisions. The [earlier status
+audit](docs/core-engine-status-2026-10-07.md) and [earlier roadmap](docs/plans/core-first-market-simulator.md)
+remain historical context, not current implementation proof. No production
+repairs have been implemented by this research handoff.
 
 ## Current architecture
 
