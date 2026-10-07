@@ -1739,7 +1739,9 @@ fn apply_trades(
             quantity,
         };
         ledger.settle_trade(settlement)?;
-        simulation.post_trade(settlement).map_err(EngineError::Simulation)?;
+        simulation
+            .post_trade(settlement)
+            .map_err(EngineError::Simulation)?;
         reduce_order(maker_id, quantity, ownership, payloads)?;
         reduce_order(taker_order_id, quantity, ownership, &mut Vec::new())?;
         payloads.push(EventPayload::TradeExecuted {

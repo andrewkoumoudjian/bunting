@@ -312,7 +312,9 @@ impl PortfolioLedger {
                 PostingAccount::Scheduled => &mut balance.scheduled,
                 PostingAccount::Fees => &mut balance.fees,
                 PostingAccount::Margin => &mut balance.margin,
-                PostingAccount::Clearing => unreachable!("clearing entries have no participant balance"),
+                PostingAccount::Clearing => {
+                    unreachable!("clearing entries have no participant balance")
+                }
             };
             *target = target
                 .checked_add(posting.amount)
@@ -336,8 +338,9 @@ impl PortfolioLedger {
         if trade.quantity.get() <= 0 {
             return Err(LedgerError::InvalidPosting);
         }
-        let notional = MoneyMinor::checked_mul_price_quantity(trade.execution_price, trade.quantity)
-            .map_err(|_| LedgerError::ArithmeticOverflow)?;
+        let notional =
+            MoneyMinor::checked_mul_price_quantity(trade.execution_price, trade.quantity)
+                .map_err(|_| LedgerError::ArithmeticOverflow)?;
         let debit = MoneyMinor::new(
             notional
                 .get()
@@ -386,8 +389,10 @@ impl PortfolioLedger {
             ],
         })?;
         if let Some((buyer, seller)) = positions {
-            self.positions.insert((trade.buyer, trade.instrument), buyer);
-            self.positions.insert((trade.seller, trade.instrument), seller);
+            self.positions
+                .insert((trade.buyer, trade.instrument), buyer);
+            self.positions
+                .insert((trade.seller, trade.instrument), seller);
         }
         Ok(())
     }
@@ -653,8 +658,9 @@ impl Ledger {
         }
         let reserved = MoneyMinor::checked_mul_price_quantity(trade.buyer_limit, trade.quantity)
             .map_err(|_| LedgerError::ArithmeticOverflow)?;
-        let notional = MoneyMinor::checked_mul_price_quantity(trade.execution_price, trade.quantity)
-            .map_err(|_| LedgerError::ArithmeticOverflow)?;
+        let notional =
+            MoneyMinor::checked_mul_price_quantity(trade.execution_price, trade.quantity)
+                .map_err(|_| LedgerError::ArithmeticOverflow)?;
         let mut accounts = BTreeMap::<ParticipantId, Account>::new();
         let mut holdings = BTreeMap::<(ParticipantId, InstrumentId), Holding>::new();
         let buyer = accounts
@@ -738,7 +744,12 @@ mod tests {
         let mut journal = PortfolioLedger::new();
         journal.set_settled_cash(buyer, currency, MoneyMinor::new(1_000));
         journal.set_settled_cash(seller, currency, MoneyMinor::new(1_000));
-        journal.set_position(seller, instrument, QuantityLots::new(10), MoneyMinor::new(100));
+        journal.set_position(
+            seller,
+            instrument,
+            QuantityLots::new(10),
+            MoneyMinor::new(100),
+        );
         let settlement = TradeSettlement {
             buyer,
             seller,
@@ -749,13 +760,34 @@ mod tests {
             quantity: QuantityLots::new(4),
         };
         journal.settle_trade(settlement, currency, 1).unwrap();
-        assert_eq!(journal.balance(buyer, currency).settled, MoneyMinor::new(940));
-        assert_eq!(journal.balance(seller, currency).settled, MoneyMinor::new(1_060));
-        assert_eq!(journal.position(buyer, instrument).settled, QuantityLots::new(4));
-        assert_eq!(journal.position(seller, instrument).settled, QuantityLots::new(6));
-        assert_eq!(journal.position(seller, instrument).cost_basis, MoneyMinor::new(60));
-        assert_eq!(journal.position(seller, instrument).realized_pnl, MoneyMinor::new(20));
-        assert_eq!(journal.net_liquidation_value(seller, currency).unwrap(), MoneyMinor::new(1_150));
+        assert_eq!(
+            journal.balance(buyer, currency).settled,
+            MoneyMinor::new(940)
+        );
+        assert_eq!(
+            journal.balance(seller, currency).settled,
+            MoneyMinor::new(1_060)
+        );
+        assert_eq!(
+            journal.position(buyer, instrument).settled,
+            QuantityLots::new(4)
+        );
+        assert_eq!(
+            journal.position(seller, instrument).settled,
+            QuantityLots::new(6)
+        );
+        assert_eq!(
+            journal.position(seller, instrument).cost_basis,
+            MoneyMinor::new(60)
+        );
+        assert_eq!(
+            journal.position(seller, instrument).realized_pnl,
+            MoneyMinor::new(20)
+        );
+        assert_eq!(
+            journal.net_liquidation_value(seller, currency).unwrap(),
+            MoneyMinor::new(1_150)
+        );
         assert_eq!(journal.journal().len(), 1);
         assert_eq!(journal.journal()[0].kind, TransactionKind::Trade);
 
@@ -780,8 +812,24 @@ mod tests {
         ledger.set_cash(buyer, MoneyMinor::new(100));
         ledger.set_cash(seller, MoneyMinor::new(100));
         ledger.set_position(seller, instrument, QuantityLots::new(5));
-        ledger.reserve(buyer, instrument, Side::Buy, PriceTicks::new(12), QuantityLots::new(2)).unwrap();
-        ledger.reserve(seller, instrument, Side::Sell, PriceTicks::new(10), QuantityLots::new(1)).unwrap();
+        ledger
+            .reserve(
+                buyer,
+                instrument,
+                Side::Buy,
+                PriceTicks::new(12),
+                QuantityLots::new(2),
+            )
+            .unwrap();
+        ledger
+            .reserve(
+                seller,
+                instrument,
+                Side::Sell,
+                PriceTicks::new(10),
+                QuantityLots::new(1),
+            )
+            .unwrap();
         let snapshot = ledger.clone();
         assert_eq!(
             ledger.settle_trade(TradeSettlement {
