@@ -502,6 +502,10 @@ pub struct RunState {
 }
 
 impl RunState {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "run initialization seeds matching books and the matching and economic account views"
+    )]
     pub fn from_scenario(
         run_id: RunId,
         iteration_id: IterationId,
@@ -2015,6 +2019,90 @@ mod tests {
                 kind: OrderKind::Market,
             }),
         }
+    }
+
+    #[test]
+    fn explicit_listing_commands_keep_cross_listed_books_and_trades_separate() {
+        let instrument = InstrumentId::new(1);
+        let primary = ListingKey::new(VenueId::new(1), instrument);
+        let secondary = ListingKey::new(VenueId::new(2), instrument);
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(21),
+            ScenarioVersion::new(1),
+            [
+                ListingDefinition::new(primary, "PRIMARY".to_owned(), bounds).unwrap(),
+                ListingDefinition::new(secondary, "SECONDARY".to_owned(), bounds).unwrap(),
+            ],
+            [participant(1), participant(2)],
+        )
+        .unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(21), IterationId::new(1), &scenario).unwrap();
+        let legacy = submit(&state, 1, 2, 100, 1, Side::Sell, 120, 1);
+        assert!(matches!(
+            state.transition(&legacy, None),
+            Err(EngineError::AmbiguousListing)
+        ));
+        let target = |state: &RunState, venue: ListingKey, id: u128, actor: u128, side: Side| {
+            let mut command = submit(state, id, actor, id, 1, side, 120, 1);
+            if let CommandPayload::SubmitOrder(order) = command.payload {
+                command.payload = CommandPayload::SubmitOrderAtListing {
+                    listing_key: venue,
+                    order,
+                };
+            }
+            command
+        };
+        let sell = target(&state, primary, 201, 2, Side::Sell);
+        let outcome = state.transition(&sell, None).unwrap();
+        assert!(outcome.accepted);
+        state = outcome.candidate;
+        let buy_elsewhere = target(&state, secondary, 202, 1, Side::Buy);
+        let outcome = state.transition(&buy_elsewhere, None).unwrap();
+        assert!(outcome.accepted);
+        assert!(!outcome.events.iter().any(|event| {
+            matches!(event.payload, EventPayload::TradeExecuted { .. })
+        }));
+        state = outcome.candidate;
+        assert_eq!(
+            state.simulation().market_by_listing[&primary].aggregated_asks,
+            vec![(PriceTicks::new(120), QuantityLots::new(1))]
+        );
+        assert_eq!(
+            state.simulation().market_by_listing[&secondary].aggregated_bids,
+            vec![(PriceTicks::new(120), QuantityLots::new(1))]
+        );
+        let buy_primary = target(&state, primary, 203, 1, Side::Buy);
+        let outcome = state.transition(&buy_primary, None).unwrap();
+        assert!(outcome.accepted);
+        assert!(outcome.events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::TradeExecuted {
+                    listing_key: Some(key),
+                    instrument_id,
+                    ..
+                } if *key == primary && *instrument_id == instrument
+            )
+        }));
+        state = outcome.candidate;
+        assert_eq!(state.simulation().market_by_listing[&primary].trades.len(), 1);
+        assert!(state.simulation().market_by_listing[&secondary].trades.is_empty());
+        assert_eq!(
+            state.simulation().market_by_listing[&secondary].aggregated_bids,
+            vec![(PriceTicks::new(120), QuantityLots::new(1))]
+        );
+        let holdings = state.holdings();
+        assert!(holdings.iter().any(|(owner, asset, holding)| {
+            *owner == ParticipantId::new(1)
+                && *asset == instrument
+                && holding.position == QuantityLots::new(101)
+        }));
+        let restored =
+            EngineSnapshotEnvelope::from_json(&state.snapshot_envelope().unwrap().to_json().unwrap())
+                .unwrap();
+        assert_eq!(restored.state.state_hash().unwrap(), state.state_hash().unwrap());
     }
 
     #[test]

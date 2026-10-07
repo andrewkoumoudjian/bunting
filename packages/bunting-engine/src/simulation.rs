@@ -338,11 +338,26 @@ pub struct MarketProjection {
 }
 
 impl MarketProjection {
+    fn validate_trade(&self, trade: TradeRecord) -> Result<(), SimulationError> {
+        self.cumulative_volume
+            .checked_add(trade.quantity)
+            .ok_or(SimulationError::ArithmeticOverflow)?;
+        let bucket_ns = 1_000_000_000_u64;
+        let bucket = LogicalTimeNs::new((trade.logical_time.get() / bucket_ns) * bucket_ns);
+        if let Some(bar) = self.bars.back().filter(|bar| bar.bucket_start == bucket) {
+            bar.volume
+                .checked_add(trade.quantity)
+                .ok_or(SimulationError::ArithmeticOverflow)?;
+        }
+        Ok(())
+    }
+
     /// Records a committed trade and updates exact history and OHLC.
     ///
     /// # Errors
     /// Returns an error when quantity aggregation overflows.
     pub fn record_trade(&mut self, trade: TradeRecord) -> Result<(), SimulationError> {
+        self.validate_trade(trade)?;
         self.cumulative_volume = self
             .cumulative_volume
             .checked_add(trade.quantity)
@@ -1034,23 +1049,29 @@ impl SimulationState {
                     price: *price,
                     quantity: *quantity,
                 };
-                // The instrument tape is consolidated; venue L2 is never coalesced.
-                // This cloning is constant-size, not a book or run-state copy.
-                let mut instrument_tape = self.market.get(instrument_id).cloned().unwrap_or_default();
-                instrument_tape.record_trade(trade)?;
+                // Validate both volume series before either mutable projection advances.
+                // This avoids copying bounded trade history on the hot path.
                 if let Some(listing) = listing_key {
                     if listing.instrument_id != *instrument_id {
                         return Err(SimulationError::UnknownIdentity);
                     }
-                    let mut listing_tape = self
-                        .market_by_listing
-                        .get(listing)
-                        .cloned()
-                        .unwrap_or_default();
-                    listing_tape.record_trade(trade)?;
-                    self.market_by_listing.insert(*listing, listing_tape);
+                    if let Some(view) = self.market_by_listing.get(listing) {
+                        view.validate_trade(trade)?;
+                    }
                 }
-                self.market.insert(*instrument_id, instrument_tape);
+                if let Some(view) = self.market.get(instrument_id) {
+                    view.validate_trade(trade)?;
+                }
+                self.market
+                    .entry(*instrument_id)
+                    .or_default()
+                    .record_trade(trade)?;
+                if let Some(listing) = listing_key {
+                    self.market_by_listing
+                        .entry(*listing)
+                        .or_default()
+                        .record_trade(trade)?;
+                }
             }
             _ => {}
         }
