@@ -774,12 +774,14 @@ fn command_envelope(
     let local_command_id = id.get();
     stored.last_local_command_id = local_command_id;
     let local_order_id = match &payload {
-        CommandPayload::SubmitOrder(order) => Some(order.order_id.get()),
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.order_id.get()),
         CommandPayload::CancelOrder(cancel) => Some(cancel.order_id.get()),
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
     };
     match &mut payload {
-        CommandPayload::SubmitOrder(order) => {
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => {
             order.order_id = namespace_order_id(
                 stored.run_id,
                 stored.participant_id,
@@ -797,7 +799,9 @@ fn command_envelope(
         }
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => {}
     }
-    if let CommandPayload::SubmitOrder(order) = &payload {
+    if let CommandPayload::SubmitOrder(order)
+    | CommandPayload::SubmitOrderAtListing { order, .. } = &payload
+    {
         stored
             .order_instruments
             .insert(order.order_id, order.instrument_id);
@@ -840,7 +844,8 @@ fn client_key(
 
 fn command_client_key(stored: &StoredFixSession, command: &Command) -> ClientCommandKey {
     let canonical_order_id = match &command.payload {
-        CommandPayload::SubmitOrder(order) => Some(order.order_id),
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.order_id),
         CommandPayload::CancelOrder(cancel) => Some(cancel.order_id),
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
     };
@@ -853,7 +858,8 @@ fn command_client_key(stored: &StoredFixSession, command: &Command) -> ClientCom
 
 fn command_instrument(command: &Command, stored: &StoredFixSession) -> Option<InstrumentId> {
     match &command.payload {
-        CommandPayload::SubmitOrder(order) => Some(order.instrument_id),
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.instrument_id),
         CommandPayload::CancelOrder(order) => {
             stored.order_instruments.get(&order.order_id).copied()
         }
@@ -867,7 +873,8 @@ fn reports_for_command(
     stored: &StoredFixSession,
 ) -> Vec<NormalizedVenueReport> {
     let order_id = match &command.payload {
-        CommandPayload::SubmitOrder(order) => order.order_id,
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => order.order_id,
         CommandPayload::CancelOrder(order) => order.order_id,
         CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => OrderId::new(0),
     };
@@ -879,7 +886,8 @@ fn reports_for_command(
     let local = LocalOrderId::new(client_order_id);
     let client = quarcc_execution_engine::ids::ClientOrderId::new(client_order_id);
     let total_quantity = match &command.payload {
-        CommandPayload::SubmitOrder(order) => Some(order.quantity.get()),
+        CommandPayload::SubmitOrder(order)
+        | CommandPayload::SubmitOrderAtListing { order, .. } => Some(order.quantity.get()),
         _ => None,
     };
     let mut cumulative_quantity = 0_i64;

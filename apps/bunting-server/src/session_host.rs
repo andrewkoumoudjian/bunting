@@ -214,7 +214,11 @@ pub(crate) fn handle_fix_connection(
                 );
                 let outbound = match request {
                     Ok(FixApplicationRequest::Command(command)) => {
-                        if matches!(command.payload, CommandPayload::SubmitOrder(_))
+                        if matches!(
+                            command.payload,
+                            CommandPayload::SubmitOrder(_)
+                                | CommandPayload::SubmitOrderAtListing { .. }
+                        )
                             && open_orders.len() >= config.max_open_orders
                         {
                             vec![business_reject(
@@ -227,7 +231,8 @@ pub(crate) fn handle_fix_connection(
                                 .map_err(|error| format!("application command failed: {error}"))?;
                             if executed.result.accepted {
                                 match &command.payload {
-                                    CommandPayload::SubmitOrder(order) => {
+                                    CommandPayload::SubmitOrder(order)
+                                    | CommandPayload::SubmitOrderAtListing { order, .. } => {
                                         open_orders.insert(order.order_id);
                                     }
                                     CommandPayload::CancelOrder(cancel) => {

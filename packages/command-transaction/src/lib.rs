@@ -427,6 +427,7 @@ fn command_listing_key(
             .listing_key_for_instrument(order.instrument_id)
             .map(Some)
             .map_err(TransactionError::from),
+        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Ok(Some(*listing_key)),
         CommandPayload::CancelOrder(cancel) => Ok(state
             .ownership()
             .get(&cancel.order_id)

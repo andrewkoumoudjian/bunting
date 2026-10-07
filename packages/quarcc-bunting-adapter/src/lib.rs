@@ -112,7 +112,7 @@ impl BuntingExecutionAdapter {
         let mut reports = Vec::new();
         for event in events {
             let (local, kind) = match &event.payload {
-                EventPayload::OrderReceived { order } if order.participant_id == actor => {
+                EventPayload::OrderReceived { order, .. } if order.participant_id == actor => {
                     let local = LocalOrderId::new(order.order_id.get());
                     self.owned_orders.insert(local);
                     self.order_quantities.insert(local, order.quantity);
@@ -285,6 +285,7 @@ mod tests {
                 1,
                 EventPayload::OrderReceived {
                     order: order(100, first),
+                    listing_key: None,
                 },
             ),
             envelope(
@@ -297,6 +298,7 @@ mod tests {
                 3,
                 EventPayload::OrderReceived {
                     order: order(200, second),
+                    listing_key: None,
                 },
             ),
             envelope(

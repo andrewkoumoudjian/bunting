@@ -31,7 +31,7 @@ fn is_private(event: &EventEnvelope, participant_id: ParticipantId) -> bool {
         return true;
     }
     match &event.payload {
-        EventPayload::OrderReceived { order } => order.participant_id == participant_id,
+        EventPayload::OrderReceived { order, .. } => order.participant_id == participant_id,
         EventPayload::OrderRested {
             participant_id: id, ..
         }
