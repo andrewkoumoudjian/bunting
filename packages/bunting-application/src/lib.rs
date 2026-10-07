@@ -549,6 +549,7 @@ pub fn listing_for_command(state: &RunState, command: &Command) -> Option<Listin
         CommandPayload::SubmitOrder(order) => {
             state.listing_key_for_instrument(order.instrument_id).ok()
         }
+        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Some(*listing_key),
         CommandPayload::CancelOrder(cancel) => state
             .ownership()
             .get(&cancel.order_id)
