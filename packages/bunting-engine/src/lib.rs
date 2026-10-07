@@ -839,6 +839,7 @@ impl RunState {
                 let book = self.restore_book(listing_key, cached, command)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
+                    listing_key: Some(listing_key),
                 });
                 let outcome = if !candidate.simulation.instruments.is_empty()
                     && candidate.simulation.lifecycle != simulation::RunLifecycle::Active
@@ -1676,6 +1677,7 @@ fn prepare_submit(
             order_id: order.order_id,
             participant_id: order.participant_id,
             instrument_id: order.instrument_id,
+            listing_key: Some(listing_key),
             side: order.side,
             price,
             remaining,
@@ -1696,6 +1698,7 @@ fn prepare_submit(
             order_id: order.order_id,
             participant_id: order.participant_id,
             instrument_id: order.instrument_id,
+            listing_key: Some(listing_key),
             remaining,
             reason: CancelReason::MarketRemainder,
         });
@@ -1849,6 +1852,7 @@ fn prepare_cancel(
         order_id: owned.order_id,
         participant_id: owned.participant_id,
         instrument_id: owned.listing_key.instrument_id,
+        listing_key: Some(owned.listing_key),
         remaining: owned.remaining_quantity,
         reason: CancelReason::Requested,
     });

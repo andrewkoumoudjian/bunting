@@ -207,7 +207,10 @@ mod tests {
         let mut trade = event(8, 700);
         trade.payload = EventPayload::TradeExecuted {
             instrument_id: InstrumentId::new(9),
-            listing_key: None,
+            listing_key: Some(bunting_market_types::ListingKey::new(
+                bunting_market_types::VenueId::new(1),
+                InstrumentId::new(9),
+            )),
             maker_order_id: OrderId::new(101),
             taker_order_id: OrderId::new(102),
             buyer_id: ParticipantId::new(700),
@@ -221,6 +224,7 @@ mod tests {
             order_id: OrderId::new(103),
             participant_id: ParticipantId::new(700),
             instrument_id: InstrumentId::new(9),
+            listing_key: None,
             side: Side::Buy,
             price: PriceTicks::new(41),
             remaining: QuantityLots::new(99),
@@ -238,6 +242,7 @@ mod tests {
         );
         let output = String::from_utf8(frames.concat())?;
         assert!(output.contains("market.trade"));
+        assert!(output.contains("1:9"));
         for forbidden in [
             "actor",
             "participant",

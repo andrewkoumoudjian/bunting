@@ -411,6 +411,8 @@ pub enum SimulationEvent {
 pub enum EventPayload {
     OrderReceived {
         order: SubmitOrder,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listing_key: Option<ListingKey>,
     },
     OrderAccepted {
         order_id: OrderId,
@@ -423,6 +425,8 @@ pub enum EventPayload {
         order_id: OrderId,
         participant_id: ParticipantId,
         instrument_id: InstrumentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listing_key: Option<ListingKey>,
         side: Side,
         price: PriceTicks,
         remaining: QuantityLots,
@@ -438,6 +442,8 @@ pub enum EventPayload {
         order_id: OrderId,
         participant_id: ParticipantId,
         instrument_id: InstrumentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listing_key: Option<ListingKey>,
         remaining: QuantityLots,
         reason: CancelReason,
     },
