@@ -475,7 +475,7 @@ fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
     assert_eq!(journal.balance(COUNTERPARTY, CURRENCY).settled, MoneyMinor::new(1_000_020));
     assert_eq!(journal.position(PARTICIPANT, INSTRUMENT).settled, QuantityLots::new(1_002));
     assert_eq!(journal.position(COUNTERPARTY, INSTRUMENT).settled, QuantityLots::new(998));
-    let accounts = state.accounts().iter().collect::<BTreeMap<_, _>>();
+    let accounts = state.accounts().iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(accounts[&PARTICIPANT].cash, journal.balance(PARTICIPANT, CURRENCY).settled);
     assert_eq!(accounts[&COUNTERPARTY].cash, journal.balance(COUNTERPARTY, CURRENCY).settled);
     let version = state.sequence().get();
@@ -485,7 +485,7 @@ fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
         amount: MoneyMinor::new(5),
         reason: "test fine".to_owned(),
     }));
-    let accounts = state.accounts().iter().collect::<BTreeMap<_, _>>();
+    let accounts = state.accounts().iter().copied().collect::<BTreeMap<_, _>>();
     assert_eq!(accounts[&PARTICIPANT].cash, MoneyMinor::new(999_975));
     assert_eq!(state.simulation().portfolio_ledger.journal().len(), 2);
     let score_version = state.sequence().get();
