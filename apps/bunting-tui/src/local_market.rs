@@ -53,6 +53,15 @@ const MAX_AGENT_ACTIONS_PER_TICK: usize = 256;
 const MAX_PENDING_HUMAN_REPORTS: usize = 256;
 const MANUAL_REPORT_ID_START: u128 = 1_000_000_000;
 
+/// Even the one-listing local fixture uses the canonical explicit-listing
+/// command, rather than relying on instrument-only routing.
+fn local_listing_submit(order: SubmitOrder) -> CommandPayload {
+    CommandPayload::SubmitOrderAtListing {
+        listing_key: ListingKey::new(VenueId::new(1), order.instrument_id),
+        order,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalScenarioConfig {
     policies: Vec<PolicyKind>,
@@ -344,7 +353,7 @@ impl Market {
             active: true,
         };
         let outcome = self.transition(
-            CommandPayload::SubmitOrder(SubmitOrder {
+            local_listing_submit(SubmitOrder {
                 order_id: OrderId::new(id),
                 instrument_id: order.instrument,
                 participant_id: order.participant,
@@ -503,6 +512,12 @@ impl Market {
     fn execute(&mut self, intent: ExecutionIntent, original: &FixMessage) -> Vec<FixMessage> {
         match intent {
             ExecutionIntent::Submit { order, .. } => {
+                // The FIX decoder validates SecurityExchange, and this local
+                // fixture owns only venue 1. Never reroute another venue.
+                let expected = ListingKey::new(VenueId::new(1), order.instrument_id);
+                if simfix_mapping::fix_order_listing(original).ok().flatten() != Some(expected) {
+                    return vec![business_reject("D", "unknown exchange listing")];
+                }
                 let id = order.client_order_id.get();
                 let view = OrderView {
                     participant: HUMAN_ID,
@@ -513,7 +528,7 @@ impl Market {
                     active: true,
                 };
                 match self.transition(
-                    CommandPayload::SubmitOrder(SubmitOrder {
+                    local_listing_submit(SubmitOrder {
                         order_id: OrderId::new(id),
                         instrument_id: view.instrument,
                         participant_id: view.participant,
@@ -608,7 +623,7 @@ impl Market {
         previous.quantity = quantity;
         previous.kind = kind;
         let submitted = self.transition(
-            CommandPayload::SubmitOrder(SubmitOrder {
+            local_listing_submit(SubmitOrder {
                 order_id: OrderId::new(new_id),
                 instrument_id: previous.instrument,
                 participant_id: HUMAN_ID,
