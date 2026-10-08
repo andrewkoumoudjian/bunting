@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const API_VERSION: &str = "bunting.v1";
+pub const API_VERSION: &str = "bunting.v2";
 pub const PRODUCT_CONTRACT_VERSION: &str = "bunting.product.v1";
 pub const FIX_COMPETITION_PROFILE_VERSION: &str = "bunting.fixlatest.competition.v1";
 
@@ -101,6 +101,7 @@ pub enum Side {
 pub struct SubmitOrderInput {
     pub run_id: UnsignedDecimalString,
     pub instrument_id: UnsignedDecimalString,
+    pub venue_id: UnsignedDecimalString,
     pub command_id: UnsignedDecimalString,
     pub correlation_id: UnsignedDecimalString,
     pub expected_sequence: SequenceDecimalString,
@@ -128,6 +129,7 @@ pub struct CancelOrderInput {
 pub struct MarketSnapshotInput {
     pub run_id: UnsignedDecimalString,
     pub instrument_id: UnsignedDecimalString,
+    pub venue_id: UnsignedDecimalString,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,6 +137,7 @@ pub struct MarketSnapshotInput {
 pub struct MarketSubscribeInput {
     pub run_id: UnsignedDecimalString,
     pub instrument_id: UnsignedDecimalString,
+    pub venue_id: UnsignedDecimalString,
     pub after_sequence: SequenceDecimalString,
 }
 
@@ -196,6 +199,7 @@ pub struct PriceLevel {
 pub struct MarketSnapshotOutput {
     pub run_id: UnsignedDecimalString,
     pub instrument_id: UnsignedDecimalString,
+    pub venue_id: UnsignedDecimalString,
     pub sequence: SequenceDecimalString,
     pub bids: Vec<PriceLevel>,
     pub asks: Vec<PriceLevel>,
@@ -342,7 +346,7 @@ pub fn procedure_kind(path: &str) -> Option<ProcedureKind> {
 #[must_use]
 pub fn generated_schema() -> Value {
     json!({
-        "schemaVersion": "bunting.rust-contract.v1",
+        "schemaVersion": "bunting.rust-contract.v2",
         "apiVersion": API_VERSION,
         "types": {
             "id": {"encoding":"unsigned_decimal_string","rust":"u128","minimum":"0","maximum":"340282366920938463463374607431768211455"},
@@ -351,11 +355,11 @@ pub fn generated_schema() -> Value {
             "side": {"encoding":"json_string","values":["buy","sell"]}
         },
         "procedures": [
-            {"name":"market.snapshot","kind":"query","input":{"runId":"id","instrumentId":"id"},"output":{"runId":"id","instrumentId":"id","sequence":"sequence","bids":"priceLevel[]","asks":"priceLevel[]"}},
+            {"name":"market.snapshot","kind":"query","input":{"runId":"id","instrumentId":"id","venueId":"id"},"output":{"runId":"id","instrumentId":"id","venueId":"id","sequence":"sequence","bids":"priceLevel[]","asks":"priceLevel[]"}},
             {"name":"orders.cancel","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
-            {"name":"orders.submit","kind":"mutation","input":{"runId":"id","instrumentId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id","side":"side","priceTicks":"marketUnit","quantityLots":"marketUnit"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
+            {"name":"orders.submit","kind":"mutation","input":{"runId":"id","instrumentId":"id","venueId":"id","commandId":"id","correlationId":"id","expectedSequence":"sequence","logicalTimeNs":"sequence","orderId":"id","side":"side","priceTicks":"marketUnit","quantityLots":"marketUnit"},"output":{"accepted":"boolean","rejectCode":"string?","committedSequence":"sequence","orderId":"id?","snapshotChecksum":"string?"}},
             {"name":"system.health","kind":"query","input":{},"output":{"apiVersion":"string","serviceVersion":"string","orderbookVersion":"string","contractCompatible":"boolean"}}
-            ,{"name":"market.subscribe","kind":"subscription","input":{"runId":"id","instrumentId":"id","afterSequence":"sequence"},"output":{"event":"committedEvent|stream.reset|market.snapshot"}}
+            ,{"name":"market.subscribe","kind":"subscription","input":{"runId":"id","instrumentId":"id","venueId":"id","afterSequence":"sequence"},"output":{"event":"committedEvent|stream.reset|market.snapshot"}}
             ,{"name":"accounts.subscribe","kind":"subscription","input":{"runId":"id","afterSequence":"sequence"},"output":{"event":"committedPrivateEvent|stream.reset"}}
         ],
         "structures": {"priceLevel":{"priceTicks":"marketUnit","quantityLots":"marketUnit"}}
