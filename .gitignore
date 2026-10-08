@@ -6,7 +6,6 @@
 # Cloudflare
 .wrangler/
 apps/*/build/
-apps/bunting-worker/.wrangler/
 .dev.vars
 .dev.vars.*
 

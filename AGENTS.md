@@ -56,7 +56,7 @@ The repository root remains one Cargo workspace and owns the single `Cargo.lock`
 - `packages/`: first-party reusable Rust packages that compose Bunting. This includes primitives, the unified market engine, execution engines, protocol components, clients, simulators, and narrowly scoped algorithm/model libraries.
 - `bunting-rs/`: integrated Bunting product/library that imports packages, configures the unified engine, and exposes the curated public API.
 - `bunting-rs/crates/`: Bunting-private glue only when code has no reusable package role.
-- `apps/`: deployable Workers, binaries, CLIs, and gateways that depend on `bunting-rs` or public package APIs.
+- `apps/`: deployable binaries, CLIs, and gateways that depend on `bunting-rs` or public package APIs.
 - `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC-compatible logic belongs in `packages/bunting-engine`.
 - `schemas/`: versioned protocol and file schemas.
 - `tests/`: cross-package, cross-engine, protocol, and deployment tests.
@@ -85,7 +85,7 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 - The former `packages/orderbook` adapter now lives as a private `bunting-engine` module; the transitional crate is removed and no production caller may bypass the engine.
 - Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
 - The primary deployment target is one Wasmer-hosted Rust WASI competition venue that accepts bounded inbound FIX/TCP sessions and calls application functions in-process. WASIX supplies the required socket/thread extensions under ADR 0027. Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts inbound raw TCP or owns market commands or origin truth.
-- Workers Cache stores immutable checksum-addressed public book snapshots; it is not a transaction coordinator.
+- No Cloudflare Worker is currently built; the former D1/command Worker was removed as a second authority. Any future publisher reads immutable post-commit exports only.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
 - Commit authoritative state before acknowledgement, cache publication, or stream publication.
 
@@ -105,7 +105,7 @@ No client, strategy, execution engine, adapter, or agent may mutate a market eng
 - Update `docs/reference-functionality-audit.md` before changing a reference’s role or adoption disposition.
 - NBC JAR translation and redistribution are authorized by ADR 0017 with file-level provenance and divergence records. Other unlicensed NBC material and QUARCC sources remain restricted to their documented authority/license rules.
 - Specification-derived protocol files can have obligations different from the implementation code; review both.
-- Worker-bound packages must compile for `wasm32-unknown-unknown` unless explicitly native-only and excluded from the Worker dependency graph.
+- `bunting-engine` and the protocol packages must stay host-neutral and compile for `wasm32-unknown-unknown`.
 - Keep fixed-point and checked arithmetic at market, protocol, execution, and ledger boundaries.
 - Keep all request, event, snapshot, queue, subscription, and recovery buffers bounded.
 - Do not commit `target/`, Worker `build/`, `out/`, database, credential, or secret files.

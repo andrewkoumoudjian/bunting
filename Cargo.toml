@@ -9,7 +9,6 @@ members = [
   "packages/origin-store",
   "packages/command-transaction",
   "packages/bunting-application",
-  "apps/bunting-worker/worker-cache",
   "packages/quarcc-execution-engine",
   "packages/quarcc-bunting-adapter",
   "packages/quarcc-execution-wasm",
@@ -22,7 +21,6 @@ members = [
   "packages/browser-wire",
   "tests/oracles/nbc-matcher",
   "bunting-rs",
-  "apps/bunting-worker",
   "apps/bunting-server",
   "apps/bunting-tui",
   "apps/bunting-cli",
@@ -83,7 +81,6 @@ rustyfix-dictionary = { version = "=0.7.4", features = ["fix50sp2", "fixt11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-worker = "=0.8.5"
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 tokio = { version = "1", features = ["io-util"] }

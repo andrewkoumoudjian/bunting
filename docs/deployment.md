@@ -79,30 +79,9 @@ it does not accept participant commands or own origin truth. See the official
 [Rust Worker guide](https://developers.cloudflare.com/workers/languages/rust/)
 and [TCP sockets contract](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/).
 
-The publication cutover is not complete while the Worker still exposes command,
-D1-origin, or outbound-FIX routes. Those routes are compatibility debt and must
-not be used for new competition deployments. The publication smoke gate will
-require checksum-addressed reads of a snapshot, archive, and leaderboard after
-Phase 4 supplies those artifacts.
-
-### Raw Workerd gate
-
-The repository also carries a raw Workerd configuration under
-`apps/bunting-worker/workerd/`. It loads the optimized JS/Wasm bundle, the real
-`FixSessionObject` namespace, and the production compatibility date without
-Wrangler or a Cloudflare account:
-
-```bash
-cd apps/bunting-worker
-worker-build --release --no-panic-recovery
-npx --yes workerd@1.20260716.1 serve workerd/workerd.capnp
-```
-
-The Workerd gate requires `GET /api/system.health` to report contract
-compatibility, authenticated `GET /fix-sessions/smoke/snapshot` to instantiate
-the Durable Object and return empty state, and `market.snapshot` to fail closed
-with `ORIGIN_UNAVAILABLE`. Raw Workerd does not supply the Cloudflare D1
-service, so the configuration intentionally binds D1's standard wrapper to a
-501 stub; D1 migrations and transactions remain local-Miniflare or remote
-staging gates. Workerd is a runtime/deployment validation here, not a hardened
-multi-tenant sandbox or a D1 emulator.
+The transitional Worker (`apps/bunting-worker`: D1 origin, Worker command
+routes, outbound FIX Durable Objects and its Workers Cache crate) was removed on
+2026-10-08 because it was a second market authority that ADR 0022 prohibits.
+No Cloudflare artifact is currently built. A replacement publisher must only read
+immutable, checksum-addressed archives, leaderboards and snapshots exported by the
+native venue after commit; it must not accept participant commands.
