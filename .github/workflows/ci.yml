@@ -34,6 +34,8 @@ jobs:
         run: cargo test --locked -p bunting-ledger -p bunting-engine
       - name: Test application and wire contracts
         run: cargo test --locked -p bunting-api-contract -p simfix-mapping -p bunting-application -p bunting-worker-cache
+      - name: Test durable native origin and adapter parity
+        run: cargo test --locked -p bunting-server --test path_equivalence
       - name: Verify formatting
         run: cargo fmt --all --check
       - name: Compile application and transport adapters

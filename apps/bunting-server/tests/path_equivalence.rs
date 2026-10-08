@@ -142,6 +142,55 @@ fn native_fix_and_worker_prepare_commit_identical_authoritative_state()
 }
 
 #[test]
+fn native_origin_refuses_torn_replayed_or_invalid_checkpoint_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    let folder = std::env::temp_dir().join(format!(
+        "bunting-origin-integrity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let path = folder.join("origin.json");
+    let config = StorageConfig {
+        kind: StorageKind::File,
+        path: Some(path.display().to_string()),
+        max_runs: 4,
+        max_commands: 64,
+        max_events_per_run: 256,
+    };
+    let store = FileOriginStore::open(&path, &config)?;
+    store.insert_run(initial_run())?;
+    let cache = InMemorySnapshotCache::new();
+    ApplicationService::new(&store, &cache).execute(&actor(), &expected_command())?;
+    drop(store);
+    let original = std::fs::read(&path)?;
+    assert!(FileOriginStore::open(&path, &config).is_ok());
+
+    let mut broken: serde_json::Value = serde_json::from_slice(&original)?;
+    broken["events"][0]["events"][0]["sequence"] = serde_json::json!(99);
+    std::fs::write(&path, serde_json::to_vec(&broken)?)?;
+    assert!(FileOriginStore::open(&path, &config).is_err());
+
+    let mut replayed: serde_json::Value = serde_json::from_slice(&original)?;
+    let duplicate = replayed["commands"][0].clone();
+    replayed["commands"].as_array_mut().unwrap().push(duplicate);
+    std::fs::write(&path, serde_json::to_vec(&replayed)?)?;
+    assert!(FileOriginStore::open(&path, &config).is_err());
+
+    let mut invalid: serde_json::Value = serde_json::from_slice(&original)?;
+    invalid["runs"][0]["next_upstream_order_id"] = serde_json::json!(0);
+    std::fs::write(&path, serde_json::to_vec(&invalid)?)?;
+    assert!(FileOriginStore::open(&path, &config).is_err());
+
+    std::fs::write(&path, &original)?;
+    assert!(FileOriginStore::open(&path, &config).is_ok());
+    std::fs::remove_file(&path)?;
+    std::fs::remove_dir(folder)?;
+    Ok(())
+}
+
+#[test]
 fn durable_local_origin_restores_committed_state_after_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join(format!(
