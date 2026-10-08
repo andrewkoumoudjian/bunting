@@ -368,7 +368,6 @@ fn build_cancel(input: &CancelOrderInput, claims: VerifiedClaims) -> (Command, C
 async fn load_run(
     environment: &Env,
     run_id: RunId,
-    instrument_id: InstrumentId,
 ) -> std::result::Result<RunState, ProcedureError> {
     let database = environment
         .d1("ORIGIN_DB")
@@ -376,8 +375,6 @@ async fn load_run(
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
         .map_err(|error| map_origin_error(&error))?;
-    // Order routing and snapshot queries validate the exact listing after load.
-    let _instrument_id = instrument_id;
     Ok(state)
 }
 
@@ -412,12 +409,10 @@ fn snapshot_output(
 
 async fn execute_command(
     client_command: (Command, ClientCommandKey),
-    instrument_id: InstrumentId,
     environment: &Env,
 ) -> std::result::Result<CommandResult, ProcedureError> {
     execute_command_detailed(
         client_command.0,
-        instrument_id,
         client_command.1,
         environment,
     )
@@ -432,7 +427,6 @@ pub(crate) struct ExecutedCommand {
 
 pub(crate) async fn execute_command_detailed(
     command: Command,
-    instrument_id: InstrumentId,
     client_key: ClientCommandKey,
     environment: &Env,
 ) -> std::result::Result<ExecutedCommand, ProcedureError> {
@@ -458,35 +452,40 @@ pub(crate) async fn execute_command_detailed(
             Err(ProcedureError::DuplicateCommandConflict)
         };
     }
-    let state = load_run(environment, command.run_id, instrument_id).await?;
+    let state = load_run(environment, command.run_id).await?;
     let listing_key = match &command.payload {
-        CommandPayload::SubmitOrderAtListing { listing_key, .. } => *listing_key,
+        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Some(*listing_key),
+        CommandPayload::SubmitOrder(order) => {
+            state.listing_key_for_instrument(order.instrument_id).ok()
+        }
         CommandPayload::CancelOrder(cancel) => state
             .ownership()
             .get(&cancel.order_id)
-            .map_or(Err(ProcedureError::NotFound), |owned| Ok(owned.listing_key))?,
-        _ => state
-            .listing_key_for_instrument(instrument_id)
-            .map_err(|_| ProcedureError::NotFound)?,
+            .map(|owned| owned.listing_key),
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
     };
-    let snapshot = state
-        .listing_snapshot(listing_key)
+    let cached = if let Some(key) = listing_key {
+        let snapshot = state
+            .listing_snapshot(key)
+            .map_err(|_| ProcedureError::NotFound)?;
+        let cache_key = SnapshotCacheKey::new(
+            state.run_id(),
+            key,
+            snapshot.represented_sequence,
+            snapshot.checksum.clone(),
+        )
         .map_err(|_| ProcedureError::InternalContractMismatch)?;
-    let cache_key = SnapshotCacheKey::new(
-        state.run_id(),
-        listing_key,
-        snapshot.represented_sequence,
-        snapshot.checksum.clone(),
-    )
-    .map_err(|_| ProcedureError::InternalContractMismatch)?;
-    let cached = match cloudflare::get_json(&cache_key).await {
-        Ok(Some(package_json)) => Some(CachedSnapshot {
-            listing_key,
-            represented_sequence: snapshot.represented_sequence,
-            checksum: snapshot.checksum.clone(),
-            package_json,
-        }),
-        Ok(None) | Err(_) => None,
+        match cloudflare::get_json(&cache_key).await {
+            Ok(Some(package_json)) => Some(CachedSnapshot {
+                listing_key: key,
+                represented_sequence: snapshot.represented_sequence,
+                checksum: snapshot.checksum.clone(),
+                package_json,
+            }),
+            Ok(None) | Err(_) => None,
+        }
+    } else {
+        None
     };
     let actor = verified_participant(command.actor)?;
     let mut prepared =
@@ -518,6 +517,7 @@ pub(crate) async fn execute_command_detailed(
 
     // Origin commit above must succeed before this best-effort cache publication.
     if publish_snapshot
+        && let Some(listing_key) = listing_key
         && let Ok(snapshot) = prepared.commit.candidate.listing_snapshot(listing_key)
         && snapshot.represented_sequence == result.committed_sequence
         && let Ok(key) = SnapshotCacheKey::new(
@@ -603,12 +603,8 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 VenueId::new(input.venue_id.get()),
                 InstrumentId::new(input.instrument_id.get()),
             );
-            match load_run(
-                environment,
-                RunId::new(input.run_id.get()),
-                listing_key.instrument_id,
-            )
-            .await
+            match load_run(environment, RunId::new(input.run_id.get()))
+                .await
             .and_then(|state| snapshot_output(&state, listing_key))
             {
                 Ok(output) => bunting_browser_wire::success(200, &output),
@@ -627,8 +623,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 Ok(input) => input,
                 Err(error) => return wire_error(error, &call.path, "invalid procedure input"),
             };
-            let instrument_id = InstrumentId::new(input.instrument_id.get());
-            match execute_command(build_submit(&input, claims), instrument_id, environment).await {
+            match execute_command(build_submit(&input, claims), environment).await {
                 Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }
@@ -645,8 +640,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 Ok(input) => input,
                 Err(error) => return wire_error(error, &call.path, "invalid procedure input"),
             };
-            let instrument_id = InstrumentId::new(input.instrument_id.get());
-            match execute_command(build_cancel(&input, claims), instrument_id, environment).await {
+            match execute_command(build_cancel(&input, claims), environment).await {
                 Ok(result) => command_response(&result, &call.path),
                 Err(error) => wire_error(error, &call.path, "command rejected"),
             }

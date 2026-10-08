@@ -338,7 +338,7 @@ impl FixSessionObject {
                 request_id,
                 listing_key,
                 ..
-            } => match load_run(&self.environment, stored.run_id, listing_key.instrument_id)
+            } => match load_run(&self.environment, stored.run_id)
                 .await
                 .and_then(|state| snapshot_output(&state, listing_key))
             {
@@ -545,15 +545,14 @@ impl FixSessionObject {
             Ok(command) => command,
             Err(reason) => return vec![business_reject(&original.msg_type, reason)],
         };
-        let Some(instrument_id) = command_instrument(&command, stored) else {
+        if command_instrument(&command, stored).is_none() {
             return vec![business_reject(
                 &original.msg_type,
                 "instrument identity is unavailable for this order",
             )];
-        };
+        }
         match execute_command_detailed(
             command.clone(),
-            instrument_id,
             command_client_key(stored, &command),
             &self.environment,
         )
@@ -612,16 +611,15 @@ impl FixSessionObject {
                     continue;
                 }
             };
-            let Some(instrument_id) = command_instrument(&command, stored) else {
+            if command_instrument(&command, stored).is_none() {
                 responses.push(business_reject(
                     &original.msg_type,
                     "instrument identity is unavailable for this order",
                 ));
                 continue;
-            };
+            }
             match execute_command_detailed(
                 command.clone(),
-                instrument_id,
                 command_client_key(stored, &command),
                 &self.environment,
             )
