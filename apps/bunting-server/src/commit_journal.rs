@@ -6,7 +6,7 @@ use bunting_origin_store::{CommitRequest, OriginError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: [u8; 8] = *b"BUNTWAL1";
@@ -17,11 +17,17 @@ const MAX_RECORD_BYTES: u64 = 256 * 1024 * 1024;
 /// Checkpoint every 128 successfully committed requests, not on each order.
 pub(crate) const CHECKPOINT_INTERVAL: usize = 128;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JournalRecord {
     version: u16,
     request: CommitRequest,
+}
+
+#[derive(Serialize)]
+struct RecordRef<'a> {
+    version: u16,
+    request: &'a CommitRequest,
 }
 
 pub(crate) fn path_for(checkpoint: &Path) -> PathBuf {
@@ -51,9 +57,9 @@ pub(crate) fn append(path: &Path, request: &CommitRequest) -> Result<(), OriginE
         fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
     }
     let existed = path.exists();
-    let bytes = serde_json::to_vec(&JournalRecord {
+    let bytes = serde_json::to_vec(&RecordRef {
         version: VERSION,
-        request: request.clone(),
+        request,
     })
     .map_err(|_| OriginError::InvalidCommit)?;
     let length = u64::try_from(bytes.len()).map_err(|_| OriginError::InvalidCommit)?;

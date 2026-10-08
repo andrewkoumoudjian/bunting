@@ -1,3 +1,4 @@
+use crate::commit_journal;
 use crate::config::{StorageConfig, StorageKind};
 use bunting_engine::{EngineSnapshotEnvelope, RunState};
 use bunting_market_events::EventEnvelope;
@@ -10,7 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StoredCommand {
@@ -38,6 +42,9 @@ struct FileState {
 pub struct FileOriginStore {
     path: PathBuf,
     state: Arc<Mutex<FileState>>,
+    /// An ambiguous write failure prevents further acknowledgments until a
+    /// process restart and journal-prefix recovery.
+    poisoned: Arc<AtomicBool>,
     max_runs: usize,
     max_commands: usize,
     max_events_per_run: usize,
@@ -46,15 +53,34 @@ pub struct FileOriginStore {
 impl FileOriginStore {
     pub fn open(path: impl Into<PathBuf>, config: &StorageConfig) -> Result<Self, OriginError> {
         let path = path.into();
-        let state = if path.exists() {
+        let journal_path = commit_journal::path_for(&path);
+        if !path.exists() && journal_path.exists() {
+            // A journal without its genesis checkpoint is not a valid run.
+            return Err(OriginError::Unavailable);
+        }
+        let mut state = if path.exists() {
             let bytes = fs::read(&path).map_err(|_| OriginError::Unavailable)?;
             serde_json::from_slice(&bytes).map_err(|_| OriginError::Unavailable)?
         } else {
             FileState::default()
         };
+        commit_journal::replay(&journal_path, |request| {
+            if check_record(
+                &state,
+                &request,
+                config.max_commands,
+                config.max_events_per_run,
+            )?
+            .is_none()
+            {
+                apply_record(&mut state, request)?;
+            }
+            Ok(())
+        })?;
         let store = Self {
             path,
             state: Arc::new(Mutex::new(state)),
+            poisoned: Arc::new(AtomicBool::new(false)),
             max_runs: config.max_runs,
             max_commands: config.max_commands,
             max_events_per_run: config.max_events_per_run,
@@ -147,6 +173,9 @@ impl FileOriginStore {
         candidate.runs.push(run);
         persist(&self.path, &candidate)?;
         *state = candidate;
+        // Checkpoint supersedes each previously committed journal entry.
+        // Leaving redundant entries on an I/O failure is safe on recovery.
+        let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
         Ok(())
     }
 
@@ -187,58 +216,120 @@ impl OriginStore for FileOriginStore {
 
     fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
         let mut state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
-        if let Some(existing) = state
-            .commands
-            .iter()
-            .find(|item| item.run_id == request.run_id && item.command_id == request.command_id)
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
+        if let Some(previous) = check_record(
+            &state,
+            &request,
+            self.max_commands,
+            self.max_events_per_run,
+        )? {
+            return Ok(CommitOutcome::Duplicate(previous));
+        }
+        // The journal is durable BEFORE the in-memory run and responses change.
+        // A failed append poisons the writer: its last frame might be complete,
+        // and only replay can resolve that ambiguity safely.
+        if let Err(error) = commit_journal::append(
+            &commit_journal::path_for(&self.path),
+            &request,
+        ) {
+            self.poisoned.store(true, Ordering::Release);
+            return Err(error);
+        }
+        let result = request.result.clone();
+        if let Err(error) = apply_record(&mut state, request) {
+            self.poisoned.store(true, Ordering::Release);
+            return Err(error);
+        }
+        // Periodically compact history to one atomically replaced checkpoint.
+        // Compaction is best effort after the journal commit and never causes a
+        // durable acknowledged order to be reported as rejected.
+        if state.commands.len() % commit_journal::CHECKPOINT_INTERVAL == 0
+            && persist(&self.path, &state).is_ok()
         {
-            return if existing.fingerprint == request.fingerprint {
-                Ok(CommitOutcome::Duplicate(existing.result.clone()))
-            } else {
-                Err(OriginError::IdempotencyConflict)
-            };
+            let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
         }
-        let run_index = state
-            .runs
-            .iter()
-            .position(|run| run.run_id() == request.run_id)
-            .ok_or(OriginError::UnknownRun)?;
-        let current = state.runs[run_index].sequence();
-        if current != request.expected_version {
-            return Err(OriginError::VersionConflict { current });
-        }
-        request.validate_against(state.runs[run_index].event_sequence())?;
-        if state.commands.len() >= self.max_commands {
-            return Err(OriginError::Unavailable);
-        }
-        let event_index = state
-            .events
-            .iter()
-            .position(|item| item.run_id == request.run_id);
-        let existing_events = event_index.map_or(0, |index| state.events[index].events.len());
-        if existing_events.saturating_add(request.events.len()) > self.max_events_per_run {
-            return Err(OriginError::Unavailable);
-        }
-        let mut candidate = state.clone();
-        candidate.runs[run_index] = request.candidate;
-        candidate.commands.push(StoredCommand {
-            run_id: request.run_id,
-            command_id: request.command_id,
-            fingerprint: request.fingerprint,
-            result: request.result.clone(),
-        });
-        if let Some(index) = event_index {
-            candidate.events[index].events.extend(request.events);
-        } else {
-            candidate.events.push(RunEvents {
-                run_id: request.run_id,
-                events: request.events,
-            });
-        }
-        persist(&self.path, &candidate)?;
-        *state = candidate;
-        Ok(CommitOutcome::Committed(request.result))
+        Ok(CommitOutcome::Committed(result))
     }
+}
+
+/// Reject idempotency collisions, version races, and invalid event cursors
+/// before any durable write. Reused without change during journal recovery.
+fn check_record(
+    state: &FileState,
+    request: &CommitRequest,
+    max_commands: usize,
+    max_events_per_run: usize,
+) -> Result<Option<CommandResult>, OriginError> {
+    if let Some(previous) = state
+        .commands
+        .iter()
+        .find(|item| item.run_id == request.run_id && item.command_id == request.command_id)
+    {
+        return if previous.fingerprint == request.fingerprint
+            && previous.result == request.result
+            && state.runs.iter().any(|run| {
+                run.run_id() == request.run_id
+                    && run.sequence() >= request.result.committed_sequence
+            })
+        {
+            Ok(Some(previous.result.clone()))
+        } else {
+            Err(OriginError::IdempotencyConflict)
+        };
+    }
+    let run = state
+        .runs
+        .iter()
+        .find(|run| run.run_id() == request.run_id)
+        .ok_or(OriginError::UnknownRun)?;
+    if run.sequence() != request.expected_version {
+        return Err(OriginError::VersionConflict {
+            current: run.sequence(),
+        });
+    }
+    request.validate_against(run.event_sequence())?;
+    if state.commands.len() >= max_commands {
+        return Err(OriginError::Unavailable);
+    }
+    let existing_events = state
+        .events
+        .iter()
+        .find(|batch| batch.run_id == request.run_id)
+        .map_or(0, |batch| batch.events.len());
+    if existing_events.saturating_add(request.events.len()) > max_events_per_run {
+        return Err(OriginError::Unavailable);
+    }
+    Ok(None)
+}
+
+fn apply_record(state: &mut FileState, request: CommitRequest) -> Result<(), OriginError> {
+    let run = state
+        .runs
+        .iter_mut()
+        .find(|run| run.run_id() == request.run_id)
+        .ok_or(OriginError::UnknownRun)?;
+    *run = request.candidate;
+    state.commands.push(StoredCommand {
+        run_id: request.run_id,
+        command_id: request.command_id,
+        fingerprint: request.fingerprint,
+        result: request.result,
+    });
+    if let Some(batch) = state
+        .events
+        .iter_mut()
+        .find(|batch| batch.run_id == request.run_id)
+    {
+        batch.events.extend(request.events);
+    } else {
+        state.events.push(RunEvents {
+            run_id: request.run_id,
+            events: request.events,
+        });
+    }
+    Ok(())
 }
 
 fn persist(path: &Path, state: &FileState) -> Result<(), OriginError> {
