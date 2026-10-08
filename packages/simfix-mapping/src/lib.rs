@@ -117,7 +117,7 @@ pub struct MappingContext {
     pub next_intent_id: IntentId,
 }
 
-/// Mandatory numeric exchange for a FIX NewOrderSingle. Non-submission
+/// Mandatory numeric exchange for a FIX `NewOrderSingle`. Non-submission
 /// messages return None; exchange selection never defaults by instrument.
 ///
 /// # Errors
