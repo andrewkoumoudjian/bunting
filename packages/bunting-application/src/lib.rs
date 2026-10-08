@@ -41,6 +41,7 @@ pub enum ApplicationError {
     ActorMismatch,
     InvalidIdentity,
     UnknownInstrument,
+    UnknownListing,
     Transaction(TransactionError),
     FixMapping(MappingError),
     Execution(ExecutionError),
@@ -247,10 +248,22 @@ where
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketProjection {
     pub run_id: RunId,
+    pub listing_key: ListingKey,
     pub instrument_id: InstrumentId,
     pub sequence: EventSequence,
     pub bids: Vec<(i64, i64)>,
     pub asks: Vec<(i64, i64)>,
+}
+
+/// A distinct instrument-level view of venue quotes. No order books are merged,
+/// and equal-price ties select the lowest canonical ListingKey.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsolidatedBbo {
+    pub run_id: RunId,
+    pub instrument_id: InstrumentId,
+    pub sequence: EventSequence,
+    pub bid: Option<(ListingKey, PriceTicks, QuantityLots)>,
+    pub ask: Option<(ListingKey, PriceTicks, QuantityLots)>,
 }
 
 /// Allowlisted public fact. Canonical envelopes and participant/order identity
@@ -261,9 +274,8 @@ pub struct PublicTrade {
     pub sequence: EventSequence,
     pub logical_time: LogicalTimeNs,
     pub instrument_id: InstrumentId,
-    /// Trading venue is public, while maker/taker identity remains private.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub listing_key: Option<bunting_market_types::ListingKey>,
+    /// Explicit venue identity; no instrument-only fallback is published.
+    pub listing_key: ListingKey,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
     pub upstream_engine_sequence: u64,
@@ -274,25 +286,27 @@ pub struct PublicTrade {
 #[must_use]
 pub fn project_public_event(
     event: &EventEnvelope,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
 ) -> Option<PublicTrade> {
     match event.payload {
         EventPayload::TradeExecuted {
-            instrument_id: event_instrument,
-            listing_key,
+            instrument_id,
+            listing_key: Some(executed_at),
             price,
             quantity,
             upstream_engine_sequence,
             ..
-        } if event_instrument == instrument_id => Some(PublicTrade {
-            sequence: event.sequence,
-            logical_time: event.logical_time,
-            instrument_id,
-            listing_key,
-            price,
-            quantity,
-            upstream_engine_sequence,
-        }),
+        } if executed_at == listing_key && instrument_id == listing_key.instrument_id => {
+            Some(PublicTrade {
+                sequence: event.sequence,
+                logical_time: event.logical_time,
+                instrument_id,
+                listing_key,
+                price,
+                quantity,
+                upstream_engine_sequence,
+            })
+        }
         _ => None,
     }
 }
@@ -352,33 +366,84 @@ fn nonzero_u128(bytes: &[u8]) -> u128 {
     u128::from_be_bytes(value).max(1)
 }
 
+/// Reads committed depth for exactly one exchange listing. Missing or corrupt
+/// listing state never falls back to another venue.
 pub fn project_market(
     state: &RunState,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
 ) -> Result<MarketProjection, ApplicationError> {
-    let listing_key = state
-        .listing_key_for_instrument(instrument_id)
-        .map_err(|_| ApplicationError::UnknownInstrument)?;
+    state
+        .listing_snapshot(listing_key)
+        .map_err(|_| ApplicationError::UnknownListing)?;
     let (bids, asks) = state
         .visible_levels(listing_key)
-        .map_err(|_| ApplicationError::UnknownInstrument)?;
+        .map_err(|_| ApplicationError::UnknownListing)?;
     let convert = |levels: Vec<(u128, u64)>| {
         levels
             .into_iter()
             .map(|(price, quantity)| {
                 Ok((
-                    i64::try_from(price).map_err(|_| ApplicationError::UnknownInstrument)?,
-                    i64::try_from(quantity).map_err(|_| ApplicationError::UnknownInstrument)?,
+                    i64::try_from(price).map_err(|_| ApplicationError::UnknownListing)?,
+                    i64::try_from(quantity).map_err(|_| ApplicationError::UnknownListing)?,
                 ))
             })
             .collect::<Result<Vec<_>, ApplicationError>>()
     };
     Ok(MarketProjection {
         run_id: state.run_id(),
-        instrument_id,
+        instrument_id: listing_key.instrument_id,
+        listing_key,
         sequence: state.sequence(),
         bids: convert(bids)?,
         asks: convert(asks)?,
+    })
+}
+
+/// Deterministic cross-venue best bid/offer, with venue identity on each side.
+/// Prices on different listings are never combined into one fictitious queue.
+pub fn project_consolidated_bbo(
+    state: &RunState,
+    instrument_id: InstrumentId,
+) -> Result<ConsolidatedBbo, ApplicationError> {
+    let mut found = false;
+    let mut best_bid: Option<(ListingKey, PriceTicks, QuantityLots)> = None;
+    let mut best_ask: Option<(ListingKey, PriceTicks, QuantityLots)> = None;
+    for &key in state.listings().keys() {
+        if key.instrument_id != instrument_id {
+            continue;
+        }
+        found = true;
+        let (bids, asks) = state
+            .visible_levels(key)
+            .map_err(|_| ApplicationError::UnknownListing)?;
+        if let Some((price, quantity)) = bids.first() {
+            let price = PriceTicks::new(i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?);
+            let quantity = QuantityLots::new(i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?);
+            if best_bid.is_none_or(|(winner, value, _)| {
+                price > value || (price == value && key < winner)
+            }) {
+                best_bid = Some((key, price, quantity));
+            }
+        }
+        if let Some((price, quantity)) = asks.first() {
+            let price = PriceTicks::new(i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?);
+            let quantity = QuantityLots::new(i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?);
+            if best_ask.is_none_or(|(winner, value, _)| {
+                price < value || (price == value && key < winner)
+            }) {
+                best_ask = Some((key, price, quantity));
+            }
+        }
+    }
+    if !found {
+        return Err(ApplicationError::UnknownInstrument);
+    }
+    Ok(ConsolidatedBbo {
+        run_id: state.run_id(),
+        instrument_id,
+        sequence: state.sequence(),
+        bid: best_bid,
+        ask: best_ask,
     })
 }
 
