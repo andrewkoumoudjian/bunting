@@ -845,27 +845,37 @@ impl RunState {
         EngineSnapshotEnvelope::new(self.clone())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one explicit match keeps every foundation command on the same staged transition path"
-    )]
+    /// Immutable transition convenience. Use `transition_owned` when a
+    /// caller already owns the loaded run to avoid cloning the full history.
     pub fn transition(
         &self,
         command: &Command,
         cached: Option<&CachedListingSnapshot>,
     ) -> Result<TransitionOutcome, EngineError> {
-        if self.run_id != command.run_id || self.sequence != command.expected_sequence {
+        self.clone().transition_owned(command, cached)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one explicit match keeps every foundation command on the same staged transition path"
+    )]
+    pub fn transition_owned(
+        self,
+        command: &Command,
+        cached: Option<&CachedListingSnapshot>,
+    ) -> Result<TransitionOutcome, EngineError> {
+        let mut candidate = self;
+        if candidate.run_id != command.run_id || candidate.sequence != command.expected_sequence {
             return Err(EngineError::SequenceConflict {
-                current: self.sequence,
+                current: candidate.sequence,
             });
         }
         let next_sequence = self
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut candidate = self.clone();
-        let mut ledger = Ledger::from_projection(self.accounts.clone(), self.holdings.clone());
-        let risk = self.restore_risk();
+        let mut ledger = Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
+        let risk = candidate.restore_risk();
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let mut changed_depth = BTreeMap::new();
@@ -875,13 +885,13 @@ impl RunState {
                 let listing_key = match &command.payload {
                     CommandPayload::SubmitOrderAtListing { listing_key, .. } => {
                         if listing_key.instrument_id != order.instrument_id
-                            || !self.listings.contains_key(listing_key)
+                            || !candidate.listings.contains_key(listing_key)
                         {
                             return Err(EngineError::UnknownListing);
                         }
                         *listing_key
                     }
-                    _ => self.listing_key_for_instrument(order.instrument_id)?,
+                    _ => candidate.listing_key_for_instrument(order.instrument_id)?,
                 };
                 let price_bounds = self
                     .listings
@@ -889,7 +899,7 @@ impl RunState {
                     .ok_or(EngineError::UnknownListing)?
                     .definition
                     .price_bounds;
-                let book = self.restore_book(listing_key, cached, command)?;
+                let book = candidate.restore_book(listing_key, cached, command)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
                     listing_key: Some(listing_key),
@@ -940,7 +950,7 @@ impl RunState {
                     .get(&cancel.order_id)
                     .map(|owned| owned.listing_key)
                 {
-                    let book = self.restore_book(listing_key, cached, command)?;
+                    let book = candidate.restore_book(listing_key, cached, command)?;
                     let outcome = prepare_cancel(
                         cancel,
                         &book,
@@ -974,8 +984,8 @@ impl RunState {
                 }
             }
             CommandPayload::ActivateKillSwitch => {
-                for listing_key in self.listings.keys().copied() {
-                    let book = self.restore_book(listing_key, cached, command)?;
+                for listing_key in candidate.listings.keys().copied().collect::<Vec<_>>() {
+                    let book = candidate.restore_book(listing_key, cached, command)?;
                     book.engage_kill_switch();
                     let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
                     changed_depth.insert(listing_key, depth);
@@ -1022,11 +1032,11 @@ impl RunState {
         for (listing_key, depth) in changed_depth {
             candidate.refresh_market_projection(listing_key, depth)?;
         }
-        let events = envelope(command, self.event_sequence, payloads)?;
+        let events = envelope(command, candidate.event_sequence, payloads)?;
         candidate.sequence = next_sequence;
         candidate.event_sequence = events
             .last()
-            .map_or(self.event_sequence, |event| event.sequence);
+            .map_or(candidate.event_sequence, |event| event.sequence);
         (candidate.accounts, candidate.holdings) = ledger.projection();
         let snapshot_checksum = changed_listings
             .iter()
@@ -1050,12 +1060,21 @@ impl RunState {
     }
 
     /// Applies one authoritative simulation-administration command atomically.
+    /// Immutable simulation transition convenience; callers already owning a
+    /// recovered run may use `transition_simulation_owned` without another copy.
+    pub fn transition_simulation(
+        &self,
+        request: &SimulationCommandRequest,
+    ) -> Result<TransitionOutcome, EngineError> {
+        self.clone().transition_simulation_owned(request)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the atomic transition stages matching, projections and canonical envelopes together"
     )]
-    pub fn transition_simulation(
-        &self,
+    pub fn transition_simulation_owned(
+        self,
         request: &SimulationCommandRequest,
     ) -> Result<TransitionOutcome, EngineError> {
         let metadata = Command {
@@ -1067,17 +1086,17 @@ impl RunState {
             actor: request.actor,
             payload: CommandPayload::ActivateKillSwitch,
         };
-        if self.run_id != request.run_id || self.sequence != request.expected_sequence {
+        let mut candidate = self;
+        if candidate.run_id != request.run_id || candidate.sequence != request.expected_sequence {
             return Err(EngineError::SequenceConflict {
-                current: self.sequence,
+                current: candidate.sequence,
             });
         }
         let next_sequence = self
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut candidate = self.clone();
-        let mut ledger = Ledger::from_projection(self.accounts.clone(), self.holdings.clone());
+        let mut ledger = Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let mut changed_depth = BTreeMap::new();
@@ -1194,11 +1213,11 @@ impl RunState {
         for (listing_key, depth) in changed_depth {
             candidate.refresh_market_projection(listing_key, depth)?;
         }
-        let events = envelope(&metadata, self.event_sequence, payloads)?;
+        let events = envelope(&metadata, candidate.event_sequence, payloads)?;
         candidate.sequence = next_sequence;
         candidate.event_sequence = events
             .last()
-            .map_or(self.event_sequence, |event| event.sequence);
+            .map_or(candidate.event_sequence, |event| event.sequence);
         (candidate.accounts, candidate.holdings) = ledger.projection();
         Ok(TransitionOutcome {
             candidate,
@@ -1209,7 +1228,7 @@ impl RunState {
             snapshot_checksum: changed_listings
                 .iter()
                 .next()
-                .and_then(|key| self.listings.get(key))
+                .and_then(|key| candidate.listings.get(key))
                 .map(|listing| listing.snapshot.checksum.clone()),
             changed_listings,
         })

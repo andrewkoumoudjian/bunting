@@ -244,7 +244,7 @@ where
                     .map(|snapshot| (key, snapshot))
             })
             .and_then(|(key, snapshot)| self.cache.get(key, snapshot).ok().flatten());
-        let prepared = prepare_command(command, &candidate, cached.as_ref())?;
+        let prepared = prepare_command_owned(command, candidate, cached.as_ref())?;
         let changed_snapshots: Vec<_> = prepared
             .commit
             .candidate
@@ -305,7 +305,7 @@ where
                 current: state.sequence(),
             }));
         }
-        let prepared = prepare_simulation_command(request, &state)?;
+        let prepared = prepare_simulation_command_owned(request, state)?;
         let events = prepared.commit.events.clone();
         let committed_state = prepared.commit.candidate.clone();
         match self.origin.commit(prepared.commit)? {
@@ -331,6 +331,23 @@ pub fn prepare_command(
     candidate: &RunState,
     cached: Option<&CachedSnapshot>,
 ) -> Result<PreparedCommand, TransactionError> {
+    prepared_command_outcome(command, candidate.transition(command, cached)?)
+}
+
+/// A loaded run is already owned by the transaction; consume it rather than
+/// copying every book snapshot, account and history before staging a candidate.
+fn prepare_command_owned(
+    command: &Command,
+    candidate: RunState,
+    cached: Option<&CachedSnapshot>,
+) -> Result<PreparedCommand, TransactionError> {
+    prepared_command_outcome(command, candidate.transition_owned(command, cached)?)
+}
+
+fn prepared_command_outcome(
+    command: &Command,
+    outcome: TransitionOutcome,
+) -> Result<PreparedCommand, TransactionError> {
     let TransitionOutcome {
         candidate,
         events,
@@ -339,7 +356,7 @@ pub fn prepare_command(
         order_id,
         snapshot_checksum,
         ..
-    } = candidate.transition(command, cached)?;
+    } = outcome;
     let result = CommandResult {
         accepted,
         reject_code,
@@ -366,6 +383,20 @@ pub fn prepare_simulation_command(
     request: &SimulationCommandRequest,
     state: &RunState,
 ) -> Result<PreparedCommand, TransactionError> {
+    prepared_simulation_outcome(request, state.transition_simulation(request)?)
+}
+
+fn prepare_simulation_command_owned(
+    request: &SimulationCommandRequest,
+    state: RunState,
+) -> Result<PreparedCommand, TransactionError> {
+    prepared_simulation_outcome(request, state.transition_simulation_owned(request)?)
+}
+
+fn prepared_simulation_outcome(
+    request: &SimulationCommandRequest,
+    outcome: TransitionOutcome,
+) -> Result<PreparedCommand, TransactionError> {
     let TransitionOutcome {
         candidate,
         events,
@@ -374,7 +405,7 @@ pub fn prepare_simulation_command(
         order_id,
         snapshot_checksum,
         ..
-    } = state.transition_simulation(request)?;
+    } = outcome;
     let result = CommandResult {
         accepted,
         reject_code,
