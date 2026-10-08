@@ -407,13 +407,30 @@ impl PortfolioLedger {
         instrument: InstrumentId,
         mark: PriceTicks,
     ) -> Result<(), LedgerError> {
-        let mut position = self.position(participant, instrument);
-        let value = MoneyMinor::checked_mul_price_quantity(mark, position.settled)
-            .map_err(|_| LedgerError::ArithmeticOverflow)?;
-        position.unrealized_pnl = value
-            .checked_sub(position.cost_basis)
-            .ok_or(LedgerError::ArithmeticOverflow)?;
+        let position = value_position(self.position(participant, instrument), mark)?;
         self.positions.insert((participant, instrument), position);
+        Ok(())
+    }
+
+    /// Atomically marks every holder of one instrument at the same clearing quote.
+    /// This O(positions) operation belongs at scoring boundaries, not per fill.
+    pub fn mark_instrument(
+        &mut self,
+        instrument: InstrumentId,
+        mark: PriceTicks,
+    ) -> Result<(), LedgerError> {
+        if mark.get() <= 0 {
+            return Err(LedgerError::InvalidPosting);
+        }
+        let mut staged = Vec::new();
+        for ((participant, asset), position) in &self.positions {
+            if *asset == instrument {
+                staged.push((*participant, value_position(*position, mark)?));
+            }
+        }
+        for (participant, position) in staged {
+            self.positions.insert((participant, instrument), position);
+        }
         Ok(())
     }
 
@@ -452,6 +469,22 @@ impl PortfolioLedger {
     pub fn journal(&self) -> &[JournalTransaction] {
         &self.journal
     }
+}
+
+/// Computes a checked mark without changing the committed position.
+fn value_position(
+    mut position: PositionBalance,
+    mark: PriceTicks,
+) -> Result<PositionBalance, LedgerError> {
+    if mark.get() <= 0 {
+        return Err(LedgerError::InvalidPosting);
+    }
+    let value = MoneyMinor::checked_mul_price_quantity(mark, position.settled)
+        .map_err(|_| LedgerError::ArithmeticOverflow)?;
+    position.unrealized_pnl = value
+        .checked_sub(position.cost_basis)
+        .ok_or(LedgerError::ArithmeticOverflow)?;
+    Ok(position)
 }
 
 /// Applies a signed execution delta with proportional average-cost realization.
@@ -801,6 +834,35 @@ mod tests {
             Err(LedgerError::ArithmeticOverflow)
         );
         assert_eq!(journal, snapshot);
+    }
+
+    #[test]
+    fn mark_instrument_rejects_bad_prices_and_never_partially_updates() {
+        let mut ledger = PortfolioLedger::new();
+        let asset = InstrumentId::new(9);
+        ledger.set_position(
+            ParticipantId::new(1),
+            asset,
+            QuantityLots::new(1),
+            MoneyMinor::new(1),
+        );
+        ledger.set_position(
+            ParticipantId::new(2),
+            asset,
+            QuantityLots::new(1),
+            MoneyMinor::new(i128::MIN),
+        );
+        let original = ledger.clone();
+        assert_eq!(
+            ledger.mark_instrument(asset, PriceTicks::new(1)),
+            Err(LedgerError::ArithmeticOverflow)
+        );
+        assert_eq!(ledger, original);
+        assert_eq!(
+            ledger.mark_instrument(asset, PriceTicks::new(-1)),
+            Err(LedgerError::InvalidPosting)
+        );
+        assert_eq!(ledger, original);
     }
 
     #[test]

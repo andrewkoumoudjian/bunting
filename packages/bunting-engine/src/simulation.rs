@@ -1290,6 +1290,14 @@ impl SimulationState {
     }
 
     fn score_iteration(&mut self) -> Result<Vec<SimulationEvent>, SimulationError> {
+        // Consolidated trades are ordered by their committed sequence across
+        // listings. At a scoring boundary all holders receive the same last mark.
+        for (instrument, projection) in &self.market {
+            if let Some(last_trade) = projection.trades.back() {
+                self.portfolio_ledger
+                    .mark_instrument(*instrument, last_trade.price)?;
+            }
+        }
         let currency = self
             .instruments
             .values()

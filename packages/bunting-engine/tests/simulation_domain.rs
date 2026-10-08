@@ -511,13 +511,30 @@ fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
         MoneyMinor::new(1_110_000)
     );
     assert_eq!(journal.journal().len(), 1);
+    // Nontrading holders are marked together at the deterministic scoring boundary.
+    assert_eq!(
+        journal.net_liquidation_value(ADMIN, CURRENCY).unwrap(),
+        MoneyMinor::new(1_100_000)
+    );
+    let scored = apply(
+        &active,
+        &command(active.sequence().get(), 0, ADMIN, SimulationCommand::ScoreIteration),
+    );
+    assert_eq!(
+        scored.simulation().portfolio_ledger.position(ADMIN, INSTRUMENT).unrealized_pnl,
+        MoneyMinor::new(10_000)
+    );
+    assert_eq!(
+        scored.simulation().portfolio_ledger.net_liquidation_value(ADMIN, CURRENCY).unwrap(),
+        MoneyMinor::new(1_110_000)
+    );
     let restored = bunting_engine::EngineSnapshotEnvelope::from_json(
-        &active.snapshot_envelope().unwrap().to_json().unwrap(),
+        &scored.snapshot_envelope().unwrap().to_json().unwrap(),
     )
     .unwrap();
     assert_eq!(
         restored.state.state_hash().unwrap(),
-        active.state_hash().unwrap()
+        scored.state_hash().unwrap()
     );
 }
 
