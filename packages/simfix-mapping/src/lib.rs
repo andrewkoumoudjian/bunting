@@ -391,7 +391,7 @@ pub enum MarketDataUpdateAction {
 #[must_use]
 pub fn market_incremental(
     request_id: &str,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
     side: Side,
     action: MarketDataUpdateAction,
     price: PriceTicks,
@@ -409,7 +409,8 @@ pub fn market_incremental(
         },
     );
     message.push(269, if side == Side::Buy { "0" } else { "1" });
-    message.push(48, instrument_id.get().to_string());
+    message.push(48, listing_key.instrument_id.get().to_string());
+    message.push(207, listing_key.venue_id.get().to_string());
     message.push(270, price.get().to_string());
     message.push(271, quantity.get().to_string());
     message
@@ -478,6 +479,18 @@ mod tests {
         assert_eq!(
             fix_order_listing(&message)?,
             Some(ListingKey::new(VenueId::new(2), InstrumentId::new(7)))
+        );
+        let mut missing_exchange = message.clone();
+        missing_exchange.fields.retain(|field| field.tag != 207);
+        assert_eq!(
+            map_inbound(
+                &missing_exchange,
+                MappingContext {
+                    participant_id: ParticipantId::new(9),
+                    next_intent_id: IntentId::new(10),
+                },
+            ),
+            Err(MappingError::Dictionary(WireError::MissingRequiredTag(207)))
         );
         assert_eq!(order.quantity, QuantityLots::new(3));
         assert_eq!(
@@ -568,13 +581,14 @@ mod tests {
         assert_eq!(snapshot.value(268), Some("2"));
         let update = market_incremental(
             "book",
-            InstrumentId::new(7),
+            ListingKey::new(VenueId::new(1), InstrumentId::new(7)),
             Side::Buy,
             MarketDataUpdateAction::Change,
             PriceTicks::new(100),
             QuantityLots::new(4),
         );
         assert_eq!(update.msg_type, "X");
+        assert_eq!(update.value(207), Some("1"));
         assert_eq!(update.value(279), Some("1"));
     }
 
