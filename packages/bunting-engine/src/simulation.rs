@@ -117,6 +117,14 @@ impl Default for LogicalClock {
     }
 }
 
+/// Exact opening mark for a pre-endowed instrument position.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningMark {
+    pub instrument_id: InstrumentId,
+    pub price: PriceTicks,
+}
+
 /// Immutable scenario input for the full simulation domain.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -129,6 +137,10 @@ pub struct SimulationScenario {
     pub facilities: BTreeMap<FacilityId, FacilityDefinition>,
     pub scheduled_actions: Vec<ScheduledAction>,
     pub initial_news: Vec<NewsItem>,
+    /// None preserves legacy unpriced inventory. Some requires complete, strictly
+    /// ordered marks for every nonzero participant opening position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_marks: Option<Vec<OpeningMark>>,
 }
 
 mod scenario_instruments {
@@ -204,6 +216,7 @@ impl Default for SimulationScenario {
             facilities: BTreeMap::new(),
             scheduled_actions: Vec::new(),
             initial_news: Vec::new(),
+            opening_marks: None,
         }
     }
 }
@@ -230,6 +243,22 @@ impl SimulationScenario {
                 || instrument.contract_multiplier <= 0
             {
                 return Err(SimulationError::InvalidScenario);
+            }
+        }
+        if let Some(marks) = &self.opening_marks {
+            let mut preceding = None;
+            for mark in marks {
+                if mark.instrument_id.get() == 0
+                    || mark.price.get() <= 0
+                    || preceding.is_some_and(|id| id >= mark.instrument_id)
+                    || !self
+                        .instruments
+                        .get(&mark.instrument_id)
+                        .is_some_and(|instrument| instrument.contract_multiplier == 1)
+                {
+                    return Err(SimulationError::InvalidScenario);
+                }
+                preceding = Some(mark.instrument_id);
             }
         }
         for (id, facility) in &self.facilities {

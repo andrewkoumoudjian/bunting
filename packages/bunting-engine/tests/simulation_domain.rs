@@ -3,7 +3,7 @@
 use bunting_engine::simulation::{
     EconomicInstrument, FacilityDefinition, FacilityKind, InstrumentKind, LogicalClock,
     RunLifecycle, SIMULATION_POLICY_VERSION, ScheduledAction, ScheduledActionKind,
-    SimulationScenario,
+    SimulationScenario, OpeningMark,
 };
 use bunting_engine::{
     ListingDefinition, ParticipantDefinition, PublishScenarioOutcome, RunState, ScenarioCatalog,
@@ -83,6 +83,7 @@ fn scenario() -> ScenarioDefinition {
             },
         }],
         initial_news: Vec::new(),
+        opening_marks: None,
     };
     ScenarioDefinition::new(
         ScenarioId::new(1),
@@ -442,6 +443,76 @@ fn released_post_only_policy_is_matched_and_replayable() {
     .unwrap()
     .state;
     assert_eq!(restored.state_hash().unwrap(), state.state_hash().unwrap());
+}
+
+
+#[test]
+fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
+    let mut config = scenario().simulation().clone();
+    config.opening_marks = Some(vec![OpeningMark {
+        instrument_id: INSTRUMENT,
+        price: PriceTicks::new(100),
+    }]);
+    let priced = scenario().with_simulation(config.clone()).unwrap();
+    let state = RunState::from_scenario(RUN, IterationId::new(1), &priced).unwrap();
+    let journal = &state.simulation().portfolio_ledger;
+    assert_eq!(
+        journal.position(PARTICIPANT, INSTRUMENT).cost_basis,
+        MoneyMinor::new(100_000)
+    );
+    assert_eq!(
+        journal.net_liquidation_value(PARTICIPANT, CURRENCY).unwrap(),
+        MoneyMinor::new(1_100_000)
+    );
+    assert!(journal.journal().is_empty());
+
+    config.opening_marks = Some(Vec::new());
+    assert!(scenario().with_simulation(config).is_err());
+
+    let mut active = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    for (actor, id, side) in [
+        (COUNTERPARTY, 101_u128, Side::Sell),
+        (PARTICIPANT, 102_u128, Side::Buy),
+    ] {
+        let order = Command {
+            run_id: RUN,
+            command_id: CommandId::new(id),
+            correlation_id: CorrelationId::new(id),
+            logical_time: LogicalTimeNs::new(0),
+            expected_sequence: active.sequence(),
+            actor,
+            payload: CommandPayload::SubmitOrder(SubmitOrder {
+                order_id: OrderId::new(id),
+                instrument_id: INSTRUMENT,
+                participant_id: actor,
+                side,
+                quantity: QuantityLots::new(2),
+                kind: OrderKind::Limit {
+                    price: PriceTicks::new(110),
+                },
+            }),
+        };
+        active = active.transition(&order, None).unwrap().candidate;
+    }
+    let journal = &active.simulation().portfolio_ledger;
+    assert_eq!(
+        journal.position(COUNTERPARTY, INSTRUMENT).cost_basis,
+        MoneyMinor::new(99_800)
+    );
+    assert_eq!(
+        journal.position(COUNTERPARTY, INSTRUMENT).realized_pnl,
+        MoneyMinor::new(20)
+    );
+    assert_eq!(
+        journal.net_liquidation_value(COUNTERPARTY, CURRENCY).unwrap(),
+        MoneyMinor::new(1_110_000)
+    );
+    assert_eq!(journal.journal().len(), 1);
+    let restored = bunting_engine::EngineSnapshotEnvelope::from_json(
+        &active.snapshot_envelope().unwrap().to_json().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.state.state_hash().unwrap(), active.state_hash().unwrap());
 }
 
 #[test]

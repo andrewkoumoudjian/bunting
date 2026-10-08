@@ -277,6 +277,17 @@ impl ScenarioDefinition {
         self.simulation
             .validate()
             .map_err(|_| ScenarioError::InvalidSimulation)?;
+        if let Some(marks) = &self.simulation.opening_marks {
+            for participant in self.participants.values() {
+                for (instrument, quantity) in &participant.initial_positions {
+                    if quantity.get() != 0
+                        && !marks.iter().any(|mark| mark.instrument_id == *instrument)
+                    {
+                        return Err(ScenarioError::InvalidSimulation);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -597,12 +608,27 @@ impl RunState {
                     participant.initial_cash,
                 );
                 for (instrument, quantity) in &participant.initial_positions {
+                    let opening_mark = scenario
+                        .simulation
+                        .opening_marks
+                        .as_ref()
+                        .and_then(|marks| marks.iter().find(|mark| mark.instrument_id == *instrument));
+                    let basis = opening_mark.map_or(Ok(MoneyMinor::new(0)), |mark| {
+                        MoneyMinor::checked_mul_price_quantity(mark.price, *quantity)
+                    }).map_err(|_| EngineError::InvalidScenario)?;
                     simulation.portfolio_ledger.set_position(
                         participant.participant_id,
                         *instrument,
                         *quantity,
-                        MoneyMinor::new(0),
+                        basis,
                     );
+                    if let Some(mark) = opening_mark {
+                        simulation.portfolio_ledger.mark_position(
+                            participant.participant_id,
+                            *instrument,
+                            mark.price,
+                        ).map_err(|_| EngineError::InvalidScenario)?;
+                    }
                 }
             }
         }
