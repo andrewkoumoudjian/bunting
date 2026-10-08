@@ -1370,17 +1370,24 @@ impl EngineSnapshotEnvelope {
     }
 
     pub fn from_json(json: &str) -> Result<Self, SnapshotError> {
-        let envelope: Self =
+        #[derive(Deserialize)]
+        struct VersionHeader {
+            schema_version: u16,
+        }
+        let header: VersionHeader =
             serde_json::from_str(json).map_err(|_| SnapshotError::Serialization)?;
-        if envelope.schema_version != ENGINE_SNAPSHOT_VERSION {
+        if header.schema_version != ENGINE_SNAPSHOT_VERSION {
             return Err(SnapshotError::UnsupportedVersion);
         }
+        let envelope: Self =
+            serde_json::from_str(json).map_err(|_| SnapshotError::Serialization)?;
         envelope.state.validate()?;
         if envelope.state.state_hash()? != envelope.state_hash {
             return Err(SnapshotError::HashMismatch);
         }
         Ok(envelope)
     }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
@@ -2060,47 +2067,32 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "full-width maker alias, colliding direct ID, fills, cancel, and replay are one invariant"
+        reason = "one test checks full-width and small canonical IDs, fills, cancellation, and recovery"
     )]
-    fn full_width_canonical_order_ids_match_cancel_and_replay_without_collision() {
+    fn every_order_uses_one_sequential_upstream_allocator() {
         let large = OrderId::new(u128::from(u64::MAX) + 123);
-        let would_collide = OrderId::new(u128::from(u64::MAX));
+        let small = OrderId::new(1);
         let mut state = run();
         let first = submit(&state, 1, 2, large.get(), 1, Side::Sell, 110, 2);
         let accepted = state.transition(&first, None).unwrap();
         assert!(accepted.accepted);
         state = accepted.candidate;
-        assert_eq!(state.ownership()[&large].upstream_order_id, u64::MAX);
-        assert_eq!(state.upstream_order_aliases.get(&u64::MAX), Some(&large));
+        assert_eq!(state.ownership()[&large].upstream_order_id, 1);
+        assert_eq!(state.upstream_to_canonical.get(&1), Some(&large));
+        assert_eq!(state.next_upstream_order_id, 2);
 
-        // The next u64-compatible order must not claim the reserved upstream ID.
-        let next = submit(
-            &state,
-            2,
-            2,
-            would_collide.get(),
-            1,
-            Side::Sell,
-            120,
-            1,
-        );
+        let next = submit(&state, 2, 2, small.get(), 1, Side::Sell, 120, 1);
         let accepted = state.transition(&next, None).unwrap();
         assert!(accepted.accepted);
         state = accepted.candidate;
-        assert_eq!(
-            state.ownership()[&would_collide].upstream_order_id,
-            u64::MAX - 1
-        );
-        assert_eq!(
-            state.upstream_order_aliases.get(&(u64::MAX - 1)),
-            Some(&would_collide)
-        );
+        assert_eq!(state.ownership()[&small].upstream_order_id, 2);
+        assert_eq!(state.upstream_to_canonical.get(&2), Some(&small));
 
-        let restored = EngineSnapshotEnvelope::from_json(
-            &state.snapshot_envelope().unwrap().to_json().unwrap(),
-        )
-        .unwrap();
-        let replay_start = restored.state;
+        let snapshot = state.snapshot_envelope().unwrap();
+        assert_eq!(snapshot.schema_version, ENGINE_SNAPSHOT_VERSION);
+        let replay_start = EngineSnapshotEnvelope::from_json(&snapshot.to_json().unwrap())
+            .unwrap()
+            .state;
         assert_eq!(replay_start.state_hash().unwrap(), state.state_hash().unwrap());
 
         let first_buy = submit(&state, 3, 1, 123, 1, Side::Buy, 110, 2);
@@ -2115,11 +2107,10 @@ mod tests {
             } if *maker_order_id == large && *taker_order_id == OrderId::new(123)
         )));
         let replayed = replay_start.transition(&first_buy, None).unwrap();
-        assert_eq!(
-            replayed.candidate.state_hash().unwrap(),
-            filled.candidate.state_hash().unwrap()
-        );
+        assert_eq!(replayed.candidate.state_hash().unwrap(), filled.candidate.state_hash().unwrap());
         state = filled.candidate;
+        assert_eq!(state.upstream_to_canonical.get(&3), Some(&OrderId::new(123)));
+        assert_eq!(state.next_upstream_order_id, 4);
 
         let cancel = Command {
             run_id: state.run_id(),
@@ -2129,7 +2120,7 @@ mod tests {
             expected_sequence: state.sequence(),
             actor: ParticipantId::new(2),
             payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
-                order_id: would_collide,
+                order_id: small,
                 participant_id: ParticipantId::new(2),
             }),
         };
@@ -2137,15 +2128,23 @@ mod tests {
         assert!(cancelled.accepted);
         assert!(cancelled.events.iter().any(|event| matches!(
             event.payload,
-            EventPayload::OrderCanceled { order_id, .. } if order_id == would_collide
+            EventPayload::OrderCanceled { order_id, .. } if order_id == small
         )));
+        assert_eq!(cancelled.candidate.ownership()[&small].state, OwnedOrderState::Canceled);
+        assert_eq!(cancelled.candidate.upstream_to_canonical.get(&1), Some(&large));
+        assert_eq!(cancelled.candidate.next_upstream_order_id, 4);
+    }
+
+    #[test]
+    fn old_snapshot_versions_are_rejected_not_migrated() {
+        let state = run();
+        let mut value = serde_json::to_value(state.snapshot_envelope().unwrap()).unwrap();
+        value["schema_version"] = serde_json::json!(1);
+        value["state"].as_object_mut().unwrap().remove("next_upstream_order_id");
+        value["state"].as_object_mut().unwrap().remove("upstream_to_canonical");
         assert_eq!(
-            cancelled.candidate.ownership()[&would_collide].state,
-            OwnedOrderState::Canceled
-        );
-        assert_eq!(
-            cancelled.candidate.upstream_order_aliases.get(&u64::MAX),
-            Some(&large)
+            EngineSnapshotEnvelope::from_json(&value.to_string()),
+            Err(SnapshotError::UnsupportedVersion)
         );
     }
 
