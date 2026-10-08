@@ -868,6 +868,7 @@ impl RunState {
         let risk = self.restore_risk();
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
+        let mut changed_depth = BTreeMap::new();
         let (accepted, reject_code, order_id) = match &command.payload {
             CommandPayload::SubmitOrder(order)
             | CommandPayload::SubmitOrderAtListing { order, .. } => {
@@ -917,7 +918,8 @@ impl RunState {
                         &mut candidate.next_upstream_order_id,
                         &mut payloads,
                     )?;
-                    candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    changed_depth.insert(listing_key, depth);
                     changed_listings.insert(listing_key);
                     outcome
                 };
@@ -946,7 +948,8 @@ impl RunState {
                         &mut candidate.ownership,
                         &mut payloads,
                     )?;
-                    candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    changed_depth.insert(listing_key, depth);
                     changed_listings.insert(listing_key);
                     match outcome {
                         Ok(()) => (true, None, Some(cancel.order_id)),
@@ -974,7 +977,8 @@ impl RunState {
                 for listing_key in self.listings.keys().copied() {
                     let book = self.restore_book(listing_key, cached, command)?;
                     book.engage_kill_switch();
-                    candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                    changed_depth.insert(listing_key, depth);
                     changed_listings.insert(listing_key);
                 }
                 payloads.push(EventPayload::KillSwitchActivated);
@@ -1015,8 +1019,8 @@ impl RunState {
                 .project_event(command.logical_time, payload)
                 .map_err(EngineError::Simulation)?;
         }
-        for listing_key in &changed_listings {
-            candidate.refresh_market_projection(*listing_key)?;
+        for (listing_key, depth) in changed_depth {
+            candidate.refresh_market_projection(listing_key, depth)?;
         }
         let events = envelope(command, self.event_sequence, payloads)?;
         candidate.sequence = next_sequence;
@@ -1076,6 +1080,7 @@ impl RunState {
         let mut ledger = Ledger::from_projection(self.accounts.clone(), self.holdings.clone());
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
+        let mut changed_depth = BTreeMap::new();
         if let SimulationCommand::MassCancel {
             participant_id,
             instrument_id,
@@ -1122,7 +1127,8 @@ impl RunState {
                 .map_err(|_| EngineError::OwnershipInvariant)?;
             }
             for (listing_key, book) in staged_books {
-                candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                changed_depth.insert(listing_key, depth);
                 changed_listings.insert(listing_key);
             }
             payloads.push(EventPayload::Simulation(
@@ -1185,8 +1191,8 @@ impl RunState {
                 .project_event(request.logical_time, payload)
                 .map_err(EngineError::Simulation)?;
         }
-        for listing_key in &changed_listings {
-            candidate.refresh_market_projection(*listing_key)?;
+        for (listing_key, depth) in changed_depth {
+            candidate.refresh_market_projection(listing_key, depth)?;
         }
         let events = envelope(&metadata, self.event_sequence, payloads)?;
         candidate.sequence = next_sequence;
@@ -1224,8 +1230,11 @@ impl RunState {
         risk
     }
 
-    fn refresh_market_projection(&mut self, listing_key: ListingKey) -> Result<(), EngineError> {
-        let (bids, asks) = self.visible_levels(listing_key)?;
+    fn refresh_market_projection(
+        &mut self,
+        listing_key: ListingKey,
+        (bids, asks): VisibleDepth,
+    ) -> Result<(), EngineError> {
         let convert = |levels: VisibleLevels| {
             levels
                 .into_iter()
@@ -1327,17 +1336,17 @@ impl RunState {
         key: ListingKey,
         sequence: EventSequence,
         book: &KernelBook,
-    ) -> Result<(), EngineError> {
+    ) -> Result<VisibleDepth, EngineError> {
+        let package = book
+            .snapshot_package(SNAPSHOT_DEPTH)
+            .map_err(|_| EngineError::Upstream)?;
+        let depth = package.visible_depth.clone();
         let listing = self
             .listings
             .get_mut(&key)
             .ok_or(EngineError::UnknownListing)?;
-        listing.snapshot = snapshot_from_package(
-            sequence,
-            book.snapshot_package(SNAPSHOT_DEPTH)
-                .map_err(|_| EngineError::Upstream)?,
-        );
-        Ok(())
+        listing.snapshot = snapshot_from_package(sequence, package);
+        Ok(depth)
     }
 }
 

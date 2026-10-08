@@ -39,16 +39,23 @@ pub fn visible_levels_from_snapshot_json(
 ) -> Result<(VisibleLevels, VisibleLevels), OrderBookError> {
     let package = OrderBookSnapshotPackage::from_json(json)?;
     package.validate()?;
+    Ok(visible_depth_from_package(&package))
+}
+
+/// Extracts visible depth from an already canonicalized upstream snapshot.
+fn visible_depth_from_package(
+    package: &OrderBookSnapshotPackage,
+) -> (VisibleLevels, VisibleLevels) {
     let levels = |items: &[pricelevel::PriceLevelSnapshot]| {
         items
             .iter()
             .map(|level| (level.price().as_u128(), level.visible_quantity().as_u64()))
             .collect()
     };
-    Ok((
+    (
         levels(&package.snapshot.bids),
         levels(&package.snapshot.asks),
-    ))
+    )
 }
 
 /// Result of one limit-order submission through the upstream engine.
@@ -67,6 +74,8 @@ pub struct SnapshotPackage {
     pub checksum: String,
     /// Upstream engine sequence represented.
     pub engine_sequence: u64,
+    /// Derived market depth from the exact same canonical package.
+    pub visible_depth: (VisibleLevels, VisibleLevels),
 }
 
 /// Checked protocol-to-upstream conversion failure.
@@ -382,10 +391,12 @@ impl KernelBook {
     /// Creates a checksum-protected package with explicit metadata.
     pub fn snapshot_package(&self, depth: usize) -> Result<SnapshotPackage, OrderBookError> {
         let package = canonical_snapshot_package(self.inner.create_snapshot_package(depth)?)?;
+        let visible_depth = visible_depth_from_package(&package);
         Ok(SnapshotPackage {
             json: package.to_json()?,
             checksum: package.checksum.clone(),
             engine_sequence: package.engine_seq,
+            visible_depth,
         })
     }
 
@@ -501,6 +512,32 @@ mod tests {
             first.snapshot_package(10).unwrap().checksum,
             second.snapshot_package(10).unwrap().checksum
         );
+    }
+
+    #[test]
+    fn canonical_snapshot_depth_matches_checksum_checked_decode() {
+        let book = KernelBook::new_at("BNT/USD", 25);
+        book.submit_limit(1, 100, 9, Side::Buy, TimeInForce::Gtc)
+            .unwrap();
+        book.submit_limit(2, 100, 3, Side::Buy, TimeInForce::Gtc)
+            .unwrap();
+        book.submit_limit(3, 105, 7, Side::Sell, TimeInForce::Gtc)
+            .unwrap();
+        let initial = book.snapshot_package(10).unwrap();
+        assert_eq!(
+            initial.visible_depth,
+            visible_levels_from_snapshot_json(&initial.json).unwrap()
+        );
+        assert_eq!(initial.visible_depth.0, vec![(100, 12)]);
+        assert_eq!(initial.visible_depth.1, vec![(105, 7)]);
+        book.cancel_remaining(2).unwrap();
+        let canceled = book.snapshot_package(10).unwrap();
+        assert_eq!(
+            canceled.visible_depth,
+            visible_levels_from_snapshot_json(&canceled.json).unwrap()
+        );
+        assert_eq!(canceled.visible_depth.0, vec![(100, 9)]);
+        assert_ne!(initial.checksum, canceled.checksum);
     }
 
     #[test]
