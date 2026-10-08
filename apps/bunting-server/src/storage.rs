@@ -45,6 +45,9 @@ pub struct FileOriginStore {
     /// An ambiguous write failure prevents further acknowledgments until a
     /// process restart and journal-prefix recovery.
     poisoned: Arc<AtomicBool>,
+    /// OS-backed single-writer lease, held until the last store clone drops.
+    #[cfg(unix)]
+    _writer_lock: Arc<File>,
     max_runs: usize,
     max_commands: usize,
     max_events_per_run: usize,
@@ -53,6 +56,34 @@ pub struct FileOriginStore {
 impl FileOriginStore {
     pub fn open(path: impl Into<PathBuf>, config: &StorageConfig) -> Result<Self, OriginError> {
         let path = path.into();
+        // Native durable mode must never admit two independent processes
+        // reading the same expected version and both appending accepted writes.
+        // Unix flock follows the lifetime of the open file descriptor, rather
+        // than leaving stale PID files behind after an unclean process exit.
+        #[cfg(unix)]
+        let writer_lock = {
+            use rustix::fs::{FlockOperation, flock};
+            let lock_path = path.with_extension("lock");
+            if let Some(parent) = lock_path
+                .parent()
+                .filter(|item| !item.as_os_str().is_empty())
+            {
+                fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
+            }
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(lock_path)
+                .map_err(|_| OriginError::Unavailable)?;
+            flock(&file, FlockOperation::NonBlockingLockExclusive)
+                .map_err(|_| OriginError::Unavailable)?;
+            Arc::new(file)
+        };
+        // A known atomic locking primitive is required for durable mode.
+        #[cfg(not(unix))]
+        return Err(OriginError::Unavailable);
+
         let journal_path = commit_journal::path_for(&path);
         if !path.exists() && journal_path.exists() {
             // A journal without its genesis checkpoint is not a valid run.
@@ -81,6 +112,8 @@ impl FileOriginStore {
             path,
             state: Arc::new(Mutex::new(state)),
             poisoned: Arc::new(AtomicBool::new(false)),
+            #[cfg(unix)]
+            _writer_lock: writer_lock,
             max_runs: config.max_runs,
             max_commands: config.max_commands,
             max_events_per_run: config.max_events_per_run,

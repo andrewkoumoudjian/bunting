@@ -331,6 +331,7 @@ dependencies = [
  "bunting-runtime",
  "bunting-tui",
  "quarcc-execution-engine",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
