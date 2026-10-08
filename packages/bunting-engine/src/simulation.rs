@@ -251,10 +251,10 @@ impl SimulationScenario {
                 if mark.instrument_id.get() == 0
                     || mark.price.get() <= 0
                     || preceding.is_some_and(|id| id >= mark.instrument_id)
-                    || !self
+                    || self
                         .instruments
                         .get(&mark.instrument_id)
-                        .is_some_and(|instrument| instrument.contract_multiplier == 1)
+                        .is_none_or(|instrument| instrument.contract_multiplier != 1)
                 {
                     return Err(SimulationError::InvalidScenario);
                 }
