@@ -4,6 +4,7 @@
 
 mod acceptor;
 mod admin;
+mod commit_journal;
 pub mod config;
 pub mod runtime;
 mod scenario;
