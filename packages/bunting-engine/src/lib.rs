@@ -874,7 +874,8 @@ impl RunState {
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut ledger = Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
+        let mut ledger =
+            Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
         let risk = candidate.restore_risk();
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
@@ -1096,7 +1097,8 @@ impl RunState {
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut ledger = Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
+        let mut ledger =
+            Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let mut changed_depth = BTreeMap::new();
@@ -2136,7 +2138,10 @@ mod tests {
             }),
         };
         let borrowed = after_submit.transition(&cancel, None).unwrap();
-        let owned = after_submit.clone().transition_owned(&cancel, None).unwrap();
+        let owned = after_submit
+            .clone()
+            .transition_owned(&cancel, None)
+            .unwrap();
         assert_eq!(borrowed.candidate, owned.candidate);
         assert_eq!(borrowed.events, owned.events);
         let after_cancel = borrowed.candidate;

@@ -488,20 +488,18 @@ pub(crate) async fn execute_command_detailed(
         None
     };
     let actor = verified_participant(command.actor)?;
-    let mut prepared =
-        prepare_authenticated_owned(&actor, &command, state, cached.as_ref()).map_err(|error| {
-            match error {
-                bunting_application::ApplicationError::Transaction(transaction) => {
-                    map_transaction_error(transaction)
-                }
-                bunting_application::ApplicationError::Unauthenticated
-                | bunting_application::ApplicationError::Unauthorized
-                | bunting_application::ApplicationError::ActorMismatch
-                | bunting_application::ApplicationError::InvalidIdentity => {
-                    ProcedureError::Unauthorized
-                }
-                _ => ProcedureError::InternalContractMismatch,
+    let mut prepared = prepare_authenticated_owned(&actor, &command, state, cached.as_ref())
+        .map_err(|error| match error {
+            bunting_application::ApplicationError::Transaction(transaction) => {
+                map_transaction_error(transaction)
             }
+            bunting_application::ApplicationError::Unauthenticated
+            | bunting_application::ApplicationError::Unauthorized
+            | bunting_application::ApplicationError::ActorMismatch
+            | bunting_application::ApplicationError::InvalidIdentity => {
+                ProcedureError::Unauthorized
+            }
+            _ => ProcedureError::InternalContractMismatch,
         })?;
     prepared.commit.client_key = Some(client_key);
     let events = prepared.commit.events.clone();
@@ -564,8 +562,8 @@ pub(crate) async fn execute_simulation_detailed(
     let state = d1_origin::load_run(&database, &request.run_id.to_string())
         .await
         .map_err(|error| map_origin_error(&error))?;
-    let mut prepared =
-        prepare_authenticated_simulation_owned(actor, &request, state).map_err(|error| match error {
+    let mut prepared = prepare_authenticated_simulation_owned(actor, &request, state).map_err(
+        |error| match error {
             bunting_application::ApplicationError::Transaction(transaction) => {
                 map_transaction_error(transaction)
             }
@@ -576,7 +574,8 @@ pub(crate) async fn execute_simulation_detailed(
                 ProcedureError::Unauthorized
             }
             _ => ProcedureError::InternalContractMismatch,
-        })?;
+        },
+    )?;
     prepared.commit.client_key = Some(client_key);
     let events = prepared.commit.events.clone();
     let request_json =
