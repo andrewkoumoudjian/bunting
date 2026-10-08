@@ -1090,26 +1090,39 @@ impl RunState {
                 })
                 .map(|owned| owned.order_id)
                 .collect::<Vec<_>>();
+            // Stage each touched matcher once. Reconstructing and snapshotting
+            // after every canceled order turned one batch into O(orders)
+            // full-book serializations; the authoritative candidate is still
+            // discarded on any error before the transaction can commit.
+            let mut staged_books = BTreeMap::new();
             for order_id in &order_ids {
                 let owned = candidate
                     .ownership
                     .get(order_id)
                     .cloned()
                     .ok_or(EngineError::OwnershipInvariant)?;
-                let book = candidate.restore_book(owned.listing_key, None, &metadata)?;
+                if !staged_books.contains_key(&owned.listing_key) {
+                    let book = candidate.restore_book(owned.listing_key, None, &metadata)?;
+                    staged_books.insert(owned.listing_key, book);
+                }
+                let book = staged_books
+                    .get(&owned.listing_key)
+                    .ok_or(EngineError::OwnershipInvariant)?;
                 prepare_cancel(
                     &bunting_market_events::CancelOrder {
                         order_id: *order_id,
                         participant_id: owned.participant_id,
                     },
-                    &book,
+                    book,
                     &mut ledger,
                     &mut candidate.ownership,
                     &mut payloads,
                 )?
                 .map_err(|_| EngineError::OwnershipInvariant)?;
-                candidate.replace_snapshot(owned.listing_key, next_sequence, &book)?;
-                changed_listings.insert(owned.listing_key);
+            }
+            for (listing_key, book) in staged_books {
+                candidate.replace_snapshot(listing_key, next_sequence, &book)?;
+                changed_listings.insert(listing_key);
             }
             payloads.push(EventPayload::Simulation(
                 bunting_market_events::SimulationEvent::MassCancelCompleted {
@@ -2150,6 +2163,78 @@ mod tests {
             Some(&large)
         );
         assert_eq!(cancelled.candidate.next_upstream_order_id, 4);
+    }
+
+    #[test]
+    fn mass_cancel_stages_one_book_per_listing_and_is_replay_deterministic() {
+        let mut state = run();
+        for (command_id, owner, instrument, side, price) in [
+            (1, 2, 1, Side::Sell, 101),
+            (2, 2, 1, Side::Sell, 102),
+            (3, 2, 1, Side::Sell, 103),
+            (4, 1, 2, Side::Buy, 95),
+        ] {
+            let next = submit(
+                &state,
+                command_id,
+                owner,
+                command_id,
+                instrument,
+                side,
+                price,
+                1,
+            );
+            let accepted = state.transition(&next, None).unwrap();
+            assert!(accepted.accepted);
+            state = accepted.candidate;
+        }
+        let untouched = ListingKey::new(VenueId::new(1), InstrumentId::new(2));
+        let removed = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let untouched_snapshot = state.listing_snapshot(untouched).unwrap().clone();
+        let previous = state.clone();
+        let request = SimulationCommandRequest {
+            run_id: state.run_id(),
+            command_id: CommandId::new(5),
+            correlation_id: CorrelationId::new(5),
+            logical_time: LogicalTimeNs::new(5_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(1),
+            payload: SimulationCommand::MassCancel {
+                participant_id: Some(ParticipantId::new(2)),
+                instrument_id: Some(InstrumentId::new(1)),
+            },
+        };
+        let finished = state.transition_simulation(&request).unwrap();
+        assert!(finished.accepted);
+        assert_eq!(finished.changed_listings, BTreeSet::from([removed]));
+        assert_eq!(
+            finished.candidate.listing_snapshot(untouched).unwrap(),
+            &untouched_snapshot
+        );
+        assert!(finished.candidate.visible_levels(removed).unwrap().1.is_empty());
+        assert_eq!(
+            finished.candidate.visible_levels(untouched).unwrap().0,
+            vec![(95, 1)]
+        );
+        for id in [1, 2, 3] {
+            assert_eq!(
+                finished.candidate.ownership()[&OrderId::new(id)].state,
+                OwnedOrderState::Canceled
+            );
+        }
+        assert_eq!(
+            finished.candidate.ownership()[&OrderId::new(4)].state,
+            OwnedOrderState::Active
+        );
+        assert_eq!(
+            previous.transition_simulation(&request).unwrap().candidate.state_hash().unwrap(),
+            finished.candidate.state_hash().unwrap()
+        );
+        let snapshot = finished.candidate.snapshot_envelope().unwrap().to_json().unwrap();
+        assert_eq!(
+            EngineSnapshotEnvelope::from_json(&snapshot).unwrap().state,
+            finished.candidate
+        );
     }
 
     #[test]
