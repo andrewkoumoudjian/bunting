@@ -8,8 +8,9 @@ pub use archive::{
     ArchiveError, ArchivePolicy, COMPETITION_ARCHIVE_VERSION, CompetitionArchive, ReplayResult,
 };
 pub use bunting_application::{
-    ApplicationService, FixApplicationRequest, FixApplicationState, MarketProjection,
-    VerifiedActor, project_market,
+    ApplicationService, ConsolidatedBbo, FixApplicationRequest, FixApplicationState,
+    MarketProjection, PublicTrade, VerifiedActor, project_consolidated_bbo, project_market,
+    project_public_event,
 };
 pub use handle::BuntingHandle;
 

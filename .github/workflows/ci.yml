@@ -33,7 +33,7 @@ jobs:
       - name: Test accounting and engine
         run: cargo test --locked -p bunting-ledger -p bunting-engine
       - name: Test application and wire contracts
-        run: cargo test --locked -p bunting-api-contract -p simfix-mapping -p bunting-application
+        run: cargo test --locked -p bunting-api-contract -p simfix-mapping -p bunting-application -p bunting-worker-cache
       - name: Verify formatting
         run: cargo fmt --all --check
       - name: Compile application and transport adapters

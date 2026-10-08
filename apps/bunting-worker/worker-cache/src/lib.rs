@@ -232,7 +232,10 @@ mod tests {
     fn cache_key_is_deterministic_and_content_addressed() {
         let key = SnapshotCacheKey::new(
             RunId::new(7),
-            ListingKey::new(bunting_market_types::VenueId::new(2), bunting_market_types::InstrumentId::new(11)),
+            ListingKey::new(
+                bunting_market_types::VenueId::new(2),
+                bunting_market_types::InstrumentId::new(11),
+            ),
             EventSequence::new(19),
             "a".repeat(64),
         )
@@ -247,14 +250,20 @@ mod tests {
     fn identical_instrument_snapshots_on_different_venues_get_distinct_cache_keys() {
         let primary = SnapshotCacheKey::new(
             RunId::new(7),
-            ListingKey::new(bunting_market_types::VenueId::new(1), bunting_market_types::InstrumentId::new(11)),
+            ListingKey::new(
+                bunting_market_types::VenueId::new(1),
+                bunting_market_types::InstrumentId::new(11),
+            ),
             EventSequence::new(19),
             "a".repeat(64),
         )
         .expect("valid primary");
         let secondary = SnapshotCacheKey::new(
             RunId::new(7),
-            ListingKey::new(bunting_market_types::VenueId::new(2), bunting_market_types::InstrumentId::new(11)),
+            ListingKey::new(
+                bunting_market_types::VenueId::new(2),
+                bunting_market_types::InstrumentId::new(11),
+            ),
             EventSequence::new(19),
             "a".repeat(64),
         )
@@ -267,7 +276,10 @@ mod tests {
         assert_eq!(
             SnapshotCacheKey::new(
                 RunId::new(1),
-                ListingKey::new(bunting_market_types::VenueId::new(1), bunting_market_types::InstrumentId::new(1)),
+                ListingKey::new(
+                    bunting_market_types::VenueId::new(1),
+                    bunting_market_types::InstrumentId::new(1)
+                ),
                 EventSequence::new(1),
                 "not-a-checksum",
             ),

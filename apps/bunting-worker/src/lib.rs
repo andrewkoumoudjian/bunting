@@ -411,13 +411,9 @@ async fn execute_command(
     client_command: (Command, ClientCommandKey),
     environment: &Env,
 ) -> std::result::Result<CommandResult, ProcedureError> {
-    execute_command_detailed(
-        client_command.0,
-        client_command.1,
-        environment,
-    )
-    .await
-    .map(|executed| executed.result)
+    execute_command_detailed(client_command.0, client_command.1, environment)
+        .await
+        .map(|executed| executed.result)
 }
 
 pub(crate) struct ExecutedCommand {
@@ -605,7 +601,7 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
             );
             match load_run(environment, RunId::new(input.run_id.get()))
                 .await
-            .and_then(|state| snapshot_output(&state, listing_key))
+                .and_then(|state| snapshot_output(&state, listing_key))
             {
                 Ok(output) => bunting_browser_wire::success(200, &output),
                 Err(error) => wire_error(error, &call.path, "snapshot unavailable"),

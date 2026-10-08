@@ -791,8 +791,14 @@ mod tests {
         assert_eq!(a.bids, vec![(99, 1)]);
         assert_eq!(b.bids, vec![(99, 1)]);
         let nbbo = project_consolidated_bbo(&state, instrument).unwrap();
-        assert_eq!(nbbo.bid, Some((primary, PriceTicks::new(99), QuantityLots::new(1))));
-        assert_eq!(nbbo.ask, Some((alternate, PriceTicks::new(104), QuantityLots::new(1))));
+        assert_eq!(
+            nbbo.bid,
+            Some((primary, PriceTicks::new(99), QuantityLots::new(1)))
+        );
+        assert_eq!(
+            nbbo.ask,
+            Some((alternate, PriceTicks::new(104), QuantityLots::new(1)))
+        );
         assert_eq!(
             project_market(&state, ListingKey::new(VenueId::new(3), instrument)),
             Err(ApplicationError::UnknownListing)
@@ -808,15 +814,26 @@ mod tests {
             .expect("the primary venue produced one public trade");
         assert_eq!(trade.listing_key, primary);
         assert_eq!(trade.price, PriceTicks::new(105));
-        assert!(executed
-            .events
-            .iter()
-            .all(|event| project_public_event(event, alternate).is_none()));
+        assert!(
+            executed
+                .events
+                .iter()
+                .all(|event| project_public_event(event, alternate).is_none())
+        );
         let json = serde_json::to_string(&trade).unwrap();
-        for private in ["buyer_id", "seller_id", "maker_order_id", "taker_order_id", "actor"] {
+        for private in [
+            "buyer_id",
+            "seller_id",
+            "maker_order_id",
+            "taker_order_id",
+            "actor",
+        ] {
             assert!(!json.contains(private));
         }
-        assert_eq!(project_market(&executed.candidate, alternate).unwrap().asks, b.asks);
+        assert_eq!(
+            project_market(&executed.candidate, alternate).unwrap().asks,
+            b.asks
+        );
     }
 
     #[test]
