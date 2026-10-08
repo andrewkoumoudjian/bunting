@@ -256,7 +256,7 @@ pub struct MarketProjection {
 }
 
 /// A distinct instrument-level view of venue quotes. No order books are merged,
-/// and equal-price ties select the lowest canonical ListingKey.
+/// and equal-price ties select the lowest canonical `ListingKey`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsolidatedBbo {
     pub run_id: RunId,
@@ -818,11 +818,13 @@ mod tests {
             .transition(&command(&state, 5, 8, primary, Side::Buy, 105), None)
             .unwrap();
         assert!(executed.accepted);
-        let trade = executed
+        let Some(trade) = executed
             .events
             .iter()
             .find_map(|event| project_public_event(event, primary))
-            .expect("the primary venue produced one public trade");
+        else {
+            panic!("the primary venue produced no public trade");
+        };
         assert_eq!(trade.listing_key, primary);
         assert_eq!(trade.price, PriceTicks::new(105));
         assert!(
