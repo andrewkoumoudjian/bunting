@@ -9,7 +9,7 @@ Build a Rust market-simulation and exchange-testing platform composed from reusa
 - Read this file before changing the repository.
 - Read the nearest scoped `AGENTS.md` for every path touched.
 - Accepted ADRs and `docs/architecture.md` are binding.
-- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`, and ADR 0019 makes that package the direct owner of the OrderBook-rs integration.
+- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`; ADR 0029 replaces OrderBook-rs with the engine's own deterministic order book; ADR 0028 (accepted) sets the single-ledger, live-state and full-replay direction.
 - Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
 - Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
 - Before reorganizing paths, read `docs/repository-reorganization.md` and follow its execution contract.
@@ -34,7 +34,7 @@ Never infer functionality from a repository name. Never treat `.gitmodules` bran
 
 A single production `bunting-engine` owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
 
-- The engine package directly integrates released `OrderBook-rs` for CLOB matching; applications and orchestration packages must not consume the matcher as a peer authority.
+- The engine package owns its private deterministic price-time book (`packages/bunting-engine/src/book.rs`, ADR 0029); applications and orchestration packages must not reach the book except through canonical engine commands and read projections.
 - NBC is a complete compatibility input to the unified engine. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models, and do not create a second selectable venue kernel.
 - The direct NBC snapshot lacks the Java implementation and named JAR; the separately pinned JAR is authorized under ADR 0017 for bytecode inspection, Rust translation and redistribution. Cite bytecode or differential evidence before claiming exact internal equivalence.
 - NBC-specific scenario, scheduler, agent, scoring and protocol behavior remains visibly provenance-linked inside the unified engine; any incompatibility with OrderBook-rs is an explicit unresolved gap or reviewed extension, not an implicit second matcher.
@@ -79,11 +79,9 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 ## Binding architecture decisions
 
-- `orderbook-rs = 0.10.3` remains the production matching dependency internal to the unified `bunting-engine` package.
-- Do not create another generic Bunting-owned CLOB when the upstream API provides the required behavior.
-- NBC may require compatibility behavior around the shared matcher, but a separate production matching implementation is prohibited unless a later ADR changes ADR 0018 with documented evidence and differential tests.
-- The former `packages/orderbook` adapter now lives as a private `bunting-engine` module; the transitional crate is removed and no production caller may bypass the engine.
-- Handle an OrderBook-rs issue through features/configuration, upstream contribution, released fix, then a dedicated pinned fork repository. Use `vendor/orderbook-rs` only when an in-repository patched source copy is explicitly approved. Do not hide third-party source under `packages/`.
+- OrderBook-rs is a dev-dependency differential oracle only; it must never return as a production dependency without a superseding ADR.
+- Keep exactly one book implementation. New order types need Bunting-level semantics, book tests and oracle coverage where an oracle exists before entering the command schema.
+- NBC compatibility behavior runs on the same engine book; a second production matcher is prohibited.
 - The primary deployment target is one Wasmer-hosted Rust WASI competition venue that accepts bounded inbound FIX/TCP sessions and calls application functions in-process. WASIX supplies the required socket/thread extensions under ADR 0027. Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts inbound raw TCP or owns market commands or origin truth.
 - No Cloudflare Worker is currently built; the former D1/command Worker was removed as a second authority. Any future publisher reads immutable post-commit exports only.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
@@ -124,7 +122,7 @@ cargo metadata --locked --format-version 1 --no-deps
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
+! cargo tree --locked -p bunting-engine -e normal | grep -q 'orderbook-rs'
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```

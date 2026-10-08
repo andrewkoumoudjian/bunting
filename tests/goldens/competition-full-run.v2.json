@@ -78,14 +78,14 @@
     }
   ],
   "sequence": 6,
-  "state_hash": "13d96198b8e1e838cf6c6f2d6936c04f5639cb7641a65f6d00b0b0d7b681d21d",
+  "state_hash": "23f45324720a54869bf1de8e1c02e4bfe3e176131b586533a6e4944613c24f9d",
   "transcript": [
     {
       "actor": 99,
       "causation_sequence": null,
       "command_id": 1,
       "correlation_id": 1,
-      "event_id": 2,
+      "event_id": 1,
       "logical_time": 0,
       "payload": {
         "simulation": {
@@ -103,7 +103,7 @@
       "causation_sequence": null,
       "command_id": 2,
       "correlation_id": 1,
-      "event_id": 3,
+      "event_id": 2,
       "logical_time": 0,
       "payload": {
         "simulation": {
@@ -124,7 +124,7 @@
       "causation_sequence": null,
       "command_id": 2,
       "correlation_id": 1,
-      "event_id": 4,
+      "event_id": 3,
       "logical_time": 0,
       "payload": {
         "simulation": {
@@ -198,7 +198,7 @@
       "causation_sequence": null,
       "command_id": 5,
       "correlation_id": 1,
-      "event_id": 6,
+      "event_id": 7,
       "logical_time": 2000000,
       "payload": {
         "simulation": {
@@ -216,7 +216,7 @@
       "causation_sequence": null,
       "command_id": 6,
       "correlation_id": 1,
-      "event_id": 7,
+      "event_id": 8,
       "logical_time": 2000000,
       "payload": {
         "simulation": {
@@ -234,7 +234,7 @@
       "causation_sequence": null,
       "command_id": 6,
       "correlation_id": 1,
-      "event_id": 8,
+      "event_id": 9,
       "logical_time": 2000000,
       "payload": {
         "simulation": {

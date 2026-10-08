@@ -85,8 +85,7 @@ jobs:
       - name: Enforce architecture dependency policy
         run: |
           test -f Cargo.lock
-          grep -Fq 'orderbook-rs = { version = "=0.10.3", default-features = false }' Cargo.toml
-          cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
+          ! cargo tree --locked -p bunting-engine -e normal | grep -q 'orderbook-rs'
           ! cargo tree --locked -p bunting-engine | grep -q '^worker '
           cargo check --locked -p bunting-engine --target wasm32-unknown-unknown
           ! cargo tree --locked | grep -q '^worker '
@@ -157,5 +156,5 @@ jobs:
           cargo run --locked -q -p bunting-cli -- score /tmp/competition.archive.json > /tmp/competition.score.json
           test $(( $(date +%s) - started )) -le 120
 
-      - name: Verify upstream dependency
-        run: cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
+      - name: Verify the matcher oracle is test-only
+        run: "! cargo tree --locked -p bunting-engine -e normal | grep -q 'orderbook-rs'"

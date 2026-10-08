@@ -8,7 +8,7 @@ use bunting_market_events::{
 };
 use bunting_market_types::{
     CurrencyId, FacilityId, InstrumentId, ListingKey, LogicalTimeNs, MoneyMinor, NegotiationId,
-    NewsId, OrderId, ParticipantId, PriceTicks, QuantityLots, TenderId,
+    NewsId, ParticipantId, PriceTicks, QuantityLots, TenderId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -336,19 +336,10 @@ pub struct OhlcBar {
     pub volume: QuantityLots,
 }
 
-/// One visible L1 price/quantity level.
-pub type L1Level = (PriceTicks, QuantityLots);
-/// Best bid and best ask from committed depth.
-pub type L1Quote = (Option<L1Level>, Option<L1Level>);
-
-/// Bounded committed public market-data projection.
+/// Bounded committed public trade history. Depth is read from the live book.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MarketProjection {
-    pub raw_bids: Vec<(PriceTicks, QuantityLots, OrderId)>,
-    pub raw_asks: Vec<(PriceTicks, QuantityLots, OrderId)>,
-    pub aggregated_bids: Vec<(PriceTicks, QuantityLots)>,
-    pub aggregated_asks: Vec<(PriceTicks, QuantityLots)>,
     pub trades: VecDeque<TradeRecord>,
     pub bars: VecDeque<OhlcBar>,
     pub cumulative_volume: QuantityLots,
@@ -412,44 +403,12 @@ impl MarketProjection {
         }
         Ok(())
     }
-
-    /// Returns L1 from committed aggregated depth.
-    #[must_use]
-    pub fn l1(&self) -> L1Quote {
-        (
-            self.aggregated_bids.first().copied(),
-            self.aggregated_asks.first().copied(),
-        )
-    }
-
-    /// Calculates exact notional market impact over aggregated depth.
-    #[must_use]
-    pub fn impact(&self, side: Side, quantity: QuantityLots) -> Option<MoneyMinor> {
-        let levels = match side {
-            Side::Buy => &self.aggregated_asks,
-            Side::Sell => &self.aggregated_bids,
-        };
-        let mut remaining = quantity;
-        let mut notional = MoneyMinor::new(0);
-        for (price, available) in levels {
-            let fill = QuantityLots::new(remaining.get().min(available.get()));
-            notional =
-                notional.checked_add(MoneyMinor::checked_mul_price_quantity(*price, fill).ok()?)?;
-            remaining = remaining.checked_sub(fill)?;
-            if remaining.get() == 0 {
-                return Some(notional);
-            }
-        }
-        None
-    }
 }
 
-/// Participant-private order and news projection.
+/// Participant-private news projection.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivateProjection {
-    pub live_orders: BTreeSet<OrderId>,
-    pub historical_orders: VecDeque<OrderId>,
     pub news: Vec<NewsId>,
 }
 
@@ -1070,94 +1029,44 @@ impl SimulationState {
         logical_time: LogicalTimeNs,
         event: &EventPayload,
     ) -> Result<(), SimulationError> {
-        match event {
-            EventPayload::OrderRested {
-                order_id,
-                participant_id,
-                ..
-            } => {
-                self.private
-                    .entry(*participant_id)
-                    .or_default()
-                    .live_orders
-                    .insert(*order_id);
-            }
-            EventPayload::OrderCanceled {
-                order_id,
-                participant_id,
-                ..
-            } => {
-                let projection = self.private.entry(*participant_id).or_default();
-                projection.live_orders.remove(order_id);
-                if projection.historical_orders.len() == MAX_TRADE_HISTORY {
-                    projection.historical_orders.pop_front();
+        if let EventPayload::TradeExecuted {
+            instrument_id,
+            listing_key,
+            price,
+            quantity,
+            ..
+        } = event
+        {
+            let trade = TradeRecord {
+                logical_time,
+                price: *price,
+                quantity: *quantity,
+            };
+            // Validate both volume series before either mutable projection advances.
+            // This avoids copying bounded trade history on the hot path.
+            if let Some(listing) = listing_key {
+                if listing.instrument_id != *instrument_id {
+                    return Err(SimulationError::UnknownIdentity);
                 }
-                projection.historical_orders.push_back(*order_id);
-            }
-            EventPayload::TradeExecuted {
-                instrument_id,
-                listing_key,
-                price,
-                quantity,
-                ..
-            } => {
-                let trade = TradeRecord {
-                    logical_time,
-                    price: *price,
-                    quantity: *quantity,
-                };
-                // Validate both volume series before either mutable projection advances.
-                // This avoids copying bounded trade history on the hot path.
-                if let Some(listing) = listing_key {
-                    if listing.instrument_id != *instrument_id {
-                        return Err(SimulationError::UnknownIdentity);
-                    }
-                    if let Some(view) = self.market_by_listing.get(listing) {
-                        view.validate_trade(trade)?;
-                    }
-                }
-                if let Some(view) = self.market.get(instrument_id) {
+                if let Some(view) = self.market_by_listing.get(listing) {
                     view.validate_trade(trade)?;
                 }
-                self.market
-                    .entry(*instrument_id)
+            }
+            if let Some(view) = self.market.get(instrument_id) {
+                view.validate_trade(trade)?;
+            }
+            self.market
+                .entry(*instrument_id)
+                .or_default()
+                .record_trade(trade)?;
+            if let Some(listing) = listing_key {
+                self.market_by_listing
+                    .entry(*listing)
                     .or_default()
                     .record_trade(trade)?;
-                if let Some(listing) = listing_key {
-                    self.market_by_listing
-                        .entry(*listing)
-                        .or_default()
-                        .record_trade(trade)?;
-                }
             }
-            _ => {}
         }
         Ok(())
-    }
-
-    /// Replaces committed aggregated L2 while preserving deterministic order.
-    pub fn set_depth(
-        &mut self,
-        listing_key: ListingKey,
-        unique_listing: bool,
-        raw_bids: Vec<(PriceTicks, QuantityLots, OrderId)>,
-        raw_asks: Vec<(PriceTicks, QuantityLots, OrderId)>,
-        bids: Vec<(PriceTicks, QuantityLots)>,
-        asks: Vec<(PriceTicks, QuantityLots)>,
-    ) {
-        let listing = self.market_by_listing.entry(listing_key).or_default();
-        listing.raw_bids.clone_from(&raw_bids);
-        listing.raw_asks.clone_from(&raw_asks);
-        listing.aggregated_bids.clone_from(&bids);
-        listing.aggregated_asks.clone_from(&asks);
-        // The old instrument-keyed view has meaningful depth only when unique.
-        if unique_listing {
-            let projection = self.market.entry(listing_key.instrument_id).or_default();
-            projection.raw_bids = raw_bids;
-            projection.raw_asks = raw_asks;
-            projection.aggregated_bids = bids;
-            projection.aggregated_asks = asks;
-        }
     }
 
     fn advance(

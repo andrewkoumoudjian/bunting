@@ -2,7 +2,6 @@ use crate::config::{DeploymentProfile, ScenarioRuntimeConfig, ServerConfig};
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_application::{ApplicationService, VerifiedActor};
-use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::{RunState, ScenarioDefinition};
 use bunting_market_types::RunId;
 use bunting_origin_store::OriginStore;
@@ -34,7 +33,6 @@ pub(crate) fn bootstrap(
 
 struct Host<'a> {
     origin: &'a NativeOrigin,
-    cache: &'a InMemorySnapshotCache,
 }
 
 impl RuntimeHost for Host<'_> {
@@ -49,7 +47,7 @@ impl RuntimeHost for Host<'_> {
         actor: &VerifiedActor,
         command: &bunting_market_events::Command,
     ) -> Result<Vec<bunting_market_events::EventEnvelope>, RuntimeError> {
-        ApplicationService::new(self.origin, self.cache)
+        ApplicationService::new(self.origin)
             .execute(actor, command)
             .map(|executed| executed.events)
             .map_err(|error| RuntimeError::Host(format!("runtime command failed: {error}")))
@@ -59,12 +57,11 @@ impl RuntimeHost for Host<'_> {
 pub(crate) fn run(
     config: &ScenarioRuntimeConfig,
     origin: &NativeOrigin,
-    cache: &InMemorySnapshotCache,
     writer: &AuthoritativeWriter,
 ) -> Result<(), String> {
     let mut runtime = DeterministicRuntime::new(config.scheduler.clone())
         .map_err(|error| format!("invalid deterministic runtime: {error}"))?;
-    let mut host = Host { origin, cache };
+    let mut host = Host { origin };
     let cadence = Duration::from_millis(config.wall_tick_ms);
     loop {
         let started = Instant::now();

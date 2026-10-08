@@ -301,20 +301,12 @@ impl DeterministicRuntime {
             .visible_levels(key)
             .map_err(|_| RuntimeError::InvalidMarket)?;
         let fallback_bid = self.config.fundamental_price.get().saturating_sub(1).max(1);
-        let best_bid = bids
-            .first()
-            .map(|(price, _)| i64::try_from(*price).map_err(|_| RuntimeError::ArithmeticOverflow))
-            .transpose()?
-            .unwrap_or(fallback_bid);
+        let best_bid = bids.first().map_or(fallback_bid, |(price, _)| price.get());
         let best_ask = asks
             .first()
-            .map(|(price, _)| i64::try_from(*price).map_err(|_| RuntimeError::ArithmeticOverflow))
-            .transpose()?
-            .unwrap_or_else(|| best_bid.saturating_add(2));
-        let quantity = |levels: &Vec<(u128, u64)>| {
-            levels.first().map_or(Ok(0), |(_, value)| {
-                i64::try_from(*value).map_err(|_| RuntimeError::ArithmeticOverflow)
-            })
+            .map_or_else(|| best_bid.saturating_add(2), |(price, _)| price.get());
+        let quantity = |levels: &bunting_engine::VisibleLevels| -> Result<i64, RuntimeError> {
+            Ok(levels.first().map_or(0, |(_, value)| value.get()))
         };
         Ok(AgentObservation {
             best_bid: PriceTicks::new(best_bid),
@@ -435,7 +427,7 @@ mod tests {
             self.roles.push(actor.identity().role);
             let outcome = self
                 .state
-                .transition(command, None)
+                .transition(command)
                 .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))?;
             self.state = outcome.candidate;
             Ok(outcome.events)
@@ -516,8 +508,8 @@ mod tests {
             .state
             .visible_levels(key)
             .map_err(|_| RuntimeError::InvalidMarket)?;
-        assert_eq!(bids, vec![(98, 5)]);
-        assert_eq!(asks, vec![(102, 5)]);
+        assert_eq!(bids, vec![(PriceTicks::new(98), QuantityLots::new(5))]);
+        assert_eq!(asks, vec![(PriceTicks::new(102), QuantityLots::new(5))]);
         Ok(())
     }
 

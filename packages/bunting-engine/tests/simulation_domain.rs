@@ -1,4 +1,8 @@
-#![allow(clippy::too_many_lines, clippy::unwrap_used)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::unwrap_used
+)]
 
 use bunting_engine::simulation::{
     CashflowKind, FacilityDefinition, FacilityKind, LogicalClock, RunLifecycle,
@@ -10,9 +14,9 @@ use bunting_engine::{
     PublishScenarioOutcome, RunState, ScenarioCatalog, ScenarioDefinition,
 };
 use bunting_market_events::{
-    AdvancedOrderPolicy, ClockMode, Command, CommandPayload, CompositeLeg, CompositePolicy,
-    NewsAudience, OrderKind, OtcDecision, Side, SimulationCommand, SimulationCommandRequest,
-    SubmitOrder, TenderDecision, TimeInForcePolicy,
+    ClockMode, Command, CommandPayload, CompositeLeg, CompositePolicy, NewsAudience, OrderKind,
+    OtcDecision, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder, TenderDecision,
+    TimeInForcePolicy,
 };
 use bunting_market_types::{
     CommandId, CorrelationId, CurrencyId, EventSequence, FacilityId, InstrumentId, IterationId,
@@ -207,7 +211,7 @@ fn lifecycle_scheduled_cashflow_snapshot_and_replay_are_equal() {
 fn orders_are_rejected_until_the_run_starts() {
     let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     let outcome = initial
-        .transition(&limit(&initial, PARTICIPANT, 1, Side::Buy, 100, 1), None)
+        .transition(&limit(&initial, PARTICIPANT, 1, Side::Buy, 100, 1))
         .unwrap();
     assert!(!outcome.accepted);
     assert_eq!(outcome.reject_code.as_deref(), Some("RunNotActive"));
@@ -496,7 +500,7 @@ fn scenario_publication_is_immutable_versioned_and_idempotent() {
 }
 
 #[test]
-fn released_post_only_policy_is_matched_and_replayable() {
+fn post_only_order_rests_and_replays() {
     let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     let active = apply(&initial, &command(0, 0, ADMIN, SimulationCommand::StartRun));
     let submit = Command {
@@ -512,14 +516,15 @@ fn released_post_only_policy_is_matched_and_replayable() {
             instrument_id: INSTRUMENT,
             side: Side::Buy,
             quantity: QuantityLots::new(10),
-            kind: OrderKind::AdvancedLimit {
+            kind: OrderKind::LimitWithPolicy {
                 price: PriceTicks::new(100),
                 time_in_force: TimeInForcePolicy::Gtc,
-                policy: AdvancedOrderPolicy::PostOnly,
+                post_only: true,
+                display_quantity: None,
             },
         }),
     };
-    let state = active.transition(&submit, None).unwrap().candidate;
+    let state = active.transition(&submit).unwrap().candidate;
     assert_eq!(
         state.ownership()[&OrderId::new(1)].remaining_quantity,
         QuantityLots::new(10)
@@ -549,7 +554,7 @@ fn opening_marks_value_endowments_and_fills_realize_actual_pnl() {
         (PARTICIPANT, 102_u128, Side::Buy),
     ] {
         let order = limit(&active, actor, id, side, 110, 2);
-        active = active.transition(&order, None).unwrap().candidate;
+        active = active.transition(&order).unwrap().candidate;
     }
     let ledger = active.ledger();
     assert_eq!(
@@ -610,9 +615,9 @@ fn fills_fines_and_scores_reconcile_from_one_ledger() {
     let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     state = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
     let sell = limit(&state, COUNTERPARTY, 101, Side::Sell, 10, 2);
-    state = state.transition(&sell, None).unwrap().candidate;
+    state = state.transition(&sell).unwrap().candidate;
     let buy = limit(&state, PARTICIPANT, 102, Side::Buy, 10, 2);
-    state = state.transition(&buy, None).unwrap().candidate;
+    state = state.transition(&buy).unwrap().candidate;
     assert_eq!(cash(&state, PARTICIPANT), MoneyMinor::new(999_980));
     assert_eq!(cash(&state, COUNTERPARTY), MoneyMinor::new(1_000_020));
     assert_eq!(
@@ -738,4 +743,163 @@ fn full_competition_run_matches_ledger_score_and_transcript_golden() {
     let expected: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(actual, expected);
+}
+
+fn policy_order(
+    state: &RunState,
+    actor: ParticipantId,
+    order_id: u128,
+    side: Side,
+    price: i64,
+    quantity: i64,
+    time_in_force: TimeInForcePolicy,
+    post_only: bool,
+    display: Option<i64>,
+    logical_time: u64,
+) -> Command {
+    let mut command = limit(state, actor, order_id, side, price, quantity);
+    command.logical_time = LogicalTimeNs::new(logical_time);
+    if let CommandPayload::SubmitOrder(order) = &mut command.payload {
+        order.kind = OrderKind::LimitWithPolicy {
+            price: PriceTicks::new(price),
+            time_in_force,
+            post_only,
+            display_quantity: display.map(QuantityLots::new),
+        };
+    }
+    command
+}
+
+#[test]
+fn post_only_rejects_crossing_and_iceberg_hides_reserve() {
+    let state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let mut state = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    let iceberg = policy_order(
+        &state,
+        COUNTERPARTY,
+        1,
+        Side::Sell,
+        105,
+        50,
+        TimeInForcePolicy::Gtc,
+        false,
+        Some(10),
+        0,
+    );
+    state = state.transition(&iceberg).unwrap().candidate;
+    let key = ListingKey::new(VenueId::new(1), INSTRUMENT);
+    assert_eq!(
+        state.visible_levels(key).unwrap().1,
+        vec![(PriceTicks::new(105), QuantityLots::new(10))]
+    );
+    // Reserve inventory covers the full iceberg, not only its display.
+    assert_eq!(
+        state.ledger().position(COUNTERPARTY, INSTRUMENT).reserved,
+        QuantityLots::new(50)
+    );
+    let crossing = policy_order(
+        &state,
+        PARTICIPANT,
+        2,
+        Side::Buy,
+        105,
+        1,
+        TimeInForcePolicy::Gtc,
+        true,
+        None,
+        0,
+    );
+    let outcome = state.transition(&crossing).unwrap();
+    assert!(!outcome.accepted);
+    assert_eq!(outcome.reject_code.as_deref(), Some("PostOnlyWouldCross"));
+    state = outcome.candidate;
+    let sweep = limit(&state, PARTICIPANT, 3, Side::Buy, 105, 25);
+    state = state.transition(&sweep).unwrap().candidate;
+    assert_eq!(
+        state.ledger().position(PARTICIPANT, INSTRUMENT).quantity,
+        QuantityLots::new(1_025)
+    );
+    assert_eq!(
+        state.visible_levels(key).unwrap().1,
+        vec![(PriceTicks::new(105), QuantityLots::new(5))]
+    );
+}
+
+#[test]
+fn gtd_orders_expire_on_the_logical_clock_and_release_reservations() {
+    let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let mut state = apply(&initial, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    let gtd = policy_order(
+        &state,
+        PARTICIPANT,
+        1,
+        Side::Buy,
+        90,
+        10,
+        TimeInForcePolicy::Gtd {
+            expires_at: LogicalTimeNs::new(1_000_000),
+        },
+        false,
+        None,
+        0,
+    );
+    state = state.transition(&gtd).unwrap().candidate;
+    assert_eq!(
+        state.ledger().cash(PARTICIPANT, CURRENCY).reserved,
+        MoneyMinor::new(900)
+    );
+    let already_expired = policy_order(
+        &state,
+        PARTICIPANT,
+        3,
+        Side::Buy,
+        90,
+        1,
+        TimeInForcePolicy::Gtd {
+            expires_at: LogicalTimeNs::new(0),
+        },
+        false,
+        None,
+        0,
+    );
+    assert_eq!(
+        state
+            .transition(&already_expired)
+            .unwrap()
+            .reject_code
+            .as_deref(),
+        Some("InvalidTimeInForce")
+    );
+    let advance = command(
+        state.sequence().get(),
+        0,
+        ADMIN,
+        SimulationCommand::Advance { steps: 1 },
+    );
+    let outcome = state.transition_simulation(&advance).unwrap();
+    assert!(outcome.events.iter().any(|event| matches!(
+        event.payload,
+        bunting_market_events::EventPayload::OrderCanceled {
+            order_id,
+            reason: bunting_market_events::CancelReason::Expired,
+            ..
+        } if order_id == OrderId::new(1)
+    )));
+    state = outcome.candidate;
+    assert_eq!(
+        state.ledger().cash(PARTICIPANT, CURRENCY).reserved,
+        MoneyMinor::new(0)
+    );
+    assert!(
+        state
+            .visible_levels(ListingKey::new(VenueId::new(1), INSTRUMENT))
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    let restored = bunting_engine::EngineSnapshotEnvelope::from_json(
+        &state.snapshot_envelope().unwrap().to_json().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.state, state);
 }

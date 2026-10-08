@@ -5,11 +5,7 @@
 pub mod competition;
 
 use bunting_api_contract::{ActorIdentity, ActorRole};
-use bunting_command_transaction::{
-    CachedSnapshot, CommandTransaction, ExecutedTransaction, PreparedCommand, SnapshotCache,
-    TransactionError, prepare_command, prepare_command_owned, prepare_simulation_command,
-    prepare_simulation_command_owned,
-};
+use bunting_command_transaction::{CommandTransaction, ExecutedTransaction, TransactionError};
 use bunting_engine::RunState;
 use bunting_market_events::{
     Command, CommandPayload, EventEnvelope, EventPayload, SimulationCommand,
@@ -177,62 +173,18 @@ pub fn authorize_simulation_command(
     Ok(())
 }
 
-/// Worker-compatible authenticated prepare step. Persistence remains adapter-owned.
-pub fn prepare_authenticated(
-    actor: &VerifiedActor,
-    command: &Command,
-    candidate: &RunState,
-    cached: Option<&CachedSnapshot>,
-) -> Result<PreparedCommand, ApplicationError> {
-    authorize_command(actor, command)?;
-    prepare_command(command, candidate, cached).map_err(ApplicationError::from)
-}
-
-/// Prepares an owned run without copying its histories or book snapshots.
-pub fn prepare_authenticated_owned(
-    actor: &VerifiedActor,
-    command: &Command,
-    candidate: RunState,
-    cached: Option<&CachedSnapshot>,
-) -> Result<PreparedCommand, ApplicationError> {
-    authorize_command(actor, command)?;
-    prepare_command_owned(command, candidate, cached).map_err(ApplicationError::from)
-}
-
-/// Worker-compatible authenticated simulation prepare step.
-pub fn prepare_authenticated_simulation(
-    actor: &VerifiedActor,
-    request: &SimulationCommandRequest,
-    state: &RunState,
-) -> Result<PreparedCommand, ApplicationError> {
-    authorize_simulation_command(actor, request)?;
-    prepare_simulation_command(request, state).map_err(ApplicationError::from)
-}
-
-/// Prepares an owned administrative run without copying its state.
-pub fn prepare_authenticated_simulation_owned(
-    actor: &VerifiedActor,
-    request: &SimulationCommandRequest,
-    state: RunState,
-) -> Result<PreparedCommand, ApplicationError> {
-    authorize_simulation_command(actor, request)?;
-    prepare_simulation_command_owned(request, state).map_err(ApplicationError::from)
-}
-
 #[derive(Debug)]
-pub struct ApplicationService<'a, O, C> {
+pub struct ApplicationService<'a, O> {
     origin: &'a O,
-    cache: &'a C,
 }
 
-impl<'a, O, C> ApplicationService<'a, O, C>
+impl<'a, O> ApplicationService<'a, O>
 where
     O: OriginStore,
-    C: SnapshotCache,
 {
     #[must_use]
-    pub const fn new(origin: &'a O, cache: &'a C) -> Self {
-        Self { origin, cache }
+    pub const fn new(origin: &'a O) -> Self {
+        Self { origin }
     }
 
     /// Executes one authenticated command and returns only origin-committed facts.
@@ -242,7 +194,7 @@ where
         command: &Command,
     ) -> Result<ExecutedTransaction, ApplicationError> {
         authorize_command(actor, command)?;
-        CommandTransaction::new(self.origin, self.cache)
+        CommandTransaction::new(self.origin)
             .execute_detailed(command)
             .map_err(ApplicationError::from)
     }
@@ -254,7 +206,7 @@ where
         request: &SimulationCommandRequest,
     ) -> Result<ExecutedTransaction, ApplicationError> {
         authorize_simulation_command(actor, request)?;
-        CommandTransaction::new(self.origin, self.cache)
+        CommandTransaction::new(self.origin)
             .execute_simulation_detailed(request)
             .map_err(ApplicationError::from)
     }
@@ -300,7 +252,6 @@ pub struct PublicTrade {
     pub listing_key: ListingKey,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
-    pub upstream_engine_sequence: u64,
 }
 
 /// Projects only facts that are safe to publish without participant, order,
@@ -313,7 +264,6 @@ pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> O
             listing_key: Some(executed_at),
             price,
             quantity,
-            upstream_engine_sequence,
             ..
         } if executed_at == listing_key && instrument_id == listing_key.instrument_id => {
             Some(PublicTrade {
@@ -323,7 +273,6 @@ pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> O
                 listing_key,
                 price,
                 quantity,
-                upstream_engine_sequence,
             })
         }
         _ => None,
@@ -391,23 +340,16 @@ pub fn project_market(
     state: &RunState,
     listing_key: ListingKey,
 ) -> Result<MarketProjection, ApplicationError> {
-    state
-        .listing_snapshot(listing_key)
-        .map_err(|_| ApplicationError::UnknownListing)?;
     let (bids, asks) = state
         .visible_levels(listing_key)
         .map_err(|_| ApplicationError::UnknownListing)?;
-    let convert = |levels: Vec<(u128, u64)>| {
-        levels
-            .into_iter()
-            .map(|(price, quantity)| {
-                Ok((
-                    i64::try_from(price).map_err(|_| ApplicationError::UnknownListing)?,
-                    i64::try_from(quantity).map_err(|_| ApplicationError::UnknownListing)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, ApplicationError>>()
-    };
+    let convert =
+        |levels: bunting_engine::VisibleLevels| -> Result<Vec<(i64, i64)>, ApplicationError> {
+            Ok(levels
+                .into_iter()
+                .map(|(price, quantity)| (price.get(), quantity.get()))
+                .collect())
+        };
     Ok(MarketProjection {
         run_id: state.run_id(),
         instrument_id: listing_key.instrument_id,
@@ -435,26 +377,14 @@ pub fn project_consolidated_bbo(
         let (bids, asks) = state
             .visible_levels(key)
             .map_err(|_| ApplicationError::UnknownListing)?;
-        if let Some((price, quantity)) = bids.first() {
-            let price = PriceTicks::new(
-                i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?,
-            );
-            let quantity = QuantityLots::new(
-                i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?,
-            );
+        if let Some(&(price, quantity)) = bids.first() {
             if best_bid
                 .is_none_or(|(winner, value, _)| price > value || (price == value && key < winner))
             {
                 best_bid = Some((key, price, quantity));
             }
         }
-        if let Some((price, quantity)) = asks.first() {
-            let price = PriceTicks::new(
-                i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?,
-            );
-            let quantity = QuantityLots::new(
-                i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?,
-            );
+        if let Some(&(price, quantity)) = asks.first() {
             if best_ask
                 .is_none_or(|(winner, value, _)| price < value || (price == value && key < winner))
             {
@@ -666,7 +596,6 @@ pub fn listing_for_command(state: &RunState, command: &Command) -> Option<Listin
 mod tests {
     use super::*;
     use bunting_api_contract::UnsignedDecimalString;
-    use bunting_command_transaction::InMemorySnapshotCache;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
     use bunting_market_events::{
         NewsAudience, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
@@ -826,7 +755,7 @@ mod tests {
             (4, 7, alternate, Side::Sell, 104),
         ] {
             let result = state
-                .transition(&command(&state, id, actor, venue, side, price), None)
+                .transition(&command(&state, id, actor, venue, side, price))
                 .unwrap();
             assert!(result.accepted);
             state = result.candidate;
@@ -852,7 +781,7 @@ mod tests {
             Err(ApplicationError::UnknownListing)
         );
         let executed = state
-            .transition(&command(&state, 5, 8, primary, Side::Buy, 105), None)
+            .transition(&command(&state, 5, 8, primary, Side::Buy, 105))
             .unwrap();
         assert!(executed.accepted);
         let trade = executed
@@ -888,8 +817,7 @@ mod tests {
     fn commits_before_returning_and_recovers_same_projection() {
         let origin = InMemoryOrigin::new();
         origin.insert_run(run()).unwrap();
-        let cache = InMemorySnapshotCache::new();
-        let service = ApplicationService::new(&origin, &cache);
+        let service = ApplicationService::new(&origin);
         let executed = service.execute(&actor(7), &command()).unwrap();
         assert!(!executed.duplicate);
         assert_eq!(executed.result.committed_sequence, EventSequence::new(1));

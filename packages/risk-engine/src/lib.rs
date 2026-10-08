@@ -86,9 +86,7 @@ pub fn admit(
         .terms(order.instrument_id)
         .map_err(|_| RejectCode::InvalidInstrument)?;
     let price = match order.kind {
-        OrderKind::Limit { price }
-        | OrderKind::LimitWithPolicy { price, .. }
-        | OrderKind::AdvancedLimit { price, .. } => {
+        OrderKind::Limit { price } | OrderKind::LimitWithPolicy { price, .. } => {
             listing
                 .price_bounds
                 .validate(price)

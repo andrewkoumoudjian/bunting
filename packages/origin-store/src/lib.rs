@@ -18,7 +18,6 @@ pub struct CommandResult {
     pub reject_code: Option<String>,
     pub committed_sequence: EventSequence,
     pub order_id: Option<OrderId>,
-    pub snapshot_checksum: Option<String>,
 }
 
 /// One atomic expected-version commit request.
@@ -273,7 +272,7 @@ mod tests {
         };
         let TransitionOutcome {
             candidate, events, ..
-        } = initial.transition(&command, None).unwrap();
+        } = initial.transition(&command).unwrap();
         CommitRequest {
             run_id: command.run_id,
             command_id: command.command_id,
@@ -286,7 +285,6 @@ mod tests {
                 reject_code: None,
                 committed_sequence: candidate.sequence(),
                 order_id: None,
-                snapshot_checksum: None,
             },
             candidate,
         }
@@ -361,7 +359,6 @@ mod tests {
                 reject_code: None,
                 committed_sequence: EventSequence::new(1),
                 order_id: None,
-                snapshot_checksum: None,
             }))
         );
     }

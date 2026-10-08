@@ -2,28 +2,27 @@
 #![allow(clippy::missing_errors_doc)]
 //! Authoritative sans-I/O Bunting market-simulation engine.
 
+mod book;
 pub mod compatibility;
-mod matching;
 pub mod simulation;
 
+pub use book::BookOrder;
+use book::{Book, Match};
 use bunting_ledger::{Fill, FillParty, LedgerError};
 pub use bunting_ledger::{FxRate, InstrumentTerms, Ledger, Reservation};
 use bunting_market_events::{
     CancelReason, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope, EventPayload,
-    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest,
+    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest, TimeInForcePolicy,
 };
 use bunting_market_types::{
-    CurrencyId, EventId, EventSequence, InstrumentId, IterationId, ListingKey, MoneyMinor, OrderId,
-    ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
+    CurrencyId, EventId, EventSequence, InstrumentId, IterationId, ListingKey, LogicalTimeNs,
+    MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId,
+    ScenarioVersion,
 };
 use bunting_risk_engine::RiskLimits;
 use compatibility::nbc::{
     NBC_TRANSLATION_VERSION, NbcCompatibilityState, RunStatus as NbcRunStatus,
     ScenarioConfig as NbcScenarioConfig, ScheduledEvent as NbcScheduledEvent,
-};
-use matching::{
-    KernelBook, SnapshotPackage, TimeInForce, TradeInfo, sequential_id_from_text,
-    to_upstream_price, to_upstream_quantity, to_upstream_side, to_upstream_time_in_force,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,11 +31,8 @@ use simulation::{
     SIMULATION_POLICY_VERSION, SimulationContext, SimulationError, SimulationScenario,
     SimulationState,
 };
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-
-pub use matching::{ORDERBOOK_RS_AUDIT_COMMIT, ORDERBOOK_RS_VERSION};
 
 /// Version of the central engine behavior established by this foundation slice.
 pub const ENGINE_VERSION: u16 = 3;
@@ -46,22 +42,18 @@ pub const ENGINE_SNAPSHOT_VERSION: u16 = 3;
 pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
 /// Maximum economic instruments admitted into one run.
 pub const MAX_INSTRUMENTS: usize = 256;
-/// Version of each nested listing snapshot record.
-pub const LISTING_SNAPSHOT_VERSION: u16 = 1;
 /// Maximum listings admitted into one foundation run.
 pub const MAX_LISTINGS: usize = 64;
 /// Maximum participants admitted into one foundation run.
 pub const MAX_PARTICIPANTS: usize = 1_024;
-/// Maximum retained order ownership records in one foundation run.
-pub const MAX_ORDERS: usize = 100_000;
-/// Maximum canonical events emitted by one command.
-pub const MAX_EVENTS_PER_TRANSITION: usize = 256;
-/// Maximum depth captured from the upstream matcher.
-pub const SNAPSHOT_DEPTH: usize = 10_000;
+/// Maximum simultaneously live orders across every listing of a run.
+pub const MAX_LIVE_ORDERS: usize = 250_000;
+/// Recently terminal orders retained for late cancels and duplicate detection.
+pub const MAX_RETIRED_ORDERS: usize = 65_536;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// Visible price and quantity levels for one side of a listing.
-pub type VisibleLevels = Vec<(u128, u64)>;
+pub type VisibleLevels = Vec<(PriceTicks, QuantityLots)>;
 /// Visible bid and ask levels for one listing.
 pub type VisibleDepth = (VisibleLevels, VisibleLevels);
 
@@ -702,34 +694,30 @@ pub enum OwnedOrderState {
 #[serde(deny_unknown_fields)]
 pub struct OwnedOrder {
     pub order_id: OrderId,
-    pub upstream_order_id: u64,
     pub participant_id: ParticipantId,
     pub listing_key: ListingKey,
     pub side: Side,
+    /// Limit price, or the listing bound that caps a market order's cash use.
     pub limit_price: PriceTicks,
     pub original_quantity: QuantityLots,
     pub remaining_quantity: QuantityLots,
     pub state: OwnedOrderState,
     /// Exact ledger reservation released on fill, cancel or expiry.
     pub reservation: Reservation,
+    /// Logical expiry of a GTD order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<LogicalTimeNs>,
+    /// Whether the order expires at its listing's session close.
+    #[serde(default)]
+    pub day: bool,
 }
 
-/// Versioned snapshot for one private matcher boundary.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ListingSnapshot {
-    pub schema_version: u16,
-    pub represented_sequence: EventSequence,
-    pub checksum: String,
-    pub package_json: String,
-}
-
-/// Authoritative state for one venue listing. The live matcher never escapes this crate.
+/// Authoritative state for one venue listing, including its live book.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListingState {
     definition: ListingDefinition,
-    snapshot: ListingSnapshot,
+    book: Book,
 }
 
 impl ListingState {
@@ -738,9 +726,15 @@ impl ListingState {
         &self.definition
     }
 
+    /// Resting orders on one side in matching priority, best price first.
+    pub fn resting(&self, side: Side) -> impl Iterator<Item = &BookOrder> + '_ {
+        self.book.orders(side)
+    }
+
+    /// Displayed quantity per level, best first.
     #[must_use]
-    pub const fn snapshot(&self) -> &ListingSnapshot {
-        &self.snapshot
+    pub fn depth(&self, side: Side) -> Vec<(PriceTicks, QuantityLots)> {
+        self.book.depth(side)
     }
 }
 
@@ -764,12 +758,13 @@ pub struct RunState {
     participants: BTreeMap<ParticipantId, ParticipantDefinition>,
     /// The single authoritative economic ledger.
     ledger: Ledger,
+    /// Live orders plus a bounded window of recently terminal orders.
     ownership: BTreeMap<OrderId, OwnedOrder>,
-    /// Single authoritative upstream-to-canonical identity index, including
-    /// every accepted order regardless of external identifier size.
-    upstream_to_canonical: BTreeMap<u64, OrderId>,
-    /// Next globally unique sequential ID for any venue in this run.
-    next_upstream_order_id: u64,
+    /// Terminal orders in retirement order; the oldest leave `ownership` first.
+    retired: VecDeque<OrderId>,
+    /// GTD expiries on the logical clock.
+    expiries: BTreeSet<(LogicalTimeNs, OrderId)>,
+    kill_switch: bool,
     #[serde(default)]
     nbc_compatibility: Option<NbcCompatibilityState>,
     #[serde(default)]
@@ -788,22 +783,19 @@ impl RunState {
         if iteration_id.get() == 0 {
             return Err(EngineError::InvalidScenario);
         }
-        let mut listings = BTreeMap::new();
-        for (key, definition) in &scenario.listings {
-            let book = KernelBook::new(&definition.symbol);
-            let snapshot = snapshot_from_package(
-                EventSequence::new(0),
-                book.snapshot_package(SNAPSHOT_DEPTH)
-                    .map_err(|_| EngineError::Upstream)?,
-            );
-            listings.insert(
-                *key,
-                ListingState {
-                    definition: definition.clone(),
-                    snapshot,
-                },
-            );
-        }
+        let listings = scenario
+            .listings
+            .iter()
+            .map(|(key, definition)| {
+                (
+                    *key,
+                    ListingState {
+                        definition: definition.clone(),
+                        book: Book::new(),
+                    },
+                )
+            })
+            .collect();
         let mut ledger = Ledger::new();
         for (instrument_id, instrument) in &scenario.instruments {
             ledger.configure_instrument(*instrument_id, instrument.terms())?;
@@ -848,8 +840,9 @@ impl RunState {
             participants: scenario.participants.clone(),
             ledger,
             ownership: BTreeMap::new(),
-            upstream_to_canonical: BTreeMap::new(),
-            next_upstream_order_id: 1,
+            retired: VecDeque::new(),
+            expiries: BTreeSet::new(),
+            kill_switch: false,
             nbc_compatibility: None,
             simulation,
         })
@@ -934,6 +927,11 @@ impl RunState {
         &self.fx_rates
     }
 
+    #[must_use]
+    pub const fn kill_switch_active(&self) -> bool {
+        self.kill_switch
+    }
+
     /// Net liquidation value of one participant in the reporting currency.
     pub fn net_liquidation_value(
         &self,
@@ -950,9 +948,20 @@ impl RunState {
         &self.participants
     }
 
+    /// Live orders and the bounded window of recently terminal orders.
     #[must_use]
     pub fn ownership(&self) -> &BTreeMap<OrderId, OwnedOrder> {
         &self.ownership
+    }
+
+    /// Live orders of one participant in identity order.
+    pub fn live_orders(
+        &self,
+        participant: ParticipantId,
+    ) -> impl Iterator<Item = &OwnedOrder> + '_ {
+        self.ownership.values().filter(move |owned| {
+            owned.participant_id == participant && owned.state == OwnedOrderState::Active
+        })
     }
 
     #[must_use]
@@ -999,16 +1008,10 @@ impl RunState {
         Ok(key)
     }
 
-    pub fn listing_snapshot(&self, key: ListingKey) -> Result<&ListingSnapshot, EngineError> {
-        self.listings
-            .get(&key)
-            .map(ListingState::snapshot)
-            .ok_or(EngineError::UnknownListing)
-    }
-
+    /// Displayed bid and ask levels of one listing, best first.
     pub fn visible_levels(&self, key: ListingKey) -> Result<VisibleDepth, EngineError> {
-        matching::visible_levels_from_snapshot_json(&self.listing_snapshot(key)?.package_json)
-            .map_err(|_| EngineError::InvalidSnapshot)
+        let listing = self.listings.get(&key).ok_or(EngineError::UnknownListing)?;
+        Ok((listing.depth(Side::Buy), listing.depth(Side::Sell)))
     }
 
     pub fn state_hash(&self) -> Result<String, SnapshotError> {
@@ -1016,28 +1019,38 @@ impl RunState {
     }
 
     fn validate(&self) -> Result<(), SnapshotError> {
+        let live = self
+            .ownership
+            .values()
+            .filter(|owned| owned.state == OwnedOrderState::Active)
+            .count();
+        let resting = self
+            .listings
+            .values()
+            .map(|listing| listing.book.len())
+            .sum::<usize>();
         if self.config.engine_version != ENGINE_VERSION
             || self.config.max_listings == 0
             || usize::from(self.config.max_listings) > MAX_LISTINGS
             || self.listings.is_empty()
             || self.listings.len() > usize::from(self.config.max_listings)
             || self.participants.len() > MAX_PARTICIPANTS
-            || self.ownership.len() > MAX_ORDERS
-            || self.next_upstream_order_id == 0
-            || self.upstream_to_canonical.len() != self.ownership.len()
-            || self
-                .upstream_to_canonical
-                .iter()
-                .any(|(upstream, canonical)| {
-                    *upstream == 0
-                        || *upstream >= self.next_upstream_order_id
-                        || self.ownership.get(canonical).is_none_or(|owned| {
-                            owned.order_id != *canonical || owned.upstream_order_id != *upstream
-                        })
+            || live > MAX_LIVE_ORDERS
+            || self.retired.len() > MAX_RETIRED_ORDERS
+            || live != resting
+            || live + self.retired.len() != self.ownership.len()
+            || self.ownership.iter().any(|(order_id, owned)| {
+                *order_id != owned.order_id
+                    || (owned.state == OwnedOrderState::Active)
+                        != self
+                            .listings
+                            .get(&owned.listing_key)
+                            .is_some_and(|listing| listing.book.contains(*order_id))
+            })
+            || self.expiries.iter().any(|(at, order_id)| {
+                self.ownership.get(order_id).is_none_or(|owned| {
+                    owned.state != OwnedOrderState::Active || owned.expires_at != Some(*at)
                 })
-            || self.ownership.iter().any(|(canonical, owned)| {
-                *canonical != owned.order_id
-                    || self.upstream_to_canonical.get(&owned.upstream_order_id) != Some(canonical)
             })
             || self
                 .nbc_compatibility
@@ -1045,10 +1058,6 @@ impl RunState {
                 .is_some_and(|compatibility| {
                     compatibility.profile_version != NBC_TRANSLATION_VERSION
                 })
-            || self
-                .listings
-                .values()
-                .any(|listing| listing.snapshot.schema_version != LISTING_SNAPSHOT_VERSION)
             || self.simulation.policy_version != SIMULATION_POLICY_VERSION
             || self.ledger.instruments().len() != self.instruments.len()
             || self
@@ -1066,24 +1075,16 @@ impl RunState {
     }
 
     /// Immutable transition convenience. Use `transition_owned` when a
-    /// caller already owns the loaded run to avoid cloning the full history.
-    pub fn transition(
-        &self,
-        command: &Command,
-        cached: Option<&CachedListingSnapshot>,
-    ) -> Result<TransitionOutcome, EngineError> {
-        self.clone().transition_owned(command, cached)
+    /// caller already owns the loaded run.
+    pub fn transition(&self, command: &Command) -> Result<TransitionOutcome, EngineError> {
+        self.clone().transition_owned(command)
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "one explicit match keeps every order-flow command on the same staged transition path"
     )]
-    pub fn transition_owned(
-        self,
-        command: &Command,
-        cached: Option<&CachedListingSnapshot>,
-    ) -> Result<TransitionOutcome, EngineError> {
+    pub fn transition_owned(self, command: &Command) -> Result<TransitionOutcome, EngineError> {
         let mut candidate = self;
         if candidate.run_id != command.run_id || candidate.sequence != command.expected_sequence {
             return Err(EngineError::SequenceConflict {
@@ -1096,7 +1097,7 @@ impl RunState {
             .ok_or(EngineError::SequenceOverflow)?;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
-        let mut changed_depth = BTreeMap::new();
+        candidate.expire_due(command.logical_time, &mut payloads, &mut changed_listings)?;
         let (accepted, reject_code, order_id) = match &command.payload {
             CommandPayload::SubmitOrder(order)
             | CommandPayload::SubmitOrderAtListing { order, .. } => {
@@ -1111,45 +1112,25 @@ impl RunState {
                     }
                     _ => candidate.listing_key_for_instrument(order.instrument_id)?,
                 };
-                let definition = candidate
-                    .listings
-                    .get(&listing_key)
-                    .ok_or(EngineError::UnknownListing)?
-                    .definition
-                    .clone();
-                let book = candidate.restore_book(listing_key, cached, command)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
                     listing_key: Some(listing_key),
                 });
                 let outcome = if candidate.simulation.lifecycle != simulation::RunLifecycle::Active
                 {
-                    Err(RejectCode::RunNotActive)
+                    Ok(Err(RejectCode::RunNotActive))
+                } else if candidate.kill_switch {
+                    Ok(Err(RejectCode::KillSwitchActive))
                 } else if candidate
                     .simulation
                     .halted_instruments
                     .contains(&order.instrument_id)
                 {
-                    Err(RejectCode::ListingHalted)
+                    Ok(Err(RejectCode::ListingHalted))
                 } else {
-                    let participant = candidate.participants.get(&order.participant_id).cloned();
-                    let outcome = prepare_submit(
-                        order,
-                        &definition,
-                        participant.as_ref(),
-                        &book,
-                        &mut candidate.ledger,
-                        &candidate.participants,
-                        &mut candidate.ownership,
-                        &mut candidate.upstream_to_canonical,
-                        &mut candidate.next_upstream_order_id,
-                        &mut payloads,
-                    )?;
-                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
-                    changed_depth.insert(listing_key, depth);
                     changed_listings.insert(listing_key);
-                    outcome
-                };
+                    candidate.submit(order, listing_key, command.logical_time, &mut payloads)
+                }?;
                 match outcome {
                     Ok(()) => (true, None, Some(order.order_id)),
                     Err(code) => {
@@ -1162,53 +1143,37 @@ impl RunState {
                 }
             }
             CommandPayload::CancelOrder(cancel) => {
-                if let Some(listing_key) = candidate
-                    .ownership
-                    .get(&cancel.order_id)
-                    .map(|owned| owned.listing_key)
-                {
-                    let book = candidate.restore_book(listing_key, cached, command)?;
-                    let outcome = prepare_cancel(
-                        cancel,
-                        CancelReason::Requested,
-                        &book,
-                        &mut candidate.ledger,
-                        &mut candidate.ownership,
-                        &mut payloads,
-                    )?;
-                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
-                    changed_depth.insert(listing_key, depth);
-                    changed_listings.insert(listing_key);
-                    match outcome {
-                        Ok(()) => (true, None, Some(cancel.order_id)),
-                        Err(code) => {
-                            payloads.push(EventPayload::OrderRejected {
-                                order_id: Some(cancel.order_id),
-                                code,
-                            });
-                            (false, Some(format!("{code:?}")), Some(cancel.order_id))
-                        }
+                let outcome = match candidate.ownership.get(&cancel.order_id) {
+                    None => Err(RejectCode::UnknownOrder),
+                    Some(owned) if owned.participant_id != cancel.participant_id => {
+                        Err(RejectCode::NotOrderOwner)
                     }
-                } else {
-                    payloads.push(EventPayload::OrderRejected {
-                        order_id: Some(cancel.order_id),
-                        code: RejectCode::UnknownOrder,
-                    });
-                    (
-                        false,
-                        Some("UnknownOrder".to_string()),
-                        Some(cancel.order_id),
-                    )
+                    Some(owned) if owned.state != OwnedOrderState::Active => {
+                        Err(RejectCode::UnknownOrder)
+                    }
+                    Some(owned) => {
+                        changed_listings.insert(owned.listing_key);
+                        candidate.cancel(
+                            cancel.order_id,
+                            CancelReason::Requested,
+                            &mut payloads,
+                        )?;
+                        Ok(())
+                    }
+                };
+                match outcome {
+                    Ok(()) => (true, None, Some(cancel.order_id)),
+                    Err(code) => {
+                        payloads.push(EventPayload::OrderRejected {
+                            order_id: Some(cancel.order_id),
+                            code,
+                        });
+                        (false, Some(format!("{code:?}")), Some(cancel.order_id))
+                    }
                 }
             }
             CommandPayload::ActivateKillSwitch => {
-                for listing_key in candidate.listings.keys().copied().collect::<Vec<_>>() {
-                    let book = candidate.restore_book(listing_key, cached, command)?;
-                    book.engage_kill_switch();
-                    let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
-                    changed_depth.insert(listing_key, depth);
-                    changed_listings.insert(listing_key);
-                }
+                candidate.kill_switch = true;
                 payloads.push(EventPayload::KillSwitchActivated);
                 (true, None, None)
             }
@@ -1242,7 +1207,6 @@ impl RunState {
             command,
             next_sequence,
             payloads,
-            changed_depth,
             changed_listings,
             accepted,
             reject_code,
@@ -1250,7 +1214,8 @@ impl RunState {
         )
     }
 
-    /// Projects committed payloads and envelopes them as the next run sequence.
+    /// Projects committed payloads, retires terminal orders and envelopes the
+    /// batch as the next run sequence.
     #[expect(
         clippy::too_many_arguments,
         reason = "the shared commit tail receives every staged transition fact"
@@ -1260,47 +1225,373 @@ impl RunState {
         command: &Command,
         next_sequence: EventSequence,
         payloads: Vec<EventPayload>,
-        changed_depth: BTreeMap<ListingKey, VisibleDepth>,
         changed_listings: BTreeSet<ListingKey>,
         accepted: bool,
         reject_code: Option<String>,
         order_id: Option<OrderId>,
     ) -> Result<TransitionOutcome, EngineError> {
-        if payloads.len() > MAX_EVENTS_PER_TRANSITION {
-            return Err(EngineError::EventBatchTooLarge);
-        }
         for payload in &payloads {
             self.simulation
                 .project_event(command.logical_time, payload)
                 .map_err(EngineError::Simulation)?;
-        }
-        for (listing_key, depth) in changed_depth {
-            self.refresh_market_projection(listing_key, depth)?;
+            match payload {
+                EventPayload::OrderCompleted { order_id }
+                | EventPayload::OrderCanceled { order_id, .. } => self.retire(*order_id),
+                _ => {}
+            }
         }
         let events = envelope(command, self.event_sequence, payloads)?;
         self.sequence = next_sequence;
         self.event_sequence = events
             .last()
             .map_or(self.event_sequence, |event| event.sequence);
-        let snapshot_checksum = changed_listings
-            .iter()
-            .next()
-            .and_then(|key| self.listings.get(key))
-            .or_else(|| {
-                (self.listings.len() == 1)
-                    .then(|| self.listings.values().next())
-                    .flatten()
-            })
-            .map(|listing| listing.snapshot.checksum.clone());
         Ok(TransitionOutcome {
             candidate: self,
             events,
             accepted,
             reject_code,
             order_id,
-            snapshot_checksum,
             changed_listings,
         })
+    }
+
+    /// Bounds retained terminal ownership. Order identifiers are namespaced by
+    /// the admission layer, so the retained window only serves late cancels and
+    /// duplicate submissions racing a terminal order.
+    fn retire(&mut self, order_id: OrderId) {
+        self.retired.push_back(order_id);
+        while self.retired.len() > MAX_RETIRED_ORDERS {
+            if let Some(oldest) = self.retired.pop_front() {
+                self.ownership.remove(&oldest);
+            }
+        }
+    }
+
+    /// Cancels every GTD order whose expiry is at or before `now`.
+    fn expire_due(
+        &mut self,
+        now: LogicalTimeNs,
+        payloads: &mut Vec<EventPayload>,
+        changed_listings: &mut BTreeSet<ListingKey>,
+    ) -> Result<(), EngineError> {
+        while let Some(&(at, order_id)) = self.expiries.first() {
+            if at > now {
+                break;
+            }
+            let listing = self
+                .ownership
+                .get(&order_id)
+                .map(|owned| owned.listing_key)
+                .ok_or(EngineError::OwnershipInvariant)?;
+            changed_listings.insert(listing);
+            self.cancel(order_id, CancelReason::Expired, payloads)?;
+        }
+        Ok(())
+    }
+
+    /// Admits, matches and rests or cancels one order.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "submission keeps admission, matching, settlement and remainder handling in one staged path"
+    )]
+    fn submit(
+        &mut self,
+        order: &bunting_market_events::SubmitOrder,
+        listing_key: ListingKey,
+        now: LogicalTimeNs,
+        payloads: &mut Vec<EventPayload>,
+    ) -> Result<Result<(), RejectCode>, EngineError> {
+        if order.order_id.get() == 0 {
+            return Ok(Err(RejectCode::InvalidOrderId));
+        }
+        if self.ownership.contains_key(&order.order_id) {
+            return Ok(Err(RejectCode::DuplicateOrderId));
+        }
+        if self.ownership.len() - self.retired.len() >= MAX_LIVE_ORDERS {
+            return Ok(Err(RejectCode::MaxOpenOrderQuantity));
+        }
+        if order.quantity.get() <= 0 {
+            return Ok(Err(RejectCode::InvalidQuantity));
+        }
+        let Some(participant) = self.participants.get(&order.participant_id) else {
+            return Ok(Err(RejectCode::ParticipantDisabled));
+        };
+        let listing = &self.listings[&listing_key];
+        let definition = &listing.definition;
+        let (limit, time_in_force, post_only, display) = match order.kind {
+            OrderKind::Limit { price } => (Some(price), TimeInForcePolicy::Gtc, false, None),
+            OrderKind::Market => (None, TimeInForcePolicy::Ioc, false, None),
+            OrderKind::LimitWithPolicy {
+                price,
+                time_in_force,
+                post_only,
+                display_quantity,
+            } => (Some(price), time_in_force, post_only, display_quantity),
+        };
+        let expires_at = match time_in_force {
+            TimeInForcePolicy::Gtd { expires_at } if expires_at <= now => {
+                return Ok(Err(RejectCode::InvalidTimeInForce));
+            }
+            TimeInForcePolicy::Gtd { expires_at } => Some(expires_at),
+            _ => None,
+        };
+        let immediate = matches!(
+            time_in_force,
+            TimeInForcePolicy::Ioc | TimeInForcePolicy::Fok
+        );
+        if display.is_some_and(|peak| peak.get() <= 0 || peak > order.quantity)
+            || (immediate && (post_only || display.is_some()))
+        {
+            return Ok(Err(RejectCode::InvalidTimeInForce));
+        }
+        if limit.is_none() && listing.book.best(order.side.opposite()).is_none() {
+            return Ok(Err(RejectCode::InsufficientLiquidity));
+        }
+        if let Some(price) = limit
+            && post_only
+            && listing.book.would_cross(order.side, price)
+        {
+            return Ok(Err(RejectCode::PostOnlyWouldCross));
+        }
+        let market_bound = match order.side {
+            Side::Buy => definition.price_bounds.max,
+            Side::Sell => definition.price_bounds.min,
+        };
+        let admission = match bunting_risk_engine::admit(
+            &participant.limits,
+            participant.enabled,
+            order,
+            bunting_risk_engine::ListingTerms {
+                price_bounds: definition.price_bounds,
+                fee_bound: definition.fees.bound(),
+            },
+            &self.ledger,
+            limit.is_none().then_some(market_bound),
+        ) {
+            Ok(admission) => admission,
+            Err(code) => return Ok(Err(code)),
+        };
+        self.ledger.open_order(
+            order.participant_id,
+            order.instrument_id,
+            order.side,
+            order.quantity,
+            admission.reservation,
+        )?;
+        self.ownership.insert(
+            order.order_id,
+            OwnedOrder {
+                order_id: order.order_id,
+                participant_id: order.participant_id,
+                listing_key,
+                side: order.side,
+                limit_price: admission.reservation_price,
+                original_quantity: order.quantity,
+                remaining_quantity: order.quantity,
+                state: OwnedOrderState::Active,
+                reservation: admission.reservation,
+                expires_at,
+                day: time_in_force == TimeInForcePolicy::Day,
+            },
+        );
+        payloads.push(EventPayload::OrderAccepted {
+            order_id: order.order_id,
+        });
+        let fillable = time_in_force != TimeInForcePolicy::Fok
+            || self.listings[&listing_key]
+                .book
+                .executable(order.side, limit)
+                >= order.quantity;
+        let remaining = if fillable {
+            let (matches, remaining) = self
+                .listings
+                .get_mut(&listing_key)
+                .ok_or(EngineError::UnknownListing)?
+                .book
+                .execute(order.side, limit, order.quantity)
+                .map_err(|_| EngineError::OwnershipInvariant)?;
+            self.settle_matches(order.order_id, listing_key, &matches, payloads)?;
+            remaining
+        } else {
+            order.quantity
+        };
+        if remaining.get() == 0 {
+            payloads.push(EventPayload::OrderCompleted {
+                order_id: order.order_id,
+            });
+        } else if let (Some(price), false) = (limit, immediate) {
+            self.listings
+                .get_mut(&listing_key)
+                .ok_or(EngineError::UnknownListing)?
+                .book
+                .rest(order.order_id, order.side, price, remaining, display)
+                .map_err(|_| EngineError::OwnershipInvariant)?;
+            if let Some(at) = expires_at {
+                self.expiries.insert((at, order.order_id));
+            }
+            payloads.push(EventPayload::OrderRested {
+                order_id: order.order_id,
+                participant_id: order.participant_id,
+                instrument_id: order.instrument_id,
+                listing_key: Some(listing_key),
+                side: order.side,
+                price,
+                remaining,
+            });
+        } else {
+            self.ledger.close_order(
+                order.participant_id,
+                order.instrument_id,
+                order.side,
+                remaining,
+                admission.reservation,
+            )?;
+            let owned = self
+                .ownership
+                .get_mut(&order.order_id)
+                .ok_or(EngineError::OwnershipInvariant)?;
+            owned.state = OwnedOrderState::Canceled;
+            owned.remaining_quantity = QuantityLots::new(0);
+            payloads.push(EventPayload::OrderCanceled {
+                order_id: order.order_id,
+                participant_id: order.participant_id,
+                instrument_id: order.instrument_id,
+                listing_key: Some(listing_key),
+                remaining,
+                reason: if limit.is_none() {
+                    CancelReason::MarketRemainder
+                } else {
+                    CancelReason::Expired
+                },
+            });
+        }
+        Ok(Ok(()))
+    }
+
+    /// Settles every book match of one aggressor through the ledger.
+    fn settle_matches(
+        &mut self,
+        taker_id: OrderId,
+        listing_key: ListingKey,
+        matches: &[Match],
+        payloads: &mut Vec<EventPayload>,
+    ) -> Result<(), EngineError> {
+        let fees = self.listings[&listing_key].definition.fees;
+        let funded = |participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
+                      participant: ParticipantId| {
+            participants
+                .get(&participant)
+                .is_some_and(|definition| definition.limits.cash_constrained)
+        };
+        for fill in matches {
+            let maker = self
+                .ownership
+                .get(&fill.maker)
+                .cloned()
+                .ok_or(EngineError::OwnershipInvariant)?;
+            let taker = self
+                .ownership
+                .get(&taker_id)
+                .cloned()
+                .ok_or(EngineError::OwnershipInvariant)?;
+            if maker.listing_key != listing_key || maker.state != OwnedOrderState::Active {
+                return Err(EngineError::OwnershipInvariant);
+            }
+            let maker_fee = per_lot_fee(fees.maker_per_lot, fill.quantity)?;
+            let taker_fee = per_lot_fee(fees.taker_per_lot, fill.quantity)?;
+            let party = |owned: &OwnedOrder, fee: MoneyMinor| FillParty {
+                participant: owned.participant_id,
+                fee,
+                order: Some(owned.reservation),
+                enforce_funding: funded(&self.participants, owned.participant_id),
+            };
+            let (buyer, seller) = if taker.side == Side::Buy {
+                (party(&taker, taker_fee), party(&maker, maker_fee))
+            } else {
+                (party(&maker, maker_fee), party(&taker, taker_fee))
+            };
+            self.ledger.settle(Fill {
+                instrument: listing_key.instrument_id,
+                price: fill.price,
+                quantity: fill.quantity,
+                buyer: Some(buyer),
+                seller: Some(seller),
+                set_mark: true,
+            })?;
+            reduce_order(fill.maker, fill.quantity, &mut self.ownership, payloads)?;
+            if fill.maker_remaining.get() == 0
+                && let Some(at) = maker.expires_at
+            {
+                self.expiries.remove(&(at, fill.maker));
+            }
+            reduce_order(
+                taker_id,
+                fill.quantity,
+                &mut self.ownership,
+                &mut Vec::new(),
+            )?;
+            payloads.push(EventPayload::TradeExecuted {
+                instrument_id: listing_key.instrument_id,
+                listing_key: Some(listing_key),
+                maker_order_id: fill.maker,
+                taker_order_id: taker_id,
+                buyer_id: buyer.participant,
+                seller_id: seller.participant,
+                price: fill.price,
+                quantity: fill.quantity,
+                buyer_fee: buyer.fee,
+                seller_fee: seller.fee,
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes a live order from its book and releases its reservation.
+    fn cancel(
+        &mut self,
+        order_id: OrderId,
+        reason: CancelReason,
+        payloads: &mut Vec<EventPayload>,
+    ) -> Result<(), EngineError> {
+        let owned = self
+            .ownership
+            .get(&order_id)
+            .cloned()
+            .filter(|owned| owned.state == OwnedOrderState::Active)
+            .ok_or(EngineError::OwnershipInvariant)?;
+        let resting = self
+            .listings
+            .get_mut(&owned.listing_key)
+            .ok_or(EngineError::UnknownListing)?
+            .book
+            .cancel(order_id)
+            .ok_or(EngineError::OwnershipInvariant)?;
+        if resting.remaining != owned.remaining_quantity {
+            return Err(EngineError::OwnershipInvariant);
+        }
+        self.ledger.close_order(
+            owned.participant_id,
+            owned.listing_key.instrument_id,
+            owned.side,
+            owned.remaining_quantity,
+            owned.reservation,
+        )?;
+        if let Some(at) = owned.expires_at {
+            self.expiries.remove(&(at, order_id));
+        }
+        if let Some(record) = self.ownership.get_mut(&order_id) {
+            record.state = OwnedOrderState::Canceled;
+            record.remaining_quantity = QuantityLots::new(0);
+        }
+        payloads.push(EventPayload::OrderCanceled {
+            order_id,
+            participant_id: owned.participant_id,
+            instrument_id: owned.listing_key.instrument_id,
+            listing_key: Some(owned.listing_key),
+            remaining: owned.remaining_quantity,
+            reason,
+        });
+        Ok(())
     }
 
     /// Applies one authoritative simulation-administration command atomically.
@@ -1313,10 +1604,6 @@ impl RunState {
         self.clone().transition_simulation_owned(request)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "mass cancel stages matcher books while other commands share the domain reducer"
-    )]
     pub fn transition_simulation_owned(
         self,
         request: &SimulationCommandRequest,
@@ -1342,7 +1629,7 @@ impl RunState {
             .ok_or(EngineError::SequenceOverflow)?;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
-        let mut changed_depth = BTreeMap::new();
+        candidate.expire_due(request.logical_time, &mut payloads, &mut changed_listings)?;
         if let SimulationCommand::MassCancel {
             participant_id,
             instrument_id,
@@ -1356,47 +1643,18 @@ impl RunState {
                         && participant_id.is_none_or(|id| owned.participant_id == id)
                         && instrument_id.is_none_or(|id| owned.listing_key.instrument_id == id)
                 })
-                .map(|owned| owned.order_id)
+                .map(|owned| (owned.order_id, owned.listing_key))
                 .collect::<Vec<_>>();
-            // Stage each touched matcher once. Reconstructing and snapshotting
-            // after every canceled order turned one batch into O(orders)
-            // full-book serializations; the authoritative candidate is still
-            // discarded on any error before the transaction can commit.
-            let mut staged_books = BTreeMap::new();
-            for order_id in &order_ids {
-                let owned = candidate
-                    .ownership
-                    .get(order_id)
-                    .cloned()
-                    .ok_or(EngineError::OwnershipInvariant)?;
-                if let Entry::Vacant(vacant) = staged_books.entry(owned.listing_key) {
-                    let book = candidate.restore_book(owned.listing_key, None, &metadata)?;
-                    vacant.insert(book);
-                }
-                let book = staged_books
-                    .get(&owned.listing_key)
-                    .ok_or(EngineError::OwnershipInvariant)?;
-                prepare_cancel(
-                    &bunting_market_events::CancelOrder {
-                        order_id: *order_id,
-                        participant_id: owned.participant_id,
-                    },
-                    CancelReason::MassCancel,
-                    book,
-                    &mut candidate.ledger,
-                    &mut candidate.ownership,
-                    &mut payloads,
-                )?
-                .map_err(|_| EngineError::OwnershipInvariant)?;
-            }
-            for (listing_key, book) in staged_books {
-                let depth = candidate.replace_snapshot(listing_key, next_sequence, &book)?;
-                changed_depth.insert(listing_key, depth);
-                changed_listings.insert(listing_key);
+            for (order_id, listing_key) in &order_ids {
+                changed_listings.insert(*listing_key);
+                candidate.cancel(*order_id, CancelReason::MassCancel, &mut payloads)?;
             }
             payloads.push(EventPayload::Simulation(
                 bunting_market_events::SimulationEvent::MassCancelCompleted {
-                    canceled_orders: order_ids,
+                    canceled_orders: order_ids
+                        .into_iter()
+                        .map(|(order_id, _)| order_id)
+                        .collect(),
                 },
             ));
         } else {
@@ -1416,145 +1674,20 @@ impl RunState {
                 )
                 .map_err(EngineError::Simulation)?;
             payloads.extend(domain_events.into_iter().map(EventPayload::Simulation));
+            // Advancing the clock can pass GTD expiries.
+            let now = candidate.simulation.clock.now;
+            candidate.expire_due(now, &mut payloads, &mut changed_listings)?;
         }
         candidate.finish(
             &metadata,
             next_sequence,
             payloads,
-            changed_depth,
             changed_listings,
             true,
             None,
             None,
         )
     }
-
-    fn refresh_market_projection(
-        &mut self,
-        listing_key: ListingKey,
-        (bids, asks): VisibleDepth,
-    ) -> Result<(), EngineError> {
-        let convert = |levels: VisibleLevels| {
-            levels
-                .into_iter()
-                .map(|(price, quantity)| {
-                    Ok((
-                        PriceTicks::new(i64::try_from(price).map_err(|_| EngineError::Accounting)?),
-                        QuantityLots::new(
-                            i64::try_from(quantity).map_err(|_| EngineError::Accounting)?,
-                        ),
-                    ))
-                })
-                .collect::<Result<Vec<_>, EngineError>>()
-        };
-        let mut raw_bids = Vec::new();
-        let mut raw_asks = Vec::new();
-        // One deterministic ownership scan supplies both raw venue depth and
-        // private live/history projections. The old path scanned every owned
-        // order twice for each changed listing.
-        for owned in self
-            .ownership
-            .values()
-            .filter(|owned| owned.listing_key == listing_key)
-        {
-            let private = self
-                .simulation
-                .private
-                .entry(owned.participant_id)
-                .or_default();
-            if owned.state == OwnedOrderState::Active {
-                let row = (owned.limit_price, owned.remaining_quantity, owned.order_id);
-                match owned.side {
-                    Side::Buy => raw_bids.push(row),
-                    Side::Sell => raw_asks.push(row),
-                }
-                private.live_orders.insert(owned.order_id);
-            } else {
-                private.live_orders.remove(&owned.order_id);
-                if !private.historical_orders.contains(&owned.order_id) {
-                    if private.historical_orders.len() == simulation::MAX_TRADE_HISTORY {
-                        private.historical_orders.pop_front();
-                    }
-                    private.historical_orders.push_back(owned.order_id);
-                }
-            }
-        }
-        raw_bids.sort_by(|left, right| right.0.cmp(&left.0).then(left.2.cmp(&right.2)));
-        raw_asks.sort_by(|left, right| left.0.cmp(&right.0).then(left.2.cmp(&right.2)));
-        let unique_listing = self
-            .listings
-            .keys()
-            .filter(|key| key.instrument_id == listing_key.instrument_id)
-            .count()
-            == 1;
-        self.simulation.set_depth(
-            listing_key,
-            unique_listing,
-            raw_bids,
-            raw_asks,
-            convert(bids)?,
-            convert(asks)?,
-        );
-        Ok(())
-    }
-
-    fn restore_book(
-        &self,
-        key: ListingKey,
-        cached: Option<&CachedListingSnapshot>,
-        command: &Command,
-    ) -> Result<KernelBook, EngineError> {
-        let listing = self.listings.get(&key).ok_or(EngineError::UnknownListing)?;
-        let logical_millis = command.logical_time.get() / 1_000_000;
-        if let Some(cached) = cached
-            && cached.listing_key == key
-            && cached.represented_sequence == listing.snapshot.represented_sequence
-            && cached.checksum == listing.snapshot.checksum
-            && let Ok(book) = KernelBook::restore_snapshot_json_at(
-                &listing.definition.symbol,
-                &cached.package_json,
-                logical_millis,
-            )
-        {
-            return Ok(book);
-        }
-        if listing.snapshot.schema_version != LISTING_SNAPSHOT_VERSION {
-            return Err(EngineError::InvalidSnapshot);
-        }
-        KernelBook::restore_snapshot_json_at(
-            &listing.definition.symbol,
-            &listing.snapshot.package_json,
-            logical_millis,
-        )
-        .map_err(|_| EngineError::InvalidSnapshot)
-    }
-
-    fn replace_snapshot(
-        &mut self,
-        key: ListingKey,
-        sequence: EventSequence,
-        book: &KernelBook,
-    ) -> Result<VisibleDepth, EngineError> {
-        let package = book
-            .snapshot_package(SNAPSHOT_DEPTH)
-            .map_err(|_| EngineError::Upstream)?;
-        let depth = package.visible_depth.clone();
-        let listing = self
-            .listings
-            .get_mut(&key)
-            .ok_or(EngineError::UnknownListing)?;
-        listing.snapshot = snapshot_from_package(sequence, package);
-        Ok(depth)
-    }
-}
-
-/// Optional immutable cache input for one listing.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CachedListingSnapshot {
-    pub listing_key: ListingKey,
-    pub represented_sequence: EventSequence,
-    pub checksum: String,
-    pub package_json: String,
 }
 
 /// Candidate result of one authoritative engine transition.
@@ -1565,7 +1698,6 @@ pub struct TransitionOutcome {
     pub accepted: bool,
     pub reject_code: Option<String>,
     pub order_id: Option<OrderId>,
-    pub snapshot_checksum: Option<String>,
     pub changed_listings: BTreeSet<ListingKey>,
 }
 
@@ -1625,13 +1757,10 @@ pub enum EngineError {
     InvalidScenario,
     UnknownListing,
     AmbiguousListing,
-    InvalidSnapshot,
     SequenceConflict { current: EventSequence },
     SequenceOverflow,
     OwnershipInvariant,
     Accounting,
-    EventBatchTooLarge,
-    Upstream,
     NbcCompatibility,
     Simulation(SimulationError),
     Snapshot(SnapshotError),
@@ -1657,307 +1786,12 @@ impl From<SnapshotError> for EngineError {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "submission stages admission, ledger reservation, OrderBook-rs matching and canonical events atomically"
-)]
-fn prepare_submit(
-    order: &bunting_market_events::SubmitOrder,
-    listing: &ListingDefinition,
-    participant: Option<&ParticipantDefinition>,
-    book: &KernelBook,
-    ledger: &mut Ledger,
-    participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
-    ownership: &mut BTreeMap<OrderId, OwnedOrder>,
-    upstream_to_canonical: &mut BTreeMap<u64, OrderId>,
-    next_upstream_order_id: &mut u64,
-    payloads: &mut Vec<EventPayload>,
-) -> Result<Result<(), RejectCode>, EngineError> {
-    if ownership.contains_key(&order.order_id) {
-        return Ok(Err(RejectCode::DuplicateOrderId));
-    }
-    if ownership.len() >= MAX_ORDERS {
-        return Ok(Err(RejectCode::MaxOpenOrderQuantity));
-    }
-    if order.order_id.get() == 0 {
-        return Ok(Err(RejectCode::InvalidOrderId));
-    }
-    let Some(participant) = participant else {
-        return Ok(Err(RejectCode::ParticipantDisabled));
-    };
-    let Ok(upstream_quantity) = to_upstream_quantity(order.quantity) else {
-        return Ok(Err(RejectCode::InvalidQuantity));
-    };
-    let listing_key = listing.key;
-    let upstream_price = match order.kind {
-        OrderKind::Limit { price }
-        | OrderKind::LimitWithPolicy { price, .. }
-        | OrderKind::AdvancedLimit { price, .. } => {
-            let Ok(upstream_price) = to_upstream_price(price) else {
-                return Ok(Err(RejectCode::PriceOutOfBounds));
-            };
-            Some(upstream_price)
-        }
-        OrderKind::Market => {
-            if !book.has_opposite_liquidity(order.side) {
-                return Ok(Err(RejectCode::InsufficientLiquidity));
-            }
-            None
-        }
-    };
-    let market_bound = match order.side {
-        Side::Buy => listing.price_bounds.max,
-        Side::Sell => listing.price_bounds.min,
-    };
-    let admission = match bunting_risk_engine::admit(
-        &participant.limits,
-        participant.enabled,
-        order,
-        bunting_risk_engine::ListingTerms {
-            price_bounds: listing.price_bounds,
-            fee_bound: listing.fees.bound(),
-        },
-        ledger,
-        order.kind.is_market().then_some(market_bound),
-    ) {
-        Ok(admission) => admission,
-        Err(code) => return Ok(Err(code)),
-    };
-    let upstream_id = *next_upstream_order_id;
-    let next_id = upstream_id
-        .checked_add(1)
-        .ok_or(EngineError::OwnershipInvariant)?;
-    if upstream_to_canonical.contains_key(&upstream_id) {
-        return Err(EngineError::OwnershipInvariant);
-    }
-    ledger.open_order(
-        order.participant_id,
-        order.instrument_id,
-        order.side,
-        order.quantity,
-        admission.reservation,
-    )?;
-    *next_upstream_order_id = next_id;
-    upstream_to_canonical.insert(upstream_id, order.order_id);
-    ownership.insert(
-        order.order_id,
-        OwnedOrder {
-            order_id: order.order_id,
-            upstream_order_id: upstream_id,
-            participant_id: order.participant_id,
-            listing_key,
-            side: order.side,
-            limit_price: admission.reservation_price,
-            original_quantity: order.quantity,
-            remaining_quantity: order.quantity,
-            state: OwnedOrderState::Active,
-            reservation: admission.reservation,
-        },
-    );
-    let trade_result = if let Some(price) = upstream_price {
-        match order.kind {
-            OrderKind::Limit { .. } => book.submit_limit(
-                upstream_id,
-                price,
-                upstream_quantity,
-                to_upstream_side(order.side),
-                TimeInForce::Gtc,
-            ),
-            OrderKind::LimitWithPolicy { time_in_force, .. } => book.submit_limit(
-                upstream_id,
-                price,
-                upstream_quantity,
-                to_upstream_side(order.side),
-                to_upstream_time_in_force(time_in_force),
-            ),
-            OrderKind::AdvancedLimit {
-                time_in_force,
-                policy,
-                ..
-            } => book.submit_advanced_limit(
-                upstream_id,
-                price,
-                upstream_quantity,
-                to_upstream_side(order.side),
-                time_in_force,
-                policy,
-            ),
-            OrderKind::Market => unreachable!("market orders have no upstream price"),
-        }
-        .map_err(|_| EngineError::Upstream)?
-        .trade_result
-    } else {
-        Some(
-            book.submit_market(upstream_id, upstream_quantity, to_upstream_side(order.side))
-                .map_err(|_| EngineError::Upstream)?,
-        )
-    };
-    payloads.push(EventPayload::OrderAccepted {
-        order_id: order.order_id,
-    });
-    if let Some(trade_result) = trade_result {
-        let engine_sequence = trade_result.engine_seq;
-        let trade_info = TradeInfo::from_trade_result(&trade_result, None);
-        apply_trades(
-            order.order_id,
-            engine_sequence,
-            &trade_info,
-            listing,
-            ledger,
-            participants,
-            ownership,
-            upstream_to_canonical,
-            payloads,
-        )?;
-    }
-    let remaining = ownership
-        .get(&order.order_id)
-        .ok_or(EngineError::OwnershipInvariant)?
-        .remaining_quantity;
-    if remaining.get() == 0 {
-        payloads.push(EventPayload::OrderCompleted {
-            order_id: order.order_id,
-        });
-    } else if let (Some(price), true) = (order.kind.limit_price(), book.contains(upstream_id)) {
-        payloads.push(EventPayload::OrderRested {
-            order_id: order.order_id,
-            participant_id: order.participant_id,
-            instrument_id: order.instrument_id,
-            listing_key: Some(listing_key),
-            side: order.side,
-            price,
-            remaining,
-        });
-    } else {
-        // Market remainders and IOC/FOK remainders never rest upstream.
-        ledger.close_order(
-            order.participant_id,
-            order.instrument_id,
-            order.side,
-            remaining,
-            admission.reservation,
-        )?;
-        if let Some(record) = ownership.get_mut(&order.order_id) {
-            record.state = OwnedOrderState::Canceled;
-            record.remaining_quantity = QuantityLots::new(0);
-        }
-        payloads.push(EventPayload::OrderCanceled {
-            order_id: order.order_id,
-            participant_id: order.participant_id,
-            instrument_id: order.instrument_id,
-            listing_key: Some(listing_key),
-            remaining,
-            reason: if order.kind.is_market() {
-                CancelReason::MarketRemainder
-            } else {
-                CancelReason::Expired
-            },
-        });
-    }
-    Ok(Ok(()))
-}
-
 fn per_lot_fee(per_lot: MoneyMinor, quantity: QuantityLots) -> Result<MoneyMinor, EngineError> {
     per_lot
         .get()
         .checked_mul(i128::from(quantity.get()))
         .map(MoneyMinor::new)
         .ok_or(EngineError::Accounting)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one fill couples ownership, settlement, the upstream map, and canonical trade events"
-)]
-fn apply_trades(
-    taker_order_id: OrderId,
-    engine_sequence: u64,
-    trade_info: &TradeInfo,
-    listing: &ListingDefinition,
-    ledger: &mut Ledger,
-    participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
-    ownership: &mut BTreeMap<OrderId, OwnedOrder>,
-    upstream_to_canonical: &BTreeMap<u64, OrderId>,
-    payloads: &mut Vec<EventPayload>,
-) -> Result<(), EngineError> {
-    let funded = |participant: ParticipantId| {
-        participants
-            .get(&participant)
-            .is_some_and(|definition| definition.limits.cash_constrained)
-    };
-    for transaction in &trade_info.transactions {
-        let maker_upstream = sequential_id_from_text(&transaction.maker_order_id)
-            .ok_or(EngineError::OwnershipInvariant)?;
-        let maker_id = upstream_to_canonical
-            .get(&maker_upstream)
-            .copied()
-            .ok_or(EngineError::OwnershipInvariant)?;
-        let maker = ownership
-            .get(&maker_id)
-            .filter(|owned| owned.upstream_order_id == maker_upstream)
-            .cloned()
-            .ok_or(EngineError::OwnershipInvariant)?;
-        let taker = ownership
-            .get(&taker_order_id)
-            .cloned()
-            .ok_or(EngineError::OwnershipInvariant)?;
-        if maker.listing_key != taker.listing_key || maker.listing_key != listing.key {
-            return Err(EngineError::OwnershipInvariant);
-        }
-        let quantity = QuantityLots::new(
-            i64::try_from(transaction.quantity).map_err(|_| EngineError::Accounting)?,
-        );
-        let execution_price =
-            PriceTicks::new(i64::try_from(transaction.price).map_err(|_| EngineError::Accounting)?);
-        let maker_fee = per_lot_fee(listing.fees.maker_per_lot, quantity)?;
-        let taker_fee = per_lot_fee(listing.fees.taker_per_lot, quantity)?;
-        let party = |owned: &OwnedOrder, fee: MoneyMinor| FillParty {
-            participant: owned.participant_id,
-            fee,
-            order: Some(owned.reservation),
-            enforce_funding: funded(owned.participant_id),
-        };
-        let (buyer, seller, buyer_fee, seller_fee) = if taker.side == Side::Buy {
-            (
-                party(&taker, taker_fee),
-                party(&maker, maker_fee),
-                taker_fee,
-                maker_fee,
-            )
-        } else {
-            (
-                party(&maker, maker_fee),
-                party(&taker, taker_fee),
-                maker_fee,
-                taker_fee,
-            )
-        };
-        ledger.settle(Fill {
-            instrument: listing.key.instrument_id,
-            price: execution_price,
-            quantity,
-            buyer: Some(buyer),
-            seller: Some(seller),
-            set_mark: true,
-        })?;
-        reduce_order(maker_id, quantity, ownership, payloads)?;
-        reduce_order(taker_order_id, quantity, ownership, &mut Vec::new())?;
-        payloads.push(EventPayload::TradeExecuted {
-            instrument_id: listing.key.instrument_id,
-            listing_key: Some(listing.key),
-            maker_order_id: maker_id,
-            taker_order_id,
-            buyer_id: buyer.participant,
-            seller_id: seller.participant,
-            price: execution_price,
-            quantity,
-            buyer_fee,
-            seller_fee,
-            upstream_engine_sequence: engine_sequence,
-        });
-    }
-    Ok(())
 }
 
 fn reduce_order(
@@ -1986,56 +1820,6 @@ fn reduce_order(
     Ok(())
 }
 
-fn prepare_cancel(
-    cancel: &bunting_market_events::CancelOrder,
-    reason: CancelReason,
-    book: &KernelBook,
-    ledger: &mut Ledger,
-    ownership: &mut BTreeMap<OrderId, OwnedOrder>,
-    payloads: &mut Vec<EventPayload>,
-) -> Result<Result<(), RejectCode>, EngineError> {
-    let Some(owned) = ownership.get(&cancel.order_id).cloned() else {
-        return Ok(Err(RejectCode::UnknownOrder));
-    };
-    if owned.participant_id != cancel.participant_id {
-        return Ok(Err(RejectCode::NotOrderOwner));
-    }
-    if owned.state != OwnedOrderState::Active {
-        return Ok(Err(RejectCode::UnknownOrder));
-    }
-    let canceled = book
-        .cancel_remaining(owned.upstream_order_id)
-        .map_err(|_| EngineError::Upstream)?;
-    let Some(upstream_remaining) = canceled else {
-        return Err(EngineError::OwnershipInvariant);
-    };
-    if upstream_remaining
-        != u64::try_from(owned.remaining_quantity.get()).map_err(|_| EngineError::Accounting)?
-    {
-        return Err(EngineError::OwnershipInvariant);
-    }
-    ledger.close_order(
-        owned.participant_id,
-        owned.listing_key.instrument_id,
-        owned.side,
-        owned.remaining_quantity,
-        owned.reservation,
-    )?;
-    if let Some(record) = ownership.get_mut(&cancel.order_id) {
-        record.state = OwnedOrderState::Canceled;
-        record.remaining_quantity = QuantityLots::new(0);
-    }
-    payloads.push(EventPayload::OrderCanceled {
-        order_id: owned.order_id,
-        participant_id: owned.participant_id,
-        instrument_id: owned.listing_key.instrument_id,
-        listing_key: Some(owned.listing_key),
-        remaining: owned.remaining_quantity,
-        reason,
-    });
-    Ok(Ok(()))
-}
-
 fn envelope(
     command: &Command,
     current_event_sequence: EventSequence,
@@ -2045,18 +1829,15 @@ fn envelope(
         .into_iter()
         .enumerate()
         .map(|(index, payload)| {
-            let offset = u64::try_from(index + 1).map_err(|_| EngineError::EventBatchTooLarge)?;
+            let offset = u64::try_from(index + 1).map_err(|_| EngineError::SequenceOverflow)?;
             let sequence = current_event_sequence
                 .get()
                 .checked_add(offset)
                 .map(EventSequence::new)
-                .ok_or(EngineError::EventBatchTooLarge)?;
-            let event_id = command
-                .command_id
-                .get()
-                .checked_add(u128::from(offset))
-                .map(EventId::new)
-                .ok_or(EngineError::EventBatchTooLarge)?;
+                .ok_or(EngineError::SequenceOverflow)?;
+            // The run-wide event sequence is the only identity guaranteed unique
+            // across commands; deriving IDs from command IDs collided.
+            let event_id = EventId::new(u128::from(sequence.get()));
             Ok(EventEnvelope {
                 schema_version: EVENT_SCHEMA_VERSION,
                 run_id: command.run_id,
@@ -2071,15 +1852,6 @@ fn envelope(
             })
         })
         .collect()
-}
-
-fn snapshot_from_package(sequence: EventSequence, package: SnapshotPackage) -> ListingSnapshot {
-    ListingSnapshot {
-        schema_version: LISTING_SNAPSHOT_VERSION,
-        represented_sequence: sequence,
-        checksum: package.checksum,
-        package_json: package.json,
-    }
 }
 
 fn hash_serializable<T: Serialize>(value: &T) -> Result<String, SnapshotError> {
@@ -2216,6 +1988,13 @@ mod tests {
         }
     }
 
+    fn levels(values: &[(i64, i64)]) -> VisibleLevels {
+        values
+            .iter()
+            .map(|(price, quantity)| (PriceTicks::new(*price), QuantityLots::new(*quantity)))
+            .collect()
+    }
+
     fn at_listing(mut command: Command, listing_key: ListingKey) -> Command {
         if let CommandPayload::SubmitOrder(order) = command.payload {
             command.payload = CommandPayload::SubmitOrderAtListing { listing_key, order };
@@ -2224,7 +2003,7 @@ mod tests {
     }
 
     fn apply(state: RunState, command: &Command) -> TransitionOutcome {
-        state.transition_owned(command, None).unwrap()
+        state.transition_owned(command).unwrap()
     }
 
     fn total_cash(state: &RunState) -> i128 {
@@ -2300,6 +2079,8 @@ mod tests {
             order.kind = OrderKind::LimitWithPolicy {
                 price: PriceTicks::new(102),
                 time_in_force: TimeInForcePolicy::Ioc,
+                post_only: false,
+                display_quantity: None,
             };
         }
         let outcome = apply(state, &ioc);
@@ -2338,15 +2119,15 @@ mod tests {
         )
         .candidate;
         let book_before = state
-            .listing_snapshot(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
-            .unwrap()
-            .package_json
-            .clone();
+            .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+            .unwrap();
         let mut fok = submit(&state, 2, 1, 2, 1, Side::Buy, 102, 10);
         if let CommandPayload::SubmitOrder(order) = &mut fok.payload {
             order.kind = OrderKind::LimitWithPolicy {
                 price: PriceTicks::new(102),
                 time_in_force: TimeInForcePolicy::Fok,
+                post_only: false,
+                display_quantity: None,
             };
         }
         let outcome = apply(state, &fok);
@@ -2374,8 +2155,8 @@ mod tests {
             .candidate
             .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
             .unwrap();
-        assert_eq!(resting.1, vec![(101, 3)]);
-        assert!(!book_before.is_empty());
+        assert_eq!(resting, book_before);
+        assert_eq!(resting.1, levels(&[(101, 3)]));
     }
 
     #[test]
@@ -2476,10 +2257,6 @@ mod tests {
             &submit(&state, 2, 2, high.get(), 1, Side::Sell, 111, 3),
         )
         .candidate;
-        assert_ne!(
-            state.ownership()[&low].upstream_order_id,
-            state.ownership()[&high].upstream_order_id
-        );
         let cancel = Command {
             run_id: state.run_id(),
             command_id: CommandId::new(3),
@@ -2502,7 +2279,7 @@ mod tests {
                 .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
                 .unwrap()
                 .1,
-            vec![(110, 2)]
+            levels(&[(110, 2)])
         );
         assert_eq!(
             state
@@ -2625,7 +2402,7 @@ mod tests {
             RunState::from_scenario(RunId::new(21), IterationId::new(1), &scenario).unwrap();
         let legacy = submit(&state, 1, 2, 100, 1, Side::Sell, 120, 1);
         assert!(matches!(
-            state.transition(&legacy, None),
+            state.transition(&legacy),
             Err(EngineError::AmbiguousListing)
         ));
         let target = |state: &RunState, venue: ListingKey, id: u128, actor: u128, side: Side| {
@@ -2639,11 +2416,11 @@ mod tests {
             command
         };
         let sell = target(&state, primary, 201, 2, Side::Sell);
-        let outcome = state.transition(&sell, None).unwrap();
+        let outcome = state.transition(&sell).unwrap();
         assert!(outcome.accepted);
         state = outcome.candidate;
         let buy_elsewhere = target(&state, secondary, 202, 1, Side::Buy);
-        let outcome = state.transition(&buy_elsewhere, None).unwrap();
+        let outcome = state.transition(&buy_elsewhere).unwrap();
         assert!(outcome.accepted);
         assert!(
             !outcome
@@ -2653,15 +2430,15 @@ mod tests {
         );
         state = outcome.candidate;
         assert_eq!(
-            state.simulation().market_by_listing[&primary].aggregated_asks,
+            state.visible_levels(primary).unwrap().1,
             vec![(PriceTicks::new(120), QuantityLots::new(1))]
         );
         assert_eq!(
-            state.simulation().market_by_listing[&secondary].aggregated_bids,
+            state.visible_levels(secondary).unwrap().0,
             vec![(PriceTicks::new(120), QuantityLots::new(1))]
         );
         let buy_primary = target(&state, primary, 203, 1, Side::Buy);
-        let outcome = state.transition(&buy_primary, None).unwrap();
+        let outcome = state.transition(&buy_primary).unwrap();
         assert!(outcome.accepted);
         assert!(outcome.events.iter().any(|event| {
             matches!(
@@ -2679,12 +2456,14 @@ mod tests {
             1
         );
         assert!(
-            state.simulation().market_by_listing[&secondary]
-                .trades
-                .is_empty()
+            state
+                .simulation()
+                .market_by_listing
+                .get(&secondary)
+                .is_none_or(|market| market.trades.is_empty())
         );
         assert_eq!(
-            state.simulation().market_by_listing[&secondary].aggregated_bids,
+            state.visible_levels(secondary).unwrap().0,
             vec![(PriceTicks::new(120), QuantityLots::new(1))]
         );
         assert_eq!(
@@ -2708,8 +2487,8 @@ mod tests {
     fn owned_transition_matches_immutable_command_cancel_and_simulation_paths() {
         let state = run();
         let sell = submit(&state, 1, 2, 41, 1, Side::Sell, 110, 3);
-        let borrowed = state.transition(&sell, None).unwrap();
-        let owned = state.clone().transition_owned(&sell, None).unwrap();
+        let borrowed = state.transition(&sell).unwrap();
+        let owned = state.clone().transition_owned(&sell).unwrap();
         assert_eq!(borrowed.candidate, owned.candidate);
         assert_eq!(borrowed.events, owned.events);
         assert_eq!(borrowed.changed_listings, owned.changed_listings);
@@ -2727,11 +2506,8 @@ mod tests {
                 participant_id: ParticipantId::new(2),
             }),
         };
-        let borrowed = after_submit.transition(&cancel, None).unwrap();
-        let owned = after_submit
-            .clone()
-            .transition_owned(&cancel, None)
-            .unwrap();
+        let borrowed = after_submit.transition(&cancel).unwrap();
+        let owned = after_submit.clone().transition_owned(&cancel).unwrap();
         assert_eq!(borrowed.candidate, owned.candidate);
         assert_eq!(borrowed.events, owned.events);
         let after_cancel = borrowed.candidate;
@@ -2763,24 +2539,19 @@ mod tests {
     }
 
     #[test]
-    fn every_order_uses_one_sequential_upstream_allocator() {
+    fn canonical_full_width_identities_drive_matching_replay_and_cancel() {
         let large = OrderId::new(u128::from(u64::MAX) + 123);
         let small = OrderId::new(1);
         let mut state = run();
         let first = submit(&state, 1, 2, large.get(), 1, Side::Sell, 110, 2);
-        let accepted = state.transition(&first, None).unwrap();
+        let accepted = state.transition(&first).unwrap();
         assert!(accepted.accepted);
         state = accepted.candidate;
-        assert_eq!(state.ownership()[&large].upstream_order_id, 1);
-        assert_eq!(state.upstream_to_canonical.get(&1), Some(&large));
-        assert_eq!(state.next_upstream_order_id, 2);
 
         let next = submit(&state, 2, 2, small.get(), 1, Side::Sell, 120, 1);
-        let accepted = state.transition(&next, None).unwrap();
+        let accepted = state.transition(&next).unwrap();
         assert!(accepted.accepted);
         state = accepted.candidate;
-        assert_eq!(state.ownership()[&small].upstream_order_id, 2);
-        assert_eq!(state.upstream_to_canonical.get(&2), Some(&small));
 
         let snapshot = state.snapshot_envelope().unwrap();
         assert_eq!(snapshot.schema_version, ENGINE_SNAPSHOT_VERSION);
@@ -2793,7 +2564,7 @@ mod tests {
         );
 
         let first_buy = submit(&state, 3, 1, 123, 1, Side::Buy, 110, 2);
-        let filled = state.transition(&first_buy, None).unwrap();
+        let filled = state.transition(&first_buy).unwrap();
         assert!(filled.accepted);
         assert!(filled.events.iter().any(|event| matches!(
             &event.payload,
@@ -2803,17 +2574,12 @@ mod tests {
                 ..
             } if *maker_order_id == large && *taker_order_id == OrderId::new(123)
         )));
-        let replayed = replay_start.transition(&first_buy, None).unwrap();
+        let replayed = replay_start.transition(&first_buy).unwrap();
         assert_eq!(
             replayed.candidate.state_hash().unwrap(),
             filled.candidate.state_hash().unwrap()
         );
         state = filled.candidate;
-        assert_eq!(
-            state.upstream_to_canonical.get(&3),
-            Some(&OrderId::new(123))
-        );
-        assert_eq!(state.next_upstream_order_id, 4);
 
         let cancel = Command {
             run_id: state.run_id(),
@@ -2827,7 +2593,7 @@ mod tests {
                 participant_id: ParticipantId::new(2),
             }),
         };
-        let cancelled = state.transition(&cancel, None).unwrap();
+        let cancelled = state.transition(&cancel).unwrap();
         assert!(cancelled.accepted);
         assert!(cancelled.events.iter().any(|event| matches!(
             event.payload,
@@ -2837,11 +2603,6 @@ mod tests {
             cancelled.candidate.ownership()[&small].state,
             OwnedOrderState::Canceled
         );
-        assert_eq!(
-            cancelled.candidate.upstream_to_canonical.get(&1),
-            Some(&large)
-        );
-        assert_eq!(cancelled.candidate.next_upstream_order_id, 4);
     }
 
     #[test]
@@ -2856,13 +2617,13 @@ mod tests {
             let next = submit(
                 &state, command_id, owner, command_id, instrument, side, price, 1,
             );
-            let accepted = state.transition(&next, None).unwrap();
+            let accepted = state.transition(&next).unwrap();
             assert!(accepted.accepted);
             state = accepted.candidate;
         }
         let untouched = ListingKey::new(VenueId::new(1), InstrumentId::new(2));
         let removed = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
-        let untouched_snapshot = state.listing_snapshot(untouched).unwrap().clone();
+        let untouched_depth = state.visible_levels(untouched).unwrap();
         let previous = state.clone();
         let request = SimulationCommandRequest {
             run_id: state.run_id(),
@@ -2880,8 +2641,8 @@ mod tests {
         assert!(finished.accepted);
         assert_eq!(finished.changed_listings, BTreeSet::from([removed]));
         assert_eq!(
-            finished.candidate.listing_snapshot(untouched).unwrap(),
-            &untouched_snapshot
+            finished.candidate.visible_levels(untouched).unwrap(),
+            untouched_depth
         );
         assert!(
             finished
@@ -2893,7 +2654,7 @@ mod tests {
         );
         assert_eq!(
             finished.candidate.visible_levels(untouched).unwrap().0,
-            vec![(95, 1)]
+            levels(&[(95, 1)])
         );
         for id in [1, 2, 3] {
             assert_eq!(
@@ -2930,15 +2691,8 @@ mod tests {
     fn old_snapshot_versions_are_rejected_not_migrated() {
         let state = run();
         let mut value = serde_json::to_value(state.snapshot_envelope().unwrap()).unwrap();
-        value["schema_version"] = serde_json::json!(1);
-        value["state"]
-            .as_object_mut()
-            .unwrap()
-            .remove("next_upstream_order_id");
-        value["state"]
-            .as_object_mut()
-            .unwrap()
-            .remove("upstream_to_canonical");
+        value["schema_version"] = serde_json::json!(2);
+        value["state"].as_object_mut().unwrap().remove("expiries");
         assert_eq!(
             EngineSnapshotEnvelope::from_json(&value.to_string()),
             Err(SnapshotError::UnsupportedVersion)
@@ -2948,20 +2702,15 @@ mod tests {
     #[test]
     fn two_listings_are_isolated_and_iteration_is_deterministic() {
         let state = run();
-        let before_two = state
-            .listing_snapshot(ListingKey::new(VenueId::new(1), InstrumentId::new(2)))
-            .unwrap()
-            .clone();
+        let before_two =
+            state.listings()[&ListingKey::new(VenueId::new(1), InstrumentId::new(2))].clone();
         let outcome = state
-            .transition(&submit(&state, 1, 1, 1, 1, Side::Buy, 100, 10), None)
+            .transition(&submit(&state, 1, 1, 1, 1, Side::Buy, 100, 10))
             .unwrap();
         assert_eq!(outcome.candidate.sequence(), EventSequence::new(1));
         assert_eq!(
-            outcome
-                .candidate
-                .listing_snapshot(ListingKey::new(VenueId::new(1), InstrumentId::new(2)))
-                .unwrap(),
-            &before_two
+            outcome.candidate.listings()[&ListingKey::new(VenueId::new(1), InstrumentId::new(2))],
+            before_two
         );
         let keys: Vec<_> = outcome.candidate.listings().keys().copied().collect();
         assert_eq!(
@@ -2977,7 +2726,7 @@ mod tests {
     fn one_command_advances_one_run_sequence_and_snapshot_round_trips() {
         let state = run();
         let outcome = state
-            .transition(&submit(&state, 1, 1, 1, 1, Side::Sell, 100, 10), None)
+            .transition(&submit(&state, 1, 1, 1, 1, Side::Sell, 100, 10))
             .unwrap();
         assert!(outcome.events.len() > 1);
         assert_eq!(outcome.candidate.sequence(), EventSequence::new(1));
@@ -2989,15 +2738,34 @@ mod tests {
     #[test]
     fn staged_failure_leaves_full_state_unchanged() {
         let mut state = run();
+        state = apply(
+            state.clone(),
+            &submit(&state, 1, 2, 1, 1, Side::Sell, 100, 1),
+        )
+        .candidate;
+        // Corrupt ownership so the cancel fails after staging begins.
         state
-            .listings
-            .get_mut(&ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+            .ownership
+            .get_mut(&OrderId::new(1))
             .unwrap()
-            .snapshot
-            .package_json = "{}".to_string();
+            .remaining_quantity = QuantityLots::new(9);
         let before = state.state_hash().unwrap();
-        let command = submit(&state, 1, 1, 1, 1, Side::Buy, 100, 10);
-        assert!(state.transition(&command, None).is_err());
+        let command = Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(2),
+            correlation_id: CorrelationId::new(2),
+            logical_time: LogicalTimeNs::new(2_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(2),
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: OrderId::new(1),
+                participant_id: ParticipantId::new(2),
+            }),
+        };
+        assert_eq!(
+            state.transition(&command).unwrap_err(),
+            EngineError::OwnershipInvariant
+        );
         assert_eq!(state.state_hash().unwrap(), before);
     }
 
@@ -3005,18 +2773,15 @@ mod tests {
     fn snapshot_plus_replayed_commands_matches_uninterrupted_state() {
         let state = run();
         let first_command = submit(&state, 1, 1, 1, 1, Side::Sell, 100, 10);
-        let first = state.transition(&first_command, None).unwrap().candidate;
+        let first = state.transition(&first_command).unwrap().candidate;
         let restored = EngineSnapshotEnvelope::from_json(
             &first.snapshot_envelope().unwrap().to_json().unwrap(),
         )
         .unwrap()
         .state;
         let second_command = submit(&first, 2, 2, 2, 1, Side::Buy, 100, 4);
-        let uninterrupted = first.transition(&second_command, None).unwrap().candidate;
-        let replayed = restored
-            .transition(&second_command, None)
-            .unwrap()
-            .candidate;
+        let uninterrupted = first.transition(&second_command).unwrap().candidate;
+        let replayed = restored.transition(&second_command).unwrap().candidate;
         assert_eq!(uninterrupted.state_hash(), replayed.state_hash());
     }
 
@@ -3024,11 +2789,11 @@ mod tests {
     fn market_order_executes_through_orderbook_rs_and_completes() {
         let state = run();
         let resting = state
-            .transition(&submit(&state, 1, 1, 1, 1, Side::Sell, 101, 10), None)
+            .transition(&submit(&state, 1, 1, 1, 1, Side::Sell, 101, 10))
             .unwrap()
             .candidate;
         let outcome = resting
-            .transition(&submit_market(&resting, 2, 2, 2, 1, Side::Buy, 4), None)
+            .transition(&submit_market(&resting, 2, 2, 2, 1, Side::Buy, 4))
             .unwrap();
 
         assert!(outcome.accepted);
@@ -3053,7 +2818,7 @@ mod tests {
                 .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
                 .unwrap()
                 .1,
-            vec![(101, 6)]
+            levels(&[(101, 6)])
         );
         assert_eq!(
             outcome
@@ -3144,7 +2909,7 @@ mod tests {
             }),
         };
 
-        let first = state.transition(&done(&state, 800, 1), None).unwrap();
+        let first = state.transition(&done(&state, 800, 1)).unwrap();
         assert_eq!(first.events.len(), 1);
         assert_eq!(
             first
@@ -3157,7 +2922,7 @@ mod tests {
         );
         let second = first
             .candidate
-            .transition(&done(&first.candidate, 801, 2), None)
+            .transition(&done(&first.candidate, 801, 2))
             .unwrap();
         assert_eq!(second.events.len(), 2);
         assert!(matches!(

@@ -10,7 +10,6 @@ use bunting_application::{
     competition::{account, discovery, news_tenders, risk_score},
     project_market,
 };
-use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::RunState;
 use bunting_market_events::{
     CommandPayload, SimulationCommand, SimulationCommandRequest, TenderDecision,
@@ -50,7 +49,6 @@ pub(crate) fn handle_fix_connection(
     mut stream: TcpStream,
     config: &FixConfig,
     origin: &NativeOrigin,
-    cache: &InMemorySnapshotCache,
     writer: &AuthoritativeWriter,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
@@ -127,7 +125,7 @@ pub(crate) fn handle_fix_connection(
         team_id: None,
     })
     .map_err(|error| format!("invalid configured actor: {error}"))?;
-    let service = ApplicationService::new(origin, cache);
+    let service = ApplicationService::new(origin);
     let mut buffer = vec![0; config.max_message_bytes.min(16_384)];
     let mut interval_started = Instant::now();
     let interval = Duration::from_millis(config.matching_interval_ms);
@@ -287,8 +285,8 @@ pub(crate) fn handle_fix_connection(
     clippy::too_many_lines,
     reason = "the exhaustive competition request router keeps projection and mutation authority visible"
 )]
-fn competition_messages<O: OriginStore, C: bunting_command_transaction::SnapshotCache>(
-    service: &ApplicationService<'_, O, C>,
+fn competition_messages<O: OriginStore>(
+    service: &ApplicationService<'_, O>,
     actor: &VerifiedActor,
     state: &RunState,
     request: CompetitionRequest,

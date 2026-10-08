@@ -1,17 +1,12 @@
 use crate::config::ServerConfig;
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
-use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::RunState;
 use bunting_market_types::{IterationId, RunId};
 use bunting_origin_store::{OriginError, OriginStore};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "startup keeps scenario bootstrap and listener supervision in one fail-fast path"
-)]
 pub fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
@@ -59,7 +54,6 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         }
     }
     let origin = Arc::new(origin);
-    let cache = Arc::new(InMemorySnapshotCache::new());
     let (matching_interval_ms, max_interval_queue) =
         config.fix.as_ref().map_or((1, 1_024), |fix| {
             (fix.matching_interval_ms, fix.max_interval_queue)
@@ -80,17 +74,15 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     }
     if let Some(runtime) = config.runtime.clone() {
         let origin = origin.clone();
-        let cache = cache.clone();
         let writer = writer.clone();
         let completed = completed.clone();
         spawn_host("bunting-scenario", completed, move || {
-            crate::scenario::run(&runtime, &origin, &cache, &writer)
+            crate::scenario::run(&runtime, &origin, &writer)
         })?;
         task_count = task_count.saturating_add(1);
     }
     if let Some(fix) = config.fix.clone() {
         let origin = origin.clone();
-        let cache = cache.clone();
         let writer = writer.clone();
         let storage_kind = config.storage.kind;
         let storage_path = config.storage.path.clone();
@@ -101,7 +93,6 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
                 storage_kind,
                 storage_path.as_deref(),
                 &origin,
-                &cache,
                 &writer,
             )
         })?;

@@ -2,7 +2,6 @@ use crate::config::{FixConfig, StorageKind, TlsConfig};
 use crate::session_host::handle_fix_connection;
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
-use bunting_command_transaction::InMemorySnapshotCache;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -16,7 +15,6 @@ pub(crate) fn run(
     storage_kind: StorageKind,
     storage_path: Option<&str>,
     origin: &Arc<NativeOrigin>,
-    cache: &Arc<InMemorySnapshotCache>,
     writer: &Arc<AuthoritativeWriter>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
@@ -44,7 +42,6 @@ pub(crate) fn run(
         }
         let config = (*config).clone();
         let origin = origin.clone();
-        let cache = cache.clone();
         let writer = writer.clone();
         let session_path = session_path.clone();
         let active_connections = active_connections.clone();
@@ -56,7 +53,6 @@ pub(crate) fn run(
                     stream,
                     &config,
                     &origin,
-                    &cache,
                     &writer,
                     session_path.as_deref(),
                 ) {

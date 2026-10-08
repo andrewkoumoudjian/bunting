@@ -2,146 +2,13 @@
 #![allow(clippy::missing_errors_doc)]
 //! Sans-I/O recovery and commit coordination around `bunting-engine`.
 
-use bunting_engine::{
-    CachedListingSnapshot, EngineError, ListingSnapshot, RunState, TransitionOutcome,
-};
-use bunting_market_events::{Command, CommandPayload, SimulationCommandRequest};
-use bunting_market_types::{EventSequence, ListingKey};
+use bunting_engine::{EngineError, RunState, TransitionOutcome};
+use bunting_market_events::{Command, SimulationCommandRequest};
 use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError, OriginStore};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex};
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-/// Immutable cache entry for one engine-owned listing snapshot.
-pub type CachedSnapshot = CachedListingSnapshot;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SnapshotCacheError {
-    Unavailable,
-}
-
-/// Recoverable immutable listing-snapshot cache boundary.
-pub trait SnapshotCache {
-    fn get(
-        &self,
-        listing_key: ListingKey,
-        snapshot: &ListingSnapshot,
-    ) -> Result<Option<CachedSnapshot>, SnapshotCacheError>;
-
-    fn put(
-        &self,
-        listing_key: ListingKey,
-        snapshot: &ListingSnapshot,
-    ) -> Result<(), SnapshotCacheError>;
-}
-
-#[derive(Debug, Default)]
-struct MemoryCacheState {
-    entries: BTreeMap<(ListingKey, EventSequence, String), CachedSnapshot>,
-    fail_put: bool,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct InMemorySnapshotCache {
-    inner: Arc<Mutex<MemoryCacheState>>,
-}
-
-impl InMemorySnapshotCache {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(&self, entry: CachedSnapshot) -> Result<(), SnapshotCacheError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| SnapshotCacheError::Unavailable)?;
-        state.entries.insert(
-            (
-                entry.listing_key,
-                entry.represented_sequence,
-                entry.checksum.clone(),
-            ),
-            entry,
-        );
-        Ok(())
-    }
-
-    pub fn set_fail_put(&self, fail: bool) -> Result<(), SnapshotCacheError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| SnapshotCacheError::Unavailable)?;
-        state.fail_put = fail;
-        Ok(())
-    }
-
-    pub fn len(&self) -> Result<usize, SnapshotCacheError> {
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| SnapshotCacheError::Unavailable)?;
-        Ok(state.entries.len())
-    }
-
-    pub fn is_empty(&self) -> Result<bool, SnapshotCacheError> {
-        self.len().map(|length| length == 0)
-    }
-}
-
-impl SnapshotCache for InMemorySnapshotCache {
-    fn get(
-        &self,
-        listing_key: ListingKey,
-        snapshot: &ListingSnapshot,
-    ) -> Result<Option<CachedSnapshot>, SnapshotCacheError> {
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| SnapshotCacheError::Unavailable)?;
-        Ok(state
-            .entries
-            .get(&(
-                listing_key,
-                snapshot.represented_sequence,
-                snapshot.checksum.clone(),
-            ))
-            .cloned())
-    }
-
-    fn put(
-        &self,
-        listing_key: ListingKey,
-        snapshot: &ListingSnapshot,
-    ) -> Result<(), SnapshotCacheError> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| SnapshotCacheError::Unavailable)?;
-        if state.fail_put {
-            return Err(SnapshotCacheError::Unavailable);
-        }
-        let entry = CachedSnapshot {
-            listing_key,
-            represented_sequence: snapshot.represented_sequence,
-            checksum: snapshot.checksum.clone(),
-            package_json: snapshot.package_json.clone(),
-        };
-        state.entries.insert(
-            (
-                listing_key,
-                snapshot.represented_sequence,
-                snapshot.checksum.clone(),
-            ),
-            entry,
-        );
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransactionError {
@@ -175,9 +42,8 @@ impl From<EngineError> for TransactionError {
 }
 
 #[derive(Debug)]
-pub struct CommandTransaction<'a, O, C> {
+pub struct CommandTransaction<'a, O> {
     origin: &'a O,
-    cache: &'a C,
 }
 
 #[derive(Clone, Debug)]
@@ -193,14 +59,13 @@ pub struct ExecutedTransaction {
     pub duplicate: bool,
 }
 
-impl<'a, O, C> CommandTransaction<'a, O, C>
+impl<'a, O> CommandTransaction<'a, O>
 where
     O: OriginStore,
-    C: SnapshotCache,
 {
     #[must_use]
-    pub const fn new(origin: &'a O, cache: &'a C) -> Self {
-        Self { origin, cache }
+    pub const fn new(origin: &'a O) -> Self {
+        Self { origin }
     }
 
     pub fn execute(&self, command: &Command) -> Result<CommandResult, TransactionError> {
@@ -235,40 +100,16 @@ where
                 current: candidate.sequence(),
             }));
         }
-        let listing_key = command_listing_key(&candidate, command)?;
-        let cached = listing_key
-            .and_then(|key| {
-                candidate
-                    .listing_snapshot(key)
-                    .ok()
-                    .map(|snapshot| (key, snapshot))
-            })
-            .and_then(|(key, snapshot)| self.cache.get(key, snapshot).ok().flatten());
-        let prepared = prepare_command_owned(command, candidate, cached.as_ref())?;
-        let changed_snapshots: Vec<_> = prepared
-            .commit
-            .candidate
-            .listings()
-            .iter()
-            .filter(|(_, listing)| {
-                listing.snapshot().represented_sequence == prepared.commit.result.committed_sequence
-            })
-            .map(|(key, listing)| (*key, listing.snapshot().clone()))
-            .collect();
+        let prepared = prepare_command_owned(command, candidate)?;
         let events = prepared.commit.events.clone();
         let committed_state = prepared.commit.candidate.clone();
         match self.origin.commit(prepared.commit)? {
-            CommitOutcome::Committed(result) => {
-                for (key, snapshot) in changed_snapshots {
-                    let _cache_put = self.cache.put(key, &snapshot);
-                }
-                Ok(ExecutedTransaction {
-                    result,
-                    events,
-                    state: committed_state,
-                    duplicate: false,
-                })
-            }
+            CommitOutcome::Committed(result) => Ok(ExecutedTransaction {
+                result,
+                events,
+                state: committed_state,
+                duplicate: false,
+            }),
             CommitOutcome::Duplicate(result) => Ok(ExecutedTransaction {
                 result,
                 events: Vec::new(),
@@ -325,13 +166,12 @@ where
     }
 }
 
-/// Prepares the engine-owned candidate without origin or cache I/O.
+/// Prepares the engine-owned candidate without origin I/O.
 pub fn prepare_command(
     command: &Command,
     candidate: &RunState,
-    cached: Option<&CachedSnapshot>,
 ) -> Result<PreparedCommand, TransactionError> {
-    prepared_command_outcome(command, candidate.transition(command, cached)?)
+    prepared_command_outcome(command, candidate.transition(command)?)
 }
 
 /// A loaded run is already owned by the transaction; consume it rather than
@@ -339,9 +179,8 @@ pub fn prepare_command(
 pub fn prepare_command_owned(
     command: &Command,
     candidate: RunState,
-    cached: Option<&CachedSnapshot>,
 ) -> Result<PreparedCommand, TransactionError> {
-    prepared_command_outcome(command, candidate.transition_owned(command, cached)?)
+    prepared_command_outcome(command, candidate.transition_owned(command)?)
 }
 
 fn prepared_command_outcome(
@@ -354,7 +193,6 @@ fn prepared_command_outcome(
         accepted,
         reject_code,
         order_id,
-        snapshot_checksum,
         ..
     } = outcome;
     let result = CommandResult {
@@ -362,7 +200,6 @@ fn prepared_command_outcome(
         reject_code,
         committed_sequence: candidate.sequence(),
         order_id,
-        snapshot_checksum,
     };
     Ok(PreparedCommand {
         commit: CommitRequest {
@@ -404,7 +241,6 @@ fn prepared_simulation_outcome(
         accepted,
         reject_code,
         order_id,
-        snapshot_checksum,
         ..
     } = outcome;
     let result = CommandResult {
@@ -412,7 +248,6 @@ fn prepared_simulation_outcome(
         reject_code,
         committed_sequence: candidate.sequence(),
         order_id,
-        snapshot_checksum,
     };
     Ok(PreparedCommand {
         commit: CommitRequest {
@@ -450,40 +285,24 @@ fn fingerprint(value: &impl serde::Serialize) -> Result<String, TransactionError
     Ok(output)
 }
 
-fn command_listing_key(
-    state: &RunState,
-    command: &Command,
-) -> Result<Option<ListingKey>, TransactionError> {
-    match &command.payload {
-        CommandPayload::SubmitOrder(order) => state
-            .listing_key_for_instrument(order.instrument_id)
-            .map(Some)
-            .map_err(TransactionError::from),
-        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Ok(Some(*listing_key)),
-        CommandPayload::CancelOrder(cancel) => Ok(state
-            .ownership()
-            .get(&cancel.order_id)
-            .map(|owned| owned.listing_key)),
-        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => Ok(None),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
     use bunting_market_events::{
-        CancelOrder, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
+        CancelOrder, CommandPayload, OrderKind, Side, SimulationCommand, SimulationCommandRequest,
+        SubmitOrder,
     };
     use bunting_market_types::CurrencyId;
     use bunting_market_types::{
-        CommandId, CorrelationId, InstrumentId, IterationId, LogicalTimeNs, MoneyMinor, OrderId,
-        ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
-        VenueId,
+        CommandId, CorrelationId, EventSequence, InstrumentId, IterationId, ListingKey,
+        LogicalTimeNs, MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots,
+        RunId, ScenarioId, ScenarioVersion, VenueId,
     };
     use bunting_origin_store::{InMemoryOrigin, OriginStore};
     use bunting_risk_engine::RiskLimits;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct CommitRaceOrigin {
@@ -516,7 +335,7 @@ mod tests {
         }
     }
 
-    fn setup() -> (InMemoryOrigin, InMemorySnapshotCache) {
+    fn setup() -> InMemoryOrigin {
         let participant = |id| {
             ParticipantDefinition::new(
                 ParticipantId::new(id),
@@ -552,7 +371,7 @@ mod tests {
         let run = RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario).unwrap();
         let origin = InMemoryOrigin::new();
         origin.insert_run(run).unwrap();
-        (origin, InMemorySnapshotCache::new())
+        origin
     }
 
     fn submit(
@@ -586,8 +405,8 @@ mod tests {
 
     #[test]
     fn duplicate_cross_cancel_and_restart_recovery_remain_transactional() {
-        let (origin, cache) = setup();
-        let transaction = CommandTransaction::new(&origin, &cache);
+        let origin = setup();
+        let transaction = CommandTransaction::new(&origin);
         let sell = submit(EventSequence::new(0), 10, 1, 1, Side::Sell, 100, 10);
         let rested = transaction.execute(&sell).unwrap();
         assert_eq!(transaction.execute(&sell).unwrap(), rested);
@@ -606,7 +425,6 @@ mod tests {
             }),
         };
         assert!(transaction.execute(&cancel).unwrap().accepted);
-        assert!(cache.len().unwrap() >= 3);
         let restored = origin.load_run(RunId::new(1)).unwrap();
         let envelope = restored.snapshot_envelope().unwrap();
         assert_eq!(
@@ -618,10 +436,9 @@ mod tests {
     }
 
     #[test]
-    fn stale_version_and_cache_failure_do_not_break_origin_authority() {
-        let (origin, cache) = setup();
-        cache.set_fail_put(true).unwrap();
-        let transaction = CommandTransaction::new(&origin, &cache);
+    fn stale_versions_are_rejected_by_origin_authority() {
+        let origin = setup();
+        let transaction = CommandTransaction::new(&origin);
         let command = submit(EventSequence::new(0), 10, 1, 1, Side::Buy, 100, 1);
         let result = transaction.execute(&command).unwrap();
         assert!(result.accepted);
@@ -640,8 +457,8 @@ mod tests {
 
     #[test]
     fn simulation_commands_use_the_same_idempotent_origin_commit() {
-        let (origin, cache) = setup();
-        let transaction = CommandTransaction::new(&origin, &cache);
+        let origin = setup();
+        let transaction = CommandTransaction::new(&origin);
         let request = SimulationCommandRequest {
             run_id: RunId::new(1),
             command_id: CommandId::new(50),
@@ -664,10 +481,10 @@ mod tests {
 
     #[test]
     fn duplicate_commit_race_discards_local_events_and_reloads_origin_state() {
-        let (origin, _) = setup();
+        let origin = setup();
         let stale = origin.load_run(RunId::new(1)).unwrap();
         let command = submit(EventSequence::new(0), 10, 1, 1, Side::Buy, 100, 1);
-        CommandTransaction::new(&origin, &InMemorySnapshotCache::new())
+        CommandTransaction::new(&origin)
             .execute_detailed(&command)
             .unwrap();
 
@@ -676,14 +493,12 @@ mod tests {
             stale,
             commit_attempted: AtomicBool::new(false),
         };
-        let cache = InMemorySnapshotCache::new();
-        let duplicate = CommandTransaction::new(&race, &cache)
+        let duplicate = CommandTransaction::new(&race)
             .execute_detailed(&command)
             .unwrap();
 
         assert!(duplicate.duplicate);
         assert!(duplicate.events.is_empty());
         assert_eq!(duplicate.state.sequence(), EventSequence::new(1));
-        assert!(cache.is_empty().unwrap());
     }
 }

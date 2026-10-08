@@ -1,5 +1,4 @@
 use bunting_application::{ApplicationError, ApplicationService, VerifiedActor};
-use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::RunState;
 use bunting_market_events::{Command, SimulationCommandRequest};
 use bunting_market_types::RunId;
@@ -9,7 +8,6 @@ use bunting_origin_store::{InMemoryOrigin, OriginError};
 #[derive(Debug)]
 pub struct BuntingHandle {
     origin: InMemoryOrigin,
-    cache: InMemorySnapshotCache,
 }
 
 impl BuntingHandle {
@@ -20,10 +18,7 @@ impl BuntingHandle {
     pub fn new(initial: RunState) -> Result<Self, OriginError> {
         let origin = InMemoryOrigin::new();
         origin.insert_run(initial)?;
-        Ok(Self {
-            origin,
-            cache: InMemorySnapshotCache::new(),
-        })
+        Ok(Self { origin })
     }
 
     /// Recovers one run from the owned origin.
@@ -31,7 +26,7 @@ impl BuntingHandle {
     /// # Errors
     /// Returns an application error when the run is unavailable.
     pub fn recover(&self, run_id: RunId) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin, &self.cache).recover(run_id)
+        ApplicationService::new(&self.origin).recover(run_id)
     }
 
     /// Executes one authenticated participant command.
@@ -44,7 +39,7 @@ impl BuntingHandle {
         actor: &VerifiedActor,
         command: &Command,
     ) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin, &self.cache)
+        ApplicationService::new(&self.origin)
             .execute(actor, command)
             .map(|executed| executed.state)
     }
@@ -59,7 +54,7 @@ impl BuntingHandle {
         actor: &VerifiedActor,
         command: &SimulationCommandRequest,
     ) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin, &self.cache)
+        ApplicationService::new(&self.origin)
             .execute_simulation(actor, command)
             .map(|executed| executed.state)
     }

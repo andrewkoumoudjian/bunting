@@ -684,7 +684,7 @@ impl Market {
     ) -> io::Result<bunting_engine::TransitionOutcome> {
         let outcome = self
             .state
-            .transition(command, None)
+            .transition(command)
             .map_err(|error| io::Error::other(format!("engine transition: {error:?}")))?;
         let mut human_adapter = self.human_adapter.clone();
         let mut reports = human_adapter
@@ -784,18 +784,7 @@ impl Market {
     fn book(&self, request_id: &str) -> FixMessage {
         let key = ListingKey::new(VenueId::new(1), INSTRUMENT_ID);
         let (bids, asks) = self.state.visible_levels(key).unwrap_or_default();
-        let convert = |levels: Vec<(u128, u64)>| {
-            levels
-                .into_iter()
-                .filter_map(|(price, quantity)| {
-                    Some((
-                        PriceTicks::new(i64::try_from(price).ok()?),
-                        QuantityLots::new(i64::try_from(quantity).ok()?),
-                    ))
-                })
-                .collect::<Vec<_>>()
-        };
-        market_snapshot(request_id, key, &convert(bids), &convert(asks))
+        market_snapshot(request_id, key, &bids, &asks)
     }
 }
 
@@ -841,8 +830,8 @@ mod tests {
             .state
             .visible_levels(ListingKey::new(VenueId::new(1), INSTRUMENT_ID))
             .map_err(|error| io::Error::other(format!("{error:?}")))?;
-        assert_eq!(bids, vec![(99, 50)]);
-        assert_eq!(asks, vec![(101, 50)]);
+        assert_eq!(bids, vec![(PriceTicks::new(99), QuantityLots::new(50))]);
+        assert_eq!(asks, vec![(PriceTicks::new(101), QuantityLots::new(50))]);
         Ok(())
     }
 
@@ -854,8 +843,20 @@ mod tests {
             .state
             .visible_levels(ListingKey::new(VenueId::new(1), INSTRUMENT_ID))
             .map_err(|error| io::Error::other(format!("{error:?}")))?;
-        assert_eq!(bids, vec![(99, 50), (98, 5)]);
-        assert_eq!(asks, vec![(101, 50), (102, 5)]);
+        assert_eq!(
+            bids,
+            vec![
+                (PriceTicks::new(99), QuantityLots::new(50)),
+                (PriceTicks::new(98), QuantityLots::new(5))
+            ]
+        );
+        assert_eq!(
+            asks,
+            vec![
+                (PriceTicks::new(101), QuantityLots::new(50)),
+                (PriceTicks::new(102), QuantityLots::new(5))
+            ]
+        );
         let runner = market
             .runner
             .as_ref()
@@ -920,13 +921,13 @@ mod tests {
                 .map_err(|error| io::Error::other(format!("{error:?}")))?
                 .1
                 .first(),
-            Some(&(101, 45))
+            Some(&(PriceTicks::new(101), QuantityLots::new(45)))
         );
         Ok(())
     }
 
     #[test]
-    fn market_order_executes_against_seeded_orderbook_rs_liquidity() -> io::Result<()> {
+    fn market_order_executes_against_seeded_book_liquidity() -> io::Result<()> {
         let mut market = Market::new(&[])?;
         let messages = market.handle(&new_order(4, "buy", 5, None));
         let fill = messages
@@ -945,7 +946,7 @@ mod tests {
                 .map_err(|error| io::Error::other(format!("{error:?}")))?
                 .1
                 .first(),
-            Some(&(101, 45))
+            Some(&(PriceTicks::new(101), QuantityLots::new(45)))
         );
         Ok(())
     }

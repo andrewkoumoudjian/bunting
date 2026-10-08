@@ -3,9 +3,8 @@
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
 use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationState, FixCommandContext,
-    VerifiedActor, prepare_authenticated,
+    VerifiedActor,
 };
-use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::{ListingDefinition, ParticipantDefinition, RunState, ScenarioDefinition};
 use bunting_market_events::{Command, CommandPayload, OrderKind, Side, SubmitOrder};
 use bunting_market_types::{
@@ -13,7 +12,7 @@ use bunting_market_types::{
     LogicalTimeNs, MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots,
     RunId, ScenarioId, ScenarioVersion, VenueId,
 };
-use bunting_origin_store::{CommitOutcome, InMemoryOrigin, OriginStore};
+use bunting_origin_store::{InMemoryOrigin, OriginStore};
 use bunting_risk_engine::RiskLimits;
 use bunting_server::config::{StorageConfig, StorageKind};
 use bunting_server::storage::FileOriginStore;
@@ -89,21 +88,17 @@ fn expected_command() -> Command {
 }
 
 #[test]
-fn native_fix_and_worker_prepare_commit_identical_authoritative_state()
+fn fix_mapped_and_canonical_commands_commit_identical_authoritative_state()
 -> Result<(), Box<dyn std::error::Error>> {
-    let worker_origin = InMemoryOrigin::new();
-    worker_origin.insert_run(initial_run()).unwrap();
-    let initial = worker_origin.load_run(RunId::new(1)).unwrap();
+    let canonical_origin = InMemoryOrigin::new();
+    canonical_origin.insert_run(initial_run()).unwrap();
     let command = expected_command();
-    let prepared = prepare_authenticated(&actor(), &command, &initial, None).unwrap();
-    assert!(matches!(
-        worker_origin.commit(prepared.commit).unwrap(),
-        CommitOutcome::Committed(_)
-    ));
+    ApplicationService::new(&canonical_origin)
+        .execute(&actor(), &command)
+        .unwrap();
 
     let native_origin = InMemoryOrigin::new();
     native_origin.insert_run(initial_run()).unwrap();
-    let cache = InMemorySnapshotCache::new();
     let mut fix = FixApplicationState::new(ExecutionConfig::default());
     let mut message = FixMessage::new("D");
     for (tag, value) in [
@@ -133,7 +128,7 @@ fn native_fix_and_worker_prepare_commit_identical_authoritative_state()
         return Err("FIX command expected".into());
     };
     assert_eq!(fix_command, command);
-    let native_execution = ApplicationService::new(&native_origin, &cache)
+    let native_execution = ApplicationService::new(&native_origin)
         .execute(&actor(), &fix_command)
         .unwrap();
     let reports = fix
@@ -143,7 +138,7 @@ fn native_fix_and_worker_prepare_commit_identical_authoritative_state()
 
     assert_eq!(
         native_origin.load_run(RunId::new(1)).unwrap(),
-        worker_origin.load_run(RunId::new(1)).unwrap()
+        canonical_origin.load_run(RunId::new(1)).unwrap()
     );
     Ok(())
 }
@@ -168,8 +163,7 @@ fn native_origin_refuses_torn_replayed_or_invalid_checkpoint_records()
     };
     let store = FileOriginStore::open(&path, &config)?;
     store.insert_run(initial_run())?;
-    let cache = InMemorySnapshotCache::new();
-    ApplicationService::new(&store, &cache).execute(&actor(), &expected_command())?;
+    ApplicationService::new(&store).execute(&actor(), &expected_command())?;
     store.checkpoint()?;
     drop(store);
     let original = std::fs::read(&path)?;
@@ -219,9 +213,7 @@ fn durable_local_origin_restores_committed_state_after_restart()
     };
     let store = FileOriginStore::open(&path, &config)?;
     store.insert_run(initial_run())?;
-    let cache = InMemorySnapshotCache::new();
-    let executed =
-        ApplicationService::new(&store, &cache).execute(&actor(), &expected_command())?;
+    let executed = ApplicationService::new(&store).execute(&actor(), &expected_command())?;
     drop(store);
 
     // The genesis checkpoint is still at version zero; the append-only
@@ -268,8 +260,7 @@ fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed
     };
     let origin = FileOriginStore::open(&path, &config)?;
     origin.insert_run(initial_run())?;
-    let cache = InMemorySnapshotCache::new();
-    let first = ApplicationService::new(&origin, &cache).execute(&actor(), &expected_command())?;
+    let first = ApplicationService::new(&origin).execute(&actor(), &expected_command())?;
     drop(origin);
 
     let intact = std::fs::read(&journal_path)?;
@@ -281,8 +272,7 @@ fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed
     let restored = FileOriginStore::open(&path, &config)?;
     assert_eq!(std::fs::read(&journal_path)?, intact);
     assert_eq!(restored.load_run(RunId::new(1))?, first.state);
-    let duplicate =
-        ApplicationService::new(&restored, &cache).execute(&actor(), &expected_command())?;
+    let duplicate = ApplicationService::new(&restored).execute(&actor(), &expected_command())?;
     assert_eq!(duplicate.result.committed_sequence, EventSequence::new(1));
     assert_eq!(restored.events(RunId::new(1))?, first.events);
     drop(restored);

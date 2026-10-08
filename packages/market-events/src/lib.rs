@@ -17,67 +17,51 @@ pub enum Side {
     Sell,
 }
 
+impl Side {
+    /// The side an aggressor on this side trades against.
+    #[must_use]
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::Buy => Self::Sell,
+            Self::Sell => Self::Buy,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderKind {
-    Limit {
-        price: PriceTicks,
-    },
+    /// Fully displayed good-till-cancel limit order.
+    Limit { price: PriceTicks },
+    /// Executes immediately against displayed and hidden liquidity; any
+    /// remainder is canceled.
     Market,
+    /// Limit order with an explicit lifetime and display policy.
     LimitWithPolicy {
         price: PriceTicks,
         time_in_force: TimeInForcePolicy,
-    },
-    AdvancedLimit {
-        price: PriceTicks,
-        time_in_force: TimeInForcePolicy,
-        policy: AdvancedOrderPolicy,
+        /// Rejects instead of trading if the order would cross on arrival.
+        #[serde(default)]
+        post_only: bool,
+        /// Iceberg display size; `None` displays the full quantity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_quantity: Option<QuantityLots>,
     },
 }
 
-/// Host-driven time-in-force policy mapped to OrderBook-rs.
+/// Lifetime of a limit order on the run's logical clock.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeInForcePolicy {
     Gtc,
     Ioc,
     Fok,
-    Gtd { expires_at_millis: u64 },
+    /// Expires when the logical clock reaches `expires_at`.
+    Gtd {
+        expires_at: LogicalTimeNs,
+    },
+    /// Expires at the close of the listing's trading session.
     Day,
-}
-
-/// Useful released OrderBook-rs special-order surface.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdvancedOrderPolicy {
-    PostOnly,
-    Iceberg {
-        visible_quantity: QuantityLots,
-    },
-    Reserve {
-        visible_quantity: QuantityLots,
-        replenish_threshold: QuantityLots,
-        replenish_quantity: QuantityLots,
-        auto_replenish: bool,
-    },
-    Pegged {
-        offset_ticks: i64,
-        reference: PegReference,
-    },
-    TrailingStop {
-        trail_ticks: QuantityLots,
-    },
-    MarketToLimit,
-}
-
-/// Upstream reference price used by pegged orders.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PegReference {
-    BestBid,
-    BestAsk,
-    MidPrice,
-    LastTrade,
 }
 
 impl OrderKind {
@@ -85,9 +69,7 @@ impl OrderKind {
     #[must_use]
     pub const fn limit_price(self) -> Option<PriceTicks> {
         match self {
-            Self::Limit { price }
-            | Self::LimitWithPolicy { price, .. }
-            | Self::AdvancedLimit { price, .. } => Some(price),
+            Self::Limit { price } | Self::LimitWithPolicy { price, .. } => Some(price),
             Self::Market => None,
         }
     }
@@ -326,6 +308,8 @@ pub enum RejectCode {
     InsufficientCash,
     InsufficientInventory,
     InsufficientLiquidity,
+    PostOnlyWouldCross,
+    InvalidTimeInForce,
     LogicalTimeRegression,
     SequenceConflict,
     ArithmeticOverflow,
@@ -480,7 +464,6 @@ pub enum EventPayload {
         buyer_fee: MoneyMinor,
         /// Total fee charged to the seller; negative is a rebate.
         seller_fee: MoneyMinor,
-        upstream_engine_sequence: u64,
     },
     PositionChanged {
         participant_id: ParticipantId,
