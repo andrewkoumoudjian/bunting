@@ -188,6 +188,7 @@ fn native_origin_refuses_torn_replayed_or_invalid_checkpoint_records()
     assert!(FileOriginStore::open(&path, &config).is_ok());
     std::fs::remove_file(&path)?;
     std::fs::remove_file(path.with_extension("wal"))?;
+    std::fs::remove_file(path.with_extension("lock"))?;
     std::fs::remove_dir(folder)?;
     Ok(())
 }
@@ -232,6 +233,7 @@ fn durable_local_origin_restores_committed_state_after_restart()
         FileOriginStore::open(&path, &config)?.load_run(RunId::new(1))?,
         executed.state
     );
+    std::fs::remove_file(path.with_extension("lock"))?;
     std::fs::remove_file(path)?;
     std::fs::remove_file(journal_path)?;
     Ok(())
@@ -286,6 +288,42 @@ fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed
     assert!(FileOriginStore::open(&path, &config).is_err());
     std::fs::remove_file(&path)?;
     std::fs::remove_file(&journal_path)?;
+    std::fs::remove_file(path.with_extension("lock"))?;
+    std::fs::remove_dir(folder)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn native_file_origin_enforces_single_writer_across_independent_opens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let folder = std::env::temp_dir().join(format!(
+        "bunting-origin-writer-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let path = folder.join("state.json");
+    let config = StorageConfig {
+        kind: StorageKind::File,
+        path: Some(path.display().to_string()),
+        max_runs: 4,
+        max_commands: 64,
+        max_events_per_run: 256,
+    };
+    let first = FileOriginStore::open(&path, &config)?;
+    first.insert_run(initial_run())?;
+    assert!(FileOriginStore::open(&path, &config).is_err());
+    let clone = first.clone();
+    drop(first);
+    assert!(FileOriginStore::open(&path, &config).is_err());
+    drop(clone);
+    let reopened = FileOriginStore::open(&path, &config)?;
+    assert_eq!(reopened.load_run(RunId::new(1))?.sequence(), EventSequence::new(0));
+    drop(reopened);
+    std::fs::remove_file(&path)?;
+    std::fs::remove_file(path.with_extension("lock"))?;
     std::fs::remove_dir(folder)?;
     Ok(())
 }
