@@ -284,10 +284,7 @@ pub struct PublicTrade {
 /// Projects only facts that are safe to publish without participant, order,
 /// command, correlation, position, or reserve-quantity metadata.
 #[must_use]
-pub fn project_public_event(
-    event: &EventEnvelope,
-    listing_key: ListingKey,
-) -> Option<PublicTrade> {
+pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> Option<PublicTrade> {
     match event.payload {
         EventPayload::TradeExecuted {
             instrument_id,
@@ -417,20 +414,28 @@ pub fn project_consolidated_bbo(
             .visible_levels(key)
             .map_err(|_| ApplicationError::UnknownListing)?;
         if let Some((price, quantity)) = bids.first() {
-            let price = PriceTicks::new(i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?);
-            let quantity = QuantityLots::new(i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?);
-            if best_bid.is_none_or(|(winner, value, _)| {
-                price > value || (price == value && key < winner)
-            }) {
+            let price = PriceTicks::new(
+                i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?,
+            );
+            let quantity = QuantityLots::new(
+                i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?,
+            );
+            if best_bid
+                .is_none_or(|(winner, value, _)| price > value || (price == value && key < winner))
+            {
                 best_bid = Some((key, price, quantity));
             }
         }
         if let Some((price, quantity)) = asks.first() {
-            let price = PriceTicks::new(i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?);
-            let quantity = QuantityLots::new(i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?);
-            if best_ask.is_none_or(|(winner, value, _)| {
-                price < value || (price == value && key < winner)
-            }) {
+            let price = PriceTicks::new(
+                i64::try_from(*price).map_err(|_| ApplicationError::UnknownListing)?,
+            );
+            let quantity = QuantityLots::new(
+                i64::try_from(*quantity).map_err(|_| ApplicationError::UnknownListing)?,
+            );
+            if best_ask
+                .is_none_or(|(winner, value, _)| price < value || (price == value && key < winner))
+            {
                 best_ask = Some((key, price, quantity));
             }
         }

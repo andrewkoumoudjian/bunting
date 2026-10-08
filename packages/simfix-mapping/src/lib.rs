@@ -3,8 +3,8 @@
 
 use bunting_market_events::{NewsAudience, OrderKind, Side};
 use bunting_market_types::{
-    CurrencyId, InstrumentId, ListingKey, MoneyMinor, NewsId, ParticipantId, PriceTicks, QuantityLots,
-    VenueId,
+    CurrencyId, InstrumentId, ListingKey, MoneyMinor, NewsId, ParticipantId, PriceTicks,
+    QuantityLots, VenueId,
 };
 use quarcc_execution_engine::{
     ExecutionIntent, NormalizedVenueReport, VenueReportKind,

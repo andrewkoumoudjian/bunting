@@ -307,17 +307,22 @@ fn build_submit(input: &SubmitOrderInput, claims: VerifiedClaims) -> (Command, C
                 InstrumentId::new(input.instrument_id.get()),
             ),
             order: SubmitOrder {
-            order_id: namespace_order_id(run_id, actor, claims.session_id, input.order_id.get()),
-            instrument_id: InstrumentId::new(input.instrument_id.get()),
-            participant_id: actor,
-            side: match input.side {
-                ContractSide::Buy => Side::Buy,
-                ContractSide::Sell => Side::Sell,
-            },
-            quantity: QuantityLots(input.quantity_lots.get()),
-            kind: OrderKind::Limit {
-                price: PriceTicks(input.price_ticks.get()),
-            },
+                order_id: namespace_order_id(
+                    run_id,
+                    actor,
+                    claims.session_id,
+                    input.order_id.get(),
+                ),
+                instrument_id: InstrumentId::new(input.instrument_id.get()),
+                participant_id: actor,
+                side: match input.side {
+                    ContractSide::Buy => Side::Buy,
+                    ContractSide::Sell => Side::Sell,
+                },
+                quantity: QuantityLots(input.quantity_lots.get()),
+                kind: OrderKind::Limit {
+                    price: PriceTicks(input.price_ticks.get()),
+                },
             },
         },
     };
@@ -598,9 +603,13 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 VenueId::new(input.venue_id.get()),
                 InstrumentId::new(input.instrument_id.get()),
             );
-            match load_run(environment, RunId::new(input.run_id.get()), listing_key.instrument_id)
-                .await
-                .and_then(|state| snapshot_output(&state, listing_key))
+            match load_run(
+                environment,
+                RunId::new(input.run_id.get()),
+                listing_key.instrument_id,
+            )
+            .await
+            .and_then(|state| snapshot_output(&state, listing_key))
             {
                 Ok(output) => bunting_browser_wire::success(200, &output),
                 Err(error) => wire_error(error, &call.path, "snapshot unavailable"),
