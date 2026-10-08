@@ -276,21 +276,16 @@ impl OriginStore for FileOriginStore {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        if let Some(previous) = check_record(
-            &state,
-            &request,
-            self.max_commands,
-            self.max_events_per_run,
-        )? {
+        if let Some(previous) =
+            check_record(&state, &request, self.max_commands, self.max_events_per_run)?
+        {
             return Ok(CommitOutcome::Duplicate(previous));
         }
         // The journal is durable BEFORE the in-memory run and responses change.
         // A failed append poisons the writer: its last frame might be complete,
         // and only replay can resolve that ambiguity safely.
-        if let Err(error) = commit_journal::append(
-            &commit_journal::path_for(&self.path),
-            &request,
-        ) {
+        if let Err(error) = commit_journal::append(&commit_journal::path_for(&self.path), &request)
+        {
             self.poisoned.store(true, Ordering::Release);
             return Err(error);
         }
@@ -329,8 +324,7 @@ fn check_record(
             && state.runs.iter().any(|run| {
                 run.run_id() == request.run_id
                     && run.sequence() >= request.result.committed_sequence
-            })
-        {
+            }) {
             Ok(Some(previous.result.clone()))
         } else {
             Err(OriginError::IdempotencyConflict)

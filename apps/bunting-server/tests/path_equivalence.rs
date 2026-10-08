@@ -262,8 +262,7 @@ fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed
     let origin = FileOriginStore::open(&path, &config)?;
     origin.insert_run(initial_run())?;
     let cache = InMemorySnapshotCache::new();
-    let first = ApplicationService::new(&origin, &cache)
-        .execute(&actor(), &expected_command())?;
+    let first = ApplicationService::new(&origin, &cache).execute(&actor(), &expected_command())?;
     drop(origin);
 
     let intact = std::fs::read(&journal_path)?;
@@ -275,8 +274,8 @@ fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed
     let restored = FileOriginStore::open(&path, &config)?;
     assert_eq!(std::fs::read(&journal_path)?, intact);
     assert_eq!(restored.load_run(RunId::new(1))?, first.state);
-    let duplicate = ApplicationService::new(&restored, &cache)
-        .execute(&actor(), &expected_command())?;
+    let duplicate =
+        ApplicationService::new(&restored, &cache).execute(&actor(), &expected_command())?;
     assert_eq!(duplicate.result.committed_sequence, EventSequence::new(1));
     assert_eq!(restored.events(RunId::new(1))?, first.events);
     drop(restored);
@@ -320,7 +319,10 @@ fn native_file_origin_enforces_single_writer_across_independent_opens()
     assert!(FileOriginStore::open(&path, &config).is_err());
     drop(clone);
     let reopened = FileOriginStore::open(&path, &config)?;
-    assert_eq!(reopened.load_run(RunId::new(1))?.sequence(), EventSequence::new(0));
+    assert_eq!(
+        reopened.load_run(RunId::new(1))?.sequence(),
+        EventSequence::new(0)
+    );
     drop(reopened);
     std::fs::remove_file(&path)?;
     std::fs::remove_file(path.with_extension("lock"))?;

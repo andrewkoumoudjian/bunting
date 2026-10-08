@@ -156,6 +156,12 @@ For one mutating command:
 
 A cache write failure does not roll back an origin commit. The next request rebuilds and repopulates the cache.
 
+### Native file-origin durability (current implementation)
+
+The native `FileOriginStore` holds an exclusive process-level `flock` lease on the companion `.lock` file (Unix only). One successful commit synchronizes one `BUNTWAL1` length-delimited SHA-256-checked frame containing the complete resulting run, command identity, canonical events and result, **before** exposing its in-memory result. The complete history is not copied and overwritten for every command. The origin periodically writes a full atomic checkpoint and compacts the journal after durability is established. Startup validates the checkpoint plus the committed journal prefix and rejects complete corrupted records; only an incomplete terminal frame may be trimmed.
+
+This is a native persistence architecture **distinct from** Worker D1's expected-version SQL batch. Journal records still serialize a complete `RunState`, the engine still restores matcher books and clones candidates per ordinary command, and this design does not promise distributed multiwriter operation or measured throughput. The checkpoint plus its journal is one recovery unit. The authoritative engine is still transport-independent.
+
 ## 8. Concurrency without a Durable Object
 
 A plain Worker does not provide request affinity. The origin store therefore enforces optimistic concurrency:
