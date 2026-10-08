@@ -195,7 +195,7 @@ jobs:
             grep -Fq 'publication wrapper is read-only' /tmp/bunting-workerd-fix.txt
             status=$(curl --silent --output /tmp/bunting-workerd-d1.json \
               --write-out '%{http_code}' \
-              'http://127.0.0.1:8787/api/market.snapshot?input=%7B%22runId%22%3A%221%22%2C%22instrumentId%22%3A%221%22%7D')
+              'http://127.0.0.1:8787/api/market.snapshot?input=%7B%22runId%22%3A%221%22%2C%22venueId%22%3A%221%22%2C%22instrumentId%22%3A%221%22%7D')
             test "$status" = 500
             grep -Fq '"buntingCode":"ORIGIN_UNAVAILABLE"' /tmp/bunting-workerd-d1.json
           )
