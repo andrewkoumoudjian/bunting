@@ -1,11 +1,12 @@
 use crate::config::{StorageConfig, StorageKind};
-use bunting_engine::RunState;
+use bunting_engine::{EngineSnapshotEnvelope, RunState};
 use bunting_market_events::EventEnvelope;
-use bunting_market_types::{CommandId, RunId};
+use bunting_market_types::{CommandId, EventSequence, RunId};
 use bunting_origin_store::{
     CommandResult, CommitOutcome, CommitRequest, InMemoryOrigin, OriginError, OriginStore,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -62,17 +63,71 @@ impl FileOriginStore {
         Ok(store)
     }
 
+    /// Fail closed on any incomplete, duplicated or inconsistent committed
+    /// state, rather than starting an exchange from a plausible JSON file.
     fn validate_loaded(&self) -> Result<(), OriginError> {
         let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
         if state.runs.len() > self.max_runs || state.commands.len() > self.max_commands {
             return Err(OriginError::Unavailable);
         }
-        if state
-            .events
-            .iter()
-            .any(|events| events.events.len() > self.max_events_per_run)
-        {
-            return Err(OriginError::Unavailable);
+        let mut runs = BTreeMap::new();
+        for run in &state.runs {
+            if runs.insert(run.run_id(), run).is_some() {
+                return Err(OriginError::InvalidCommit);
+            }
+            // Validate the exact engine schema and canonical snapshot hash.
+            // Do not attempt recovery from obsolete or structurally corrupt runs.
+            let envelope = run
+                .snapshot_envelope()
+                .and_then(|envelope| envelope.to_json())
+                .map_err(|_| OriginError::InvalidCommit)?;
+            EngineSnapshotEnvelope::from_json(&envelope)
+                .map_err(|_| OriginError::InvalidCommit)?;
+        }
+        let mut event_heads = BTreeMap::new();
+        let mut event_commands = BTreeSet::new();
+        for batch in &state.events {
+            if batch.events.len() > self.max_events_per_run
+                || !runs.contains_key(&batch.run_id)
+                || event_heads.contains_key(&batch.run_id)
+            {
+                return Err(OriginError::InvalidCommit);
+            }
+            let mut current = EventSequence::new(0);
+            for event in &batch.events {
+                let next = current
+                    .checked_add(EventSequence::new(1))
+                    .ok_or(OriginError::InvalidCommit)?;
+                if event.run_id != batch.run_id || event.sequence != next {
+                    return Err(OriginError::InvalidCommit);
+                }
+                event_commands.insert((batch.run_id, event.command_id));
+                current = next;
+            }
+            event_heads.insert(batch.run_id, current);
+        }
+        if runs.iter().any(|(run_id, run)| {
+            event_heads
+                .get(run_id)
+                .copied()
+                .unwrap_or(EventSequence::new(0))
+                != run.event_sequence()
+        }) {
+            return Err(OriginError::InvalidCommit);
+        }
+        let mut command_ids = BTreeSet::new();
+        for command in &state.commands {
+            let Some(run) = runs.get(&command.run_id) else {
+                return Err(OriginError::InvalidCommit);
+            };
+            if !command_ids.insert((command.run_id, command.command_id))
+                || !event_commands.contains(&(command.run_id, command.command_id))
+                || command.fingerprint.is_empty()
+                || command.result.committed_sequence.get() == 0
+                || command.result.committed_sequence > run.sequence()
+            {
+                return Err(OriginError::InvalidCommit);
+            }
         }
         Ok(())
     }
@@ -210,7 +265,23 @@ fn persist(path: &Path, state: &FileState) -> Result<(), OriginError> {
     file.write_all(&bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| OriginError::Unavailable)?;
-    fs::rename(&temporary, path).map_err(|_| OriginError::Unavailable)
+    // Closing the file before rename is required on some supported hosts.
+    drop(file);
+    fs::rename(&temporary, path).map_err(|_| OriginError::Unavailable)?;
+    // A synced temporary file alone does not make the rename durable after a
+    // sudden power loss. On POSIX, syncing the containing directory persists
+    // the directory entry that names the atomically replaced snapshot.
+    #[cfg(unix)]
+    {
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| OriginError::Unavailable)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
