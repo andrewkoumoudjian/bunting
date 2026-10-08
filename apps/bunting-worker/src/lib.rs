@@ -30,8 +30,8 @@ use bunting_market_events::{
     SubmitOrder,
 };
 use bunting_market_types::{
-    CorrelationId, EventSequence, InstrumentId, LogicalTimeNs, ParticipantId, PriceTicks,
-    QuantityLots, RunId, SessionId,
+    CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId,
+    PriceTicks, QuantityLots, RunId, SessionId, VenueId,
 };
 use bunting_origin_store::{ClientCommandKey, CommandResult, CommitOutcome, OriginError};
 use bunting_worker_cache::{CachePolicy, SnapshotCacheKey, cloudflare};
@@ -215,16 +215,19 @@ fn resume_cursor(request: &Request, input_cursor: u64) -> Result<u64> {
 }
 
 async fn subscribe(call: &Call, request: &Request, environment: &Env) -> Result<Response> {
-    let (run_id, instrument_id, after, class) = match call.path.as_str() {
+    let (run_id, listing_key, after, class) = match call.path.as_str() {
         "market.subscribe" => {
             let input: MarketSubscribeInput = decode_input(call)
                 .map_err(|_| Error::RustError("invalid market subscription input".to_owned()))?;
-            let instrument_id = InstrumentId::new(input.instrument_id.get());
+            let listing_key = ListingKey::new(
+                VenueId::new(input.venue_id.get()),
+                InstrumentId::new(input.instrument_id.get()),
+            );
             (
                 RunId::new(input.run_id.get()),
-                Some(instrument_id),
+                Some(listing_key),
                 resume_cursor(request, input.after_sequence.get())?,
-                subscriptions::StreamClass::Public { instrument_id },
+                subscriptions::StreamClass::Public { listing_key },
             )
         }
         "accounts.subscribe" => {
@@ -246,10 +249,10 @@ async fn subscribe(call: &Call, request: &Request, environment: &Env) -> Result<
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
         .map_err(|_| Error::RustError("subscription origin unavailable".to_owned()))?;
-    if let Some(instrument_id) = instrument_id {
+    if let Some(listing_key) = listing_key {
         state
-            .listing_key_for_instrument(instrument_id)
-            .map_err(|_| Error::RustError("subscription instrument not found".to_owned()))?;
+            .listing_snapshot(listing_key)
+            .map_err(|_| Error::RustError("subscription listing not found".to_owned()))?;
     }
     if after > state.event_sequence().get() {
         return Err(Error::RustError(
@@ -267,8 +270,8 @@ async fn subscribe(call: &Call, request: &Request, environment: &Env) -> Result<
     let cursor = state.event_sequence();
     let plan = subscriptions::plan(events, cursor, class);
     let snapshot = if matches!(&plan, subscriptions::Plan::Reset { .. }) {
-        instrument_id
-            .map(|id| snapshot_output(&state, id))
+        listing_key
+            .map(|key| snapshot_output(&state, key))
             .transpose()
             .map_err(|_| Error::RustError("snapshot unavailable".to_owned()))?
     } else {
@@ -298,7 +301,12 @@ fn build_submit(input: &SubmitOrderInput, claims: VerifiedClaims) -> (Command, C
         logical_time: LogicalTimeNs::new(input.logical_time_ns.get()),
         expected_sequence: EventSequence::new(input.expected_sequence.get()),
         actor,
-        payload: CommandPayload::SubmitOrder(SubmitOrder {
+        payload: CommandPayload::SubmitOrderAtListing {
+            listing_key: ListingKey::new(
+                VenueId::new(input.venue_id.get()),
+                InstrumentId::new(input.instrument_id.get()),
+            ),
+            order: SubmitOrder {
             order_id: namespace_order_id(run_id, actor, claims.session_id, input.order_id.get()),
             instrument_id: InstrumentId::new(input.instrument_id.get()),
             participant_id: actor,
@@ -310,7 +318,8 @@ fn build_submit(input: &SubmitOrderInput, claims: VerifiedClaims) -> (Command, C
             kind: OrderKind::Limit {
                 price: PriceTicks(input.price_ticks.get()),
             },
-        }),
+            },
+        },
     };
     (
         command,
@@ -362,18 +371,17 @@ async fn load_run(
     let state = d1_origin::load_run(&database, &run_id.to_string())
         .await
         .map_err(|error| map_origin_error(&error))?;
-    state
-        .listing_key_for_instrument(instrument_id)
-        .map_err(|_| ProcedureError::NotFound)?;
+    // Order routing and snapshot queries validate the exact listing after load.
+    let _instrument_id = instrument_id;
     Ok(state)
 }
 
 fn snapshot_output(
     state: &RunState,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
 ) -> std::result::Result<MarketSnapshotOutput, ProcedureError> {
-    let projection = project_market(state, instrument_id).map_err(|error| match error {
-        bunting_application::ApplicationError::UnknownInstrument => ProcedureError::NotFound,
+    let projection = project_market(state, listing_key).map_err(|error| match error {
+        bunting_application::ApplicationError::UnknownListing => ProcedureError::NotFound,
         _ => ProcedureError::InternalContractMismatch,
     })?;
     let levels = |items: Vec<(i64, i64)>| {
@@ -389,7 +397,8 @@ fn snapshot_output(
     };
     Ok(MarketSnapshotOutput {
         run_id: UnsignedDecimalString::new(projection.run_id.get()),
-        instrument_id: UnsignedDecimalString::new(instrument_id.get()),
+        instrument_id: UnsignedDecimalString::new(listing_key.instrument_id.get()),
+        venue_id: UnsignedDecimalString::new(listing_key.venue_id.get()),
         sequence: SequenceDecimalString::new(projection.sequence.get()),
         bids: levels(projection.bids)?,
         asks: levels(projection.asks)?,
@@ -445,9 +454,16 @@ pub(crate) async fn execute_command_detailed(
         };
     }
     let state = load_run(environment, command.run_id, instrument_id).await?;
-    let listing_key = state
-        .listing_key_for_instrument(instrument_id)
-        .map_err(|_| ProcedureError::NotFound)?;
+    let listing_key = match &command.payload {
+        CommandPayload::SubmitOrderAtListing { listing_key, .. } => *listing_key,
+        CommandPayload::CancelOrder(cancel) => state
+            .ownership()
+            .get(&cancel.order_id)
+            .map_or(Err(ProcedureError::NotFound), |owned| Ok(owned.listing_key))?,
+        _ => state
+            .listing_key_for_instrument(instrument_id)
+            .map_err(|_| ProcedureError::NotFound)?,
+    };
     let snapshot = state
         .listing_snapshot(listing_key)
         .map_err(|_| ProcedureError::InternalContractMismatch)?;
@@ -578,13 +594,13 @@ async fn dispatch_call(call: &Call, request: &Request, environment: &Env) -> Wir
                 Ok(input) => input,
                 Err(error) => return wire_error(error, &call.path, "invalid procedure input"),
             };
-            match load_run(
-                environment,
-                RunId::new(input.run_id.get()),
+            let listing_key = ListingKey::new(
+                VenueId::new(input.venue_id.get()),
                 InstrumentId::new(input.instrument_id.get()),
-            )
-            .await
-            .and_then(|state| snapshot_output(&state, InstrumentId::new(input.instrument_id.get())))
+            );
+            match load_run(environment, RunId::new(input.run_id.get()), listing_key.instrument_id)
+                .await
+                .and_then(|state| snapshot_output(&state, listing_key))
             {
                 Ok(output) => bunting_browser_wire::success(200, &output),
                 Err(error) => wire_error(error, &call.path, "snapshot unavailable"),

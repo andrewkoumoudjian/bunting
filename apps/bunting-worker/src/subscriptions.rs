@@ -2,7 +2,7 @@
 
 use bunting_application::{PublicTrade, project_public_event};
 use bunting_market_events::{EventEnvelope, EventPayload};
-use bunting_market_types::{EventSequence, InstrumentId, ParticipantId};
+use bunting_market_types::{EventSequence, ListingKey, ParticipantId};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -12,7 +12,7 @@ const PRIVATE_EVENT_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamClass {
-    Public { instrument_id: InstrumentId },
+    Public { listing_key: ListingKey },
     Private { participant_id: ParticipantId },
 }
 
@@ -62,10 +62,10 @@ pub fn plan(events: Vec<EventEnvelope>, current: EventSequence, class: StreamCla
         StreamClass::Private { .. } => PRIVATE_EVENT_LIMIT,
     };
     match class {
-        StreamClass::Public { instrument_id } => {
+        StreamClass::Public { listing_key } => {
             let projected: Vec<_> = events
                 .iter()
-                .filter_map(|event| project_public_event(event, instrument_id))
+                .filter_map(|event| project_public_event(event, listing_key))
                 .collect();
             if projected.len() > limit {
                 Plan::Reset {
@@ -234,7 +234,10 @@ mod tests {
                 vec![trade, rested],
                 EventSequence::new(9),
                 StreamClass::Public {
-                    instrument_id: InstrumentId::new(9),
+                    listing_key: bunting_market_types::ListingKey::new(
+                        bunting_market_types::VenueId::new(1),
+                        InstrumentId::new(9),
+                    ),
                 },
             ),
             None,
