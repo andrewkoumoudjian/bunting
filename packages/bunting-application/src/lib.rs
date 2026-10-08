@@ -699,6 +699,122 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cross-venue scenario exercises venue depth, NBBO ties and public feed isolation"
+    )]
+    fn listing_depth_nbbo_and_public_trades_are_unambiguous() {
+        let instrument = InstrumentId::new(1);
+        let primary = ListingKey::new(VenueId::new(1), instrument);
+        let alternate = ListingKey::new(VenueId::new(2), instrument);
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let limits = RiskLimits {
+            max_order_quantity: QuantityLots::new(100),
+            max_open_order_quantity: QuantityLots::new(100),
+            max_absolute_position: QuantityLots::new(100),
+        };
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(3),
+            ScenarioVersion::new(1),
+            [
+                ListingDefinition::new(primary, "PRIMARY".into(), bounds).unwrap(),
+                ListingDefinition::new(alternate, "ALTERNATE".into(), bounds).unwrap(),
+            ],
+            [
+                ParticipantDefinition::new(
+                    ParticipantId::new(7),
+                    true,
+                    limits,
+                    MoneyMinor::new(100_000),
+                    BTreeMap::from([(instrument, QuantityLots::new(10))]),
+                ),
+                ParticipantDefinition::new(
+                    ParticipantId::new(8),
+                    true,
+                    limits,
+                    MoneyMinor::new(100_000),
+                    BTreeMap::new(),
+                ),
+            ],
+        )
+        .unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(3), IterationId::new(1), &scenario).unwrap();
+        let command = |state: &RunState,
+                       id: u128,
+                       actor: u128,
+                       listing_key: ListingKey,
+                       side: Side,
+                       price: i64| Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(id),
+            correlation_id: CorrelationId::new(id),
+            logical_time: LogicalTimeNs::new(u64::try_from(id).unwrap()),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(actor),
+            payload: CommandPayload::SubmitOrderAtListing {
+                listing_key,
+                order: SubmitOrder {
+                    order_id: OrderId::new(id),
+                    instrument_id: instrument,
+                    participant_id: ParticipantId::new(actor),
+                    side,
+                    quantity: QuantityLots::new(1),
+                    kind: OrderKind::Limit {
+                        price: PriceTicks::new(price),
+                    },
+                },
+            },
+        };
+        for (id, actor, venue, side, price) in [
+            (1, 8, primary, Side::Buy, 99),
+            (2, 8, alternate, Side::Buy, 99),
+            (3, 7, primary, Side::Sell, 105),
+            (4, 7, alternate, Side::Sell, 104),
+        ] {
+            let result = state
+                .transition(&command(&state, id, actor, venue, side, price), None)
+                .unwrap();
+            assert!(result.accepted);
+            state = result.candidate;
+        }
+        let a = project_market(&state, primary).unwrap();
+        let b = project_market(&state, alternate).unwrap();
+        assert_eq!(a.listing_key, primary);
+        assert_eq!(a.asks, vec![(105, 1)]);
+        assert_eq!(b.asks, vec![(104, 1)]);
+        assert_eq!(a.bids, vec![(99, 1)]);
+        assert_eq!(b.bids, vec![(99, 1)]);
+        let nbbo = project_consolidated_bbo(&state, instrument).unwrap();
+        assert_eq!(nbbo.bid, Some((primary, PriceTicks::new(99), QuantityLots::new(1))));
+        assert_eq!(nbbo.ask, Some((alternate, PriceTicks::new(104), QuantityLots::new(1))));
+        assert_eq!(
+            project_market(&state, ListingKey::new(VenueId::new(3), instrument)),
+            Err(ApplicationError::UnknownListing)
+        );
+        let executed = state
+            .transition(&command(&state, 5, 8, primary, Side::Buy, 105), None)
+            .unwrap();
+        assert!(executed.accepted);
+        let trade = executed
+            .events
+            .iter()
+            .find_map(|event| project_public_event(event, primary))
+            .expect("the primary venue produced one public trade");
+        assert_eq!(trade.listing_key, primary);
+        assert_eq!(trade.price, PriceTicks::new(105));
+        assert!(executed
+            .events
+            .iter()
+            .all(|event| project_public_event(event, alternate).is_none()));
+        let json = serde_json::to_string(&trade).unwrap();
+        for private in ["buyer_id", "seller_id", "maker_order_id", "taker_order_id", "actor"] {
+            assert!(!json.contains(private));
+        }
+        assert_eq!(project_market(&executed.candidate, alternate).unwrap().asks, b.asks);
+    }
+
+    #[test]
     fn commits_before_returning_and_recovers_same_projection() {
         let origin = InMemoryOrigin::new();
         origin.insert_run(run()).unwrap();
