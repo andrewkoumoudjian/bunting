@@ -2,8 +2,8 @@
 
 use bunting_engine::simulation::{
     EconomicInstrument, FacilityDefinition, FacilityKind, InstrumentKind, LogicalClock,
-    RunLifecycle, SIMULATION_POLICY_VERSION, ScheduledAction, ScheduledActionKind,
-    SimulationScenario, OpeningMark,
+    OpeningMark, RunLifecycle, SIMULATION_POLICY_VERSION, ScheduledAction, ScheduledActionKind,
+    SimulationScenario,
 };
 use bunting_engine::{
     ListingDefinition, ParticipantDefinition, PublishScenarioOutcome, RunState, ScenarioCatalog,
@@ -445,7 +445,6 @@ fn released_post_only_policy_is_matched_and_replayable() {
     assert_eq!(restored.state_hash().unwrap(), state.state_hash().unwrap());
 }
 
-
 #[test]
 fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
     let mut config = scenario().simulation().clone();
@@ -461,7 +460,9 @@ fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
         MoneyMinor::new(100_000)
     );
     assert_eq!(
-        journal.net_liquidation_value(PARTICIPANT, CURRENCY).unwrap(),
+        journal
+            .net_liquidation_value(PARTICIPANT, CURRENCY)
+            .unwrap(),
         MoneyMinor::new(1_100_000)
     );
     assert!(journal.journal().is_empty());
@@ -504,7 +505,9 @@ fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
         MoneyMinor::new(20)
     );
     assert_eq!(
-        journal.net_liquidation_value(COUNTERPARTY, CURRENCY).unwrap(),
+        journal
+            .net_liquidation_value(COUNTERPARTY, CURRENCY)
+            .unwrap(),
         MoneyMinor::new(1_110_000)
     );
     assert_eq!(journal.journal().len(), 1);
@@ -512,7 +515,10 @@ fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
         &active.snapshot_envelope().unwrap().to_json().unwrap(),
     )
     .unwrap();
-    assert_eq!(restored.state.state_hash().unwrap(), active.state_hash().unwrap());
+    assert_eq!(
+        restored.state.state_hash().unwrap(),
+        active.state_hash().unwrap()
+    );
 }
 
 #[test]

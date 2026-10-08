@@ -608,14 +608,19 @@ impl RunState {
                     participant.initial_cash,
                 );
                 for (instrument, quantity) in &participant.initial_positions {
-                    let opening_mark = scenario
-                        .simulation
-                        .opening_marks
-                        .as_ref()
-                        .and_then(|marks| marks.iter().find(|mark| mark.instrument_id == *instrument));
-                    let basis = opening_mark.map_or(Ok(MoneyMinor::new(0)), |mark| {
-                        MoneyMinor::checked_mul_price_quantity(mark.price, *quantity)
-                    }).map_err(|_| EngineError::InvalidScenario)?;
+                    let opening_mark =
+                        scenario
+                            .simulation
+                            .opening_marks
+                            .as_ref()
+                            .and_then(|marks| {
+                                marks.iter().find(|mark| mark.instrument_id == *instrument)
+                            });
+                    let basis = opening_mark
+                        .map_or(Ok(MoneyMinor::new(0)), |mark| {
+                            MoneyMinor::checked_mul_price_quantity(mark.price, *quantity)
+                        })
+                        .map_err(|_| EngineError::InvalidScenario)?;
                     simulation.portfolio_ledger.set_position(
                         participant.participant_id,
                         *instrument,
@@ -623,11 +628,10 @@ impl RunState {
                         basis,
                     );
                     if let Some(mark) = opening_mark {
-                        simulation.portfolio_ledger.mark_position(
-                            participant.participant_id,
-                            *instrument,
-                            mark.price,
-                        ).map_err(|_| EngineError::InvalidScenario)?;
+                        simulation
+                            .portfolio_ledger
+                            .mark_position(participant.participant_id, *instrument, mark.price)
+                            .map_err(|_| EngineError::InvalidScenario)?;
                     }
                 }
             }
@@ -2052,7 +2056,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "single scenario asserts routing, independent depth and trade accounting")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single scenario asserts routing, independent depth and trade accounting"
+    )]
     fn explicit_listing_commands_keep_cross_listed_books_and_trades_separate() {
         let instrument = InstrumentId::new(1);
         let primary = ListingKey::new(VenueId::new(1), instrument);
