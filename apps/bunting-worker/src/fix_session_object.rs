@@ -688,7 +688,7 @@ impl FixSessionObject {
     }
 }
 
-/// Attach the mandatory FIX SecurityExchange to every actual submission.
+/// Attach the mandatory FIX `SecurityExchange` to every actual submission.
 fn route_fix_submission(
     mut command: Command,
     message: &FixMessage,
@@ -979,27 +979,37 @@ fn reports_for_command(
         }
     }
     if reports.is_empty() {
-        reports.push(NormalizedVenueReport {
-            report_id: ReportId::new(command.command_id.get()),
-            source_sequence: Some(executed.result.committed_sequence.get()),
-            client_order_id: Some(client),
-            local_order_id: Some(local),
-            venue_order_id: Some(VenueOrderId::new(order_id.to_string())),
-            leaves_quantity: None,
-            kind: if executed.result.accepted {
-                VenueReportKind::Accepted
-            } else {
-                VenueReportKind::Rejected {
-                    reason: executed
-                        .result
-                        .reject_code
-                        .clone()
-                        .unwrap_or_else(|| "command rejected".to_owned()),
-                }
-            },
-        });
+        reports.push(fallback_report(command, executed, local, client, order_id));
     }
     reports
+}
+
+fn fallback_report(
+    command: &Command,
+    executed: &crate::ExecutedCommand,
+    local: LocalOrderId,
+    client: quarcc_execution_engine::ids::ClientOrderId,
+    order_id: OrderId,
+) -> NormalizedVenueReport {
+    NormalizedVenueReport {
+        report_id: ReportId::new(command.command_id.get()),
+        source_sequence: Some(executed.result.committed_sequence.get()),
+        client_order_id: Some(client),
+        local_order_id: Some(local),
+        venue_order_id: Some(VenueOrderId::new(order_id.to_string())),
+        leaves_quantity: None,
+        kind: if executed.result.accepted {
+            VenueReportKind::Accepted
+        } else {
+            VenueReportKind::Rejected {
+                reason: executed
+                    .result
+                    .reject_code
+                    .clone()
+                    .unwrap_or_else(|| "command rejected".to_owned()),
+            }
+        },
+    }
 }
 
 async fn write_actions(socket: &mut Socket, actions: &[SessionAction]) -> Result<()> {

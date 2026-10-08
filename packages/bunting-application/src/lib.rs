@@ -818,13 +818,11 @@ mod tests {
             .transition(&command(&state, 5, 8, primary, Side::Buy, 105), None)
             .unwrap();
         assert!(executed.accepted);
-        let Some(trade) = executed
+        let trade = executed
             .events
             .iter()
             .find_map(|event| project_public_event(event, primary))
-        else {
-            panic!("the primary venue produced no public trade");
-        };
+            .unwrap();
         assert_eq!(trade.listing_key, primary);
         assert_eq!(trade.price, PriceTicks::new(105));
         assert!(

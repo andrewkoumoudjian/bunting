@@ -421,6 +421,20 @@ pub(crate) struct ExecutedCommand {
     pub events: Vec<EventEnvelope>,
 }
 
+fn command_listing(state: &RunState, command: &Command) -> Option<ListingKey> {
+    match &command.payload {
+        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Some(*listing_key),
+        CommandPayload::SubmitOrder(order) => {
+            state.listing_key_for_instrument(order.instrument_id).ok()
+        }
+        CommandPayload::CancelOrder(cancel) => state
+            .ownership()
+            .get(&cancel.order_id)
+            .map(|owned| owned.listing_key),
+        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
+    }
+}
+
 pub(crate) async fn execute_command_detailed(
     command: Command,
     client_key: ClientCommandKey,
@@ -449,17 +463,7 @@ pub(crate) async fn execute_command_detailed(
         };
     }
     let state = load_run(environment, command.run_id).await?;
-    let listing_key = match &command.payload {
-        CommandPayload::SubmitOrderAtListing { listing_key, .. } => Some(*listing_key),
-        CommandPayload::SubmitOrder(order) => {
-            state.listing_key_for_instrument(order.instrument_id).ok()
-        }
-        CommandPayload::CancelOrder(cancel) => state
-            .ownership()
-            .get(&cancel.order_id)
-            .map(|owned| owned.listing_key),
-        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
-    };
+    let listing_key = command_listing(&state, &command);
     let cached = if let Some(key) = listing_key {
         let snapshot = state
             .listing_snapshot(key)
