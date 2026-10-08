@@ -407,8 +407,8 @@ const STATUS_REQUEST: MessageRule = MessageRule {
 };
 const MARKET_DATA_REQUEST: MessageRule = MessageRule {
     msg_type: "V",
-    required_tags: &[262, 263, 264, 267, 269, 48],
-    allowed_tags: &[262, 263, 264, 265, 267, 269, 146, 55, 48],
+    required_tags: &[262, 263, 264, 267, 269, 48, 207],
+    allowed_tags: &[262, 263, 264, 265, 267, 269, 146, 55, 48, 207],
 };
 
 #[must_use]
@@ -569,6 +569,7 @@ mod tests {
         request.push(269, "0");
         request.push(269, "1");
         request.push(48, "7");
+        request.push(207, "1");
         validate_competition(&request).unwrap();
         let group = request.repeating_group(267, 269, &[]).unwrap();
         assert_eq!(group.entries.len(), 2);
@@ -576,6 +577,12 @@ mod tests {
         assert_eq!(
             validate_competition(&request),
             Err(WireError::MissingRequiredTag(48))
+        );
+        request.push(48, "7");
+        request.fields.retain(|field| field.tag != 207);
+        assert_eq!(
+            validate_competition(&request),
+            Err(WireError::MissingRequiredTag(207))
         );
     }
 
