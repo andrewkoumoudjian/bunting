@@ -1219,17 +1219,18 @@ impl RunState {
             .last()
             .map_or(candidate.event_sequence, |event| event.sequence);
         (candidate.accounts, candidate.holdings) = ledger.projection();
+        let snapshot_checksum = changed_listings
+            .iter()
+            .next()
+            .and_then(|key| candidate.listings.get(key))
+            .map(|listing| listing.snapshot.checksum.clone());
         Ok(TransitionOutcome {
             candidate,
             events,
             accepted: true,
             reject_code: None,
             order_id: None,
-            snapshot_checksum: changed_listings
-                .iter()
-                .next()
-                .and_then(|key| candidate.listings.get(key))
-                .map(|listing| listing.snapshot.checksum.clone()),
+            snapshot_checksum,
             changed_listings,
         })
     }
