@@ -1250,15 +1250,9 @@ impl RunState {
         };
         let mut raw_bids = Vec::new();
         let mut raw_asks = Vec::new();
-        for owned in self.ownership.values().filter(|owned| {
-            owned.listing_key == listing_key && owned.state == OwnedOrderState::Active
-        }) {
-            let row = (owned.limit_price, owned.remaining_quantity, owned.order_id);
-            match owned.side {
-                Side::Buy => raw_bids.push(row),
-                Side::Sell => raw_asks.push(row),
-            }
-        }
+        // One deterministic ownership scan supplies both raw venue depth and
+        // private live/history projections. The old path scanned every owned
+        // order twice for each changed listing.
         for owned in self
             .ownership
             .values()
@@ -1270,6 +1264,11 @@ impl RunState {
                 .entry(owned.participant_id)
                 .or_default();
             if owned.state == OwnedOrderState::Active {
+                let row = (owned.limit_price, owned.remaining_quantity, owned.order_id);
+                match owned.side {
+                    Side::Buy => raw_bids.push(row),
+                    Side::Sell => raw_asks.push(row),
+                }
                 private.live_orders.insert(owned.order_id);
             } else {
                 private.live_orders.remove(&owned.order_id);
