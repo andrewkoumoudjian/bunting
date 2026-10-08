@@ -16,7 +16,6 @@ use bunting_market_events::{
 use bunting_market_types::{
     EventId, EventSequence, InstrumentId, IterationId, ListingKey, MoneyMinor, OrderId,
     ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
-    VenueId,
 };
 use bunting_risk_engine::{RiskLimits, RiskState};
 use compatibility::nbc::{
@@ -1637,6 +1636,10 @@ fn prepare_submit(
     Ok(Ok(()))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one fill couples ownership, settlement, the upstream map, and canonical trade events"
+)]
 fn apply_trades(
     taker_order_id: OrderId,
     engine_sequence: u64,
@@ -1853,7 +1856,7 @@ fn hash_serializable<T: Serialize>(value: &T) -> Result<String, SnapshotError> {
 mod tests {
     use super::*;
     use bunting_market_events::{NbcDone, SubmitOrder};
-    use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs};
+    use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs, VenueId};
 
     fn participant(id: u128) -> ParticipantDefinition {
         ParticipantDefinition {
@@ -2068,10 +2071,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one test checks full-width and small canonical IDs, fills, cancellation, and recovery"
-    )]
     fn every_order_uses_one_sequential_upstream_allocator() {
         let large = OrderId::new(u128::from(u64::MAX) + 123);
         let small = OrderId::new(1);
