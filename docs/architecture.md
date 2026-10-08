@@ -177,13 +177,14 @@ The initial slice writes an authoritative upstream package and complete private 
 The cache key is:
 
 ```text
-https://cache.bunting.invalid/v1/orderbooks/
-  {run_id}/{instrument_id}/{event_sequence}/{snapshot_checksum}
+https://cache.bunting.invalid/v2/orderbooks/
+  {run_id}/{venue_id}/{instrument_id}/{event_sequence}/{snapshot_checksum}
 ```
 
 Properties:
 
 - immutable key;
+- the venue identity is mandatory, so cross-listed instruments cannot share cache entries;
 - JSON `OrderBookSnapshotPackage` body;
 - upstream package validation on every restore;
 - checksum as ETag;
