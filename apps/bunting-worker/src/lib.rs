@@ -474,7 +474,7 @@ pub(crate) async fn execute_command_detailed(
         .map_err(|_| ProcedureError::InternalContractMismatch)?;
     let cache_key = SnapshotCacheKey::new(
         state.run_id(),
-        instrument_id,
+        listing_key,
         snapshot.represented_sequence,
         snapshot.checksum.clone(),
     )
@@ -522,7 +522,7 @@ pub(crate) async fn execute_command_detailed(
         && snapshot.represented_sequence == result.committed_sequence
         && let Ok(key) = SnapshotCacheKey::new(
             prepared.commit.run_id,
-            listing_key.instrument_id,
+            listing_key,
             snapshot.represented_sequence,
             snapshot.checksum.clone(),
         )

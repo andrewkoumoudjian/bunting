@@ -6,7 +6,7 @@
 //! authoritative venue. The Worker can read and publish snapshots, archives and
 //! leaderboards; it never accepts market commands or owns participant balances.
 
-use bunting_market_types::{EventSequence, InstrumentId, RunId};
+use bunting_market_types::{EventSequence, ListingKey, RunId};
 use core::fmt;
 
 /// Default edge TTL for immutable order-book snapshot packages.
@@ -34,7 +34,7 @@ impl std::error::Error for CacheKeyError {}
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SnapshotCacheKey {
     run_id: RunId,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
     sequence: EventSequence,
     checksum: String,
 }
@@ -92,7 +92,7 @@ impl SnapshotCacheKey {
     /// Creates a content-addressed snapshot cache key.
     pub fn new(
         run_id: RunId,
-        instrument_id: InstrumentId,
+        listing_key: ListingKey,
         sequence: EventSequence,
         checksum: impl Into<String>,
     ) -> Result<Self, CacheKeyError> {
@@ -102,7 +102,7 @@ impl SnapshotCacheKey {
         }
         Ok(Self {
             run_id,
-            instrument_id,
+            listing_key,
             sequence,
             checksum,
         })
@@ -112,9 +112,10 @@ impl SnapshotCacheKey {
     #[must_use]
     pub fn url(&self) -> String {
         format!(
-            "{CACHE_ORIGIN}/v1/orderbooks/{}/{}/{}/{}",
+            "{CACHE_ORIGIN}/v2/orderbooks/{}/{}/{}/{}/{}",
             self.run_id.get(),
-            self.instrument_id.get(),
+            self.listing_key.venue_id.get(),
+            self.listing_key.instrument_id.get(),
             self.sequence.get(),
             self.checksum
         )
@@ -231,15 +232,34 @@ mod tests {
     fn cache_key_is_deterministic_and_content_addressed() {
         let key = SnapshotCacheKey::new(
             RunId::new(7),
-            InstrumentId::new(11),
+            ListingKey::new(bunting_market_types::VenueId::new(2), bunting_market_types::InstrumentId::new(11)),
             EventSequence::new(19),
             "a".repeat(64),
         )
         .expect("valid test key");
         assert_eq!(
             key.url(),
-            format!("{CACHE_ORIGIN}/v1/orderbooks/7/11/19/{}", "a".repeat(64))
+            format!("{CACHE_ORIGIN}/v2/orderbooks/7/2/11/19/{}", "a".repeat(64))
         );
+    }
+
+    #[test]
+    fn identical_instrument_snapshots_on_different_venues_get_distinct_cache_keys() {
+        let primary = SnapshotCacheKey::new(
+            RunId::new(7),
+            ListingKey::new(bunting_market_types::VenueId::new(1), bunting_market_types::InstrumentId::new(11)),
+            EventSequence::new(19),
+            "a".repeat(64),
+        )
+        .expect("valid primary");
+        let secondary = SnapshotCacheKey::new(
+            RunId::new(7),
+            ListingKey::new(bunting_market_types::VenueId::new(2), bunting_market_types::InstrumentId::new(11)),
+            EventSequence::new(19),
+            "a".repeat(64),
+        )
+        .expect("valid secondary");
+        assert_ne!(primary.url(), secondary.url());
     }
 
     #[test]
@@ -247,7 +267,7 @@ mod tests {
         assert_eq!(
             SnapshotCacheKey::new(
                 RunId::new(1),
-                InstrumentId::new(1),
+                ListingKey::new(bunting_market_types::VenueId::new(1), bunting_market_types::InstrumentId::new(1)),
                 EventSequence::new(1),
                 "not-a-checksum",
             ),
