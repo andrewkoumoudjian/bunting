@@ -37,6 +37,44 @@ pub struct CommitRequest {
     pub candidate: RunState,
 }
 
+impl CommitRequest {
+    /// Enforces one strictly ordered canonical event batch against the last
+    /// committed event cursor. Identical validation is required by every origin.
+    pub fn validate_against(
+        &self,
+        previous_event_sequence: EventSequence,
+    ) -> Result<(), OriginError> {
+        let next_version = self
+            .expected_version
+            .checked_add(EventSequence::new(1))
+            .ok_or(OriginError::InvalidCommit)?;
+        if self.candidate.run_id() != self.run_id
+            || self.candidate.sequence() != next_version
+            || self.result.committed_sequence != next_version
+            || self.fingerprint.is_empty()
+            || self.events.is_empty()
+        {
+            return Err(OriginError::InvalidCommit);
+        }
+        let mut expected_event_sequence = previous_event_sequence;
+        for event in &self.events {
+            expected_event_sequence = expected_event_sequence
+                .checked_add(EventSequence::new(1))
+                .ok_or(OriginError::InvalidCommit)?;
+            if event.run_id != self.run_id
+                || event.command_id != self.command_id
+                || event.sequence != expected_event_sequence
+            {
+                return Err(OriginError::InvalidCommit);
+            }
+        }
+        if self.candidate.event_sequence() != expected_event_sequence {
+            return Err(OriginError::InvalidCommit);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClientCommandKey {
     pub actor: ParticipantId,
@@ -149,20 +187,12 @@ impl OriginStore for InMemoryOrigin {
         if current != request.expected_version {
             return Err(OriginError::VersionConflict { current });
         }
-        let next = request
-            .expected_version
-            .checked_add(EventSequence::new(1))
-            .ok_or(OriginError::InvalidCommit)?;
-        if request.candidate.run_id() != request.run_id
-            || request.candidate.sequence() != next
-            || request.result.committed_sequence != next
-            || request
-                .events
-                .last()
-                .is_some_and(|event| event.sequence != request.candidate.event_sequence())
-        {
-            return Err(OriginError::InvalidCommit);
-        }
+        let previous_events = state
+            .runs
+            .get(&request.run_id)
+            .ok_or(OriginError::UnknownRun)?
+            .event_sequence();
+        request.validate_against(previous_events)?;
         state
             .events
             .entry(request.run_id)
@@ -284,6 +314,42 @@ mod tests {
                 .filter(|outcome| matches!(outcome, Ok(Err(OriginError::VersionConflict { .. }))))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn origin_rejects_missing_reordered_and_cross_run_events_without_mutation() {
+        let origin = InMemoryOrigin::new();
+        origin.insert_run(run()).unwrap();
+        let original = origin.load_run(RunId::new(1)).unwrap();
+
+        let mut missing = request(1);
+        missing.events.clear();
+        assert_eq!(origin.commit(missing), Err(OriginError::InvalidCommit));
+
+        let mut wrong_run = request(2);
+        wrong_run.events[0].run_id = RunId::new(2);
+        assert_eq!(origin.commit(wrong_run), Err(OriginError::InvalidCommit));
+
+        let mut wrong_command = request(3);
+        wrong_command.events[0].command_id = CommandId::new(900);
+        assert_eq!(origin.commit(wrong_command), Err(OriginError::InvalidCommit));
+
+        let mut wrong_cursor = request(4);
+        wrong_cursor.events[0].sequence = EventSequence::new(9);
+        assert_eq!(origin.commit(wrong_cursor), Err(OriginError::InvalidCommit));
+
+        assert_eq!(origin.load_run(RunId::new(1)).unwrap(), original);
+        assert!(origin.events(RunId::new(1)).unwrap().is_empty());
+        assert_eq!(
+            origin.commit(request(5)),
+            Ok(CommitOutcome::Committed(CommandResult {
+                accepted: true,
+                reject_code: None,
+                committed_sequence: EventSequence::new(1),
+                order_id: None,
+                snapshot_checksum: None,
+            }))
         );
     }
 

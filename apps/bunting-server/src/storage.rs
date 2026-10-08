@@ -208,20 +208,7 @@ impl OriginStore for FileOriginStore {
         if current != request.expected_version {
             return Err(OriginError::VersionConflict { current });
         }
-        let next = request
-            .expected_version
-            .checked_add(bunting_market_types::EventSequence::new(1))
-            .ok_or(OriginError::InvalidCommit)?;
-        if request.candidate.run_id() != request.run_id
-            || request.candidate.sequence() != next
-            || request.result.committed_sequence != next
-            || request
-                .events
-                .last()
-                .is_some_and(|event| event.sequence != request.candidate.event_sequence())
-        {
-            return Err(OriginError::InvalidCommit);
-        }
+        request.validate_against(state.runs[run_index].event_sequence())?;
         if state.commands.len() >= self.max_commands {
             return Err(OriginError::Unavailable);
         }
