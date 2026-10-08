@@ -2026,6 +2026,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "single scenario asserts routing, independent depth and trade accounting")]
     fn explicit_listing_commands_keep_cross_listed_books_and_trades_separate() {
         let instrument = InstrumentId::new(1);
         let primary = ListingKey::new(VenueId::new(1), instrument);

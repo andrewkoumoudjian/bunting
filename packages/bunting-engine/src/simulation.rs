@@ -1089,10 +1089,10 @@ impl SimulationState {
         asks: Vec<(PriceTicks, QuantityLots)>,
     ) {
         let listing = self.market_by_listing.entry(listing_key).or_default();
-        listing.raw_bids = raw_bids.clone();
-        listing.raw_asks = raw_asks.clone();
-        listing.aggregated_bids = bids.clone();
-        listing.aggregated_asks = asks.clone();
+        listing.raw_bids.clone_from(&raw_bids);
+        listing.raw_asks.clone_from(&raw_asks);
+        listing.aggregated_bids.clone_from(&bids);
+        listing.aggregated_asks.clone_from(&asks);
         // The old instrument-keyed view has meaningful depth only when unique.
         if unique_listing {
             let projection = self.market.entry(listing_key.instrument_id).or_default();
