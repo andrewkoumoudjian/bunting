@@ -282,11 +282,22 @@ impl PortfolioLedger {
     /// # Errors
     /// Returns an error when postings are empty, unbalanced by currency, or overflow.
     pub fn post(&mut self, transaction: JournalTransaction) -> Result<(), LedgerError> {
-        if transaction.postings.is_empty() {
+        if transaction.transaction_id == 0
+            || transaction.postings.is_empty()
+            || self.journal.last().is_some_and(|prior| {
+                prior.transaction_id >= transaction.transaction_id
+            })
+        {
             return Err(LedgerError::InvalidPosting);
         }
         let mut totals = BTreeMap::<CurrencyId, MoneyMinor>::new();
         for posting in &transaction.postings {
+            if posting.currency_id.get() == 0
+                || (posting.participant_id.is_none()
+                    != (posting.account == PostingAccount::Clearing))
+            {
+                return Err(LedgerError::InvalidPosting);
+            }
             let total = totals.entry(posting.currency_id).or_default();
             *total = total
                 .checked_add(posting.amount)
@@ -951,6 +962,57 @@ mod tests {
             ledger.post(invalid),
             Err(LedgerError::UnbalancedTransaction)
         );
+        assert_eq!(ledger, before);
+
+        for wrong_posting in [
+            JournalPosting {
+                participant_id: None,
+                currency_id: currency,
+                account: PostingAccount::Cash,
+                amount: MoneyMinor::new(10),
+            },
+            JournalPosting {
+                participant_id: Some(participant),
+                currency_id: currency,
+                account: PostingAccount::Clearing,
+                amount: MoneyMinor::new(10),
+            },
+        ] {
+            let malformed = JournalTransaction {
+                transaction_id: 2,
+                kind: TransactionKind::Adjustment,
+                postings: vec![
+                    wrong_posting,
+                    JournalPosting {
+                        participant_id: None,
+                        currency_id: currency,
+                        account: PostingAccount::Clearing,
+                        amount: MoneyMinor::new(-10),
+                    },
+                ],
+            };
+            assert_eq!(ledger.post(malformed), Err(LedgerError::InvalidPosting));
+            assert_eq!(ledger, before);
+        }
+        let replayed = JournalTransaction {
+            transaction_id: 1,
+            kind: TransactionKind::Adjustment,
+            postings: vec![
+                JournalPosting {
+                    participant_id: Some(participant),
+                    currency_id: currency,
+                    account: PostingAccount::Cash,
+                    amount: MoneyMinor::new(1),
+                },
+                JournalPosting {
+                    participant_id: None,
+                    currency_id: currency,
+                    account: PostingAccount::Clearing,
+                    amount: MoneyMinor::new(-1),
+                },
+            ],
+        };
+        assert_eq!(ledger.post(replayed), Err(LedgerError::InvalidPosting));
         assert_eq!(ledger, before);
     }
 }
