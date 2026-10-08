@@ -664,6 +664,7 @@ pub fn new_order(id: u128, side: &str, quantity: i64, price: Option<i64>) -> Fix
     let mut message = FixMessage::new("D");
     message.push(11, id.to_string());
     message.push(48, "1");
+    message.push(207, "1");
     message.push(54, if side == "buy" { "1" } else { "2" });
     message.push(38, quantity.to_string());
     if let Some(price) = price {
@@ -693,6 +694,7 @@ pub fn book_request(id: u128) -> FixMessage {
     message.push(269, "0");
     message.push(269, "1");
     message.push(48, "1");
+    message.push(207, "1");
     message
 }
 
