@@ -81,8 +81,7 @@ impl FileOriginStore {
                 .snapshot_envelope()
                 .and_then(|envelope| envelope.to_json())
                 .map_err(|_| OriginError::InvalidCommit)?;
-            EngineSnapshotEnvelope::from_json(&envelope)
-                .map_err(|_| OriginError::InvalidCommit)?;
+            EngineSnapshotEnvelope::from_json(&envelope).map_err(|_| OriginError::InvalidCommit)?;
         }
         let mut event_heads = BTreeMap::new();
         let mut event_commands = BTreeSet::new();

@@ -333,7 +333,10 @@ mod tests {
 
         let mut wrong_command = request(3);
         wrong_command.events[0].command_id = CommandId::new(900);
-        assert_eq!(origin.commit(wrong_command), Err(OriginError::InvalidCommit));
+        assert_eq!(
+            origin.commit(wrong_command),
+            Err(OriginError::InvalidCommit)
+        );
 
         let mut wrong_cursor = request(4);
         wrong_cursor.events[0].sequence = EventSequence::new(9);

@@ -68,14 +68,14 @@ fn expected_command() -> Command {
         payload: CommandPayload::SubmitOrderAtListing {
             listing_key: ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
             order: SubmitOrder {
-            order_id: OrderId::new(1),
-            instrument_id: InstrumentId::new(1),
-            participant_id: ParticipantId::new(7),
-            side: Side::Buy,
-            quantity: QuantityLots::new(3),
-            kind: OrderKind::Limit {
-                price: PriceTicks::new(101),
-            },
+                order_id: OrderId::new(1),
+                instrument_id: InstrumentId::new(1),
+                participant_id: ParticipantId::new(7),
+                side: Side::Buy,
+                quantity: QuantityLots::new(3),
+                kind: OrderKind::Limit {
+                    price: PriceTicks::new(101),
+                },
             },
         },
     }

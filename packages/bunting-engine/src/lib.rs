@@ -2175,14 +2175,7 @@ mod tests {
             (4, 1, 2, Side::Buy, 95),
         ] {
             let next = submit(
-                &state,
-                command_id,
-                owner,
-                command_id,
-                instrument,
-                side,
-                price,
-                1,
+                &state, command_id, owner, command_id, instrument, side, price, 1,
             );
             let accepted = state.transition(&next, None).unwrap();
             assert!(accepted.accepted);
@@ -2211,7 +2204,14 @@ mod tests {
             finished.candidate.listing_snapshot(untouched).unwrap(),
             &untouched_snapshot
         );
-        assert!(finished.candidate.visible_levels(removed).unwrap().1.is_empty());
+        assert!(
+            finished
+                .candidate
+                .visible_levels(removed)
+                .unwrap()
+                .1
+                .is_empty()
+        );
         assert_eq!(
             finished.candidate.visible_levels(untouched).unwrap().0,
             vec![(95, 1)]
@@ -2227,10 +2227,20 @@ mod tests {
             OwnedOrderState::Active
         );
         assert_eq!(
-            previous.transition_simulation(&request).unwrap().candidate.state_hash().unwrap(),
+            previous
+                .transition_simulation(&request)
+                .unwrap()
+                .candidate
+                .state_hash()
+                .unwrap(),
             finished.candidate.state_hash().unwrap()
         );
-        let snapshot = finished.candidate.snapshot_envelope().unwrap().to_json().unwrap();
+        let snapshot = finished
+            .candidate
+            .snapshot_envelope()
+            .unwrap()
+            .to_json()
+            .unwrap();
         assert_eq!(
             EngineSnapshotEnvelope::from_json(&snapshot).unwrap().state,
             finished.candidate

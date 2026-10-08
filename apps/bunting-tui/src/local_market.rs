@@ -772,7 +772,7 @@ impl Market {
                 })
                 .collect::<Vec<_>>()
         };
-        market_snapshot(request_id, INSTRUMENT_ID, &convert(bids), &convert(asks))
+        market_snapshot(request_id, key, &convert(bids), &convert(asks))
     }
 }
 
