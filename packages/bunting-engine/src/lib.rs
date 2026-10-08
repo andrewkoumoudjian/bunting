@@ -29,6 +29,7 @@ use matching::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use simulation::{SIMULATION_POLICY_VERSION, SimulationError, SimulationScenario, SimulationState};
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -1101,9 +1102,9 @@ impl RunState {
                     .get(order_id)
                     .cloned()
                     .ok_or(EngineError::OwnershipInvariant)?;
-                if !staged_books.contains_key(&owned.listing_key) {
+                if let Entry::Vacant(vacant) = staged_books.entry(owned.listing_key) {
                     let book = candidate.restore_book(owned.listing_key, None, &metadata)?;
-                    staged_books.insert(owned.listing_key, book);
+                    vacant.insert(book);
                 }
                 let book = staged_books
                     .get(&owned.listing_key)
