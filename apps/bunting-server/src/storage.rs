@@ -159,6 +159,9 @@ impl FileOriginStore {
 
     pub fn insert_run(&self, run: RunState) -> Result<(), OriginError> {
         let mut state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
         if let Some(existing) = state.runs.iter().find(|item| item.run_id() == run.run_id()) {
             return if existing == &run {
                 Ok(())
@@ -179,8 +182,23 @@ impl FileOriginStore {
         Ok(())
     }
 
+    /// Force a durable, atomic checkpoint and compact the synced journal.
+    /// Failure to compact does not undo the checkpoint or committed commands.
+    pub fn checkpoint(&self) -> Result<(), OriginError> {
+        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
+        persist(&self.path, &state)?;
+        let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
+        Ok(())
+    }
+
     pub fn events(&self, run_id: RunId) -> Result<Vec<EventEnvelope>, OriginError> {
         let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
         Ok(state
             .events
             .iter()
@@ -193,6 +211,9 @@ impl FileOriginStore {
 impl OriginStore for FileOriginStore {
     fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
         let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
         state
             .runs
             .iter()
@@ -207,6 +228,9 @@ impl OriginStore for FileOriginStore {
         command_id: CommandId,
     ) -> Result<Option<(String, CommandResult)>, OriginError> {
         let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
         Ok(state
             .commands
             .iter()
