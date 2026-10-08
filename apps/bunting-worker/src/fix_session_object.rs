@@ -541,7 +541,9 @@ impl FixSessionObject {
         intent: ExecutionIntent,
         original: &FixMessage,
     ) -> Vec<FixMessage> {
-        let command = match command_for_intent(stored, &intent) {
+        let command = match command_for_intent(stored, &intent)
+            .and_then(|command| route_fix_submission(command, original))
+        {
             Ok(command) => command,
             Err(reason) => return vec![business_reject(&original.msg_type, reason)],
         };
@@ -604,7 +606,9 @@ impl FixSessionObject {
         }
         let mut responses = Vec::new();
         for action in actions.into_vec() {
-            let command = match command_for_action(stored, &action) {
+            let command = match command_for_action(stored, &action)
+                .and_then(|command| route_fix_submission(command, original))
+            {
                 Ok(command) => command,
                 Err(reason) => {
                     responses.push(business_reject(&original.msg_type, reason));
@@ -682,6 +686,26 @@ impl FixSessionObject {
         self.socket.replace(Some(socket));
         result
     }
+}
+
+/// Attach the mandatory FIX SecurityExchange to every actual submission.
+fn route_fix_submission(
+    mut command: Command,
+    message: &FixMessage,
+) -> std::result::Result<Command, &'static str> {
+    if let CommandPayload::SubmitOrder(order) = &command.payload {
+        let listing_key = simfix_mapping::fix_order_listing(message)
+            .map_err(|_| "missing or invalid SecurityExchange (207)")?
+            .ok_or("new FIX order requires SecurityExchange (207)")?;
+        if listing_key.instrument_id != order.instrument_id {
+            return Err("FIX SecurityExchange does not match instrument");
+        }
+        command.payload = CommandPayload::SubmitOrderAtListing {
+            listing_key,
+            order: order.clone(),
+        };
+    }
+    Ok(command)
 }
 
 fn command_for_intent(

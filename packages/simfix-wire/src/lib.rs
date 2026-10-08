@@ -387,8 +387,8 @@ pub struct MessageRule {
 const STANDARD_HEADER_TAGS: &[u32] = &[49, 56, 34, 43, 52, 122];
 const NEW_ORDER_SINGLE: MessageRule = MessageRule {
     msg_type: "D",
-    required_tags: &[11, 48, 54, 38, 40],
-    allowed_tags: &[11, 48, 54, 38, 40, 44, 59, 60],
+    required_tags: &[11, 48, 207, 54, 38, 40],
+    allowed_tags: &[11, 48, 207, 54, 38, 40, 44, 59, 60],
 };
 const CANCEL_REQUEST: MessageRule = MessageRule {
     msg_type: "F",

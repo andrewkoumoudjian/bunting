@@ -117,6 +117,29 @@ pub struct MappingContext {
     pub next_intent_id: IntentId,
 }
 
+/// Mandatory numeric exchange for a FIX NewOrderSingle. Non-submission
+/// messages return None; exchange selection never defaults by instrument.
+///
+/// # Errors
+/// Returns an error for an absent, zero or malformed listing identifier.
+pub fn fix_order_listing(message: &FixMessage) -> Result<Option<ListingKey>, MappingError> {
+    if message.msg_type != "D" {
+        return Ok(None);
+    }
+    let instrument = parse::<u128>(message, 48)?;
+    let venue = parse::<u128>(message, 207)?;
+    if instrument == 0 {
+        return Err(MappingError::InvalidTag(48));
+    }
+    if venue == 0 {
+        return Err(MappingError::InvalidTag(207));
+    }
+    Ok(Some(ListingKey::new(
+        VenueId::new(venue),
+        InstrumentId::new(instrument),
+    )))
+}
+
 /// Maps FIX orders and market-data requests into transport-neutral application inputs.
 ///
 /// # Errors
@@ -130,7 +153,9 @@ pub fn map_inbound(
     match message.msg_type.as_str() {
         "D" => {
             let client_order_id = ClientOrderId::new(parse(message, 11)?);
-            let instrument_id = InstrumentId::new(parse(message, 48)?);
+            let instrument_id = fix_order_listing(message)?
+                .ok_or(MappingError::MissingTag(207))?
+                .instrument_id;
             let side = parse_side(required(message, 54)?)?;
             let quantity = QuantityLots::new(parse(message, 38)?);
             let kind = parse_order_kind(message)?;
@@ -435,6 +460,7 @@ mod tests {
         let mut message = FixMessage::new("D");
         message.push(11, "1");
         message.push(48, "7");
+        message.push(207, "2");
         message.push(54, "1");
         message.push(38, "3");
         message.push(40, "2");
@@ -449,6 +475,10 @@ mod tests {
         let InboundApplication::Intent(ExecutionIntent::Submit { order, .. }) = mapped else {
             return Err(MappingError::UnsupportedMessage);
         };
+        assert_eq!(
+            fix_order_listing(&message)?,
+            Some(ListingKey::new(VenueId::new(2), InstrumentId::new(7)))
+        );
         assert_eq!(order.quantity, QuantityLots::new(3));
         assert_eq!(
             order.kind,

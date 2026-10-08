@@ -576,7 +576,7 @@ impl FixApplicationState {
                     self.client_order_ids
                         .insert(*local_order_id, client_order_id);
                 }
-                let command = self.adapter.command_for_action(
+                let mut command = self.adapter.command_for_action(
                     action,
                     &BuntingCommandContext {
                         run_id: context.run_id,
@@ -586,6 +586,17 @@ impl FixApplicationState {
                         correlation_id: context.correlation_id,
                     },
                 )?;
+                if let CommandPayload::SubmitOrder(order) = &command.payload {
+                    let listing_key = simfix_mapping::fix_order_listing(message)?
+                        .ok_or(ApplicationError::UnknownListing)?;
+                    if listing_key.instrument_id != order.instrument_id {
+                        return Err(ApplicationError::UnknownListing);
+                    }
+                    command.payload = CommandPayload::SubmitOrderAtListing {
+                        listing_key,
+                        order: order.clone(),
+                    };
+                }
                 Ok(FixApplicationRequest::Command(command))
             }
         }
