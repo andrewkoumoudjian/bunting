@@ -163,6 +163,7 @@ fn native_origin_refuses_torn_replayed_or_invalid_checkpoint_records()
     store.insert_run(initial_run())?;
     let cache = InMemorySnapshotCache::new();
     ApplicationService::new(&store, &cache).execute(&actor(), &expected_command())?;
+    store.checkpoint()?;
     drop(store);
     let original = std::fs::read(&path)?;
     assert!(FileOriginStore::open(&path, &config).is_ok());
@@ -186,6 +187,7 @@ fn native_origin_refuses_torn_replayed_or_invalid_checkpoint_records()
     std::fs::write(&path, &original)?;
     assert!(FileOriginStore::open(&path, &config).is_ok());
     std::fs::remove_file(&path)?;
+    std::fs::remove_file(path.with_extension("wal"))?;
     std::fs::remove_dir(folder)?;
     Ok(())
 }
@@ -214,9 +216,76 @@ fn durable_local_origin_restores_committed_state_after_restart()
         ApplicationService::new(&store, &cache).execute(&actor(), &expected_command())?;
     drop(store);
 
+    // The genesis checkpoint is still at version zero; the append-only
+    // journal, not a full checkpoint rewrite, owns this committed transition.
+    let checkpoint: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    assert_eq!(checkpoint["runs"][0]["sequence"], serde_json::json!(0));
+    let journal_path = path.with_extension("wal");
+    assert!(!std::fs::read(&journal_path)?.is_empty());
     let restored = FileOriginStore::open(&path, &config)?;
     assert_eq!(restored.load_run(RunId::new(1))?, executed.state);
     assert_eq!(restored.events(RunId::new(1))?, executed.events);
+    restored.checkpoint()?;
+    assert_eq!(std::fs::metadata(&journal_path)?.len(), 0);
+    drop(restored);
+    assert_eq!(
+        FileOriginStore::open(&path, &config)?.load_run(RunId::new(1))?,
+        executed.state
+    );
     std::fs::remove_file(path)?;
+    std::fs::remove_file(journal_path)?;
+    Ok(())
+}
+
+#[test]
+fn incomplete_journal_tail_is_removed_but_a_complete_corrupt_record_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    let folder = std::env::temp_dir().join(format!(
+        "bunting-journal-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let path = folder.join("state.json");
+    let journal_path = path.with_extension("wal");
+    let config = StorageConfig {
+        kind: StorageKind::File,
+        path: Some(path.display().to_string()),
+        max_runs: 4,
+        max_commands: 64,
+        max_events_per_run: 256,
+    };
+    let origin = FileOriginStore::open(&path, &config)?;
+    origin.insert_run(initial_run())?;
+    let cache = InMemorySnapshotCache::new();
+    let first = ApplicationService::new(&origin, &cache)
+        .execute(&actor(), &expected_command())?;
+    drop(origin);
+
+    let intact = std::fs::read(&journal_path)?;
+    assert!(intact.len() > 48);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)?
+        .write_all(b"crash-tail")?;
+    let restored = FileOriginStore::open(&path, &config)?;
+    assert_eq!(std::fs::read(&journal_path)?, intact);
+    assert_eq!(restored.load_run(RunId::new(1))?, first.state);
+    let duplicate = ApplicationService::new(&restored, &cache)
+        .execute(&actor(), &expected_command())?;
+    assert_eq!(duplicate.result.committed_sequence, EventSequence::new(1));
+    assert_eq!(restored.events(RunId::new(1))?, first.events);
+    drop(restored);
+
+    let mut corrupt = intact;
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    std::fs::write(&journal_path, &corrupt)?;
+    assert!(FileOriginStore::open(&path, &config).is_err());
+    std::fs::remove_file(&path)?;
+    std::fs::remove_file(&journal_path)?;
+    std::fs::remove_dir(folder)?;
     Ok(())
 }
