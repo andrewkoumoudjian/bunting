@@ -2229,6 +2229,98 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "full-width maker alias, colliding direct ID, fills, cancel, and replay are one invariant"
+    )]
+    fn full_width_canonical_order_ids_match_cancel_and_replay_without_collision() {
+        let large = OrderId::new(u128::from(u64::MAX) + 123);
+        let would_collide = OrderId::new(u128::from(u64::MAX));
+        let mut state = run();
+        let first = submit(&state, 1, 2, large.get(), 1, Side::Sell, 110, 2);
+        let accepted = state.transition(&first, None).unwrap();
+        assert!(accepted.accepted);
+        state = accepted.candidate;
+        assert_eq!(state.ownership()[&large].upstream_order_id, u64::MAX);
+        assert_eq!(state.upstream_order_aliases.get(&u64::MAX), Some(&large));
+
+        // The next u64-compatible order must not claim the reserved upstream ID.
+        let next = submit(
+            &state,
+            2,
+            2,
+            would_collide.get(),
+            1,
+            Side::Sell,
+            120,
+            1,
+        );
+        let accepted = state.transition(&next, None).unwrap();
+        assert!(accepted.accepted);
+        state = accepted.candidate;
+        assert_eq!(
+            state.ownership()[&would_collide].upstream_order_id,
+            u64::MAX - 1
+        );
+        assert_eq!(
+            state.upstream_order_aliases.get(&(u64::MAX - 1)),
+            Some(&would_collide)
+        );
+
+        let restored = EngineSnapshotEnvelope::from_json(
+            &state.snapshot_envelope().unwrap().to_json().unwrap(),
+        )
+        .unwrap();
+        let replay_start = restored.state;
+        assert_eq!(replay_start.state_hash().unwrap(), state.state_hash().unwrap());
+
+        let first_buy = submit(&state, 3, 1, 123, 1, Side::Buy, 110, 2);
+        let filled = state.transition(&first_buy, None).unwrap();
+        assert!(filled.accepted);
+        assert!(filled.events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::TradeExecuted {
+                maker_order_id,
+                taker_order_id,
+                ..
+            } if *maker_order_id == large && *taker_order_id == OrderId::new(123)
+        )));
+        let replayed = replay_start.transition(&first_buy, None).unwrap();
+        assert_eq!(
+            replayed.candidate.state_hash().unwrap(),
+            filled.candidate.state_hash().unwrap()
+        );
+        state = filled.candidate;
+
+        let cancel = Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(4),
+            correlation_id: CorrelationId::new(4),
+            logical_time: LogicalTimeNs::new(4_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(2),
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: would_collide,
+                participant_id: ParticipantId::new(2),
+            }),
+        };
+        let cancelled = state.transition(&cancel, None).unwrap();
+        assert!(cancelled.accepted);
+        assert!(cancelled.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCanceled { order_id, .. } if order_id == would_collide
+        )));
+        assert_eq!(
+            cancelled.candidate.ownership()[&would_collide].state,
+            OwnedOrderState::Canceled
+        );
+        assert_eq!(
+            cancelled.candidate.upstream_order_aliases.get(&u64::MAX),
+            Some(&large)
+        );
+    }
+
+    #[test]
     fn two_listings_are_isolated_and_iteration_is_deterministic() {
         let state = run();
         let before_two = state
