@@ -96,6 +96,10 @@ audit](docs/core-engine-status-2026-10-07.md) and [earlier roadmap](docs/plans/c
 remain historical context, not current implementation proof. No production
 repairs have been implemented by this research handoff.
 
+For source-backed agent and synthetic-liquidity implementation options, see the
+[October 8 agent/market simulation research note](docs/research/2026-10-08-agent-market-simulation-implementations.md).
+It is documentation only; no models or external code were imported by that review.
+
 ## Current architecture
 
 - `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.

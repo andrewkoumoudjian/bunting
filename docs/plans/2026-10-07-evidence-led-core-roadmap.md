@@ -2,6 +2,8 @@
 
 Status: **proposed development roadmap**, documentation only. Audited source: main@0fdbd130a59b212ac6cae1d3b78000acd94fb9b2; no code or tests changed in this handoff. The [independent architecture audit](../research/2026-10-07-independent-core-architecture-audit.md) gives the mechanism, alternatives, exact source pointers, external literature and limits. [Proposed ADR 0028](../adr/0028-proposed-headless-run-authority.md) identifies changes requiring architecture acceptance.
 
+**Agent and market-flow research (2026-10-08):** [source-pinned Rust/C++ implementation comparison, academic models, observed agent gaps and integration gates](../research/2026-10-08-agent-market-simulation-implementations.md). This is a proposed Slice 5 research input, not an accepted architecture change or implemented realism claim.
+
 ## Objective and release definition
 
 Release a **headless reusable Rust simulation engine** that owns matching, orders, economic posting, agent and calendar time, deterministic replay and market data. It must operate in-process with no TUI, FIX, Cloudflare, Wasmer, internet access or system wall-clock in the transition logic.
