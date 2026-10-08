@@ -124,6 +124,16 @@ pub const fn to_upstream_time_in_force(policy: TimeInForcePolicy) -> TimeInForce
     }
 }
 
+/// Splits an immediate policy into the policy submitted upstream and the
+/// immediate behavior Bunting completes after matching.
+const fn immediate_policy(policy: TimeInForce) -> (TimeInForce, Option<TimeInForce>) {
+    match policy {
+        TimeInForce::Ioc => (TimeInForce::Gtc, Some(TimeInForce::Ioc)),
+        TimeInForce::Fok => (TimeInForce::Fok, Some(TimeInForce::Fok)),
+        other => (other, None),
+    }
+}
+
 /// Recovers a sequential upstream identifier from its stable textual form.
 #[must_use]
 pub fn sequential_id_from_text(value: &str) -> Option<u64> {
@@ -171,17 +181,39 @@ impl KernelBook {
         side: Side,
         time_in_force: TimeInForce,
     ) -> Result<LimitSubmission, OrderBookError> {
-        let (order, trade_result) = self.inner.add_limit_order_with_result(
+        let (resting_policy, immediate) = immediate_policy(time_in_force);
+        let result = self.inner.add_limit_order_with_result(
             Id::sequential(order_id),
             price,
             quantity,
             side,
-            time_in_force,
+            resting_policy,
             None,
-        )?;
+        );
+        self.finish_immediate(order_id, immediate, result.map(|(_, trades)| trades))
+    }
 
-        let _order_id = order.id().to_string();
-        Ok(LimitSubmission { trade_result })
+    /// OrderBook-rs 0.10.3 consumes an IOC's partial fills and then returns
+    /// `InsufficientLiquidity`, discarding the fills. Bunting therefore submits
+    /// IOC as GTC and removes any remainder within the same transition, which
+    /// keeps identical matching semantics while preserving the trade result. An
+    /// infeasible FOK is rejected upstream before matching and rests nothing.
+    fn finish_immediate(
+        &self,
+        order_id: u64,
+        immediate: Option<TimeInForce>,
+        result: Result<Option<TradeResult>, OrderBookError>,
+    ) -> Result<LimitSubmission, OrderBookError> {
+        match (immediate, result) {
+            (Some(TimeInForce::Fok), Err(OrderBookError::InsufficientLiquidity { .. })) => {
+                Ok(LimitSubmission { trade_result: None })
+            }
+            (Some(TimeInForce::Ioc), Ok(trade_result)) => {
+                self.inner.cancel_order(Id::sequential(order_id))?;
+                Ok(LimitSubmission { trade_result })
+            }
+            (_, result) => result.map(|trade_result| LimitSubmission { trade_result }),
+        }
     }
 
     /// Submits a released OrderBook-rs special order without exposing the matcher.
@@ -203,7 +235,7 @@ impl KernelBook {
         let quantity = Quantity::new(quantity);
         let user_id = Hash32([0; 32]);
         let timestamp = self.inner.clock().now_millis();
-        let time_in_force = to_upstream_time_in_force(time_in_force);
+        let (time_in_force, immediate) = immediate_policy(to_upstream_time_in_force(time_in_force));
         let order = match policy {
             AdvancedOrderPolicy::PostOnly => OrderType::PostOnly {
                 id,
@@ -334,8 +366,11 @@ impl KernelBook {
                 extra_fields: (),
             },
         };
-        let (_, trade_result) = self.inner.add_order_with_result(order)?;
-        Ok(LimitSubmission { trade_result })
+        let result = self
+            .inner
+            .add_order_with_result(order)
+            .map(|(_, trades)| trades);
+        self.finish_immediate(order_id, immediate, result)
     }
 
     /// Submits a market order and normalizes the upstream match result into a trade result.
@@ -375,6 +410,12 @@ impl KernelBook {
             .inner
             .cancel_order(Id::sequential(order_id))?
             .map(|order| order.quantity()))
+    }
+
+    /// Returns whether an order currently rests in this book.
+    #[must_use]
+    pub fn contains(&self, order_id: u64) -> bool {
+        self.inner.get_order(Id::sequential(order_id)).is_some()
     }
 
     /// Engages the upstream operational kill switch.

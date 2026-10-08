@@ -217,6 +217,8 @@ mod tests {
             seller_id: ParticipantId::new(800),
             price: PriceTicks::new(42),
             quantity: QuantityLots::new(3),
+            buyer_fee: bunting_market_types::MoneyMinor::new(5),
+            seller_fee: bunting_market_types::MoneyMinor::new(-1),
             upstream_engine_sequence: 17,
         };
         let mut rested = event(9, 700);

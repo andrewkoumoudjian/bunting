@@ -671,6 +671,7 @@ mod tests {
     use bunting_market_events::{
         NewsAudience, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
     };
+    use bunting_market_types::CurrencyId;
     use bunting_market_types::{
         CommandId, InstrumentId, IterationId, MoneyMinor, NewsId, OrderId, PriceBounds, PriceTicks,
         QuantityLots, ScenarioId, ScenarioVersion, VenueId,
@@ -693,6 +694,13 @@ mod tests {
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [ListingDefinition::new(
                 ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
                 "ONE".to_owned(),
@@ -702,12 +710,12 @@ mod tests {
             [ParticipantDefinition::new(
                 ParticipantId::new(7),
                 true,
-                RiskLimits {
-                    max_order_quantity: QuantityLots::new(100),
-                    max_open_order_quantity: QuantityLots::new(1_000),
-                    max_absolute_position: QuantityLots::new(1_000),
-                },
-                MoneyMinor::new(100_000),
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(1_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(100_000))]),
                 BTreeMap::new(),
             )],
         )
@@ -746,14 +754,21 @@ mod tests {
         let primary = ListingKey::new(VenueId::new(1), instrument);
         let alternate = ListingKey::new(VenueId::new(2), instrument);
         let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
-        let limits = RiskLimits {
-            max_order_quantity: QuantityLots::new(100),
-            max_open_order_quantity: QuantityLots::new(100),
-            max_absolute_position: QuantityLots::new(100),
-        };
+        let limits = RiskLimits::new(
+            QuantityLots::new(100),
+            QuantityLots::new(100),
+            QuantityLots::new(100),
+        );
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(3),
             ScenarioVersion::new(1),
+            [bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [
                 ListingDefinition::new(primary, "PRIMARY".into(), bounds).unwrap(),
                 ListingDefinition::new(alternate, "ALTERNATE".into(), bounds).unwrap(),
@@ -763,14 +778,14 @@ mod tests {
                     ParticipantId::new(7),
                     true,
                     limits,
-                    MoneyMinor::new(100_000),
+                    BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(100_000))]),
                     BTreeMap::from([(instrument, QuantityLots::new(10))]),
                 ),
                 ParticipantDefinition::new(
                     ParticipantId::new(8),
                     true,
                     limits,
-                    MoneyMinor::new(100_000),
+                    BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(100_000))]),
                     BTreeMap::new(),
                 ),
             ],
@@ -923,7 +938,10 @@ mod tests {
         assert_eq!(view.news[0].news_id, NewsId::new(1));
         let account = competition::account(&private, &actor(7)).unwrap();
         assert_eq!(account.participant_id, ParticipantId::new(7));
-        assert_eq!(account.policies.score, "bunting.score.nlv-rank.v1");
+        assert_eq!(
+            account.policies.score,
+            "bunting.score.nlv-last-trade-rank.v2"
+        );
     }
 
     #[test]

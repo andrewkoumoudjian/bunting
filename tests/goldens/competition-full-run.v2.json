@@ -1,0 +1,251 @@
+{
+  "ledger": [
+    {
+      "cash": {
+        "balance": 999900,
+        "fees": 0,
+        "reserved": 0
+      },
+      "participant_id": 1,
+      "position": {
+        "cost_basis": 100000,
+        "open_buy": 0,
+        "open_sell": 0,
+        "quantity": 1000,
+        "realized_pnl": 0,
+        "reserved": 0,
+        "traded": 0
+      }
+    },
+    {
+      "cash": {
+        "balance": 1000000,
+        "fees": 0,
+        "reserved": 0
+      },
+      "participant_id": 2,
+      "position": {
+        "cost_basis": 100000,
+        "open_buy": 0,
+        "open_sell": 0,
+        "quantity": 1000,
+        "realized_pnl": 0,
+        "reserved": 0,
+        "traded": 0
+      }
+    },
+    {
+      "cash": {
+        "balance": 1000000,
+        "fees": 0,
+        "reserved": 0
+      },
+      "participant_id": 99,
+      "position": {
+        "cost_basis": 100000,
+        "open_buy": 0,
+        "open_sell": 0,
+        "quantity": 1000,
+        "realized_pnl": 0,
+        "reserved": 0,
+        "traded": 0
+      }
+    }
+  ],
+  "lifecycle": "terminated",
+  "logical_time": 2000000,
+  "scores": [
+    {
+      "entries": [
+        {
+          "participant_id": 2,
+          "rank": 1,
+          "score": 1100000
+        },
+        {
+          "participant_id": 99,
+          "rank": 2,
+          "score": 1100000
+        },
+        {
+          "participant_id": 1,
+          "rank": 3,
+          "score": 1099900
+        }
+      ],
+      "generated_at": 2000000,
+      "policy_version": 1
+    }
+  ],
+  "sequence": 6,
+  "state_hash": "13d96198b8e1e838cf6c6f2d6936c04f5639cb7641a65f6d00b0b0d7b681d21d",
+  "transcript": [
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 1,
+      "correlation_id": 1,
+      "event_id": 2,
+      "logical_time": 0,
+      "payload": {
+        "simulation": {
+          "lifecycle_changed": {
+            "status": "active"
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 1
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 2,
+      "correlation_id": 1,
+      "event_id": 3,
+      "logical_time": 0,
+      "payload": {
+        "simulation": {
+          "fine_applied": {
+            "amount": 125,
+            "currency_id": 1,
+            "participant_id": 1,
+            "policy_version": 1
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 2
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 2,
+      "correlation_id": 1,
+      "event_id": 4,
+      "logical_time": 0,
+      "payload": {
+        "simulation": {
+          "administrator_change_recorded": {
+            "reason": "late disclosure"
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 3
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 3,
+      "correlation_id": 1,
+      "event_id": 4,
+      "logical_time": 0,
+      "payload": {
+        "simulation": {
+          "clock_advanced": {
+            "from": 0,
+            "to": 1000000
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 4
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 4,
+      "correlation_id": 1,
+      "event_id": 5,
+      "logical_time": 1000000,
+      "payload": {
+        "simulation": {
+          "clock_advanced": {
+            "from": 1000000,
+            "to": 2000000
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 5
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 4,
+      "correlation_id": 1,
+      "event_id": 6,
+      "logical_time": 1000000,
+      "payload": {
+        "simulation": {
+          "scheduled_action_applied": {
+            "action_id": 1
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 6
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 5,
+      "correlation_id": 1,
+      "event_id": 6,
+      "logical_time": 2000000,
+      "payload": {
+        "simulation": {
+          "iteration_scored": {
+            "participant_count": 3
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 7
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 6,
+      "correlation_id": 1,
+      "event_id": 7,
+      "logical_time": 2000000,
+      "payload": {
+        "simulation": {
+          "lifecycle_changed": {
+            "status": "terminated"
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 8
+    },
+    {
+      "actor": 99,
+      "causation_sequence": null,
+      "command_id": 6,
+      "correlation_id": 1,
+      "event_id": 8,
+      "logical_time": 2000000,
+      "payload": {
+        "simulation": {
+          "administrator_change_recorded": {
+            "reason": "golden run complete"
+          }
+        }
+      },
+      "run_id": 11,
+      "schema_version": 1,
+      "sequence": 9
+    }
+  ]
+}

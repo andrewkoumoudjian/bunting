@@ -39,13 +39,22 @@ pub fn account(frame: &mut Frame, area: Rect, client: &FixClient) {
                     "Participant: {}  Sequence: {}",
                     account.participant_id, account.committed_sequence
                 )),
+                Line::from(
+                    account
+                        .cash
+                        .iter()
+                        .map(|cash| {
+                            format!(
+                                "Cash[{}]: {}  Reserved: {}  Fees: {}",
+                                cash.currency_id, cash.balance, cash.reserved, cash.fees
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("  "),
+                ),
                 Line::from(format!(
-                    "Order cash: {}  Reserved: {}",
-                    account.order_cash, account.order_reserved_cash
-                )),
-                Line::from(format!(
-                    "NLV by currency: {:?}",
-                    account.net_liquidation_value
+                    "NLV[{}]: {}",
+                    account.reporting_currency, account.net_liquidation_value
                 )),
                 Line::from(format!(
                     "PnL: {}  Commission: {}",

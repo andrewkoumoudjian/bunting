@@ -6,18 +6,17 @@ pub mod compatibility;
 mod matching;
 pub mod simulation;
 
-use bunting_ledger::{
-    Account, AccountProjection, Holding, HoldingProjection, Ledger, LedgerError, TradeSettlement,
-};
+use bunting_ledger::{Fill, FillParty, LedgerError};
+pub use bunting_ledger::{FxRate, InstrumentTerms, Ledger, Reservation};
 use bunting_market_events::{
     CancelReason, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope, EventPayload,
     OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest,
 };
 use bunting_market_types::{
-    EventId, EventSequence, InstrumentId, IterationId, ListingKey, MoneyMinor, OrderId,
+    CurrencyId, EventId, EventSequence, InstrumentId, IterationId, ListingKey, MoneyMinor, OrderId,
     ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
 };
-use bunting_risk_engine::{RiskLimits, RiskState};
+use bunting_risk_engine::RiskLimits;
 use compatibility::nbc::{
     NBC_TRANSLATION_VERSION, NbcCompatibilityState, RunStatus as NbcRunStatus,
     ScenarioConfig as NbcScenarioConfig, ScheduledEvent as NbcScheduledEvent,
@@ -28,7 +27,11 @@ use matching::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use simulation::{SIMULATION_POLICY_VERSION, SimulationError, SimulationScenario, SimulationState};
+pub use simulation::InstrumentKind;
+use simulation::{
+    SIMULATION_POLICY_VERSION, SimulationContext, SimulationError, SimulationScenario,
+    SimulationState,
+};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -36,11 +39,13 @@ use std::fmt;
 pub use matching::{ORDERBOOK_RS_AUDIT_COMMIT, ORDERBOOK_RS_VERSION};
 
 /// Version of the central engine behavior established by this foundation slice.
-pub const ENGINE_VERSION: u16 = 2;
+pub const ENGINE_VERSION: u16 = 3;
 /// Version of the complete persisted engine snapshot envelope.
-pub const ENGINE_SNAPSHOT_VERSION: u16 = 2;
-/// Version of the minimal Bunting-native scenario schema.
-pub const SCENARIO_SCHEMA_VERSION: u16 = 1;
+pub const ENGINE_SNAPSHOT_VERSION: u16 = 3;
+/// Version of the Bunting-native scenario schema.
+pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
+/// Maximum economic instruments admitted into one run.
+pub const MAX_INSTRUMENTS: usize = 256;
 /// Version of each nested listing snapshot record.
 pub const LISTING_SNAPSHOT_VERSION: u16 = 1;
 /// Maximum listings admitted into one foundation run.
@@ -79,6 +84,32 @@ impl Default for EngineConfig {
     }
 }
 
+/// Per-lot fee schedule of one listing, charged in the instrument currency.
+///
+/// RIT's `TradingFee` maps to `taker_per_lot` and `LimitOrderRebate` maps to a
+/// negative `maker_per_lot`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeeSchedule {
+    /// Charged per filled lot to the aggressing order; negative is a rebate.
+    pub taker_per_lot: MoneyMinor,
+    /// Charged per filled lot to the resting order; negative is a rebate.
+    pub maker_per_lot: MoneyMinor,
+}
+
+impl FeeSchedule {
+    /// Largest per-lot charge either role can incur, used for buy reservations.
+    #[must_use]
+    pub fn bound(self) -> MoneyMinor {
+        MoneyMinor::new(
+            self.taker_per_lot
+                .get()
+                .max(self.maker_per_lot.get())
+                .max(0),
+        )
+    }
+}
+
 /// Immutable venue-specific listing input.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +117,8 @@ pub struct ListingDefinition {
     key: ListingKey,
     symbol: String,
     price_bounds: PriceBounds,
+    #[serde(default)]
+    fees: FeeSchedule,
 }
 
 impl ListingDefinition {
@@ -105,7 +138,15 @@ impl ListingDefinition {
             key,
             symbol,
             price_bounds,
+            fees: FeeSchedule::default(),
         })
+    }
+
+    /// Replaces the listing fee schedule.
+    #[must_use]
+    pub const fn with_fees(mut self, fees: FeeSchedule) -> Self {
+        self.fees = fees;
+        self
     }
 
     #[must_use]
@@ -122,16 +163,103 @@ impl ListingDefinition {
     pub const fn price_bounds(&self) -> PriceBounds {
         self.price_bounds
     }
+
+    #[must_use]
+    pub const fn fees(&self) -> FeeSchedule {
+        self.fees
+    }
 }
 
-/// Immutable participant input required by the foundation run.
+/// Immutable economic definition shared by every listing of one instrument.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstrumentDefinition {
+    pub instrument_id: InstrumentId,
+    pub symbol: String,
+    /// Settlement and quotation currency.
+    pub currency: CurrencyId,
+    pub kind: InstrumentKind,
+    /// Positive contract multiplier applied to price-times-quantity notional.
+    pub multiplier: i64,
+    /// Whether positions may become negative without borrowed inventory.
+    #[serde(default)]
+    pub shortable: bool,
+    /// Opening valuation mark; required when any participant starts with a position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_mark: Option<PriceTicks>,
+}
+
+impl InstrumentDefinition {
+    /// Unit-multiplier, non-shortable instrument without an opening mark.
+    #[must_use]
+    pub fn new(
+        instrument_id: InstrumentId,
+        symbol: impl Into<String>,
+        currency: CurrencyId,
+        kind: InstrumentKind,
+    ) -> Self {
+        Self {
+            instrument_id,
+            symbol: symbol.into(),
+            currency,
+            kind,
+            multiplier: 1,
+            shortable: false,
+            opening_mark: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_multiplier(mut self, multiplier: i64) -> Self {
+        self.multiplier = multiplier;
+        self
+    }
+
+    #[must_use]
+    pub const fn shortable(mut self) -> Self {
+        self.shortable = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_opening_mark(mut self, mark: PriceTicks) -> Self {
+        self.opening_mark = Some(mark);
+        self
+    }
+
+    /// Ledger terms derived from this definition.
+    #[must_use]
+    pub const fn terms(&self) -> InstrumentTerms {
+        InstrumentTerms {
+            currency: self.currency,
+            multiplier: self.multiplier,
+            shortable: self.shortable,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ScenarioError> {
+        if self.instrument_id.get() == 0
+            || self.symbol.is_empty()
+            || self.symbol.len() > 128
+            || self.currency.get() == 0
+            || self.multiplier <= 0
+            || self.opening_mark.is_some_and(|mark| mark.get() <= 0)
+        {
+            return Err(ScenarioError::InvalidInstrument);
+        }
+        Ok(())
+    }
+}
+
+/// Immutable participant input required by the run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantDefinition {
     participant_id: ParticipantId,
     enabled: bool,
     limits: RiskLimits,
-    initial_cash: MoneyMinor,
+    /// Canonically ordered opening cash per currency.
+    initial_cash: BTreeMap<CurrencyId, MoneyMinor>,
     /// Canonically ordered initial positions.
     initial_positions: BTreeMap<InstrumentId, QuantityLots>,
 }
@@ -142,7 +270,7 @@ impl ParticipantDefinition {
         participant_id: ParticipantId,
         enabled: bool,
         limits: RiskLimits,
-        initial_cash: MoneyMinor,
+        initial_cash: BTreeMap<CurrencyId, MoneyMinor>,
         initial_positions: BTreeMap<InstrumentId, QuantityLots>,
     ) -> Self {
         Self {
@@ -170,8 +298,8 @@ impl ParticipantDefinition {
     }
 
     #[must_use]
-    pub const fn initial_cash(&self) -> MoneyMinor {
-        self.initial_cash
+    pub fn initial_cash(&self) -> &BTreeMap<CurrencyId, MoneyMinor> {
+        &self.initial_cash
     }
 
     #[must_use]
@@ -180,13 +308,52 @@ impl ParticipantDefinition {
     }
 }
 
-/// Minimal immutable scenario definition used to instantiate a run.
+mod instrument_list {
+    use super::{InstrumentDefinition, InstrumentId};
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S>(
+        value: &BTreeMap<InstrumentId, InstrumentDefinition>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(value.values())
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<InstrumentId, InstrumentDefinition>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut output = BTreeMap::new();
+        for value in Vec::<InstrumentDefinition>::deserialize(deserializer)? {
+            if output.insert(value.instrument_id, value).is_some() {
+                return Err(serde::de::Error::custom("duplicate instrument"));
+            }
+        }
+        Ok(output)
+    }
+}
+
+/// Immutable scenario definition used to instantiate a run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioDefinition {
     schema_version: u16,
     scenario_id: ScenarioId,
     scenario_version: ScenarioVersion,
+    /// Currency in which net liquidation value and scores are reported.
+    reporting_currency: CurrencyId,
+    /// Conversions for every other held currency.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fx_rates: Vec<FxRate>,
+    /// Economic instruments; every listed instrument must be defined.
+    #[serde(with = "instrument_list")]
+    instruments: BTreeMap<InstrumentId, InstrumentDefinition>,
     /// Canonically ordered by listing identity.
     listings: BTreeMap<ListingKey, ListingDefinition>,
     /// Canonically ordered by participant identity.
@@ -196,12 +363,24 @@ pub struct ScenarioDefinition {
 }
 
 impl ScenarioDefinition {
+    /// Builds a validated scenario. The reporting currency defaults to the
+    /// lowest instrument currency; use [`Self::with_reporting`] for others.
     pub fn new(
         scenario_id: ScenarioId,
         scenario_version: ScenarioVersion,
+        instruments: impl IntoIterator<Item = InstrumentDefinition>,
         listings: impl IntoIterator<Item = ListingDefinition>,
         participants: impl IntoIterator<Item = ParticipantDefinition>,
     ) -> Result<Self, ScenarioError> {
+        let mut instrument_map = BTreeMap::new();
+        for instrument in instruments {
+            if instrument_map
+                .insert(instrument.instrument_id, instrument)
+                .is_some()
+            {
+                return Err(ScenarioError::InvalidInstrument);
+            }
+        }
         let mut listing_map = BTreeMap::new();
         for listing in listings {
             let key = listing.key;
@@ -219,16 +398,36 @@ impl ScenarioDefinition {
                 return Err(ScenarioError::DuplicateParticipant);
             }
         }
+        let reporting_currency = instrument_map
+            .values()
+            .map(|instrument| instrument.currency)
+            .min()
+            .ok_or(ScenarioError::InvalidInstrument)?;
         let definition = Self {
             schema_version: SCENARIO_SCHEMA_VERSION,
             scenario_id,
             scenario_version,
+            reporting_currency,
+            fx_rates: Vec::new(),
+            instruments: instrument_map,
             listings: listing_map,
             participants: participant_map,
             simulation: SimulationScenario::default(),
         };
         definition.validate()?;
         Ok(definition)
+    }
+
+    /// Sets the reporting currency and the conversions for other currencies.
+    pub fn with_reporting(
+        mut self,
+        reporting_currency: CurrencyId,
+        fx_rates: Vec<FxRate>,
+    ) -> Result<Self, ScenarioError> {
+        self.reporting_currency = reporting_currency;
+        self.fx_rates = fx_rates;
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn validate(&self) -> Result<(), ScenarioError> {
@@ -241,8 +440,45 @@ impl ScenarioDefinition {
         if self.listings.is_empty() || self.listings.len() > MAX_LISTINGS {
             return Err(ScenarioError::ListingBound);
         }
+        if self.instruments.is_empty() || self.instruments.len() > MAX_INSTRUMENTS {
+            return Err(ScenarioError::InvalidInstrument);
+        }
         if self.participants.len() > MAX_PARTICIPANTS {
             return Err(ScenarioError::ParticipantBound);
+        }
+        for (id, instrument) in &self.instruments {
+            if *id != instrument.instrument_id {
+                return Err(ScenarioError::InvalidInstrument);
+            }
+            instrument.validate()?;
+        }
+        let currency_supported = |currency: CurrencyId| {
+            currency == self.reporting_currency
+                || self.fx_rates.iter().any(|rate| rate.currency == currency)
+        };
+        if self.reporting_currency.get() == 0 {
+            return Err(ScenarioError::InvalidCurrency);
+        }
+        for (index, rate) in self.fx_rates.iter().enumerate() {
+            if rate.currency == self.reporting_currency
+                || rate.minor_units_per_lot <= 0
+                || self.fx_rates[..index]
+                    .iter()
+                    .any(|other| other.currency == rate.currency)
+                || self
+                    .instruments
+                    .get(&rate.instrument_id)
+                    .is_none_or(|instrument| instrument.currency != self.reporting_currency)
+            {
+                return Err(ScenarioError::InvalidCurrency);
+            }
+        }
+        if self
+            .instruments
+            .values()
+            .any(|instrument| !currency_supported(instrument.currency))
+        {
+            return Err(ScenarioError::InvalidCurrency);
         }
         for (key, listing) in &self.listings {
             if key.venue_id.get() == 0
@@ -250,6 +486,7 @@ impl ScenarioDefinition {
                 || *key != listing.key
                 || listing.symbol.is_empty()
                 || listing.symbol.len() > 128
+                || !self.instruments.contains_key(&key.instrument_id)
             {
                 return Err(ScenarioError::InvalidListing);
             }
@@ -259,33 +496,38 @@ impl ScenarioDefinition {
                 .map_err(|_| ScenarioError::InvalidListing)?;
         }
         for (participant_id, participant) in &self.participants {
-            if *participant_id != participant.participant_id {
-                return Err(ScenarioError::InvalidParticipant);
-            }
-            if participant.initial_positions.len() > MAX_LISTINGS
-                || participant.initial_positions.keys().any(|instrument| {
-                    !self
-                        .listings
-                        .keys()
-                        .any(|key| key.instrument_id == *instrument)
-                })
+            if *participant_id != participant.participant_id
+                || participant.initial_positions.len() > MAX_INSTRUMENTS
+                || participant.initial_cash.len() > MAX_INSTRUMENTS
+                || participant
+                    .initial_cash
+                    .keys()
+                    .any(|currency| currency.get() == 0 || !currency_supported(*currency))
             {
                 return Err(ScenarioError::InvalidParticipant);
+            }
+            for (instrument, quantity) in &participant.initial_positions {
+                let definition = self
+                    .instruments
+                    .get(instrument)
+                    .ok_or(ScenarioError::InvalidParticipant)?;
+                if quantity.get() != 0 && definition.opening_mark.is_none() {
+                    return Err(ScenarioError::InvalidParticipant);
+                }
+                if quantity.get() < 0 && !definition.shortable {
+                    return Err(ScenarioError::InvalidParticipant);
+                }
             }
         }
         self.simulation
             .validate()
             .map_err(|_| ScenarioError::InvalidSimulation)?;
-        if let Some(marks) = &self.simulation.opening_marks {
-            for participant in self.participants.values() {
-                for (instrument, quantity) in &participant.initial_positions {
-                    if quantity.get() != 0
-                        && !marks.iter().any(|mark| mark.instrument_id == *instrument)
-                    {
-                        return Err(ScenarioError::InvalidSimulation);
-                    }
-                }
-            }
+        if self
+            .simulation
+            .referenced_instruments()
+            .any(|instrument| !self.instruments.contains_key(&instrument))
+        {
+            return Err(ScenarioError::InvalidSimulation);
         }
         Ok(())
     }
@@ -302,8 +544,18 @@ impl ScenarioDefinition {
     }
 
     #[must_use]
+    pub fn instruments(&self) -> &BTreeMap<InstrumentId, InstrumentDefinition> {
+        &self.instruments
+    }
+
+    #[must_use]
     pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
         &self.participants
+    }
+
+    #[must_use]
+    pub const fn reporting_currency(&self) -> CurrencyId {
+        self.reporting_currency
     }
 
     /// Attaches validated immutable simulation-domain configuration.
@@ -332,6 +584,8 @@ impl ScenarioDefinition {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScenarioError {
     UnsupportedSchemaVersion,
+    InvalidInstrument,
+    InvalidCurrency,
     ListingBound,
     ParticipantBound,
     DuplicateListing,
@@ -456,6 +710,8 @@ pub struct OwnedOrder {
     pub original_quantity: QuantityLots,
     pub remaining_quantity: QuantityLots,
     pub state: OwnedOrderState,
+    /// Exact ledger reservation released on fill, cancel or expiry.
+    pub reservation: Reservation,
 }
 
 /// Versioned snapshot for one private matcher boundary.
@@ -500,10 +756,14 @@ pub struct RunState {
     scenario_version: ScenarioVersion,
     scenario_hash: String,
     config: EngineConfig,
+    reporting_currency: CurrencyId,
+    fx_rates: Vec<FxRate>,
+    #[serde(with = "instrument_list")]
+    instruments: BTreeMap<InstrumentId, InstrumentDefinition>,
     listings: BTreeMap<ListingKey, ListingState>,
     participants: BTreeMap<ParticipantId, ParticipantDefinition>,
-    accounts: AccountProjection,
-    holdings: HoldingProjection,
+    /// The single authoritative economic ledger.
+    ledger: Ledger,
     ownership: BTreeMap<OrderId, OwnedOrder>,
     /// Single authoritative upstream-to-canonical identity index, including
     /// every accepted order regardless of external identifier size.
@@ -517,10 +777,6 @@ pub struct RunState {
 }
 
 impl RunState {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "run initialization seeds matching books and the matching and economic account views"
-    )]
     pub fn from_scenario(
         run_id: RunId,
         iteration_id: IterationId,
@@ -548,98 +804,34 @@ impl RunState {
                 },
             );
         }
-        let accounts = scenario
-            .participants
-            .values()
-            .map(|participant| {
-                (
+        let mut ledger = Ledger::new();
+        for (instrument_id, instrument) in &scenario.instruments {
+            ledger.configure_instrument(*instrument_id, instrument.terms())?;
+            if let Some(mark) = instrument.opening_mark {
+                ledger.set_mark(*instrument_id, mark)?;
+            }
+        }
+        for participant in scenario.participants.values() {
+            for (currency, amount) in &participant.initial_cash {
+                ledger.post_cash(participant.participant_id, *currency, *amount)?;
+            }
+            for (instrument_id, quantity) in &participant.initial_positions {
+                let instrument = &scenario.instruments[instrument_id];
+                let basis = instrument
+                    .opening_mark
+                    .map_or(Ok(MoneyMinor::new(0)), |mark| {
+                        bunting_ledger::notional(mark, *quantity, instrument.multiplier)
+                    })?;
+                ledger.seed_position(
                     participant.participant_id,
-                    Account {
-                        cash: participant.initial_cash,
-                        reserved_cash: MoneyMinor::new(0),
-                    },
-                )
-            })
-            .collect();
-        let holdings = scenario
-            .participants
-            .values()
-            .flat_map(|participant| {
-                participant
-                    .initial_positions
-                    .iter()
-                    .map(|(instrument, quantity)| {
-                        (
-                            participant.participant_id,
-                            *instrument,
-                            Holding {
-                                position: *quantity,
-                                reserved_inventory: QuantityLots::new(0),
-                            },
-                        )
-                    })
-            })
-            .collect();
-        let mut simulation = SimulationState::from_scenario(&scenario.simulation)
+                    *instrument_id,
+                    *quantity,
+                    basis,
+                )?;
+            }
+        }
+        let simulation = SimulationState::from_scenario(&scenario.simulation)
             .map_err(|_| EngineError::InvalidScenario)?;
-        // ParticipantDefinition has one scalar cash balance, so this projection
-        // cannot safely represent initial cash across multiple currencies.
-        if let Some(first) = scenario.simulation.instruments.values().next() {
-            if scenario
-                .simulation
-                .instruments
-                .values()
-                .any(|instrument| instrument.settlement_currency != first.settlement_currency)
-            {
-                return Err(EngineError::InvalidScenario);
-            }
-        }
-        if let Some(currency) = scenario
-            .simulation
-            .instruments
-            .values()
-            .map(|instrument| instrument.settlement_currency)
-            .next()
-        {
-            for participant in scenario.participants.values() {
-                simulation
-                    .private
-                    .entry(participant.participant_id)
-                    .or_default();
-                simulation.portfolio_ledger.set_settled_cash(
-                    participant.participant_id,
-                    currency,
-                    participant.initial_cash,
-                );
-                for (instrument, quantity) in &participant.initial_positions {
-                    let opening_mark =
-                        scenario
-                            .simulation
-                            .opening_marks
-                            .as_ref()
-                            .and_then(|marks| {
-                                marks.iter().find(|mark| mark.instrument_id == *instrument)
-                            });
-                    let basis = opening_mark
-                        .map_or(Ok(MoneyMinor::new(0)), |mark| {
-                            MoneyMinor::checked_mul_price_quantity(mark.price, *quantity)
-                        })
-                        .map_err(|_| EngineError::InvalidScenario)?;
-                    simulation.portfolio_ledger.set_position(
-                        participant.participant_id,
-                        *instrument,
-                        *quantity,
-                        basis,
-                    );
-                    if let Some(mark) = opening_mark {
-                        simulation
-                            .portfolio_ledger
-                            .mark_position(participant.participant_id, *instrument, mark.price)
-                            .map_err(|_| EngineError::InvalidScenario)?;
-                    }
-                }
-            }
-        }
         Ok(Self {
             run_id,
             sequence: EventSequence::new(0),
@@ -649,10 +841,12 @@ impl RunState {
             scenario_version: scenario.scenario_version,
             scenario_hash: scenario.content_hash()?,
             config: EngineConfig::default(),
+            reporting_currency: scenario.reporting_currency,
+            fx_rates: scenario.fx_rates.clone(),
+            instruments: scenario.instruments.clone(),
             listings,
             participants: scenario.participants.clone(),
-            accounts,
-            holdings,
+            ledger,
             ownership: BTreeMap::new(),
             upstream_to_canonical: BTreeMap::new(),
             next_upstream_order_id: 1,
@@ -719,14 +913,35 @@ impl RunState {
         &self.listings
     }
 
+    /// The single authoritative economic ledger.
     #[must_use]
-    pub fn accounts(&self) -> &AccountProjection {
-        &self.accounts
+    pub const fn ledger(&self) -> &Ledger {
+        &self.ledger
     }
 
     #[must_use]
-    pub fn holdings(&self) -> &HoldingProjection {
-        &self.holdings
+    pub fn instruments(&self) -> &BTreeMap<InstrumentId, InstrumentDefinition> {
+        &self.instruments
+    }
+
+    #[must_use]
+    pub const fn reporting_currency(&self) -> CurrencyId {
+        self.reporting_currency
+    }
+
+    #[must_use]
+    pub fn fx_rates(&self) -> &[FxRate] {
+        &self.fx_rates
+    }
+
+    /// Net liquidation value of one participant in the reporting currency.
+    pub fn net_liquidation_value(
+        &self,
+        participant: ParticipantId,
+    ) -> Result<MoneyMinor, EngineError> {
+        Ok(self
+            .ledger
+            .reporting_value(participant, self.reporting_currency, &self.fx_rates)?)
     }
 
     /// Returns immutable participant configuration pinned by the run scenario.
@@ -835,6 +1050,11 @@ impl RunState {
                 .values()
                 .any(|listing| listing.snapshot.schema_version != LISTING_SNAPSHOT_VERSION)
             || self.simulation.policy_version != SIMULATION_POLICY_VERSION
+            || self.ledger.instruments().len() != self.instruments.len()
+            || self
+                .instruments
+                .iter()
+                .any(|(id, definition)| self.ledger.terms(*id) != Ok(definition.terms()))
         {
             return Err(SnapshotError::UnsupportedVersion);
         }
@@ -857,7 +1077,7 @@ impl RunState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one explicit match keeps every foundation command on the same staged transition path"
+        reason = "one explicit match keeps every order-flow command on the same staged transition path"
     )]
     pub fn transition_owned(
         self,
@@ -874,9 +1094,6 @@ impl RunState {
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut ledger =
-            Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
-        let risk = candidate.restore_risk();
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let mut changed_depth = BTreeMap::new();
@@ -894,19 +1111,18 @@ impl RunState {
                     }
                     _ => candidate.listing_key_for_instrument(order.instrument_id)?,
                 };
-                let price_bounds = candidate
+                let definition = candidate
                     .listings
                     .get(&listing_key)
                     .ok_or(EngineError::UnknownListing)?
                     .definition
-                    .price_bounds;
+                    .clone();
                 let book = candidate.restore_book(listing_key, cached, command)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
                     listing_key: Some(listing_key),
                 });
-                let outcome = if !candidate.simulation.instruments.is_empty()
-                    && candidate.simulation.lifecycle != simulation::RunLifecycle::Active
+                let outcome = if candidate.simulation.lifecycle != simulation::RunLifecycle::Active
                 {
                     Err(RejectCode::RunNotActive)
                 } else if candidate
@@ -916,14 +1132,14 @@ impl RunState {
                 {
                     Err(RejectCode::ListingHalted)
                 } else {
+                    let participant = candidate.participants.get(&order.participant_id).cloned();
                     let outcome = prepare_submit(
                         order,
-                        listing_key,
-                        price_bounds,
+                        &definition,
+                        participant.as_ref(),
                         &book,
-                        &mut ledger,
-                        &mut candidate.simulation,
-                        &risk,
+                        &mut candidate.ledger,
+                        &candidate.participants,
                         &mut candidate.ownership,
                         &mut candidate.upstream_to_canonical,
                         &mut candidate.next_upstream_order_id,
@@ -954,8 +1170,9 @@ impl RunState {
                     let book = candidate.restore_book(listing_key, cached, command)?;
                     let outcome = prepare_cancel(
                         cancel,
+                        CancelReason::Requested,
                         &book,
-                        &mut ledger,
+                        &mut candidate.ledger,
                         &mut candidate.ownership,
                         &mut payloads,
                     )?;
@@ -1021,36 +1238,62 @@ impl RunState {
                 (true, None, None)
             }
         };
+        candidate.finish(
+            command,
+            next_sequence,
+            payloads,
+            changed_depth,
+            changed_listings,
+            accepted,
+            reject_code,
+            order_id,
+        )
+    }
+
+    /// Projects committed payloads and envelopes them as the next run sequence.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared commit tail receives every staged transition fact"
+    )]
+    fn finish(
+        mut self,
+        command: &Command,
+        next_sequence: EventSequence,
+        payloads: Vec<EventPayload>,
+        changed_depth: BTreeMap<ListingKey, VisibleDepth>,
+        changed_listings: BTreeSet<ListingKey>,
+        accepted: bool,
+        reject_code: Option<String>,
+        order_id: Option<OrderId>,
+    ) -> Result<TransitionOutcome, EngineError> {
         if payloads.len() > MAX_EVENTS_PER_TRANSITION {
             return Err(EngineError::EventBatchTooLarge);
         }
         for payload in &payloads {
-            candidate
-                .simulation
+            self.simulation
                 .project_event(command.logical_time, payload)
                 .map_err(EngineError::Simulation)?;
         }
         for (listing_key, depth) in changed_depth {
-            candidate.refresh_market_projection(listing_key, depth)?;
+            self.refresh_market_projection(listing_key, depth)?;
         }
-        let events = envelope(command, candidate.event_sequence, payloads)?;
-        candidate.sequence = next_sequence;
-        candidate.event_sequence = events
+        let events = envelope(command, self.event_sequence, payloads)?;
+        self.sequence = next_sequence;
+        self.event_sequence = events
             .last()
-            .map_or(candidate.event_sequence, |event| event.sequence);
-        (candidate.accounts, candidate.holdings) = ledger.projection();
+            .map_or(self.event_sequence, |event| event.sequence);
         let snapshot_checksum = changed_listings
             .iter()
             .next()
-            .and_then(|key| candidate.listings.get(key))
+            .and_then(|key| self.listings.get(key))
             .or_else(|| {
-                (candidate.listings.len() == 1)
-                    .then(|| candidate.listings.values().next())
+                (self.listings.len() == 1)
+                    .then(|| self.listings.values().next())
                     .flatten()
             })
             .map(|listing| listing.snapshot.checksum.clone());
         Ok(TransitionOutcome {
-            candidate,
+            candidate: self,
             events,
             accepted,
             reject_code,
@@ -1072,7 +1315,7 @@ impl RunState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "the atomic transition stages matching, projections and canonical envelopes together"
+        reason = "mass cancel stages matcher books while other commands share the domain reducer"
     )]
     pub fn transition_simulation_owned(
         self,
@@ -1097,8 +1340,6 @@ impl RunState {
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
-        let mut ledger =
-            Ledger::from_projection(candidate.accounts.clone(), candidate.holdings.clone());
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         let mut changed_depth = BTreeMap::new();
@@ -1140,8 +1381,9 @@ impl RunState {
                         order_id: *order_id,
                         participant_id: owned.participant_id,
                     },
+                    CancelReason::MassCancel,
                     book,
-                    &mut ledger,
+                    &mut candidate.ledger,
                     &mut candidate.ownership,
                     &mut payloads,
                 )?
@@ -1158,98 +1400,33 @@ impl RunState {
                 },
             ));
         } else {
+            let mut context = SimulationContext {
+                ledger: &mut candidate.ledger,
+                participants: &candidate.participants,
+                reporting_currency: candidate.reporting_currency,
+                fx_rates: &candidate.fx_rates,
+            };
             let domain_events = candidate
                 .simulation
-                .apply(request.actor, request.logical_time, &request.payload)
+                .apply(
+                    &mut context,
+                    request.actor,
+                    request.logical_time,
+                    &request.payload,
+                )
                 .map_err(EngineError::Simulation)?;
             payloads.extend(domain_events.into_iter().map(EventPayload::Simulation));
         }
-        if payloads.len() > MAX_EVENTS_PER_TRANSITION {
-            return Err(EngineError::EventBatchTooLarge);
-        }
-        if let Some(currency) = candidate
-            .simulation
-            .instruments
-            .values()
-            .next()
-            .map(|instrument| instrument.settlement_currency)
-        {
-            // The legacy account projection is single-currency. Reject
-            // mismatched instruments until the risk account is multi-currency.
-            if candidate
-                .simulation
-                .instruments
-                .values()
-                .any(|instrument| instrument.settlement_currency != currency)
-            {
-                return Err(EngineError::Accounting);
-            }
-            for participant in candidate.participants.keys() {
-                ledger.set_cash(
-                    *participant,
-                    candidate
-                        .simulation
-                        .portfolio_ledger
-                        .balance(*participant, currency)
-                        .settled,
-                );
-                for instrument in candidate.simulation.instruments.keys() {
-                    ledger.set_position(
-                        *participant,
-                        *instrument,
-                        candidate
-                            .simulation
-                            .portfolio_ledger
-                            .position(*participant, *instrument)
-                            .settled,
-                    );
-                }
-            }
-        }
-        for payload in &payloads {
-            candidate
-                .simulation
-                .project_event(request.logical_time, payload)
-                .map_err(EngineError::Simulation)?;
-        }
-        for (listing_key, depth) in changed_depth {
-            candidate.refresh_market_projection(listing_key, depth)?;
-        }
-        let events = envelope(&metadata, candidate.event_sequence, payloads)?;
-        candidate.sequence = next_sequence;
-        candidate.event_sequence = events
-            .last()
-            .map_or(candidate.event_sequence, |event| event.sequence);
-        (candidate.accounts, candidate.holdings) = ledger.projection();
-        let snapshot_checksum = changed_listings
-            .iter()
-            .next()
-            .and_then(|key| candidate.listings.get(key))
-            .map(|listing| listing.snapshot.checksum.clone());
-        Ok(TransitionOutcome {
-            candidate,
-            events,
-            accepted: true,
-            reject_code: None,
-            order_id: None,
-            snapshot_checksum,
+        candidate.finish(
+            &metadata,
+            next_sequence,
+            payloads,
+            changed_depth,
             changed_listings,
-        })
-    }
-
-    fn restore_risk(&self) -> RiskState {
-        let mut risk = RiskState::new();
-        for listing in self.listings.values() {
-            risk.configure_instrument(
-                listing.definition.key.instrument_id,
-                listing.definition.price_bounds,
-            );
-        }
-        for participant in self.participants.values() {
-            risk.configure_participant(participant.participant_id, participant.limits);
-            risk.set_enabled(participant.participant_id, participant.enabled);
-        }
-        risk
+            true,
+            None,
+            None,
+        )
     }
 
     fn refresh_market_projection(
@@ -1483,16 +1660,15 @@ impl From<SnapshotError> for EngineError {
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "submission stages risk, OrderBook-rs matching, ledger effects, and canonical events atomically"
+    reason = "submission stages admission, ledger reservation, OrderBook-rs matching and canonical events atomically"
 )]
 fn prepare_submit(
     order: &bunting_market_events::SubmitOrder,
-    listing_key: ListingKey,
-    price_bounds: PriceBounds,
+    listing: &ListingDefinition,
+    participant: Option<&ParticipantDefinition>,
     book: &KernelBook,
     ledger: &mut Ledger,
-    simulation: &mut SimulationState,
-    risk: &RiskState,
+    participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
     upstream_to_canonical: &mut BTreeMap<u64, OrderId>,
     next_upstream_order_id: &mut u64,
@@ -1507,47 +1683,45 @@ fn prepare_submit(
     if order.order_id.get() == 0 {
         return Ok(Err(RejectCode::InvalidOrderId));
     }
+    let Some(participant) = participant else {
+        return Ok(Err(RejectCode::ParticipantDisabled));
+    };
     let Ok(upstream_quantity) = to_upstream_quantity(order.quantity) else {
         return Ok(Err(RejectCode::InvalidQuantity));
     };
-    let (reservation_price, upstream_price) = match order.kind {
+    let listing_key = listing.key;
+    let upstream_price = match order.kind {
         OrderKind::Limit { price }
         | OrderKind::LimitWithPolicy { price, .. }
         | OrderKind::AdvancedLimit { price, .. } => {
             let Ok(upstream_price) = to_upstream_price(price) else {
                 return Ok(Err(RejectCode::PriceOutOfBounds));
             };
-            (price, Some(upstream_price))
+            Some(upstream_price)
         }
         OrderKind::Market => {
             if !book.has_opposite_liquidity(order.side) {
                 return Ok(Err(RejectCode::InsufficientLiquidity));
             }
-            let price = match order.side {
-                Side::Buy => price_bounds.max,
-                Side::Sell => price_bounds.min,
-            };
-            (price, None)
+            None
         }
     };
-    let open_quantity = ownership
-        .values()
-        .filter(|owned| {
-            owned.participant_id == order.participant_id
-                && owned.listing_key.instrument_id == order.instrument_id
-                && owned.state == OwnedOrderState::Active
-        })
-        .try_fold(QuantityLots::new(0), |total, owned| {
-            total.checked_add(owned.remaining_quantity)
-        })
-        .ok_or(EngineError::Accounting)?;
-    let reservation_price = match risk.check(
+    let market_bound = match order.side {
+        Side::Buy => listing.price_bounds.max,
+        Side::Sell => listing.price_bounds.min,
+    };
+    let admission = match bunting_risk_engine::admit(
+        &participant.limits,
+        participant.enabled,
         order,
-        open_quantity,
+        bunting_risk_engine::ListingTerms {
+            price_bounds: listing.price_bounds,
+            fee_bound: listing.fees.bound(),
+        },
         ledger,
-        order.kind.is_market().then_some(reservation_price),
+        order.kind.is_market().then_some(market_bound),
     ) {
-        Ok(value) => value,
+        Ok(admission) => admission,
         Err(code) => return Ok(Err(code)),
     };
     let upstream_id = *next_upstream_order_id;
@@ -1557,12 +1731,12 @@ fn prepare_submit(
     if upstream_to_canonical.contains_key(&upstream_id) {
         return Err(EngineError::OwnershipInvariant);
     }
-    ledger.reserve(
+    ledger.open_order(
         order.participant_id,
         order.instrument_id,
         order.side,
-        reservation_price,
         order.quantity,
+        admission.reservation,
     )?;
     *next_upstream_order_id = next_id;
     upstream_to_canonical.insert(upstream_id, order.order_id);
@@ -1574,10 +1748,11 @@ fn prepare_submit(
             participant_id: order.participant_id,
             listing_key,
             side: order.side,
-            limit_price: reservation_price,
+            limit_price: admission.reservation_price,
             original_quantity: order.quantity,
             remaining_quantity: order.quantity,
             state: OwnedOrderState::Active,
+            reservation: admission.reservation,
         },
     );
     let trade_result = if let Some(price) = upstream_price {
@@ -1628,8 +1803,9 @@ fn prepare_submit(
             order.order_id,
             engine_sequence,
             &trade_info,
+            listing,
             ledger,
-            simulation,
+            participants,
             ownership,
             upstream_to_canonical,
             payloads,
@@ -1640,13 +1816,10 @@ fn prepare_submit(
         .ok_or(EngineError::OwnershipInvariant)?
         .remaining_quantity;
     if remaining.get() == 0 {
-        if let Some(taker) = ownership.get_mut(&order.order_id) {
-            taker.state = OwnedOrderState::Filled;
-        }
         payloads.push(EventPayload::OrderCompleted {
             order_id: order.order_id,
         });
-    } else if let Some(price) = order.kind.limit_price() {
+    } else if let (Some(price), true) = (order.kind.limit_price(), book.contains(upstream_id)) {
         payloads.push(EventPayload::OrderRested {
             order_id: order.order_id,
             participant_id: order.participant_id,
@@ -1657,12 +1830,13 @@ fn prepare_submit(
             remaining,
         });
     } else {
-        ledger.release(
+        // Market remainders and IOC/FOK remainders never rest upstream.
+        ledger.close_order(
             order.participant_id,
             order.instrument_id,
             order.side,
-            reservation_price,
             remaining,
+            admission.reservation,
         )?;
         if let Some(record) = ownership.get_mut(&order.order_id) {
             record.state = OwnedOrderState::Canceled;
@@ -1674,10 +1848,22 @@ fn prepare_submit(
             instrument_id: order.instrument_id,
             listing_key: Some(listing_key),
             remaining,
-            reason: CancelReason::MarketRemainder,
+            reason: if order.kind.is_market() {
+                CancelReason::MarketRemainder
+            } else {
+                CancelReason::Expired
+            },
         });
     }
     Ok(Ok(()))
+}
+
+fn per_lot_fee(per_lot: MoneyMinor, quantity: QuantityLots) -> Result<MoneyMinor, EngineError> {
+    per_lot
+        .get()
+        .checked_mul(i128::from(quantity.get()))
+        .map(MoneyMinor::new)
+        .ok_or(EngineError::Accounting)
 }
 
 #[expect(
@@ -1688,12 +1874,18 @@ fn apply_trades(
     taker_order_id: OrderId,
     engine_sequence: u64,
     trade_info: &TradeInfo,
+    listing: &ListingDefinition,
     ledger: &mut Ledger,
-    simulation: &mut SimulationState,
+    participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
     upstream_to_canonical: &BTreeMap<u64, OrderId>,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<(), EngineError> {
+    let funded = |participant: ParticipantId| {
+        participants
+            .get(&participant)
+            .is_some_and(|definition| definition.limits.cash_constrained)
+    };
     for transaction in &trade_info.transactions {
         let maker_upstream = sequential_id_from_text(&transaction.maker_order_id)
             .ok_or(EngineError::OwnershipInvariant)?;
@@ -1710,7 +1902,7 @@ fn apply_trades(
             .get(&taker_order_id)
             .cloned()
             .ok_or(EngineError::OwnershipInvariant)?;
-        if maker.listing_key != taker.listing_key {
+        if maker.listing_key != taker.listing_key || maker.listing_key != listing.key {
             return Err(EngineError::OwnershipInvariant);
         }
         let quantity = QuantityLots::new(
@@ -1718,45 +1910,50 @@ fn apply_trades(
         );
         let execution_price =
             PriceTicks::new(i64::try_from(transaction.price).map_err(|_| EngineError::Accounting)?);
-        let (buyer, seller, buyer_limit, seller_limit) = if taker.side == Side::Buy {
+        let maker_fee = per_lot_fee(listing.fees.maker_per_lot, quantity)?;
+        let taker_fee = per_lot_fee(listing.fees.taker_per_lot, quantity)?;
+        let party = |owned: &OwnedOrder, fee: MoneyMinor| FillParty {
+            participant: owned.participant_id,
+            fee,
+            order: Some(owned.reservation),
+            enforce_funding: funded(owned.participant_id),
+        };
+        let (buyer, seller, buyer_fee, seller_fee) = if taker.side == Side::Buy {
             (
-                taker.participant_id,
-                maker.participant_id,
-                taker.limit_price,
-                maker.limit_price,
+                party(&taker, taker_fee),
+                party(&maker, maker_fee),
+                taker_fee,
+                maker_fee,
             )
         } else {
             (
-                maker.participant_id,
-                taker.participant_id,
-                maker.limit_price,
-                taker.limit_price,
+                party(&maker, maker_fee),
+                party(&taker, taker_fee),
+                maker_fee,
+                taker_fee,
             )
         };
-        let settlement = TradeSettlement {
-            buyer,
-            seller,
-            instrument: taker.listing_key.instrument_id,
-            buyer_limit,
-            seller_limit,
-            execution_price,
+        ledger.settle(Fill {
+            instrument: listing.key.instrument_id,
+            price: execution_price,
             quantity,
-        };
-        ledger.settle_trade(settlement)?;
-        simulation
-            .post_trade(settlement)
-            .map_err(EngineError::Simulation)?;
+            buyer: Some(buyer),
+            seller: Some(seller),
+            set_mark: true,
+        })?;
         reduce_order(maker_id, quantity, ownership, payloads)?;
         reduce_order(taker_order_id, quantity, ownership, &mut Vec::new())?;
         payloads.push(EventPayload::TradeExecuted {
-            instrument_id: taker.listing_key.instrument_id,
-            listing_key: Some(taker.listing_key),
+            instrument_id: listing.key.instrument_id,
+            listing_key: Some(listing.key),
             maker_order_id: maker_id,
             taker_order_id,
-            buyer_id: buyer,
-            seller_id: seller,
+            buyer_id: buyer.participant,
+            seller_id: seller.participant,
             price: execution_price,
             quantity,
+            buyer_fee,
+            seller_fee,
             upstream_engine_sequence: engine_sequence,
         });
     }
@@ -1791,6 +1988,7 @@ fn reduce_order(
 
 fn prepare_cancel(
     cancel: &bunting_market_events::CancelOrder,
+    reason: CancelReason,
     book: &KernelBook,
     ledger: &mut Ledger,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
@@ -1816,12 +2014,12 @@ fn prepare_cancel(
     {
         return Err(EngineError::OwnershipInvariant);
     }
-    ledger.release(
+    ledger.close_order(
         owned.participant_id,
         owned.listing_key.instrument_id,
         owned.side,
-        owned.limit_price,
         owned.remaining_quantity,
+        owned.reservation,
     )?;
     if let Some(record) = ownership.get_mut(&cancel.order_id) {
         record.state = OwnedOrderState::Canceled;
@@ -1833,7 +2031,7 @@ fn prepare_cancel(
         instrument_id: owned.listing_key.instrument_id,
         listing_key: Some(owned.listing_key),
         remaining: owned.remaining_quantity,
-        reason: CancelReason::Requested,
+        reason,
     });
     Ok(Ok(()))
 }
@@ -1899,19 +2097,31 @@ fn hash_serializable<T: Serialize>(value: &T) -> Result<String, SnapshotError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use bunting_market_events::TimeInForcePolicy;
     use bunting_market_events::{NbcDone, SubmitOrder};
     use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs, VenueId};
+
+    const CASH: CurrencyId = CurrencyId::new(1);
+
+    fn instruments() -> [InstrumentDefinition; 2] {
+        [
+            InstrumentDefinition::new(InstrumentId::new(1), "ONE", CASH, InstrumentKind::Equity)
+                .with_opening_mark(PriceTicks::new(100)),
+            InstrumentDefinition::new(InstrumentId::new(2), "TWO", CASH, InstrumentKind::Equity)
+                .with_opening_mark(PriceTicks::new(100)),
+        ]
+    }
 
     fn participant(id: u128) -> ParticipantDefinition {
         ParticipantDefinition {
             participant_id: ParticipantId::new(id),
             enabled: true,
-            limits: RiskLimits {
-                max_order_quantity: QuantityLots::new(100),
-                max_open_order_quantity: QuantityLots::new(1_000),
-                max_absolute_position: QuantityLots::new(1_000),
-            },
-            initial_cash: MoneyMinor::new(100_000),
+            limits: RiskLimits::new(
+                QuantityLots::new(100),
+                QuantityLots::new(1_000),
+                QuantityLots::new(1_000),
+            ),
+            initial_cash: BTreeMap::from([(CASH, MoneyMinor::new(100_000))]),
             initial_positions: BTreeMap::from([
                 (InstrumentId::new(1), QuantityLots::new(100)),
                 (InstrumentId::new(2), QuantityLots::new(100)),
@@ -1920,22 +2130,24 @@ mod tests {
     }
 
     fn run() -> RunState {
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            instruments(),
             [
-                ListingDefinition {
-                    key: ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
-                    symbol: "ONE".to_string(),
-                    price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000))
-                        .unwrap(),
-                },
-                ListingDefinition {
-                    key: ListingKey::new(VenueId::new(1), InstrumentId::new(2)),
-                    symbol: "TWO".to_string(),
-                    price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000))
-                        .unwrap(),
-                },
+                ListingDefinition::new(
+                    ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
+                    "ONE".to_string(),
+                    bounds,
+                )
+                .unwrap(),
+                ListingDefinition::new(
+                    ListingKey::new(VenueId::new(1), InstrumentId::new(2)),
+                    "TWO".to_string(),
+                    bounds,
+                )
+                .unwrap(),
             ],
             [participant(1), participant(2)],
         )
@@ -2004,6 +2216,382 @@ mod tests {
         }
     }
 
+    fn at_listing(mut command: Command, listing_key: ListingKey) -> Command {
+        if let CommandPayload::SubmitOrder(order) = command.payload {
+            command.payload = CommandPayload::SubmitOrderAtListing { listing_key, order };
+        }
+        command
+    }
+
+    fn apply(state: RunState, command: &Command) -> TransitionOutcome {
+        state.transition_owned(command, None).unwrap()
+    }
+
+    fn total_cash(state: &RunState) -> i128 {
+        state
+            .participants()
+            .keys()
+            .map(|participant| state.ledger().cash(*participant, CASH).balance.get())
+            .sum()
+    }
+
+    #[test]
+    fn fees_and_rebates_settle_once_and_conserve_cash_net_of_fees() {
+        let fees = FeeSchedule {
+            taker_per_lot: MoneyMinor::new(3),
+            maker_per_lot: MoneyMinor::new(-1),
+        };
+        let mut state = run();
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        state.listings.get_mut(&key).unwrap().definition.fees = fees;
+        let before = total_cash(&state);
+        let maker = submit(&state, 1, 2, 1, 1, Side::Sell, 105, 10);
+        state = apply(state, &maker).candidate;
+        let taker = submit(&state, 2, 1, 2, 1, Side::Buy, 110, 4);
+        let outcome = apply(state, &taker);
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::TradeExecuted { price, quantity, buyer_fee, seller_fee, .. }
+                if price == PriceTicks::new(105)
+                    && quantity == QuantityLots::new(4)
+                    && buyer_fee == MoneyMinor::new(12)
+                    && seller_fee == MoneyMinor::new(-4)
+        )));
+        let state = outcome.candidate;
+        let buyer = state.ledger().cash(ParticipantId::new(1), CASH);
+        assert_eq!(buyer.balance, MoneyMinor::new(100_000 - 420 - 12));
+        assert_eq!(buyer.reserved, MoneyMinor::new(0));
+        assert_eq!(buyer.fees, MoneyMinor::new(12));
+        let seller = state.ledger().cash(ParticipantId::new(2), CASH);
+        assert_eq!(seller.balance, MoneyMinor::new(100_000 + 420 + 4));
+        // Six lots stay resting with exactly six lots of inventory reserved.
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(2), InstrumentId::new(1))
+                .reserved,
+            QuantityLots::new(6)
+        );
+        assert_eq!(total_cash(&state), before - 12 + 4);
+        assert_eq!(
+            state.ledger().mark(InstrumentId::new(1)),
+            Some(PriceTicks::new(105))
+        );
+        // Realized P&L: seller sold 4 at 105 against an opening basis of 100.
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(2), InstrumentId::new(1))
+                .realized_pnl,
+            MoneyMinor::new(20)
+        );
+    }
+
+    #[test]
+    fn ioc_remainder_is_canceled_and_releases_its_reservation_exactly() {
+        let mut state = run();
+        state = apply(
+            state.clone(),
+            &submit(&state, 1, 2, 1, 1, Side::Sell, 101, 3),
+        )
+        .candidate;
+        let mut ioc = submit(&state, 2, 1, 2, 1, Side::Buy, 102, 10);
+        if let CommandPayload::SubmitOrder(order) = &mut ioc.payload {
+            order.kind = OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(102),
+                time_in_force: TimeInForcePolicy::Ioc,
+            };
+        }
+        let outcome = apply(state, &ioc);
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCanceled { order_id, remaining, reason: CancelReason::Expired, .. }
+                if order_id == OrderId::new(2) && remaining == QuantityLots::new(7)
+        )));
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderRested { order_id, .. } if order_id == OrderId::new(2)
+        )));
+        let state = outcome.candidate;
+        let cash = state.ledger().cash(ParticipantId::new(1), CASH);
+        assert_eq!(cash.reserved, MoneyMinor::new(0));
+        assert_eq!(cash.balance, MoneyMinor::new(100_000 - 303));
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(1), InstrumentId::new(1))
+                .open_buy,
+            QuantityLots::new(0)
+        );
+        assert_eq!(
+            state.ownership()[&OrderId::new(2)].state,
+            OwnedOrderState::Canceled
+        );
+    }
+
+    #[test]
+    fn infeasible_fok_is_killed_without_touching_the_book() {
+        let mut state = run();
+        state = apply(
+            state.clone(),
+            &submit(&state, 1, 2, 1, 1, Side::Sell, 101, 3),
+        )
+        .candidate;
+        let book_before = state
+            .listing_snapshot(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+            .unwrap()
+            .package_json
+            .clone();
+        let mut fok = submit(&state, 2, 1, 2, 1, Side::Buy, 102, 10);
+        if let CommandPayload::SubmitOrder(order) = &mut fok.payload {
+            order.kind = OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(102),
+                time_in_force: TimeInForcePolicy::Fok,
+            };
+        }
+        let outcome = apply(state, &fok);
+        assert!(outcome.accepted);
+        assert!(
+            !outcome
+                .events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::TradeExecuted { .. }))
+        );
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCanceled { remaining, reason: CancelReason::Expired, .. }
+                if remaining == QuantityLots::new(10)
+        )));
+        assert_eq!(
+            outcome
+                .candidate
+                .ledger()
+                .cash(ParticipantId::new(1), CASH)
+                .reserved,
+            MoneyMinor::new(0)
+        );
+        let resting = outcome
+            .candidate
+            .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+            .unwrap();
+        assert_eq!(resting.1, vec![(101, 3)]);
+        assert!(!book_before.is_empty());
+    }
+
+    #[test]
+    fn instrument_risk_aggregates_open_orders_across_venues() {
+        let instrument = InstrumentId::new(1);
+        let primary = ListingKey::new(VenueId::new(1), instrument);
+        let secondary = ListingKey::new(VenueId::new(2), instrument);
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let mut trader = participant(1);
+        trader.limits.max_open_order_quantity = QuantityLots::new(15);
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(31),
+            ScenarioVersion::new(1),
+            instruments(),
+            [
+                ListingDefinition::new(primary, "P".into(), bounds).unwrap(),
+                ListingDefinition::new(secondary, "S".into(), bounds).unwrap(),
+            ],
+            [trader, participant(2)],
+        )
+        .unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(31), IterationId::new(1), &scenario).unwrap();
+        let first = at_listing(submit(&state, 1, 1, 1, 1, Side::Buy, 50, 10), primary);
+        let outcome = apply(state, &first);
+        assert!(outcome.accepted);
+        state = outcome.candidate;
+        let second = at_listing(submit(&state, 2, 1, 2, 1, Side::Buy, 50, 10), secondary);
+        let outcome = apply(state, &second);
+        assert!(!outcome.accepted);
+        assert_eq!(outcome.reject_code.as_deref(), Some("MaxOpenOrderQuantity"));
+        assert_eq!(
+            outcome
+                .candidate
+                .ledger()
+                .cash(ParticipantId::new(1), CASH)
+                .reserved,
+            MoneyMinor::new(500)
+        );
+    }
+
+    #[test]
+    fn shortable_instruments_admit_uncovered_sales_and_value_short_positions() {
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let short =
+            InstrumentDefinition::new(InstrumentId::new(1), "S", CASH, InstrumentKind::Equity)
+                .shortable()
+                .with_multiplier(10)
+                .with_opening_mark(PriceTicks::new(100));
+        let mut seller = participant(2);
+        seller.initial_positions.clear();
+        let mut buyer = participant(1);
+        buyer.initial_positions.clear();
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(32),
+            ScenarioVersion::new(1),
+            [short],
+            [ListingDefinition::new(key, "S".into(), bounds).unwrap()],
+            [buyer, seller],
+        )
+        .unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(32), IterationId::new(1), &scenario).unwrap();
+        state = apply(
+            state.clone(),
+            &submit(&state, 1, 2, 1, 1, Side::Sell, 90, 5),
+        )
+        .candidate;
+        state = apply(state.clone(), &submit(&state, 2, 1, 2, 1, Side::Buy, 90, 5)).candidate;
+        let seller = state
+            .ledger()
+            .position(ParticipantId::new(2), InstrumentId::new(1));
+        assert_eq!(seller.quantity, QuantityLots::new(-5));
+        assert_eq!(seller.cost_basis, MoneyMinor::new(-4_500));
+        assert_eq!(
+            state.ledger().cash(ParticipantId::new(2), CASH).balance,
+            MoneyMinor::new(104_500)
+        );
+        assert_eq!(
+            state.net_liquidation_value(ParticipantId::new(2)).unwrap(),
+            MoneyMinor::new(100_000)
+        );
+    }
+
+    #[test]
+    fn distinct_orders_sharing_low_64_bits_never_alias() {
+        let low = OrderId::new(7);
+        let high = OrderId::new((1_u128 << 64) | 7);
+        let mut state = run();
+        state = apply(
+            state.clone(),
+            &submit(&state, 1, 2, low.get(), 1, Side::Sell, 110, 2),
+        )
+        .candidate;
+        state = apply(
+            state.clone(),
+            &submit(&state, 2, 2, high.get(), 1, Side::Sell, 111, 3),
+        )
+        .candidate;
+        assert_ne!(
+            state.ownership()[&low].upstream_order_id,
+            state.ownership()[&high].upstream_order_id
+        );
+        let cancel = Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(3),
+            correlation_id: CorrelationId::new(3),
+            logical_time: LogicalTimeNs::new(3_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(2),
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: high,
+                participant_id: ParticipantId::new(2),
+            }),
+        };
+        let outcome = apply(state, &cancel);
+        assert!(outcome.accepted);
+        let state = outcome.candidate;
+        assert_eq!(state.ownership()[&high].state, OwnedOrderState::Canceled);
+        assert_eq!(state.ownership()[&low].state, OwnedOrderState::Active);
+        assert_eq!(
+            state
+                .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(1)))
+                .unwrap()
+                .1,
+            vec![(110, 2)]
+        );
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(2), InstrumentId::new(1))
+                .reserved,
+            QuantityLots::new(2)
+        );
+        let buy = submit(&state, 4, 1, 99, 1, Side::Buy, 111, 2);
+        let filled = apply(state, &buy);
+        assert!(filled.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::TradeExecuted { maker_order_id, .. } if maker_order_id == low
+        )));
+    }
+
+    #[test]
+    fn accepted_tender_settles_against_the_house_and_scores_every_participant() {
+        let mut state = run();
+        let request = |state: &RunState, id: u128, actor: u128, payload| SimulationCommandRequest {
+            run_id: state.run_id(),
+            command_id: CommandId::new(id),
+            correlation_id: CorrelationId::new(id),
+            logical_time: LogicalTimeNs::new(u64::try_from(id).unwrap()),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(actor),
+            payload,
+        };
+        let open = request(
+            &state,
+            1,
+            9,
+            SimulationCommand::OpenTender {
+                tender_id: bunting_market_types::TenderId::new(1),
+                participant_id: ParticipantId::new(1),
+                instrument_id: InstrumentId::new(1),
+                side: Side::Sell,
+                quantity: QuantityLots::new(50),
+                price: PriceTicks::new(120),
+                expires_at: LogicalTimeNs::new(100),
+            },
+        );
+        state = state.transition_simulation_owned(&open).unwrap().candidate;
+        let accept = request(
+            &state,
+            2,
+            1,
+            SimulationCommand::DecideTender {
+                tender_id: bunting_market_types::TenderId::new(1),
+                decision: bunting_market_events::TenderDecision::Accept,
+            },
+        );
+        let outcome = state.transition_simulation_owned(&accept).unwrap();
+        assert!(outcome.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::Simulation(bunting_market_events::SimulationEvent::TenderSettled { .. })
+        )));
+        state = outcome.candidate;
+        assert_eq!(
+            state.ledger().cash(ParticipantId::new(1), CASH).balance,
+            MoneyMinor::new(106_000)
+        );
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(1), InstrumentId::new(1))
+                .quantity,
+            QuantityLots::new(50)
+        );
+        // An off-book tender price never becomes the public valuation mark.
+        assert_eq!(
+            state.ledger().mark(InstrumentId::new(1)),
+            Some(PriceTicks::new(100))
+        );
+        let score = request(&state, 3, 9, SimulationCommand::ScoreIteration);
+        state = state.transition_simulation_owned(&score).unwrap().candidate;
+        let report = state.simulation().reports.last().unwrap();
+        assert_eq!(report.entries.len(), 2);
+        assert_eq!(report.entries[0].participant_id, ParticipantId::new(1));
+        assert_eq!(
+            report.entries[0].score,
+            MoneyMinor::new(106_000 + 5_000 + 10_000)
+        );
+        assert_eq!(
+            report.entries[1].score,
+            MoneyMinor::new(100_000 + 10_000 + 10_000)
+        );
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -2025,6 +2613,7 @@ mod tests {
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(21),
             ScenarioVersion::new(1),
+            instruments(),
             [
                 ListingDefinition::new(primary, "PRIMARY".to_owned(), bounds).unwrap(),
                 ListingDefinition::new(secondary, "SECONDARY".to_owned(), bounds).unwrap(),
@@ -2098,12 +2687,13 @@ mod tests {
             state.simulation().market_by_listing[&secondary].aggregated_bids,
             vec![(PriceTicks::new(120), QuantityLots::new(1))]
         );
-        let holdings = state.holdings();
-        assert!(holdings.iter().any(|(owner, asset, holding)| {
-            *owner == ParticipantId::new(1)
-                && *asset == instrument
-                && holding.position == QuantityLots::new(101)
-        }));
+        assert_eq!(
+            state
+                .ledger()
+                .position(ParticipantId::new(1), instrument)
+                .quantity,
+            QuantityLots::new(101)
+        );
         let restored = EngineSnapshotEnvelope::from_json(
             &state.snapshot_envelope().unwrap().to_json().unwrap(),
         )
@@ -2490,19 +3080,24 @@ mod tests {
 
     #[test]
     fn scenario_hash_is_canonical_and_decoding_is_strict() {
-        let one = ListingDefinition {
-            key: ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
-            symbol: "ONE".to_string(),
-            price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap(),
-        };
-        let two = ListingDefinition {
-            key: ListingKey::new(VenueId::new(1), InstrumentId::new(2)),
-            symbol: "TWO".to_string(),
-            price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap(),
-        };
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let one = ListingDefinition::new(
+            ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
+            "ONE".to_string(),
+            bounds,
+        )
+        .unwrap();
+        let two = ListingDefinition::new(
+            ListingKey::new(VenueId::new(1), InstrumentId::new(2)),
+            "TWO".to_string(),
+            bounds,
+        )
+        .unwrap();
+        let [first_instrument, second_instrument] = instruments();
         let first = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [first_instrument.clone(), second_instrument.clone()],
             [one.clone(), two.clone()],
             [participant(1), participant(2)],
         )
@@ -2510,6 +3105,7 @@ mod tests {
         let second = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [second_instrument, first_instrument],
             [two, one],
             [participant(2), participant(1)],
         )

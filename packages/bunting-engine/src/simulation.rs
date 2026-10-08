@@ -1,12 +1,10 @@
 //! Authoritative deterministic simulation-domain state and projections.
 
-use bunting_ledger::{
-    JournalPosting, JournalTransaction, LedgerError, PortfolioLedger, PostingAccount,
-    TradeSettlement, TransactionKind,
-};
+use crate::ParticipantDefinition;
+use bunting_ledger::{Fill, FillParty, FxRate, Ledger, LedgerError};
 use bunting_market_events::{
-    ClockMode, CompositeLeg, CompositePolicy, EventPayload, NewsAudience, OtcDecision, Side,
-    SimulationCommand, SimulationEvent, TenderDecision,
+    ClockMode, EventPayload, NewsAudience, OtcDecision, Side, SimulationCommand, SimulationEvent,
+    TenderDecision,
 };
 use bunting_market_types::{
     CurrencyId, FacilityId, InstrumentId, ListingKey, LogicalTimeNs, MoneyMinor, NegotiationId,
@@ -51,17 +49,6 @@ pub enum InstrumentKind {
     Synthetic {
         components: Vec<(InstrumentId, i64)>,
     },
-}
-
-/// Immutable economic instrument definition.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EconomicInstrument {
-    pub instrument_id: InstrumentId,
-    pub symbol: String,
-    pub settlement_currency: CurrencyId,
-    pub kind: InstrumentKind,
-    pub contract_multiplier: i64,
 }
 
 /// Versioned facility category.
@@ -117,62 +104,18 @@ impl Default for LogicalClock {
     }
 }
 
-/// Exact opening mark for a pre-endowed instrument position.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpeningMark {
-    pub instrument_id: InstrumentId,
-    pub price: PriceTicks,
-}
-
 /// Immutable scenario input for the full simulation domain.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SimulationScenario {
     pub policy_version: u16,
     pub clock: LogicalClock,
-    #[serde(with = "scenario_instruments")]
-    pub instruments: BTreeMap<InstrumentId, EconomicInstrument>,
     #[serde(with = "scenario_facilities")]
     pub facilities: BTreeMap<FacilityId, FacilityDefinition>,
     pub scheduled_actions: Vec<ScheduledAction>,
     pub initial_news: Vec<NewsItem>,
-    /// None preserves legacy unpriced inventory. Some requires complete, strictly
-    /// ordered marks for every nonzero participant opening position.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opening_marks: Option<Vec<OpeningMark>>,
-}
-
-mod scenario_instruments {
-    use super::{EconomicInstrument, InstrumentId};
-    use serde::{Deserialize, Serialize};
-    use std::collections::BTreeMap;
-
-    pub fn serialize<S>(
-        value: &BTreeMap<InstrumentId, EconomicInstrument>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        value.values().collect::<Vec<_>>().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<BTreeMap<InstrumentId, EconomicInstrument>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let values = Vec::<EconomicInstrument>::deserialize(deserializer)?;
-        let mut output = BTreeMap::new();
-        for value in values {
-            if output.insert(value.instrument_id, value).is_some() {
-                return Err(serde::de::Error::custom("duplicate instrument"));
-            }
-        }
-        Ok(output)
-    }
+    /// Whether the run accepts orders immediately or waits for `StartRun`.
+    pub starts_active: bool,
 }
 
 mod scenario_facilities {
@@ -212,11 +155,10 @@ impl Default for SimulationScenario {
         Self {
             policy_version: SIMULATION_POLICY_VERSION,
             clock: LogicalClock::default(),
-            instruments: BTreeMap::new(),
             facilities: BTreeMap::new(),
             scheduled_actions: Vec::new(),
             initial_news: Vec::new(),
-            opening_marks: None,
+            starts_active: true,
         }
     }
 }
@@ -234,49 +176,95 @@ impl SimulationScenario {
         {
             return Err(SimulationError::InvalidScenario);
         }
-        for (id, instrument) in &self.instruments {
-            if *id != instrument.instrument_id
-                || id.get() == 0
-                || instrument.symbol.is_empty()
-                || instrument.symbol.len() > 128
-                || instrument.settlement_currency.get() == 0
-                || instrument.contract_multiplier <= 0
-            {
-                return Err(SimulationError::InvalidScenario);
-            }
-        }
-        if let Some(marks) = &self.opening_marks {
-            let mut preceding = None;
-            for mark in marks {
-                if mark.instrument_id.get() == 0
-                    || mark.price.get() <= 0
-                    || preceding.is_some_and(|id| id >= mark.instrument_id)
-                    || self
-                        .instruments
-                        .get(&mark.instrument_id)
-                        .is_none_or(|instrument| instrument.contract_multiplier != 1)
-                {
-                    return Err(SimulationError::InvalidScenario);
-                }
-                preceding = Some(mark.instrument_id);
-            }
-        }
         for (id, facility) in &self.facilities {
             if *id != facility.facility_id
                 || id.get() == 0
                 || facility.capacity.get() <= 0
-                || facility
-                    .input_instrument
-                    .is_some_and(|instrument| !self.instruments.contains_key(&instrument))
-                || facility
-                    .output_instrument
-                    .is_some_and(|instrument| !self.instruments.contains_key(&instrument))
+                || (facility.input_instrument.is_none() && facility.output_instrument.is_none())
             {
                 return Err(SimulationError::InvalidScenario);
             }
         }
+        if self.scheduled_actions.iter().any(|action| {
+            matches!(
+                action.kind,
+                ScheduledActionKind::ExerciseOption { .. } | ScheduledActionKind::Deliver { .. }
+            )
+        }) {
+            // Option exercise and physical delivery have no settled semantics yet;
+            // refuse them rather than silently ignoring scheduled economic events.
+            return Err(SimulationError::Unsupported);
+        }
         Ok(())
     }
+
+    /// Instruments referenced by facilities and scheduled actions.
+    pub fn referenced_instruments(&self) -> impl Iterator<Item = InstrumentId> + '_ {
+        self.facilities
+            .values()
+            .flat_map(|facility| [facility.input_instrument, facility.output_instrument])
+            .flatten()
+            .chain(
+                self.scheduled_actions
+                    .iter()
+                    .filter_map(|action| match action.kind {
+                        ScheduledActionKind::ExpireInstrument { instrument_id }
+                        | ScheduledActionKind::ExerciseOption { instrument_id, .. }
+                        | ScheduledActionKind::Deliver { instrument_id, .. } => Some(instrument_id),
+                        ScheduledActionKind::Cashflow { .. }
+                        | ScheduledActionKind::CompleteFacilityJob { .. } => None,
+                    }),
+            )
+    }
+}
+
+/// Economic authority and run facts a simulation command may read or post to.
+pub struct SimulationContext<'a> {
+    pub ledger: &'a mut Ledger,
+    pub participants: &'a BTreeMap<ParticipantId, ParticipantDefinition>,
+    pub reporting_currency: CurrencyId,
+    pub fx_rates: &'a [FxRate],
+}
+
+impl SimulationContext<'_> {
+    fn require_instrument(&self, instrument: InstrumentId) -> Result<(), SimulationError> {
+        self.ledger
+            .terms(instrument)
+            .map(|_| ())
+            .map_err(|_| SimulationError::UnknownIdentity)
+    }
+
+    fn require_participant(&self, participant: ParticipantId) -> Result<(), SimulationError> {
+        if self.participants.contains_key(&participant) {
+            Ok(())
+        } else {
+            Err(SimulationError::UnknownIdentity)
+        }
+    }
+
+    fn party(&self, participant: ParticipantId) -> FillParty {
+        FillParty {
+            participant,
+            fee: MoneyMinor::new(0),
+            order: None,
+            enforce_funding: self
+                .participants
+                .get(&participant)
+                .is_some_and(|definition| definition.limits().cash_constrained),
+        }
+    }
+}
+
+/// Economic reason recorded with a scheduled cashflow.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CashflowKind {
+    Dividend,
+    Coupon,
+    Interest,
+    Fee,
+    Settlement,
+    Adjustment,
 }
 
 /// One versioned product or facility action.
@@ -287,7 +275,7 @@ pub enum ScheduledActionKind {
         participant_id: ParticipantId,
         currency_id: CurrencyId,
         amount: MoneyMinor,
-        kind: TransactionKind,
+        kind: CashflowKind,
     },
     ExpireInstrument {
         instrument_id: InstrumentId,
@@ -492,6 +480,8 @@ pub struct OtcState {
     pub price: PriceTicks,
     pub expires_at: LogicalTimeNs,
     pub status: String,
+    /// Party whose response the open negotiation awaits.
+    pub awaiting: ParticipantId,
 }
 
 /// Capacity reservation and completion state.
@@ -541,7 +531,6 @@ pub struct SimulationState {
     pub policy_version: u16,
     pub lifecycle: RunLifecycle,
     pub clock: LogicalClock,
-    pub instruments: BTreeMap<InstrumentId, EconomicInstrument>,
     pub facilities: BTreeMap<FacilityId, FacilityDefinition>,
     pub halted_instruments: BTreeSet<InstrumentId>,
     pub scheduled_actions: Vec<ScheduledAction>,
@@ -551,7 +540,6 @@ pub struct SimulationState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market_by_listing: BTreeMap<ListingKey, MarketProjection>,
     pub private: BTreeMap<ParticipantId, PrivateProjection>,
-    pub portfolio_ledger: PortfolioLedger,
     pub news: Vec<NewsItem>,
     pub tenders: BTreeMap<TenderId, TenderState>,
     pub otc: BTreeMap<NegotiationId, OtcState>,
@@ -559,7 +547,6 @@ pub struct SimulationState {
     pub administrator_changes: Vec<AdministratorChange>,
     pub reports: Vec<IterationReport>,
     pub next_action_id: u128,
-    pub next_transaction_id: u128,
 }
 
 impl Default for SimulationState {
@@ -568,7 +555,6 @@ impl Default for SimulationState {
             policy_version: SIMULATION_POLICY_VERSION,
             lifecycle: RunLifecycle::Stopped,
             clock: LogicalClock::default(),
-            instruments: BTreeMap::new(),
             facilities: BTreeMap::new(),
             halted_instruments: BTreeSet::new(),
             scheduled_actions: Vec::new(),
@@ -576,7 +562,6 @@ impl Default for SimulationState {
             market: BTreeMap::new(),
             market_by_listing: BTreeMap::new(),
             private: BTreeMap::new(),
-            portfolio_ledger: PortfolioLedger::new(),
             news: Vec::new(),
             tenders: BTreeMap::new(),
             otc: BTreeMap::new(),
@@ -584,7 +569,6 @@ impl Default for SimulationState {
             administrator_changes: Vec::new(),
             reports: Vec::new(),
             next_action_id: 1,
-            next_transaction_id: 1,
         }
     }
 }
@@ -597,8 +581,12 @@ impl SimulationState {
     pub fn from_scenario(scenario: &SimulationScenario) -> Result<Self, SimulationError> {
         scenario.validate()?;
         let mut state = Self {
+            lifecycle: if scenario.starts_active {
+                RunLifecycle::Active
+            } else {
+                RunLifecycle::Stopped
+            },
             clock: scenario.clock,
-            instruments: scenario.instruments.clone(),
             facilities: scenario.facilities.clone(),
             news: scenario.initial_news.clone(),
             ..Self::default()
@@ -627,6 +615,7 @@ impl SimulationState {
     )]
     pub fn apply(
         &mut self,
+        context: &mut SimulationContext<'_>,
         actor: ParticipantId,
         logical_time: LogicalTimeNs,
         command: &SimulationCommand,
@@ -656,7 +645,7 @@ impl SimulationState {
                     status: "active".into(),
                 }])
             }
-            SimulationCommand::Advance { steps } => self.advance(*steps),
+            SimulationCommand::Advance { steps } => self.advance(context, *steps),
             SimulationCommand::SetPacing { mode, reason } => {
                 validate_reason(reason)?;
                 self.clock.mode = *mode;
@@ -693,7 +682,7 @@ impl SimulationState {
                 reason,
             } => {
                 validate_reason(reason)?;
-                self.require_instrument(*instrument_id)?;
+                context.require_instrument(*instrument_id)?;
                 if *halted {
                     self.halted_instruments.insert(*instrument_id);
                 } else {
@@ -746,7 +735,8 @@ impl SimulationState {
                 price,
                 expires_at,
             } => {
-                self.require_instrument(*instrument_id)?;
+                context.require_instrument(*instrument_id)?;
+                context.require_participant(*participant_id)?;
                 if quantity.get() <= 0
                     || price.get() <= 0
                     || *expires_at <= logical_time
@@ -786,15 +776,43 @@ impl SimulationState {
                 {
                     return Err(SimulationError::InvalidLifecycle);
                 }
+                let mut events = Vec::new();
+                if *decision == TenderDecision::Accept {
+                    let party = context.party(tender.participant_id);
+                    let (buyer, seller) = match tender.side {
+                        Side::Buy => (Some(party), None),
+                        Side::Sell => (None, Some(party)),
+                    };
+                    context.ledger.settle(Fill {
+                        instrument: tender.instrument_id,
+                        price: tender.price,
+                        quantity: tender.quantity,
+                        buyer,
+                        seller,
+                        set_mark: false,
+                    })?;
+                    events.push(SimulationEvent::TenderSettled {
+                        tender_id: *tender_id,
+                        participant_id: tender.participant_id,
+                        instrument_id: tender.instrument_id,
+                        side: tender.side,
+                        quantity: tender.quantity,
+                        price: tender.price,
+                    });
+                }
                 tender.status = match decision {
                     TenderDecision::Accept => "accepted",
                     TenderDecision::Decline => "declined",
                 }
                 .into();
-                Ok(vec![SimulationEvent::TenderChanged {
-                    tender_id: *tender_id,
-                    status: tender.status.clone(),
-                }])
+                events.insert(
+                    0,
+                    SimulationEvent::TenderChanged {
+                        tender_id: *tender_id,
+                        status: tender.status.clone(),
+                    },
+                );
+                Ok(events)
             }
             SimulationCommand::OpenOtc {
                 negotiation_id,
@@ -805,10 +823,13 @@ impl SimulationState {
                 price,
                 expires_at,
             } => {
-                self.require_instrument(*instrument_id)?;
+                context.require_instrument(*instrument_id)?;
+                context.require_participant(actor)?;
+                context.require_participant(*counterparty_id)?;
                 if quantity.get() <= 0
                     || price.get() <= 0
                     || *expires_at <= logical_time
+                    || *counterparty_id == actor
                     || self.otc.contains_key(negotiation_id)
                 {
                     return Err(SimulationError::InvalidCommand);
@@ -825,6 +846,7 @@ impl SimulationState {
                         price: *price,
                         expires_at: *expires_at,
                         status: "proposed".into(),
+                        awaiting: *counterparty_id,
                     },
                 );
                 Ok(vec![SimulationEvent::OtcChanged {
@@ -841,9 +863,9 @@ impl SimulationState {
                     .otc
                     .get_mut(negotiation_id)
                     .ok_or(SimulationError::UnknownIdentity)?;
-                if !matches!(actor, value if value == otc.proposer_id || value == otc.counterparty_id)
-                    || otc.status == "accepted"
-                    || otc.status == "broken"
+                if actor != otc.awaiting
+                    || !matches!(otc.status.as_str(), "proposed" | "countered")
+                    || otc.expires_at <= logical_time
                     || quantity.get() <= 0
                     || price.get() <= 0
                 {
@@ -852,6 +874,11 @@ impl SimulationState {
                 otc.quantity = *quantity;
                 otc.price = *price;
                 otc.status = "countered".into();
+                otc.awaiting = if actor == otc.proposer_id {
+                    otc.counterparty_id
+                } else {
+                    otc.proposer_id
+                };
                 Ok(vec![SimulationEvent::OtcChanged {
                     negotiation_id: *negotiation_id,
                     status: otc.status.clone(),
@@ -865,8 +892,39 @@ impl SimulationState {
                     .otc
                     .get_mut(negotiation_id)
                     .ok_or(SimulationError::UnknownIdentity)?;
-                if actor != otc.counterparty_id && !matches!(decision, OtcDecision::Break) {
+                let party = actor == otc.proposer_id || actor == otc.counterparty_id;
+                let responder = actor == otc.awaiting;
+                if !(party && (responder || *decision == OtcDecision::Break)) {
                     return Err(SimulationError::NotOwner);
+                }
+                // Settled trades are final; only open negotiations can be broken.
+                if !matches!(otc.status.as_str(), "proposed" | "countered")
+                    || otc.expires_at <= logical_time
+                {
+                    return Err(SimulationError::InvalidLifecycle);
+                }
+                let mut events = Vec::new();
+                if *decision == OtcDecision::Accept {
+                    let (buyer_id, seller_id) = match otc.side {
+                        Side::Buy => (otc.proposer_id, otc.counterparty_id),
+                        Side::Sell => (otc.counterparty_id, otc.proposer_id),
+                    };
+                    context.ledger.settle(Fill {
+                        instrument: otc.instrument_id,
+                        price: otc.price,
+                        quantity: otc.quantity,
+                        buyer: Some(context.party(buyer_id)),
+                        seller: Some(context.party(seller_id)),
+                        set_mark: false,
+                    })?;
+                    events.push(SimulationEvent::OtcSettled {
+                        negotiation_id: *negotiation_id,
+                        buyer_id,
+                        seller_id,
+                        instrument_id: otc.instrument_id,
+                        quantity: otc.quantity,
+                        price: otc.price,
+                    });
                 }
                 otc.status = match decision {
                     OtcDecision::Accept => "accepted",
@@ -874,16 +932,24 @@ impl SimulationState {
                     OtcDecision::Break => "broken",
                 }
                 .into();
-                Ok(vec![SimulationEvent::OtcChanged {
-                    negotiation_id: *negotiation_id,
-                    status: otc.status.clone(),
-                }])
+                events.insert(
+                    0,
+                    SimulationEvent::OtcChanged {
+                        negotiation_id: *negotiation_id,
+                        status: otc.status.clone(),
+                    },
+                );
+                Ok(events)
             }
             SimulationCommand::SubmitComposite {
                 policy,
                 minimum_fill,
                 legs,
-            } => self.apply_composite(*policy, *minimum_fill, legs),
+            } => {
+                // Multi-leg execution has no atomic matching/settlement path yet.
+                let _ = (policy, minimum_fill, legs);
+                Err(SimulationError::Unsupported)
+            }
             SimulationCommand::ScheduleCashflow {
                 participant_id,
                 currency_id,
@@ -900,7 +966,7 @@ impl SimulationState {
                         participant_id: *participant_id,
                         currency_id: *currency_id,
                         amount: *amount,
-                        kind: TransactionKind::Adjustment,
+                        kind: CashflowKind::Adjustment,
                     },
                 })?;
                 Ok(vec![SimulationEvent::CashflowScheduled {
@@ -919,30 +985,13 @@ impl SimulationState {
                 if amount.get() <= 0 {
                     return Err(SimulationError::InvalidCommand);
                 }
+                context.require_participant(*participant_id)?;
                 let debit = MoneyMinor::new(0)
                     .checked_sub(*amount)
                     .ok_or(SimulationError::ArithmeticOverflow)?;
-                let transaction_id = self.next_transaction();
-                self.portfolio_ledger
-                    .post(JournalTransaction {
-                        transaction_id,
-                        kind: TransactionKind::Fine,
-                        postings: vec![
-                            JournalPosting {
-                                participant_id: Some(*participant_id),
-                                currency_id: *currency_id,
-                                account: PostingAccount::Cash,
-                                amount: debit,
-                            },
-                            JournalPosting {
-                                participant_id: None,
-                                currency_id: *currency_id,
-                                account: PostingAccount::Clearing,
-                                amount: *amount,
-                            },
-                        ],
-                    })
-                    .map_err(SimulationError::from)?;
+                context
+                    .ledger
+                    .post_cash(*participant_id, *currency_id, debit)?;
                 self.record_admin(actor, logical_time, reason.clone());
                 Ok(vec![
                     SimulationEvent::FineApplied {
@@ -1007,30 +1056,9 @@ impl SimulationState {
                     participant_id: *participant_id,
                 }])
             }
-            SimulationCommand::ScoreIteration => self.score_iteration(),
+            SimulationCommand::ScoreIteration => self.score_iteration(context),
             SimulationCommand::MassCancel { .. } => Err(SimulationError::RequiresMatchingState),
         }
-    }
-
-    /// Records the financial effects of a matched fill in the simulation journal.
-    /// Minimal matching-only scenarios have no economic-instrument currency contract yet.
-    pub fn post_trade(&mut self, trade: TradeSettlement) -> Result<(), SimulationError> {
-        if self.instruments.is_empty() {
-            return Ok(());
-        }
-        let currency = self
-            .instruments
-            .get(&trade.instrument)
-            .ok_or(SimulationError::UnknownIdentity)?
-            .settlement_currency;
-        let next_id = self
-            .next_transaction_id
-            .checked_add(1)
-            .ok_or(SimulationError::ArithmeticOverflow)?;
-        self.portfolio_ledger
-            .settle_trade(trade, currency, self.next_transaction_id)?;
-        self.next_transaction_id = next_id;
-        Ok(())
     }
 
     /// Projects one committed canonical event into public and private views.
@@ -1132,7 +1160,11 @@ impl SimulationState {
         }
     }
 
-    fn advance(&mut self, steps: u32) -> Result<Vec<SimulationEvent>, SimulationError> {
+    fn advance(
+        &mut self,
+        context: &mut SimulationContext<'_>,
+        steps: u32,
+    ) -> Result<Vec<SimulationEvent>, SimulationError> {
         self.require_lifecycle(RunLifecycle::Active)?;
         if steps == 0 {
             return Err(SimulationError::InvalidCommand);
@@ -1165,7 +1197,7 @@ impl SimulationState {
         );
         let due = std::mem::replace(&mut self.scheduled_actions, pending);
         for action in due {
-            self.apply_scheduled(&action)?;
+            self.apply_scheduled(context, &action)?;
             self.applied_actions.insert(action.action_id);
             events.push(SimulationEvent::ScheduledActionApplied {
                 action_id: action.action_id,
@@ -1184,38 +1216,21 @@ impl SimulationState {
         Ok(events)
     }
 
-    fn apply_scheduled(&mut self, action: &ScheduledAction) -> Result<(), SimulationError> {
+    fn apply_scheduled(
+        &mut self,
+        context: &mut SimulationContext<'_>,
+        action: &ScheduledAction,
+    ) -> Result<(), SimulationError> {
         match action.kind {
             ScheduledActionKind::Cashflow {
                 participant_id,
                 currency_id,
                 amount,
-                kind,
+                ..
             } => {
-                let transaction_id = self.next_transaction();
-                self.portfolio_ledger.post(JournalTransaction {
-                    transaction_id,
-                    kind,
-                    postings: vec![
-                        JournalPosting {
-                            participant_id: Some(participant_id),
-                            currency_id,
-                            account: PostingAccount::Cash,
-                            amount,
-                        },
-                        JournalPosting {
-                            participant_id: None,
-                            currency_id,
-                            account: PostingAccount::Clearing,
-                            amount: MoneyMinor::new(
-                                amount
-                                    .get()
-                                    .checked_neg()
-                                    .ok_or(SimulationError::ArithmeticOverflow)?,
-                            ),
-                        },
-                    ],
-                })?;
+                context
+                    .ledger
+                    .post_cash(participant_id, currency_id, amount)?;
             }
             ScheduledActionKind::CompleteFacilityJob { job_id } => {
                 let job = self
@@ -1227,23 +1242,15 @@ impl SimulationState {
                     .facilities
                     .get(&job.facility_id)
                     .ok_or(SimulationError::UnknownIdentity)?;
-                let mut ledger = self.portfolio_ledger.clone();
-                if let Some(input) = facility.input_instrument {
-                    ledger.adjust_position(
-                        job.participant_id,
-                        input,
-                        QuantityLots::new(
-                            job.input_quantity
-                                .get()
-                                .checked_neg()
-                                .ok_or(SimulationError::ArithmeticOverflow)?,
-                        ),
-                    )?;
-                }
-                if let Some(output) = facility.output_instrument {
-                    ledger.adjust_position(job.participant_id, output, job.output_quantity)?;
-                }
-                self.portfolio_ledger = ledger;
+                context.ledger.convert(
+                    job.participant_id,
+                    facility
+                        .input_instrument
+                        .map(|instrument| (instrument, job.input_quantity)),
+                    facility
+                        .output_instrument
+                        .map(|instrument| (instrument, job.output_quantity)),
+                )?;
                 self.facility_jobs
                     .get_mut(&job_id)
                     .ok_or(SimulationError::UnknownIdentity)?
@@ -1252,71 +1259,32 @@ impl SimulationState {
             ScheduledActionKind::ExpireInstrument { instrument_id } => {
                 self.halted_instruments.insert(instrument_id);
             }
-            ScheduledActionKind::ExerciseOption { .. } | ScheduledActionKind::Deliver { .. } => {}
+            ScheduledActionKind::ExerciseOption { .. } | ScheduledActionKind::Deliver { .. } => {
+                return Err(SimulationError::Unsupported);
+            }
         }
         Ok(())
     }
 
-    fn apply_composite(
-        &self,
-        policy: CompositePolicy,
-        minimum_fill: QuantityLots,
-        legs: &[CompositeLeg],
+    /// Freezes one deterministic NLV ranking of every enrolled participant at
+    /// the committed instrument marks, in the reporting currency.
+    fn score_iteration(
+        &mut self,
+        context: &SimulationContext<'_>,
     ) -> Result<Vec<SimulationEvent>, SimulationError> {
-        if legs.is_empty() || legs.len() > MAX_COMPOSITE_LEGS || minimum_fill.get() < 0 {
-            return Err(SimulationError::BoundExceeded);
-        }
-        for leg in legs {
-            self.require_instrument(leg.instrument_id)?;
-            if leg.quantity.get() <= 0
-                || leg.limit_price.get() <= 0
-                || self.halted_instruments.contains(&leg.instrument_id)
-            {
-                return Err(SimulationError::InvalidCommand);
-            }
-        }
-        if matches!(
-            policy,
-            CompositePolicy::AllOrNone | CompositePolicy::AtomicConversion
-        ) && minimum_fill.get() > 0
-            && legs.iter().any(|leg| leg.quantity < minimum_fill)
-        {
-            return Err(SimulationError::InvalidCommand);
-        }
-        Ok(vec![SimulationEvent::CompositeCompleted {
-            policy,
-            accepted_legs: u32::try_from(legs.len()).map_err(|_| SimulationError::BoundExceeded)?,
-        }])
-    }
-
-    fn score_iteration(&mut self) -> Result<Vec<SimulationEvent>, SimulationError> {
-        // Consolidated trades are ordered by their committed sequence across
-        // listings. At a scoring boundary all holders receive the same last mark.
-        for (instrument, projection) in &self.market {
-            if let Some(last_trade) = projection.trades.back() {
-                self.portfolio_ledger
-                    .mark_instrument(*instrument, last_trade.price)?;
-            }
-        }
-        let currency = self
-            .instruments
-            .values()
-            .next()
-            .map(|instrument| instrument.settlement_currency)
-            .ok_or(SimulationError::InvalidScenario)?;
-        let participants = self
-            .private
+        let mut entries = context
+            .participants
             .keys()
-            .copied()
-            .chain(self.tenders.values().map(|tender| tender.participant_id))
-            .collect::<BTreeSet<_>>();
-        let mut entries = participants
-            .into_iter()
             .map(|participant_id| {
-                self.portfolio_ledger
-                    .net_liquidation_value(participant_id, currency)
+                context
+                    .ledger
+                    .reporting_value(
+                        *participant_id,
+                        context.reporting_currency,
+                        context.fx_rates,
+                    )
                     .map(|score| ScoreEntry {
-                        participant_id,
+                        participant_id: *participant_id,
                         score,
                         rank: 0,
                     })
@@ -1342,14 +1310,6 @@ impl SimulationState {
             Ok(())
         } else {
             Err(SimulationError::InvalidLifecycle)
-        }
-    }
-
-    fn require_instrument(&self, instrument: InstrumentId) -> Result<(), SimulationError> {
-        if self.instruments.contains_key(&instrument) {
-            Ok(())
-        } else {
-            Err(SimulationError::UnknownIdentity)
         }
     }
 
@@ -1394,12 +1354,6 @@ impl SimulationState {
         self.next_action_id = self.next_action_id.saturating_add(1);
         value
     }
-
-    fn next_transaction(&mut self) -> u128 {
-        let value = self.next_transaction_id;
-        self.next_transaction_id = self.next_transaction_id.saturating_add(1);
-        value
-    }
 }
 
 fn validate_reason(reason: &str) -> Result<(), SimulationError> {
@@ -1423,11 +1377,12 @@ pub enum SimulationError {
     NotOwner,
     ArithmeticOverflow,
     RequiresMatchingState,
-    Ledger,
+    Unsupported,
+    Ledger(LedgerError),
 }
 
 impl From<LedgerError> for SimulationError {
-    fn from(_: LedgerError) -> Self {
-        Self::Ledger
+    fn from(error: LedgerError) -> Self {
+        Self::Ledger(error)
     }
 }

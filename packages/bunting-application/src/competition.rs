@@ -8,7 +8,7 @@ use bunting_engine::{
 };
 use bunting_market_events::NewsAudience;
 use bunting_market_types::{
-    CurrencyId, EventSequence, InstrumentId, LogicalTimeNs, MoneyMinor, ParticipantId,
+    CurrencyId, EventSequence, InstrumentId, LogicalTimeNs, MoneyMinor, ParticipantId, PriceTicks,
     QuantityLots, RunId, ScenarioId, ScenarioVersion,
 };
 use bunting_risk_engine::RiskLimits;
@@ -32,12 +32,12 @@ pub struct CompetitionPolicies {
 pub fn competition_policies() -> CompetitionPolicies {
     CompetitionPolicies {
         pnl: "bunting.pnl.v1".to_owned(),
-        commission: "bunting.commission.zero.v1".to_owned(),
+        commission: "bunting.commission.listing-per-lot.v1".to_owned(),
         news: "bunting.news.audience.v1".to_owned(),
-        tender: "bunting.tender.targeted-fixed-price.v1".to_owned(),
+        tender: "bunting.tender.house-settled-fixed-price.v1".to_owned(),
         risk: "bunting.risk.scenario-limits.v1".to_owned(),
         fine: "bunting.fine.explicit-cash.v1".to_owned(),
-        score: "bunting.score.nlv-rank.v1".to_owned(),
+        score: "bunting.score.nlv-last-trade-rank.v2".to_owned(),
     }
 }
 
@@ -67,33 +67,33 @@ pub struct HoldingView {
     pub instrument_id: InstrumentId,
     pub position: QuantityLots,
     pub reserved: QuantityLots,
+    pub open_buy: QuantityLots,
+    pub open_sell: QuantityLots,
     pub realized_pnl: MoneyMinor,
     pub unrealized_pnl: MoneyMinor,
     pub cost_basis: MoneyMinor,
+    pub mark: Option<PriceTicks>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CashView {
     pub currency_id: CurrencyId,
-    pub settled: MoneyMinor,
+    pub balance: MoneyMinor,
     pub reserved: MoneyMinor,
-    pub accrued: MoneyMinor,
-    pub scheduled: MoneyMinor,
     pub fees: MoneyMinor,
-    pub margin: MoneyMinor,
 }
 
+/// One participant's account, projected entirely from the authoritative ledger.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountView {
     pub participant_id: ParticipantId,
     pub committed_sequence: EventSequence,
-    pub order_cash: MoneyMinor,
-    pub order_reserved_cash: MoneyMinor,
     pub cash: Vec<CashView>,
     pub holdings: Vec<HoldingView>,
-    pub net_liquidation_value: Vec<(CurrencyId, MoneyMinor)>,
+    pub reporting_currency: CurrencyId,
+    pub net_liquidation_value: MoneyMinor,
     pub policies: CompetitionPolicies,
 }
 
@@ -142,80 +142,48 @@ pub fn account(state: &RunState, actor: &VerifiedActor) -> Result<AccountView, A
     let participant = actor
         .participant_id()
         .ok_or(ApplicationError::Unauthorized)?;
-    let base = state
-        .accounts()
-        .iter()
-        .find_map(|(id, account)| (*id == participant).then_some(*account))
-        .ok_or(ApplicationError::Unauthorized)?;
-    let currencies = state
-        .simulation()
-        .instruments
-        .values()
-        .map(|instrument| instrument.settlement_currency)
-        .collect::<std::collections::BTreeSet<_>>();
-    let cash = currencies
-        .iter()
-        .map(|currency_id| {
-            let value = state
-                .simulation()
-                .portfolio_ledger
-                .balance(participant, *currency_id);
-            CashView {
-                currency_id: *currency_id,
-                settled: value.settled,
-                reserved: value.reserved,
-                accrued: value.accrued,
-                scheduled: value.scheduled,
-                fees: value.fees,
-                margin: value.margin,
-            }
+    if !state.participants().contains_key(&participant) {
+        return Err(ApplicationError::Unauthorized);
+    }
+    let ledger = state.ledger();
+    let cash = ledger
+        .cash_balances(participant)
+        .map(|(currency_id, balance)| CashView {
+            currency_id,
+            balance: balance.balance,
+            reserved: balance.reserved,
+            fees: balance.fees,
         })
         .collect();
     let holdings = state
-        .listings()
-        .values()
-        .map(|listing| listing.definition().key().instrument_id)
+        .instruments()
+        .keys()
         .map(|instrument_id| {
-            let order_holding = state
-                .holdings()
-                .iter()
-                .find_map(|(owner, instrument, holding)| {
-                    (*owner == participant && *instrument == instrument_id).then_some(*holding)
-                })
-                .unwrap_or_default();
-            let portfolio = state
-                .simulation()
-                .portfolio_ledger
-                .position(participant, instrument_id);
-            HoldingView {
-                instrument_id,
-                position: order_holding.position,
-                reserved: order_holding.reserved_inventory,
-                realized_pnl: portfolio.realized_pnl,
-                unrealized_pnl: portfolio.unrealized_pnl,
-                cost_basis: portfolio.cost_basis,
-            }
+            let position = ledger.position(participant, *instrument_id);
+            Ok(HoldingView {
+                instrument_id: *instrument_id,
+                position: position.quantity,
+                reserved: position.reserved,
+                open_buy: position.open_buy,
+                open_sell: position.open_sell,
+                realized_pnl: position.realized_pnl,
+                unrealized_pnl: ledger
+                    .unrealized_pnl(participant, *instrument_id)
+                    .map_err(|_| ApplicationError::InvalidIdentity)?,
+                cost_basis: position.cost_basis,
+                mark: ledger.mark(*instrument_id),
+            })
         })
-        .collect();
-    let net_liquidation_value = currencies
-        .into_iter()
-        .map(|currency| {
-            state
-                .simulation()
-                .portfolio_ledger
-                .net_liquidation_value(participant, currency)
-                .map(|value| (currency, value))
-                .map_err(|_| ApplicationError::InvalidIdentity)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, ApplicationError>>()?;
     Ok(AccountView {
         participant_id: participant,
         committed_sequence: state.sequence(),
-        order_cash: base.cash,
-        order_reserved_cash: base.reserved_cash,
         cash,
         holdings,
-        net_liquidation_value,
+        reporting_currency: state.reporting_currency(),
+        net_liquidation_value: state
+            .net_liquidation_value(participant)
+            .map_err(|_| ApplicationError::InvalidIdentity)?,
         policies: competition_policies(),
     })
 }

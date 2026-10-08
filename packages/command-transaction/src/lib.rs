@@ -476,6 +476,7 @@ mod tests {
     use bunting_market_events::{
         CancelOrder, OrderKind, Side, SimulationCommand, SimulationCommandRequest, SubmitOrder,
     };
+    use bunting_market_types::CurrencyId;
     use bunting_market_types::{
         CommandId, CorrelationId, InstrumentId, IterationId, LogicalTimeNs, MoneyMinor, OrderId,
         ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId, ScenarioVersion,
@@ -520,18 +521,25 @@ mod tests {
             ParticipantDefinition::new(
                 ParticipantId::new(id),
                 true,
-                RiskLimits {
-                    max_order_quantity: QuantityLots::new(100),
-                    max_open_order_quantity: QuantityLots::new(1_000),
-                    max_absolute_position: QuantityLots::new(1_000),
-                },
-                MoneyMinor::new(100_000),
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(1_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(100_000))]),
                 BTreeMap::from([(InstrumentId::new(1), QuantityLots::new(100))]),
             )
         };
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [ListingDefinition::new(
                 ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
                 "ONE".to_string(),
@@ -641,7 +649,7 @@ mod tests {
             logical_time: LogicalTimeNs::new(0),
             expected_sequence: EventSequence::new(0),
             actor: ParticipantId::new(99),
-            payload: SimulationCommand::StartRun,
+            payload: SimulationCommand::PauseRun,
         };
         let committed = transaction.execute_simulation_detailed(&request).unwrap();
         assert!(!committed.duplicate);

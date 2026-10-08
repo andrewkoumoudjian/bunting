@@ -1,12 +1,27 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "scenario_id": 1,
   "scenario_version": 1,
+  "reporting_currency": 1,
+  "instruments": [
+    {
+      "instrument_id": 1,
+      "symbol": "BNT",
+      "currency": 1,
+      "kind": "equity",
+      "multiplier": 1,
+      "shortable": false,
+      "opening_mark": 100
+    }
+  ],
   "listings": {
     "1:1": {
       "key": "1:1",
       "symbol": "BNT",
-      "price_bounds": {"min": 1, "max": 1000000}
+      "price_bounds": {
+        "min": 1,
+        "max": 1000000
+      }
     }
   },
   "participants": {
@@ -18,7 +33,9 @@
         "max_open_order_quantity": 1000000,
         "max_absolute_position": 1000000
       },
-      "initial_cash": 1000000000,
+      "initial_cash": {
+        "1": 1000000000
+      },
       "initial_positions": {}
     },
     "2": {
@@ -29,7 +46,9 @@
         "max_open_order_quantity": 1000000,
         "max_absolute_position": 1000000
       },
-      "initial_cash": 1000000000,
+      "initial_cash": {
+        "1": 1000000000
+      },
       "initial_positions": {}
     },
     "10": {
@@ -40,8 +59,12 @@
         "max_open_order_quantity": 1000000,
         "max_absolute_position": 1000000
       },
-      "initial_cash": 1000000000,
-      "initial_positions": {"1": 100000}
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
     }
   }
 }

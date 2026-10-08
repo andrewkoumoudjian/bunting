@@ -217,6 +217,7 @@ mod tests {
         ListingDefinition, ParticipantDefinition, ScenarioDefinition, TransitionOutcome,
     };
     use bunting_market_events::{Command, CommandPayload};
+    use bunting_market_types::CurrencyId;
     use bunting_market_types::{
         CorrelationId, InstrumentId, IterationId, ListingKey, LogicalTimeNs, MoneyMinor,
         ParticipantId, PriceBounds, PriceTicks, QuantityLots, ScenarioId, ScenarioVersion, VenueId,
@@ -230,6 +231,13 @@ mod tests {
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [ListingDefinition::new(
                 ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
                 "ONE".to_string(),
@@ -239,12 +247,12 @@ mod tests {
             [ParticipantDefinition::new(
                 ParticipantId::new(1),
                 true,
-                RiskLimits {
-                    max_order_quantity: QuantityLots::new(100),
-                    max_open_order_quantity: QuantityLots::new(1_000),
-                    max_absolute_position: QuantityLots::new(1_000),
-                },
-                MoneyMinor::new(1_000),
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(1_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000))]),
                 BTreeMap::new(),
             )],
         )

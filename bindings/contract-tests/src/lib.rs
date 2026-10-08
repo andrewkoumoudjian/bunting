@@ -25,7 +25,7 @@ mod tests {
             logical_time: LogicalTimeNs::new(0),
             expected_sequence: initial.sequence(),
             actor: ParticipantId::new(1),
-            payload: SimulationCommand::StartRun,
+            payload: SimulationCommand::PauseRun,
         };
         let outcome = initial
             .transition_simulation(&command)

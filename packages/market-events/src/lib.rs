@@ -375,6 +375,24 @@ pub enum SimulationEvent {
         tender_id: TenderId,
         status: String,
     },
+    /// An accepted tender settled against the house at its fixed price.
+    TenderSettled {
+        tender_id: TenderId,
+        participant_id: ParticipantId,
+        instrument_id: InstrumentId,
+        side: Side,
+        quantity: QuantityLots,
+        price: PriceTicks,
+    },
+    /// An accepted bilateral OTC negotiation settled between its parties.
+    OtcSettled {
+        negotiation_id: NegotiationId,
+        buyer_id: ParticipantId,
+        seller_id: ParticipantId,
+        instrument_id: InstrumentId,
+        quantity: QuantityLots,
+        price: PriceTicks,
+    },
     OtcChanged {
         negotiation_id: NegotiationId,
         status: String,
@@ -458,6 +476,10 @@ pub enum EventPayload {
         seller_id: ParticipantId,
         price: PriceTicks,
         quantity: QuantityLots,
+        /// Total fee charged to the buyer; negative is a rebate.
+        buyer_fee: MoneyMinor,
+        /// Total fee charged to the seller; negative is a rebate.
+        seller_fee: MoneyMinor,
         upstream_engine_sequence: u64,
     },
     PositionChanged {

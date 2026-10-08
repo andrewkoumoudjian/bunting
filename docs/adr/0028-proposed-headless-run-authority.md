@@ -1,6 +1,6 @@
-# ADR 0028 (PROPOSED): Headless run ownership, economic truth, and verifiable execution
+# ADR 0028: Headless run ownership, economic truth, and verifiable execution
 
-- **Status: Proposed — NOT accepted, NOT an active supersession**
+- **Status: Accepted (2026-10-08)** — accepted by the repository owner's explicit overhaul direction; implementation proceeds in the slices recorded in `docs/implementation-log/`. Item 10 (matching provider) is superseded by a later ADR when the Bunting-owned matcher lands.
 - Date: 2026-10-07
 - Evidence baseline: [main@0fdbd130a59b212ac6cae1d3b78000acd94fb9b2](https://github.com/andrewkoumoudjian/bunting/commit/0fdbd130a59b212ac6cae1d3b78000acd94fb9b2)
 - Research: [independent code/alternative audit](../research/2026-10-07-independent-core-architecture-audit.md)

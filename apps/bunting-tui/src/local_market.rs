@@ -6,14 +6,15 @@ use bunting_application::{
     competition::{account, discovery, news_tenders, risk_score},
 };
 use bunting_engine::{
-    ListingDefinition, OwnedOrderState, ParticipantDefinition, RunState, ScenarioDefinition,
+    InstrumentDefinition, InstrumentKind, ListingDefinition, OwnedOrderState,
+    ParticipantDefinition, RunState, ScenarioDefinition,
 };
 use bunting_market_events::{
     CancelOrder, Command, CommandPayload, EventEnvelope, OrderKind, Side, SubmitOrder,
 };
 use bunting_market_types::{
-    CommandId, CorrelationId, InstrumentId, IterationId, ListingKey, LogicalTimeNs, MoneyMinor,
-    OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId,
+    CommandId, CorrelationId, CurrencyId, InstrumentId, IterationId, ListingKey, LogicalTimeNs,
+    MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId,
     ScenarioVersion, VenueId,
 };
 use bunting_risk_engine::RiskLimits;
@@ -255,12 +256,12 @@ impl Market {
             ParticipantDefinition::new(
                 id,
                 true,
-                RiskLimits {
-                    max_order_quantity: QuantityLots::new(10_000),
-                    max_open_order_quantity: QuantityLots::new(100_000),
-                    max_absolute_position: QuantityLots::new(1_000_000),
-                },
-                MoneyMinor::new(10_000_000),
+                RiskLimits::new(
+                    QuantityLots::new(10_000),
+                    QuantityLots::new(100_000),
+                    QuantityLots::new(1_000_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(10_000_000))]),
                 BTreeMap::from([(INSTRUMENT_ID, QuantityLots::new(100_000))]),
             )
         };
@@ -276,6 +277,13 @@ impl Market {
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [InstrumentDefinition::new(
+                INSTRUMENT_ID,
+                "BUNT",
+                CurrencyId::new(1),
+                InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [listing],
             [participant(HUMAN_ID), participant(MAKER_ID)]
                 .into_iter()

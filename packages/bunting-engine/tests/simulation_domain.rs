@@ -1,15 +1,14 @@
 #![allow(clippy::too_many_lines, clippy::unwrap_used)]
 
 use bunting_engine::simulation::{
-    EconomicInstrument, FacilityDefinition, FacilityKind, InstrumentKind, LogicalClock,
-    OpeningMark, RunLifecycle, SIMULATION_POLICY_VERSION, ScheduledAction, ScheduledActionKind,
+    CashflowKind, FacilityDefinition, FacilityKind, LogicalClock, RunLifecycle,
+    SIMULATION_POLICY_VERSION, ScheduledAction, ScheduledActionKind, SimulationError,
     SimulationScenario,
 };
 use bunting_engine::{
-    ListingDefinition, ParticipantDefinition, PublishScenarioOutcome, RunState, ScenarioCatalog,
-    ScenarioDefinition,
+    EngineError, InstrumentDefinition, InstrumentKind, ListingDefinition, ParticipantDefinition,
+    PublishScenarioOutcome, RunState, ScenarioCatalog, ScenarioDefinition,
 };
-use bunting_ledger::TransactionKind;
 use bunting_market_events::{
     AdvancedOrderPolicy, ClockMode, Command, CommandPayload, CompositeLeg, CompositePolicy,
     NewsAudience, OrderKind, OtcDecision, Side, SimulationCommand, SimulationCommandRequest,
@@ -34,34 +33,24 @@ fn participant(id: ParticipantId) -> ParticipantDefinition {
     ParticipantDefinition::new(
         id,
         true,
-        RiskLimits {
-            max_order_quantity: QuantityLots::new(1_000),
-            max_open_order_quantity: QuantityLots::new(10_000),
-            max_absolute_position: QuantityLots::new(10_000),
-        },
-        MoneyMinor::new(1_000_000),
+        RiskLimits::new(
+            QuantityLots::new(1_000),
+            QuantityLots::new(10_000),
+            QuantityLots::new(10_000),
+        ),
+        BTreeMap::from([(CURRENCY, MoneyMinor::new(1_000_000))]),
         BTreeMap::from([(INSTRUMENT, QuantityLots::new(1_000))]),
     )
 }
 
-fn scenario() -> ScenarioDefinition {
-    let simulation = SimulationScenario {
+fn simulation(starts_active: bool) -> SimulationScenario {
+    SimulationScenario {
         policy_version: SIMULATION_POLICY_VERSION,
         clock: LogicalClock {
             now: LogicalTimeNs::new(0),
             step_ns: 1_000_000,
             mode: ClockMode::Lockstep,
         },
-        instruments: BTreeMap::from([(
-            INSTRUMENT,
-            EconomicInstrument {
-                instrument_id: INSTRUMENT,
-                symbol: "BNT".into(),
-                settlement_currency: CURRENCY,
-                kind: InstrumentKind::Equity,
-                contract_multiplier: 1,
-            },
-        )]),
         facilities: BTreeMap::from([(
             FacilityId::new(1),
             FacilityDefinition {
@@ -79,15 +68,22 @@ fn scenario() -> ScenarioDefinition {
                 participant_id: PARTICIPANT,
                 currency_id: CURRENCY,
                 amount: MoneyMinor::new(25),
-                kind: TransactionKind::Dividend,
+                kind: CashflowKind::Dividend,
             },
         }],
         initial_news: Vec::new(),
-        opening_marks: None,
-    };
+        starts_active,
+    }
+}
+
+fn scenario() -> ScenarioDefinition {
     ScenarioDefinition::new(
         ScenarioId::new(1),
         ScenarioVersion::new(1),
+        [
+            InstrumentDefinition::new(INSTRUMENT, "BNT", CURRENCY, InstrumentKind::Equity)
+                .with_opening_mark(PriceTicks::new(100)),
+        ],
         [ListingDefinition::new(
             ListingKey::new(VenueId::new(1), INSTRUMENT),
             "BNT".into(),
@@ -101,7 +97,7 @@ fn scenario() -> ScenarioDefinition {
         ],
     )
     .unwrap()
-    .with_simulation(simulation)
+    .with_simulation(simulation(false))
     .unwrap()
 }
 
@@ -124,6 +120,38 @@ fn command(
 
 fn apply(state: &RunState, command: &SimulationCommandRequest) -> RunState {
     state.transition_simulation(command).unwrap().candidate
+}
+
+fn cash(state: &RunState, participant: ParticipantId) -> MoneyMinor {
+    state.ledger().cash(participant, CURRENCY).balance
+}
+
+fn limit(
+    state: &RunState,
+    actor: ParticipantId,
+    order_id: u128,
+    side: Side,
+    price: i64,
+    quantity: i64,
+) -> Command {
+    Command {
+        run_id: RUN,
+        command_id: CommandId::new(order_id),
+        correlation_id: CorrelationId::new(order_id),
+        logical_time: LogicalTimeNs::new(0),
+        expected_sequence: state.sequence(),
+        actor,
+        payload: CommandPayload::SubmitOrder(SubmitOrder {
+            order_id: OrderId::new(order_id),
+            instrument_id: INSTRUMENT,
+            participant_id: actor,
+            side,
+            quantity: QuantityLots::new(quantity),
+            kind: OrderKind::Limit {
+                price: PriceTicks::new(price),
+            },
+        }),
+    }
 }
 
 #[test]
@@ -153,15 +181,7 @@ fn lifecycle_scheduled_cashflow_snapshot_and_replay_are_equal() {
         LogicalTimeNs::new(2_000_000)
     );
     assert_eq!(
-        uninterrupted.simulation().portfolio_ledger.journal().len(),
-        1
-    );
-    assert_eq!(
-        uninterrupted
-            .simulation()
-            .portfolio_ledger
-            .balance(PARTICIPANT, CURRENCY)
-            .settled,
+        cash(&uninterrupted, PARTICIPANT),
         MoneyMinor::new(1_000_025)
     );
     let envelope = uninterrupted.snapshot_envelope().unwrap();
@@ -181,6 +201,16 @@ fn lifecycle_scheduled_cashflow_snapshot_and_replay_are_equal() {
         .unwrap();
     let fresh = RunState::from_scenario(RUN, IterationId::new(2), &scenario()).unwrap();
     assert_eq!(reset.state_hash().unwrap(), fresh.state_hash().unwrap());
+}
+
+#[test]
+fn orders_are_rejected_until_the_run_starts() {
+    let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let outcome = initial
+        .transition(&limit(&initial, PARTICIPANT, 1, Side::Buy, 100, 1), None)
+        .unwrap();
+    assert!(!outcome.accepted);
+    assert_eq!(outcome.reject_code.as_deref(), Some("RunNotActive"));
 }
 
 #[test]
@@ -204,7 +234,7 @@ fn invalid_paused_advance_rolls_back_every_component() {
 }
 
 #[test]
-fn news_tender_otc_composite_facility_and_scoring_share_one_sequence() {
+fn news_tender_otc_facility_and_scoring_settle_through_one_ledger() {
     let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     let commands = vec![
         command(0, 0, ADMIN, SimulationCommand::StartRun),
@@ -268,21 +298,6 @@ fn news_tender_otc_composite_facility_and_scoring_share_one_sequence() {
         command(
             6,
             0,
-            PARTICIPANT,
-            SimulationCommand::SubmitComposite {
-                policy: CompositePolicy::AllOrNone,
-                minimum_fill: QuantityLots::new(1),
-                legs: vec![CompositeLeg {
-                    instrument_id: INSTRUMENT,
-                    side: Side::Buy,
-                    quantity: QuantityLots::new(1),
-                    limit_price: PriceTicks::new(100),
-                }],
-            },
-        ),
-        command(
-            7,
-            0,
             ADMIN,
             SimulationCommand::ScheduleFacilityJob {
                 facility_id: FacilityId::new(1),
@@ -292,13 +307,13 @@ fn news_tender_otc_composite_facility_and_scoring_share_one_sequence() {
                 completes_at: LogicalTimeNs::new(1_000_000),
             },
         ),
-        command(8, 0, ADMIN, SimulationCommand::Advance { steps: 1 }),
-        command(9, 1_000_000, ADMIN, SimulationCommand::ScoreIteration),
+        command(7, 0, ADMIN, SimulationCommand::Advance { steps: 1 }),
+        command(8, 1_000_000, ADMIN, SimulationCommand::ScoreIteration),
     ];
     for command in &commands {
         state = apply(&state, command);
     }
-    assert_eq!(state.sequence(), EventSequence::new(10));
+    assert_eq!(state.sequence(), EventSequence::new(9));
     assert_eq!(
         state.simulation().private[&PARTICIPANT].news,
         vec![NewsId::new(1)]
@@ -325,38 +340,118 @@ fn news_tender_otc_composite_facility_and_scoring_share_one_sequence() {
             .values()
             .all(|job| job.completed)
     );
+    // 1000 + 5 tender - 2 OTC - 5 facility input + 4 facility output.
     assert_eq!(
-        state
-            .simulation()
-            .portfolio_ledger
-            .position(PARTICIPANT, INSTRUMENT)
-            .settled,
-        QuantityLots::new(999)
+        state.ledger().position(PARTICIPANT, INSTRUMENT).quantity,
+        QuantityLots::new(1_002)
     );
-    assert_eq!(state.simulation().reports.len(), 1);
+    assert_eq!(
+        state.ledger().position(COUNTERPARTY, INSTRUMENT).quantity,
+        QuantityLots::new(1_002)
+    );
+    assert_eq!(
+        cash(&state, PARTICIPANT),
+        MoneyMinor::new(1_000_000 - 500 + 202)
+    );
+    assert_eq!(cash(&state, COUNTERPARTY), MoneyMinor::new(1_000_000 - 202));
+    let report = state.simulation().reports.last().unwrap();
+    assert_eq!(report.entries.len(), 3);
+    assert!(
+        report
+            .entries
+            .iter()
+            .all(|entry| entry.score == state.net_liquidation_value(entry.participant_id).unwrap())
+    );
 }
 
 #[test]
-fn checked_in_simulation_fixture_is_strict_and_versioned() {
-    let fixture: SimulationScenario =
-        serde_json::from_str(include_str!("../../../scenarios/simulation-domain.v1.json")).unwrap();
+fn unsupported_economic_actions_fail_closed() {
+    let state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let active = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    let composite = command(
+        1,
+        0,
+        PARTICIPANT,
+        SimulationCommand::SubmitComposite {
+            policy: CompositePolicy::AllOrNone,
+            minimum_fill: QuantityLots::new(1),
+            legs: vec![CompositeLeg {
+                instrument_id: INSTRUMENT,
+                side: Side::Buy,
+                quantity: QuantityLots::new(1),
+                limit_price: PriceTicks::new(100),
+            }],
+        },
+    );
+    assert_eq!(
+        active.transition_simulation(&composite).unwrap_err(),
+        EngineError::Simulation(SimulationError::Unsupported)
+    );
+    let mut config = simulation(true);
+    config.scheduled_actions.push(ScheduledAction {
+        action_id: 2,
+        effective_at: LogicalTimeNs::new(5),
+        kind: ScheduledActionKind::Deliver {
+            participant_id: PARTICIPANT,
+            instrument_id: INSTRUMENT,
+            quantity: QuantityLots::new(1),
+        },
+    });
+    assert!(scenario().with_simulation(config).is_err());
+}
+
+#[test]
+fn unfunded_tender_acceptance_is_rejected_without_mutation() {
+    let state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
+    let mut state = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
+    state = apply(
+        &state,
+        &command(
+            1,
+            0,
+            ADMIN,
+            SimulationCommand::OpenTender {
+                tender_id: TenderId::new(9),
+                participant_id: PARTICIPANT,
+                instrument_id: INSTRUMENT,
+                side: Side::Buy,
+                quantity: QuantityLots::new(1_000_000),
+                price: PriceTicks::new(100),
+                expires_at: LogicalTimeNs::new(10),
+            },
+        ),
+    );
+    let before = state.state_hash().unwrap();
+    let accept = command(
+        2,
+        0,
+        PARTICIPANT,
+        SimulationCommand::DecideTender {
+            tender_id: TenderId::new(9),
+            decision: TenderDecision::Accept,
+        },
+    );
+    assert!(state.transition_simulation(&accept).is_err());
+    assert_eq!(state.state_hash().unwrap(), before);
+}
+
+#[test]
+fn checked_in_scenario_fixture_is_strict_and_versioned() {
+    let fixture: ScenarioDefinition =
+        serde_json::from_str(include_str!("../../../scenarios/simulation-domain.v2.json")).unwrap();
     fixture.validate().unwrap();
-    assert_eq!(fixture.policy_version, SIMULATION_POLICY_VERSION);
-    assert_eq!(fixture.instruments.len(), 2);
+    assert_eq!(fixture.instruments().len(), 2);
+    RunState::from_scenario(RUN, IterationId::new(1), &fixture).unwrap();
     let mut value: serde_json::Value =
-        serde_json::from_str(include_str!("../../../scenarios/simulation-domain.v1.json")).unwrap();
+        serde_json::from_str(include_str!("../../../scenarios/simulation-domain.v2.json")).unwrap();
     value["unknown"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<SimulationScenario>(value).is_err());
+    assert!(serde_json::from_value::<ScenarioDefinition>(value).is_err());
 }
 
 #[test]
-fn fine_policy_posts_an_exact_balanced_cash_debit() {
+fn fine_policy_debits_cash_exactly() {
     let initial = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
-    let before = initial
-        .simulation()
-        .portfolio_ledger
-        .balance(PARTICIPANT, CURRENCY)
-        .settled;
+    let before = cash(&initial, PARTICIPANT);
     let fined = apply(
         &initial,
         &command(
@@ -372,16 +467,8 @@ fn fine_policy_posts_an_exact_balanced_cash_debit() {
         ),
     );
     assert_eq!(
-        fined
-            .simulation()
-            .portfolio_ledger
-            .balance(PARTICIPANT, CURRENCY)
-            .settled,
+        cash(&fined, PARTICIPANT),
         before.checked_sub(MoneyMinor::new(125)).unwrap()
-    );
-    assert_eq!(
-        fined.simulation().portfolio_ledger.journal()[0].kind,
-        TransactionKind::Fine
     );
 }
 
@@ -446,164 +533,95 @@ fn released_post_only_policy_is_matched_and_replayable() {
 }
 
 #[test]
-fn explicit_opening_marks_value_endowments_and_realize_actual_trade_pnl() {
-    let mut config = scenario().simulation().clone();
-    config.opening_marks = Some(vec![OpeningMark {
-        instrument_id: INSTRUMENT,
-        price: PriceTicks::new(100),
-    }]);
-    let priced = scenario().with_simulation(config.clone()).unwrap();
-    let state = RunState::from_scenario(RUN, IterationId::new(1), &priced).unwrap();
-    let journal = &state.simulation().portfolio_ledger;
+fn opening_marks_value_endowments_and_fills_realize_actual_pnl() {
+    let state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     assert_eq!(
-        journal.position(PARTICIPANT, INSTRUMENT).cost_basis,
+        state.ledger().position(PARTICIPANT, INSTRUMENT).cost_basis,
         MoneyMinor::new(100_000)
     );
     assert_eq!(
-        journal
-            .net_liquidation_value(PARTICIPANT, CURRENCY)
-            .unwrap(),
+        state.net_liquidation_value(PARTICIPANT).unwrap(),
         MoneyMinor::new(1_100_000)
     );
-    assert!(journal.journal().is_empty());
-
-    config.opening_marks = Some(Vec::new());
-    assert!(scenario().with_simulation(config).is_err());
-
     let mut active = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
     for (actor, id, side) in [
         (COUNTERPARTY, 101_u128, Side::Sell),
         (PARTICIPANT, 102_u128, Side::Buy),
     ] {
-        let order = Command {
-            run_id: RUN,
-            command_id: CommandId::new(id),
-            correlation_id: CorrelationId::new(id),
-            logical_time: LogicalTimeNs::new(0),
-            expected_sequence: active.sequence(),
-            actor,
-            payload: CommandPayload::SubmitOrder(SubmitOrder {
-                order_id: OrderId::new(id),
-                instrument_id: INSTRUMENT,
-                participant_id: actor,
-                side,
-                quantity: QuantityLots::new(2),
-                kind: OrderKind::Limit {
-                    price: PriceTicks::new(110),
-                },
-            }),
-        };
+        let order = limit(&active, actor, id, side, 110, 2);
         active = active.transition(&order, None).unwrap().candidate;
     }
-    let journal = &active.simulation().portfolio_ledger;
+    let ledger = active.ledger();
     assert_eq!(
-        journal.position(COUNTERPARTY, INSTRUMENT).cost_basis,
+        ledger.position(COUNTERPARTY, INSTRUMENT).cost_basis,
         MoneyMinor::new(99_800)
     );
     assert_eq!(
-        journal.position(COUNTERPARTY, INSTRUMENT).realized_pnl,
+        ledger.position(COUNTERPARTY, INSTRUMENT).realized_pnl,
         MoneyMinor::new(20)
     );
+    // The fill is the instrument's mark for every holder immediately.
     assert_eq!(
-        journal
-            .net_liquidation_value(COUNTERPARTY, CURRENCY)
-            .unwrap(),
+        active.net_liquidation_value(COUNTERPARTY).unwrap(),
+        MoneyMinor::new(1_000_220 + 998 * 110)
+    );
+    assert_eq!(
+        active.net_liquidation_value(ADMIN).unwrap(),
         MoneyMinor::new(1_110_000)
     );
-    assert_eq!(journal.journal().len(), 1);
-    // Nontrading holders are marked together at the deterministic scoring boundary.
     assert_eq!(
-        journal.net_liquidation_value(ADMIN, CURRENCY).unwrap(),
-        MoneyMinor::new(1_100_000)
-    );
-    let scored = apply(
-        &active,
-        &command(
-            active.sequence().get(),
-            0,
-            ADMIN,
-            SimulationCommand::ScoreIteration,
-        ),
-    );
-    assert_eq!(
-        scored
-            .simulation()
-            .portfolio_ledger
-            .position(ADMIN, INSTRUMENT)
-            .unrealized_pnl,
+        ledger.unrealized_pnl(ADMIN, INSTRUMENT).unwrap(),
         MoneyMinor::new(10_000)
     );
-    assert_eq!(
-        scored
-            .simulation()
-            .portfolio_ledger
-            .net_liquidation_value(ADMIN, CURRENCY)
-            .unwrap(),
-        MoneyMinor::new(1_110_000)
-    );
     let restored = bunting_engine::EngineSnapshotEnvelope::from_json(
-        &scored.snapshot_envelope().unwrap().to_json().unwrap(),
+        &active.snapshot_envelope().unwrap().to_json().unwrap(),
     )
     .unwrap();
     assert_eq!(
         restored.state.state_hash().unwrap(),
-        scored.state_hash().unwrap()
+        active.state_hash().unwrap()
     );
 }
 
 #[test]
-fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
+fn opening_positions_require_an_opening_mark() {
+    let unmarked = ScenarioDefinition::new(
+        ScenarioId::new(1),
+        ScenarioVersion::new(1),
+        [InstrumentDefinition::new(
+            INSTRUMENT,
+            "BNT",
+            CURRENCY,
+            InstrumentKind::Equity,
+        )],
+        [ListingDefinition::new(
+            ListingKey::new(VenueId::new(1), INSTRUMENT),
+            "BNT".into(),
+            PriceBounds::new(PriceTicks::new(1), PriceTicks::new(10_000)).unwrap(),
+        )
+        .unwrap()],
+        [participant(PARTICIPANT)],
+    );
+    assert!(unmarked.is_err());
+}
+
+#[test]
+fn fills_fines_and_scores_reconcile_from_one_ledger() {
     let mut state = RunState::from_scenario(RUN, IterationId::new(1), &scenario()).unwrap();
     state = apply(&state, &command(0, 0, ADMIN, SimulationCommand::StartRun));
-    let submit = |state: &RunState, actor: ParticipantId, order_id: u128, side: Side| Command {
-        run_id: RUN,
-        command_id: CommandId::new(order_id),
-        correlation_id: CorrelationId::new(order_id),
-        logical_time: LogicalTimeNs::new(0),
-        expected_sequence: state.sequence(),
-        actor,
-        payload: CommandPayload::SubmitOrder(SubmitOrder {
-            order_id: OrderId::new(order_id),
-            instrument_id: INSTRUMENT,
-            participant_id: actor,
-            side,
-            quantity: QuantityLots::new(2),
-            kind: OrderKind::Limit {
-                price: PriceTicks::new(10),
-            },
-        }),
-    };
-    let sell = submit(&state, COUNTERPARTY, 101, Side::Sell);
+    let sell = limit(&state, COUNTERPARTY, 101, Side::Sell, 10, 2);
     state = state.transition(&sell, None).unwrap().candidate;
-    let buy = submit(&state, PARTICIPANT, 102, Side::Buy);
+    let buy = limit(&state, PARTICIPANT, 102, Side::Buy, 10, 2);
     state = state.transition(&buy, None).unwrap().candidate;
-    let journal = &state.simulation().portfolio_ledger;
-    assert_eq!(journal.journal().len(), 1);
-    assert_eq!(journal.journal()[0].kind, TransactionKind::Trade);
+    assert_eq!(cash(&state, PARTICIPANT), MoneyMinor::new(999_980));
+    assert_eq!(cash(&state, COUNTERPARTY), MoneyMinor::new(1_000_020));
     assert_eq!(
-        journal.balance(PARTICIPANT, CURRENCY).settled,
-        MoneyMinor::new(999_980)
-    );
-    assert_eq!(
-        journal.balance(COUNTERPARTY, CURRENCY).settled,
-        MoneyMinor::new(1_000_020)
-    );
-    assert_eq!(
-        journal.position(PARTICIPANT, INSTRUMENT).settled,
+        state.ledger().position(PARTICIPANT, INSTRUMENT).quantity,
         QuantityLots::new(1_002)
     );
     assert_eq!(
-        journal.position(COUNTERPARTY, INSTRUMENT).settled,
+        state.ledger().position(COUNTERPARTY, INSTRUMENT).quantity,
         QuantityLots::new(998)
-    );
-    let accounts = state.accounts().iter().copied().collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        accounts[&PARTICIPANT].cash,
-        journal.balance(PARTICIPANT, CURRENCY).settled
-    );
-    assert_eq!(
-        accounts[&COUNTERPARTY].cash,
-        journal.balance(COUNTERPARTY, CURRENCY).settled
     );
     let version = state.sequence().get();
     state = apply(
@@ -620,15 +638,24 @@ fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
             },
         ),
     );
-    let accounts = state.accounts().iter().copied().collect::<BTreeMap<_, _>>();
-    assert_eq!(accounts[&PARTICIPANT].cash, MoneyMinor::new(999_975));
-    assert_eq!(state.simulation().portfolio_ledger.journal().len(), 2);
+    assert_eq!(cash(&state, PARTICIPANT), MoneyMinor::new(999_975));
     let score_version = state.sequence().get();
     state = apply(
         &state,
         &command(score_version, 0, ADMIN, SimulationCommand::ScoreIteration),
     );
-    assert_eq!(state.simulation().reports.last().unwrap().entries.len(), 3);
+    let report = state.simulation().reports.last().unwrap();
+    assert_eq!(report.entries.len(), 3);
+    // Every participant is valued at the last trade (10) after the fill.
+    let participant_score = report
+        .entries
+        .iter()
+        .find(|entry| entry.participant_id == PARTICIPANT)
+        .unwrap();
+    assert_eq!(
+        participant_score.score,
+        MoneyMinor::new(999_975 + 1_002 * 10)
+    );
     let replay = bunting_engine::EngineSnapshotEnvelope::from_json(
         &state.snapshot_envelope().unwrap().to_json().unwrap(),
     )
@@ -638,6 +665,8 @@ fn fills_and_fines_reconcile_matching_accounts_with_competition_books() {
         state.state_hash().unwrap()
     );
 }
+
+const GOLDEN: &str = "competition-full-run.v2.json";
 
 #[test]
 fn full_competition_run_matches_ledger_score_and_transcript_golden() {
@@ -678,18 +707,35 @@ fn full_competition_run_matches_ledger_score_and_transcript_golden() {
         );
         state = outcome.candidate;
     }
+    let ledger = state
+        .participants()
+        .keys()
+        .map(|participant| {
+            serde_json::json!({
+                "participant_id": participant,
+                "cash": state.ledger().cash(*participant, CURRENCY),
+                "position": state.ledger().position(*participant, INSTRUMENT),
+            })
+        })
+        .collect::<Vec<_>>();
     let actual = serde_json::json!({
         "state_hash": state.state_hash().unwrap(),
         "sequence": state.sequence(),
         "lifecycle": state.simulation().lifecycle,
         "logical_time": state.simulation().clock.now,
-        "ledger": state.simulation().portfolio_ledger.journal(),
+        "ledger": ledger,
         "scores": state.simulation().reports,
         "transcript": transcript,
     });
-    let expected: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../tests/goldens/competition-full-run.v1.json"
-    ))
-    .unwrap();
+    let path = format!(
+        "{}/../../tests/goldens/{GOLDEN}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    // Goldens are only ever regenerated from an actual replay, never edited by hand.
+    if std::env::var_os("BUNTING_BLESS").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
+    }
+    let expected: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }

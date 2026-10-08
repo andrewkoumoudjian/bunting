@@ -9,9 +9,9 @@ use bunting_command_transaction::InMemorySnapshotCache;
 use bunting_engine::{ListingDefinition, ParticipantDefinition, RunState, ScenarioDefinition};
 use bunting_market_events::{Command, CommandPayload, OrderKind, Side, SubmitOrder};
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, InstrumentId, IterationId, ListingKey, LogicalTimeNs,
-    MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId,
-    ScenarioVersion, VenueId,
+    CommandId, CorrelationId, CurrencyId, EventSequence, InstrumentId, IterationId, ListingKey,
+    LogicalTimeNs, MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots,
+    RunId, ScenarioId, ScenarioVersion, VenueId,
 };
 use bunting_origin_store::{CommitOutcome, InMemoryOrigin, OriginStore};
 use bunting_risk_engine::RiskLimits;
@@ -25,6 +25,13 @@ fn initial_run() -> RunState {
     let scenario = ScenarioDefinition::new(
         ScenarioId::new(1),
         ScenarioVersion::new(1),
+        [bunting_engine::InstrumentDefinition::new(
+            InstrumentId::new(1),
+            "BNT",
+            CurrencyId::new(1),
+            bunting_engine::InstrumentKind::Equity,
+        )
+        .with_opening_mark(PriceTicks::new(100))],
         [ListingDefinition::new(
             ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
             "ONE".to_owned(),
@@ -34,12 +41,12 @@ fn initial_run() -> RunState {
         [ParticipantDefinition::new(
             ParticipantId::new(7),
             true,
-            RiskLimits {
-                max_order_quantity: QuantityLots::new(100),
-                max_open_order_quantity: QuantityLots::new(1_000),
-                max_absolute_position: QuantityLots::new(1_000),
-            },
-            MoneyMinor::new(100_000),
+            RiskLimits::new(
+                QuantityLots::new(100),
+                QuantityLots::new(1_000),
+                QuantityLots::new(1_000),
+            ),
+            BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(100_000))]),
             BTreeMap::new(),
         )],
     )

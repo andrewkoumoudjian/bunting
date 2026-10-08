@@ -1,294 +1,349 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Pure exact pre-trade admission policy and replayable run controls.
+//! Pure, exact pre-trade admission over the authoritative ledger.
+//!
+//! Admission reads immutable participant limits, listing terms and the
+//! committed ledger; it never mutates state. Open-order quantities come from
+//! the ledger's per-instrument counters, so a check is O(log n) regardless of
+//! how many orders a run has accepted.
 
-use bunting_ledger::Ledger;
+use bunting_ledger::{Ledger, Reservation};
 use bunting_market_events::{OrderKind, RejectCode, Side, SubmitOrder};
-use bunting_market_types::{
-    InstrumentId, MoneyMinor, ParticipantId, PriceBounds, PriceTicks, QuantityLots,
-};
+use bunting_market_types::{MoneyMinor, PriceBounds, PriceTicks, QuantityLots};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
 
+const fn cash_constrained_default() -> bool {
+    true
+}
+
+/// Per-participant admission limits pinned by the scenario.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RiskLimits {
+    /// Largest single order.
     pub max_order_quantity: QuantityLots,
+    /// Largest open quantity per instrument across both sides and all venues.
     pub max_open_order_quantity: QuantityLots,
+    /// Largest absolute worst-case position per instrument.
     pub max_absolute_position: QuantityLots,
+    /// Whether buy orders must be fully funded by available cash.
+    #[serde(default = "cash_constrained_default")]
+    pub cash_constrained: bool,
 }
 
-/// Enforcement behavior for one portfolio-risk rule set.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RiskMode {
-    HardReject,
-    AllowAndPenalize,
-    Warning,
-}
-
-/// Exact portfolio and grouped-risk limits.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortfolioRiskLimits {
-    pub shortable: bool,
-    pub buying_power: MoneyMinor,
-    pub max_gross_notional: MoneyMinor,
-    pub max_net_notional: MoneyMinor,
-    pub max_concentration_bps: u32,
-    pub margin_requirement_bps: u32,
-    pub stress_loss_limit: MoneyMinor,
-    pub mode: RiskMode,
-    pub gross_groups: BTreeMap<String, Vec<InstrumentId>>,
-    pub net_groups: BTreeMap<String, Vec<InstrumentId>>,
-}
-
-/// Immutable exact exposure presented to portfolio risk.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PortfolioExposure {
-    pub available_cash: MoneyMinor,
-    pub position_after: QuantityLots,
-    pub order_notional: MoneyMinor,
-    pub gross_notional_after: MoneyMinor,
-    pub net_notional_after: MoneyMinor,
-    pub largest_position_notional: MoneyMinor,
-    pub stress_loss: MoneyMinor,
-}
-
-/// Stable portfolio-risk outcome.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PortfolioRiskDecision {
-    pub accepted: bool,
-    pub warnings: Vec<RejectCode>,
-    pub penalty: MoneyMinor,
-}
-
-/// Evaluates exact grouped exposure without mutating market or ledger state.
-///
-/// # Errors
-/// Returns a stable rejection when the configured enforcement mode is hard.
-pub fn check_portfolio(
-    limits: &PortfolioRiskLimits,
-    exposure: PortfolioExposure,
-) -> Result<PortfolioRiskDecision, RejectCode> {
-    let mut warnings = Vec::new();
-    if !limits.shortable && exposure.position_after.get() < 0 {
-        warnings.push(RejectCode::InsufficientInventory);
-    }
-    if exposure.order_notional > exposure.available_cash
-        || exposure.order_notional > limits.buying_power
-    {
-        warnings.push(RejectCode::InsufficientCash);
-    }
-    if exposure.gross_notional_after > limits.max_gross_notional
-        || exposure.net_notional_after.get().unsigned_abs()
-            > limits.max_net_notional.get().unsigned_abs()
-    {
-        warnings.push(RejectCode::PositionLimit);
-    }
-    let concentration_bps = if exposure.gross_notional_after.get() == 0 {
-        0
-    } else {
-        exposure
-            .largest_position_notional
-            .get()
-            .unsigned_abs()
-            .saturating_mul(10_000)
-            .checked_div(exposure.gross_notional_after.get().unsigned_abs())
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or(u32::MAX)
-    };
-    if concentration_bps > limits.max_concentration_bps
-        || exposure.stress_loss > limits.stress_loss_limit
-    {
-        warnings.push(RejectCode::PositionLimit);
-    }
-    if warnings.is_empty() {
-        return Ok(PortfolioRiskDecision {
-            accepted: true,
-            warnings,
-            penalty: MoneyMinor::new(0),
-        });
-    }
-    match limits.mode {
-        RiskMode::HardReject => Err(warnings[0]),
-        RiskMode::Warning => Ok(PortfolioRiskDecision {
-            accepted: true,
-            warnings,
-            penalty: MoneyMinor::new(0),
-        }),
-        RiskMode::AllowAndPenalize => {
-            let penalty = MoneyMinor::new(
-                i128::try_from(warnings.len()).map_err(|_| RejectCode::ArithmeticOverflow)?,
-            );
-            Ok(PortfolioRiskDecision {
-                accepted: true,
-                warnings,
-                penalty,
-            })
-        }
-    }
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RiskState {
-    pub kill_switch_active: bool,
-    instruments: BTreeMap<InstrumentId, PriceBounds>,
-    enabled: BTreeSet<ParticipantId>,
-    limits: BTreeMap<ParticipantId, RiskLimits>,
-}
-impl RiskState {
+impl RiskLimits {
+    /// Cash-constrained limits.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new(
+        max_order_quantity: QuantityLots,
+        max_open_order_quantity: QuantityLots,
+        max_absolute_position: QuantityLots,
+    ) -> Self {
         Self {
-            kill_switch_active: false,
-            instruments: BTreeMap::new(),
-            enabled: BTreeSet::new(),
-            limits: BTreeMap::new(),
+            max_order_quantity,
+            max_open_order_quantity,
+            max_absolute_position,
+            cash_constrained: true,
         }
-    }
-    pub fn configure_instrument(&mut self, id: InstrumentId, bounds: PriceBounds) {
-        self.instruments.insert(id, bounds);
-    }
-    pub fn configure_participant(&mut self, id: ParticipantId, limits: RiskLimits) {
-        self.enabled.insert(id);
-        self.limits.insert(id, limits);
-    }
-    pub fn set_enabled(&mut self, id: ParticipantId, enabled: bool) {
-        if enabled {
-            self.enabled.insert(id);
-        } else {
-            self.enabled.remove(&id);
-        }
-    }
-    /// Returns whether a participant is enabled.
-    #[must_use]
-    pub fn is_enabled(&self, id: ParticipantId) -> bool {
-        self.enabled.contains(&id)
-    }
-    pub fn check(
-        &self,
-        order: &SubmitOrder,
-        open_quantity: QuantityLots,
-        ledger: &Ledger,
-        market_reservation_price: Option<PriceTicks>,
-    ) -> Result<PriceTicks, RejectCode> {
-        if self.kill_switch_active {
-            return Err(RejectCode::KillSwitchActive);
-        }
-        if !self.enabled.contains(&order.participant_id) {
-            return Err(RejectCode::ParticipantDisabled);
-        }
-        if order.quantity.get() <= 0 {
-            return Err(RejectCode::InvalidQuantity);
-        }
-        let bounds = self
-            .instruments
-            .get(&order.instrument_id)
-            .ok_or(RejectCode::InvalidInstrument)?;
-        let price = match order.kind {
-            OrderKind::Limit { price }
-            | OrderKind::LimitWithPolicy { price, .. }
-            | OrderKind::AdvancedLimit { price, .. } => {
-                bounds
-                    .validate(price)
-                    .map_err(|_| RejectCode::PriceOutOfBounds)?;
-                price
-            }
-            OrderKind::Market => market_reservation_price.unwrap_or(PriceTicks(0)),
-        };
-        let limits = self
-            .limits
-            .get(&order.participant_id)
-            .ok_or(RejectCode::ParticipantDisabled)?;
-        if order.quantity > limits.max_order_quantity {
-            return Err(RejectCode::MaxOrderQuantity);
-        }
-        let total = open_quantity
-            .checked_add(order.quantity)
-            .ok_or(RejectCode::ArithmeticOverflow)?;
-        if total > limits.max_open_order_quantity {
-            return Err(RejectCode::MaxOpenOrderQuantity);
-        }
-        let holding = ledger.holding(order.participant_id, order.instrument_id);
-        let projected = match order.side {
-            Side::Buy => holding.position.checked_add(total),
-            Side::Sell => holding.position.checked_sub(total),
-        }
-        .ok_or(RejectCode::ArithmeticOverflow)?;
-        if projected.get().unsigned_abs() > limits.max_absolute_position.get().unsigned_abs() {
-            return Err(RejectCode::PositionLimit);
-        }
-        match order.side {
-            Side::Buy => {
-                let cost = bunting_market_types::MoneyMinor::checked_mul_price_quantity(
-                    price,
-                    order.quantity,
-                )
-                .map_err(|_| RejectCode::ArithmeticOverflow)?;
-                if ledger
-                    .available_cash(order.participant_id)
-                    .ok_or(RejectCode::ArithmeticOverflow)?
-                    < cost
-                {
-                    return Err(RejectCode::InsufficientCash);
-                }
-            }
-            Side::Sell => {
-                if ledger
-                    .available_inventory(order.participant_id, order.instrument_id)
-                    .ok_or(RejectCode::ArithmeticOverflow)?
-                    < order.quantity
-                {
-                    return Err(RejectCode::InsufficientInventory);
-                }
-            }
-        }
-        Ok(price)
     }
 }
-impl Default for RiskState {
-    fn default() -> Self {
-        Self::new()
+
+/// Listing facts needed to admit one order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListingTerms {
+    pub price_bounds: PriceBounds,
+    /// Largest per-lot fee the order can incur; reserved with buy notional.
+    pub fee_bound: MoneyMinor,
+}
+
+/// Accepted admission: the price that bounds the order's cash use and the
+/// reservation the ledger must hold while the order is open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Admission {
+    pub reservation_price: PriceTicks,
+    pub reservation: Reservation,
+}
+
+/// Admits one order or returns a stable rejection.
+///
+/// `market_reservation_price` bounds a market order's cash use (the listing's
+/// worst price on the order side).
+pub fn admit(
+    limits: &RiskLimits,
+    enabled: bool,
+    order: &SubmitOrder,
+    listing: ListingTerms,
+    ledger: &Ledger,
+    market_reservation_price: Option<PriceTicks>,
+) -> Result<Admission, RejectCode> {
+    if !enabled {
+        return Err(RejectCode::ParticipantDisabled);
     }
+    if order.quantity.get() <= 0 {
+        return Err(RejectCode::InvalidQuantity);
+    }
+    let terms = ledger
+        .terms(order.instrument_id)
+        .map_err(|_| RejectCode::InvalidInstrument)?;
+    let price = match order.kind {
+        OrderKind::Limit { price }
+        | OrderKind::LimitWithPolicy { price, .. }
+        | OrderKind::AdvancedLimit { price, .. } => {
+            listing
+                .price_bounds
+                .validate(price)
+                .map_err(|_| RejectCode::PriceOutOfBounds)?;
+            price
+        }
+        OrderKind::Market => market_reservation_price.ok_or(RejectCode::InsufficientLiquidity)?,
+    };
+    if order.quantity > limits.max_order_quantity {
+        return Err(RejectCode::MaxOrderQuantity);
+    }
+    let position = ledger.position(order.participant_id, order.instrument_id);
+    let open = position
+        .open_buy
+        .checked_add(position.open_sell)
+        .and_then(|open| open.checked_add(order.quantity))
+        .ok_or(RejectCode::ArithmeticOverflow)?;
+    if open > limits.max_open_order_quantity {
+        return Err(RejectCode::MaxOpenOrderQuantity);
+    }
+    let worst_case = match order.side {
+        Side::Buy => position
+            .quantity
+            .checked_add(position.open_buy)
+            .and_then(|value| value.checked_add(order.quantity)),
+        Side::Sell => position
+            .quantity
+            .checked_sub(position.open_sell)
+            .and_then(|value| value.checked_sub(order.quantity)),
+    }
+    .ok_or(RejectCode::ArithmeticOverflow)?;
+    if worst_case.get().unsigned_abs() > limits.max_absolute_position.get().unsigned_abs() {
+        return Err(RejectCode::PositionLimit);
+    }
+    let reservation = match order.side {
+        Side::Buy if limits.cash_constrained => {
+            let cash_per_lot = ledger
+                .cash_per_lot(order.instrument_id, price, listing.fee_bound)
+                .map_err(|_| RejectCode::ArithmeticOverflow)?;
+            let required = cash_per_lot
+                .get()
+                .checked_mul(i128::from(order.quantity.get()))
+                .ok_or(RejectCode::ArithmeticOverflow)?;
+            let available = ledger
+                .cash(order.participant_id, terms.currency)
+                .available()
+                .ok_or(RejectCode::ArithmeticOverflow)?;
+            if available.get() < required {
+                return Err(RejectCode::InsufficientCash);
+            }
+            Reservation {
+                cash_per_lot,
+                inventory: false,
+            }
+        }
+        Side::Buy => Reservation::NONE,
+        Side::Sell if terms.shortable => Reservation::NONE,
+        Side::Sell => {
+            if position.available().ok_or(RejectCode::ArithmeticOverflow)? < order.quantity {
+                return Err(RejectCode::InsufficientInventory);
+            }
+            Reservation {
+                cash_per_lot: MoneyMinor::new(0),
+                inventory: true,
+            }
+        }
+    };
+    Ok(Admission {
+        reservation_price: price,
+        reservation,
+    })
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use bunting_ledger::InstrumentTerms;
+    use bunting_market_types::{CurrencyId, InstrumentId, OrderId, ParticipantId};
 
-    fn limits(mode: RiskMode) -> PortfolioRiskLimits {
-        PortfolioRiskLimits {
-            shortable: false,
-            buying_power: MoneyMinor::new(100),
-            max_gross_notional: MoneyMinor::new(200),
-            max_net_notional: MoneyMinor::new(100),
-            max_concentration_bps: 7_500,
-            margin_requirement_bps: 2_500,
-            stress_loss_limit: MoneyMinor::new(50),
-            mode,
-            gross_groups: BTreeMap::new(),
-            net_groups: BTreeMap::new(),
+    const STOCK: InstrumentId = InstrumentId::new(1);
+    const TRADER: ParticipantId = ParticipantId::new(7);
+
+    fn ledger(shortable: bool) -> Ledger {
+        let mut ledger = Ledger::new();
+        ledger
+            .configure_instrument(
+                STOCK,
+                InstrumentTerms {
+                    currency: CurrencyId::new(1),
+                    multiplier: 1,
+                    shortable,
+                },
+            )
+            .unwrap();
+        ledger
+            .post_cash(TRADER, CurrencyId::new(1), MoneyMinor::new(1_000))
+            .unwrap();
+        ledger
+    }
+
+    fn order(side: Side, quantity: i64, price: i64) -> SubmitOrder {
+        SubmitOrder {
+            order_id: OrderId::new(1),
+            instrument_id: STOCK,
+            participant_id: TRADER,
+            side,
+            quantity: QuantityLots::new(quantity),
+            kind: OrderKind::Limit {
+                price: PriceTicks::new(price),
+            },
         }
     }
 
+    fn listing() -> ListingTerms {
+        ListingTerms {
+            price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap(),
+            fee_bound: MoneyMinor::new(1),
+        }
+    }
+
+    fn limits() -> RiskLimits {
+        RiskLimits::new(
+            QuantityLots::new(100),
+            QuantityLots::new(150),
+            QuantityLots::new(120),
+        )
+    }
+
     #[test]
-    fn hard_and_penalty_modes_share_the_same_exact_breach_detection() -> Result<(), RejectCode> {
-        let exposure = PortfolioExposure {
-            available_cash: MoneyMinor::new(100),
-            position_after: QuantityLots::new(-1),
-            order_notional: MoneyMinor::new(10),
-            gross_notional_after: MoneyMinor::new(10),
-            net_notional_after: MoneyMinor::new(-10),
-            largest_position_notional: MoneyMinor::new(10),
-            stress_loss: MoneyMinor::new(1),
+    fn buy_reservation_includes_fee_bound_and_rejects_unfunded_orders() {
+        let ledger = ledger(false);
+        let admitted = admit(
+            &limits(),
+            true,
+            &order(Side::Buy, 90, 10),
+            listing(),
+            &ledger,
+            None,
+        )
+        .unwrap();
+        assert_eq!(admitted.reservation.cash_per_lot, MoneyMinor::new(11));
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Buy, 91, 10),
+                listing(),
+                &ledger,
+                None
+            ),
+            Err(RejectCode::InsufficientCash)
+        );
+        let unconstrained = RiskLimits {
+            cash_constrained: false,
+            ..limits()
         };
         assert_eq!(
-            check_portfolio(&limits(RiskMode::HardReject), exposure),
+            admit(
+                &unconstrained,
+                true,
+                &order(Side::Buy, 100, 10),
+                listing(),
+                &ledger,
+                None
+            )
+            .unwrap()
+            .reservation,
+            Reservation::NONE
+        );
+    }
+
+    #[test]
+    fn short_sales_require_a_shortable_instrument() {
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Sell, 5, 10),
+                listing(),
+                &ledger(false),
+                None
+            ),
             Err(RejectCode::InsufficientInventory)
         );
-        let allowed = check_portfolio(&limits(RiskMode::AllowAndPenalize), exposure)?;
-        assert!(allowed.accepted);
-        assert_eq!(allowed.penalty, MoneyMinor::new(2));
-        Ok(())
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Sell, 5, 10),
+                listing(),
+                &ledger(true),
+                None
+            )
+            .unwrap()
+            .reservation,
+            Reservation::NONE
+        );
+    }
+
+    #[test]
+    fn limits_use_open_quantity_and_worst_case_position() {
+        let mut ledger = ledger(true);
+        ledger
+            .open_order(
+                TRADER,
+                STOCK,
+                Side::Sell,
+                QuantityLots::new(60),
+                Reservation::NONE,
+            )
+            .unwrap();
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Sell, 61, 10),
+                listing(),
+                &ledger,
+                None
+            ),
+            Err(RejectCode::PositionLimit)
+        );
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Buy, 91, 1),
+                listing(),
+                &ledger,
+                None
+            ),
+            Err(RejectCode::MaxOpenOrderQuantity)
+        );
+        assert_eq!(
+            admit(
+                &limits(),
+                false,
+                &order(Side::Buy, 1, 1),
+                listing(),
+                &ledger,
+                None
+            ),
+            Err(RejectCode::ParticipantDisabled)
+        );
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Buy, 1, 1_001),
+                listing(),
+                &ledger,
+                None
+            ),
+            Err(RejectCode::PriceOutOfBounds)
+        );
     }
 }

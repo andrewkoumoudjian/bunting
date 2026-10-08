@@ -168,7 +168,7 @@ mod tests {
             logical_time: LogicalTimeNs::new(0),
             expected_sequence: initial_state.sequence(),
             actor: ParticipantId::new(1),
-            payload: SimulationCommand::StartRun,
+            payload: SimulationCommand::PauseRun,
         };
         let outcome = initial_state
             .transition_simulation(&command)

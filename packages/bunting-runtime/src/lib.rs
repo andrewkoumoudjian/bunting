@@ -407,6 +407,7 @@ fn built_in_actor(participant_id: ParticipantId) -> Result<VerifiedActor, Runtim
 mod tests {
     use super::*;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
+    use bunting_market_types::CurrencyId;
     use bunting_market_types::{
         IterationId, ListingKey, MoneyMinor, PriceBounds, ScenarioId, ScenarioVersion, VenueId,
     };
@@ -454,17 +455,24 @@ mod tests {
         let participant = ParticipantDefinition::new(
             participant_id,
             true,
-            RiskLimits {
-                max_order_quantity: QuantityLots::new(100),
-                max_open_order_quantity: QuantityLots::new(1_000),
-                max_absolute_position: QuantityLots::new(10_000),
-            },
-            MoneyMinor::new(1_000_000),
+            RiskLimits::new(
+                QuantityLots::new(100),
+                QuantityLots::new(1_000),
+                QuantityLots::new(10_000),
+            ),
+            BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000_000))]),
             BTreeMap::from([(instrument_id, QuantityLots::new(100))]),
         );
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
+            [bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
             [listing],
             [participant],
         )

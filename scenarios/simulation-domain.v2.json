@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "scenario_id": 1,
+  "scenario_version": 1,
+  "reporting_currency": 1,
+  "instruments": [
+    {
+      "instrument_id": 1,
+      "symbol": "BNT",
+      "currency": 1,
+      "kind": "equity",
+      "multiplier": 1,
+      "shortable": false,
+      "opening_mark": 1000
+    },
+    {
+      "instrument_id": 2,
+      "symbol": "BNT-FUT",
+      "currency": 1,
+      "kind": {
+        "future": {
+          "underlying": 1,
+          "expiry": 1000000000,
+          "physical_delivery": true
+        }
+      },
+      "multiplier": 100,
+      "shortable": true,
+      "opening_mark": 1000
+    }
+  ],
+  "listings": {
+    "1:1": {
+      "key": "1:1",
+      "symbol": "BNT",
+      "price_bounds": {"min": 1, "max": 100000},
+      "fees": {"taker_per_lot": 2, "maker_per_lot": -1}
+    },
+    "1:2": {
+      "key": "1:2",
+      "symbol": "BNT-FUT",
+      "price_bounds": {"min": 1, "max": 100000}
+    }
+  },
+  "participants": {
+    "1": {
+      "participant_id": 1,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 1000,
+        "max_open_order_quantity": 10000,
+        "max_absolute_position": 10000
+      },
+      "initial_cash": {"1": 1000000},
+      "initial_positions": {"1": 100}
+    }
+  },
+  "simulation": {
+    "policy_version": 1,
+    "clock": {
+      "now": 0,
+      "step_ns": 1000000,
+      "mode": {"mode": "lockstep"}
+    },
+    "facilities": [
+      {
+        "facility_id": 1,
+        "kind": "conversion",
+        "capacity": 100,
+        "input_instrument": 1,
+        "output_instrument": 2
+      }
+    ],
+    "scheduled_actions": [
+      {
+        "action_id": 1,
+        "effective_at": 2000000,
+        "kind": {
+          "cashflow": {
+            "participant_id": 1,
+            "currency_id": 1,
+            "amount": 25,
+            "kind": "dividend"
+          }
+        }
+      }
+    ],
+    "initial_news": [
+      {
+        "news_id": 1,
+        "published_at": 0,
+        "audience": {"kind": "public"},
+        "headline": "Scenario initialized",
+        "body": "Bunting-native deterministic fixture."
+      }
+    ],
+    "starts_active": false
+  }
+}
