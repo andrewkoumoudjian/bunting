@@ -870,7 +870,7 @@ impl RunState {
                 current: candidate.sequence,
             });
         }
-        let next_sequence = self
+        let next_sequence = candidate
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
@@ -893,7 +893,7 @@ impl RunState {
                     }
                     _ => candidate.listing_key_for_instrument(order.instrument_id)?,
                 };
-                let price_bounds = self
+                let price_bounds = candidate
                     .listings
                     .get(&listing_key)
                     .ok_or(EngineError::UnknownListing)?
@@ -945,7 +945,7 @@ impl RunState {
                 }
             }
             CommandPayload::CancelOrder(cancel) => {
-                if let Some(listing_key) = self
+                if let Some(listing_key) = candidate
                     .ownership
                     .get(&cancel.order_id)
                     .map(|owned| owned.listing_key)
@@ -1092,7 +1092,7 @@ impl RunState {
                 current: candidate.sequence,
             });
         }
-        let next_sequence = self
+        let next_sequence = candidate
             .sequence
             .checked_add(EventSequence::new(1))
             .ok_or(EngineError::SequenceOverflow)?;
@@ -2108,6 +2108,61 @@ mod tests {
         assert_eq!(
             restored.state.state_hash().unwrap(),
             state.state_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn owned_transition_matches_immutable_command_cancel_and_simulation_paths() {
+        let state = run();
+        let sell = submit(&state, 1, 2, 41, 1, Side::Sell, 110, 3);
+        let borrowed = state.transition(&sell, None).unwrap();
+        let owned = state.clone().transition_owned(&sell, None).unwrap();
+        assert_eq!(borrowed.candidate, owned.candidate);
+        assert_eq!(borrowed.events, owned.events);
+        assert_eq!(borrowed.changed_listings, owned.changed_listings);
+        let after_submit = borrowed.candidate;
+
+        let cancel = Command {
+            run_id: after_submit.run_id(),
+            command_id: CommandId::new(2),
+            correlation_id: CorrelationId::new(2),
+            logical_time: LogicalTimeNs::new(2_000_000),
+            expected_sequence: after_submit.sequence(),
+            actor: ParticipantId::new(2),
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: OrderId::new(41),
+                participant_id: ParticipantId::new(2),
+            }),
+        };
+        let borrowed = after_submit.transition(&cancel, None).unwrap();
+        let owned = after_submit.clone().transition_owned(&cancel, None).unwrap();
+        assert_eq!(borrowed.candidate, owned.candidate);
+        assert_eq!(borrowed.events, owned.events);
+        let after_cancel = borrowed.candidate;
+
+        let request = SimulationCommandRequest {
+            run_id: after_cancel.run_id(),
+            command_id: CommandId::new(3),
+            correlation_id: CorrelationId::new(3),
+            logical_time: LogicalTimeNs::new(3_000_000),
+            expected_sequence: after_cancel.sequence(),
+            actor: ParticipantId::new(1),
+            payload: SimulationCommand::MassCancel {
+                participant_id: None,
+                instrument_id: Some(InstrumentId::new(1)),
+            },
+        };
+        let borrowed = after_cancel.transition_simulation(&request).unwrap();
+        let owned = after_cancel
+            .clone()
+            .transition_simulation_owned(&request)
+            .unwrap();
+        assert_eq!(borrowed.candidate, owned.candidate);
+        assert_eq!(borrowed.events, owned.events);
+        assert_eq!(borrowed.changed_listings, owned.changed_listings);
+        assert_eq!(
+            borrowed.candidate.state_hash().unwrap(),
+            owned.candidate.state_hash().unwrap()
         );
     }
 
