@@ -55,6 +55,8 @@ lines.extend(
         "bounded UTF-8 JSON for competition resources; it never changes FIX "
         "session sequencing or the authoritative event schema.",
         "",
+        "New FIX orders (D) and market-data requests (V) must include standard tag 207 (SecurityExchange), containing a positive numeric Bunting venue ID. FIX market snapshots (W) and incremental updates (X) publish both instrument tag 48 and exchange tag 207. No order submission or market feed may silently select a venue from instrument identity.",
+        "",
         "The venue keeps the existing Bunting codec while the QuickFIX-Go "
         "interoperability gate remains green. Unknown tags and malformed frames "
         "are rejected within the published wire and rate limits.",
