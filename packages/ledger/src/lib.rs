@@ -284,9 +284,10 @@ impl PortfolioLedger {
     pub fn post(&mut self, transaction: JournalTransaction) -> Result<(), LedgerError> {
         if transaction.transaction_id == 0
             || transaction.postings.is_empty()
-            || self.journal.last().is_some_and(|prior| {
-                prior.transaction_id >= transaction.transaction_id
-            })
+            || self
+                .journal
+                .last()
+                .is_some_and(|prior| prior.transaction_id >= transaction.transaction_id)
         {
             return Err(LedgerError::InvalidPosting);
         }
