@@ -25,8 +25,7 @@ use compatibility::nbc::{
 };
 use matching::{
     KernelBook, SnapshotPackage, TimeInForce, TradeInfo, sequential_id_from_text,
-    to_upstream_order_id, to_upstream_price, to_upstream_quantity, to_upstream_side,
-    to_upstream_time_in_force,
+    to_upstream_price, to_upstream_quantity, to_upstream_side, to_upstream_time_in_force,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,9 +36,9 @@ use std::fmt;
 pub use matching::{ORDERBOOK_RS_AUDIT_COMMIT, ORDERBOOK_RS_VERSION};
 
 /// Version of the central engine behavior established by this foundation slice.
-pub const ENGINE_VERSION: u16 = 1;
+pub const ENGINE_VERSION: u16 = 2;
 /// Version of the complete persisted engine snapshot envelope.
-pub const ENGINE_SNAPSHOT_VERSION: u16 = 1;
+pub const ENGINE_SNAPSHOT_VERSION: u16 = 2;
 /// Version of the minimal Bunting-native scenario schema.
 pub const SCENARIO_SCHEMA_VERSION: u16 = 1;
 /// Version of each nested listing snapshot record.
@@ -506,10 +505,11 @@ pub struct RunState {
     accounts: AccountProjection,
     holdings: HoldingProjection,
     ownership: BTreeMap<OrderId, OwnedOrder>,
-    /// Replayable reverse index for canonical orders exceeding the u64 matcher range.
-    /// Empty legacy runs serialize unchanged.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    upstream_order_aliases: BTreeMap<u64, OrderId>,
+    /// Single authoritative upstream-to-canonical identity index, including
+    /// every accepted order regardless of external identifier size.
+    upstream_to_canonical: BTreeMap<u64, OrderId>,
+    /// Next globally unique sequential ID for any venue in this run.
+    next_upstream_order_id: u64,
     #[serde(default)]
     nbc_compatibility: Option<NbcCompatibilityState>,
     #[serde(default)]
@@ -654,7 +654,8 @@ impl RunState {
             accounts,
             holdings,
             ownership: BTreeMap::new(),
-            upstream_order_aliases: BTreeMap::new(),
+            upstream_to_canonical: BTreeMap::new(),
+            next_upstream_order_id: 1,
             nbc_compatibility: None,
             simulation,
         })
@@ -807,21 +808,18 @@ impl RunState {
             || self.listings.len() > usize::from(self.config.max_listings)
             || self.participants.len() > MAX_PARTICIPANTS
             || self.ownership.len() > MAX_ORDERS
-            || self.upstream_order_aliases.len() > self.ownership.len()
-            || self.upstream_order_aliases.iter().any(|(upstream, canonical)| {
+            || self.next_upstream_order_id == 0
+            || self.upstream_to_canonical.len() != self.ownership.len()
+            || self.upstream_to_canonical.iter().any(|(upstream, canonical)| {
                 *upstream == 0
-                    || self
-                        .ownership
-                        .get(canonical)
-                        .is_none_or(|owned| owned.upstream_order_id != *upstream)
+                    || *upstream >= self.next_upstream_order_id
+                    || self.ownership.get(canonical).is_none_or(|owned| {
+                        owned.order_id != *canonical || owned.upstream_order_id != *upstream
+                    })
             })
-            || self.ownership.iter().any(|(id, owned)| {
-                *id != owned.order_id
-                    || owned.upstream_order_id == 0
-                    || (u128::from(owned.upstream_order_id) != id.get()
-                        && self.upstream_order_aliases.get(&owned.upstream_order_id) != Some(id))
-                    || (u128::from(owned.upstream_order_id) == id.get()
-                        && self.upstream_order_aliases.contains_key(&owned.upstream_order_id))
+            || self.ownership.iter().any(|(canonical, owned)| {
+                *canonical != owned.order_id
+                    || self.upstream_to_canonical.get(&owned.upstream_order_id) != Some(canonical)
             })
             || self
                 .nbc_compatibility
@@ -912,7 +910,8 @@ impl RunState {
                         &mut candidate.simulation,
                         &risk,
                         &mut candidate.ownership,
-                        &mut candidate.upstream_order_aliases,
+                        &mut candidate.upstream_to_canonical,
+                        &mut candidate.next_upstream_order_id,
                         &mut payloads,
                     )?;
                     candidate.replace_snapshot(listing_key, next_sequence, &book)?;
@@ -1383,148 +1382,6 @@ impl EngineSnapshotEnvelope {
         Ok(envelope)
     }
 
-    /// Restores the current envelope or deterministically migrates the legacy
-    /// one-listing projection written before the unified engine existed.
-    pub fn from_persisted_json(json: &str) -> Result<Self, SnapshotError> {
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|_| SnapshotError::Serialization)?;
-        if value.get("schema_version").is_some() {
-            return Self::from_json(json);
-        }
-        let legacy: LegacyRunState =
-            serde_json::from_value(value).map_err(|_| SnapshotError::Serialization)?;
-        if legacy.snapshot.instrument_id != legacy.instrument_id
-            || legacy.snapshot.represented_sequence != legacy.version
-            || legacy
-                .ownership
-                .iter()
-                .any(|owned| owned.instrument_id != legacy.instrument_id)
-        {
-            return Err(SnapshotError::InvalidScenario);
-        }
-        let listing_key = ListingKey::new(VenueId::new(1), legacy.instrument_id);
-        let participants = legacy
-            .participants
-            .iter()
-            .map(|participant| {
-                let cash = legacy
-                    .accounts
-                    .iter()
-                    .find(|(id, _)| id == &participant.participant_id)
-                    .map_or(MoneyMinor::new(0), |(_, account)| account.cash);
-                let initial_positions = legacy
-                    .holdings
-                    .iter()
-                    .filter(|(id, _, _)| id == &participant.participant_id)
-                    .map(|(_, instrument, holding)| (*instrument, holding.position))
-                    .collect();
-                ParticipantDefinition {
-                    participant_id: participant.participant_id,
-                    enabled: participant.enabled,
-                    limits: participant.limits,
-                    initial_cash: cash,
-                    initial_positions,
-                }
-            })
-            .collect::<Vec<_>>();
-        let scenario = ScenarioDefinition::new(
-            ScenarioId::new(legacy.run_id.get()),
-            ScenarioVersion::new(1),
-            [ListingDefinition {
-                key: listing_key,
-                symbol: legacy.symbol,
-                price_bounds: legacy.price_bounds,
-            }],
-            participants,
-        )
-        .map_err(|_| SnapshotError::InvalidScenario)?;
-        let mut state = RunState::from_scenario(legacy.run_id, IterationId::new(1), &scenario)
-            .map_err(|_| SnapshotError::InvalidScenario)?;
-        state.sequence = legacy.version;
-        state.event_sequence = legacy.version;
-        state.accounts = legacy.accounts;
-        state.holdings = legacy.holdings;
-        state.ownership = legacy
-            .ownership
-            .into_iter()
-            .map(|owned| {
-                (
-                    owned.order_id,
-                    OwnedOrder {
-                        order_id: owned.order_id,
-                        upstream_order_id: owned.upstream_order_id,
-                        participant_id: owned.participant_id,
-                        listing_key,
-                        side: owned.side,
-                        limit_price: owned.limit_price,
-                        original_quantity: owned.original_quantity,
-                        remaining_quantity: owned.remaining_quantity,
-                        state: owned.state,
-                    },
-                )
-            })
-            .collect();
-        state.nbc_compatibility = None;
-        let listing = state
-            .listings
-            .get_mut(&listing_key)
-            .ok_or(SnapshotError::InvalidScenario)?;
-        listing.snapshot = ListingSnapshot {
-            schema_version: LISTING_SNAPSHOT_VERSION,
-            represented_sequence: legacy.snapshot.represented_sequence,
-            checksum: legacy.snapshot.checksum,
-            package_json: legacy.snapshot.package_json,
-        };
-        Self::new(state)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRunState {
-    run_id: RunId,
-    version: EventSequence,
-    instrument_id: InstrumentId,
-    symbol: String,
-    price_bounds: PriceBounds,
-    participants: Vec<LegacyParticipantConfig>,
-    accounts: AccountProjection,
-    holdings: HoldingProjection,
-    ownership: Vec<LegacyOwnedOrder>,
-    snapshot: LegacySnapshotRecord,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyParticipantConfig {
-    participant_id: ParticipantId,
-    enabled: bool,
-    limits: RiskLimits,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyOwnedOrder {
-    order_id: OrderId,
-    upstream_order_id: u64,
-    participant_id: ParticipantId,
-    instrument_id: InstrumentId,
-    side: Side,
-    limit_price: PriceTicks,
-    original_quantity: QuantityLots,
-    remaining_quantity: QuantityLots,
-    state: OwnedOrderState,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacySnapshotRecord {
-    instrument_id: InstrumentId,
-    represented_sequence: EventSequence,
-    checksum: String,
-    package_json: String,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
     Serialization,
@@ -1570,38 +1427,6 @@ impl From<SnapshotError> for EngineError {
     }
 }
 
-/// Returns a lossless upstream ID and whether it requires a persisted alias.
-/// Existing u64 canonical IDs keep their legacy values when unclaimed.
-fn upstream_id_for_submission(
-    canonical: OrderId,
-    ownership: &BTreeMap<OrderId, OwnedOrder>,
-    aliases: &BTreeMap<u64, OrderId>,
-) -> Option<(u64, bool)> {
-    if canonical.get() == 0 {
-        return None;
-    }
-    if let Ok(direct) = to_upstream_order_id(canonical) {
-        if !aliases.contains_key(&direct) {
-            return Some((direct, false));
-        }
-    }
-    let mut candidate = match aliases.keys().next().copied() {
-        Some(lowest) => lowest.checked_sub(1)?,
-        None => u64::MAX,
-    };
-    loop {
-        if candidate == 0 {
-            return None;
-        }
-        if !aliases.contains_key(&candidate)
-            && !ownership.contains_key(&OrderId::new(u128::from(candidate)))
-        {
-            return Some((candidate, true));
-        }
-        candidate = candidate.checked_sub(1)?;
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1616,7 +1441,8 @@ fn prepare_submit(
     simulation: &mut SimulationState,
     risk: &RiskState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
-    aliases: &mut BTreeMap<u64, OrderId>,
+    upstream_to_canonical: &mut BTreeMap<u64, OrderId>,
+    next_upstream_order_id: &mut u64,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<Result<(), RejectCode>, EngineError> {
     if ownership.contains_key(&order.order_id) {
@@ -1625,11 +1451,9 @@ fn prepare_submit(
     if ownership.len() >= MAX_ORDERS {
         return Ok(Err(RejectCode::MaxOpenOrderQuantity));
     }
-    let Some((upstream_id, aliased)) =
-        upstream_id_for_submission(order.order_id, ownership, aliases)
-    else {
+    if order.order_id.get() == 0 {
         return Ok(Err(RejectCode::InvalidOrderId));
-    };
+    }
     let Ok(upstream_quantity) = to_upstream_quantity(order.quantity) else {
         return Ok(Err(RejectCode::InvalidQuantity));
     };
@@ -1673,6 +1497,13 @@ fn prepare_submit(
         Ok(value) => value,
         Err(code) => return Ok(Err(code)),
     };
+    let upstream_id = *next_upstream_order_id;
+    let next_id = upstream_id
+        .checked_add(1)
+        .ok_or(EngineError::OwnershipInvariant)?;
+    if upstream_to_canonical.contains_key(&upstream_id) {
+        return Err(EngineError::OwnershipInvariant);
+    }
     ledger.reserve(
         order.participant_id,
         order.instrument_id,
@@ -1680,9 +1511,8 @@ fn prepare_submit(
         reservation_price,
         order.quantity,
     )?;
-    if aliased {
-        aliases.insert(upstream_id, order.order_id);
-    }
+    *next_upstream_order_id = next_id;
+    upstream_to_canonical.insert(upstream_id, order.order_id);
     ownership.insert(
         order.order_id,
         OwnedOrder {
@@ -1748,7 +1578,7 @@ fn prepare_submit(
             ledger,
             simulation,
             ownership,
-            aliases,
+            upstream_to_canonical,
             payloads,
         )?;
     }
@@ -1804,17 +1634,16 @@ fn apply_trades(
     ledger: &mut Ledger,
     simulation: &mut SimulationState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
-    aliases: &BTreeMap<u64, OrderId>,
+    upstream_to_canonical: &BTreeMap<u64, OrderId>,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<(), EngineError> {
     for transaction in &trade_info.transactions {
         let maker_upstream = sequential_id_from_text(&transaction.maker_order_id)
             .ok_or(EngineError::OwnershipInvariant)?;
-        // Alias index preserves full-width canonical IDs for upstream maker fills.
-        let maker_id = aliases
+        let maker_id = upstream_to_canonical
             .get(&maker_upstream)
             .copied()
-            .unwrap_or(OrderId::new(u128::from(maker_upstream)));
+            .ok_or(EngineError::OwnershipInvariant)?;
         let maker = ownership
             .get(&maker_id)
             .filter(|owned| owned.upstream_order_id == maker_upstream)
@@ -2486,60 +2315,6 @@ mod tests {
             .unwrap()
             .insert("unknown".to_string(), serde_json::Value::Bool(true));
         assert!(serde_json::from_value::<ScenarioDefinition>(value).is_err());
-    }
-
-    #[test]
-    fn legacy_one_listing_projection_migrates_deterministically() {
-        let state = run();
-        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
-        let snapshot = state.listing_snapshot(key).unwrap();
-        let legacy_holdings: Vec<_> = state
-            .holdings()
-            .iter()
-            .filter(|(_, instrument, _)| *instrument == InstrumentId::new(1))
-            .copied()
-            .collect();
-        let legacy = serde_json::json!({
-            "run_id": 1,
-            "version": 0,
-            "instrument_id": 1,
-            "symbol": "ONE",
-            "price_bounds": { "min": 1, "max": 1000 },
-            "participants": [
-                {
-                    "participant_id": 1,
-                    "enabled": true,
-                    "limits": {
-                        "max_order_quantity": 100,
-                        "max_open_order_quantity": 1000,
-                        "max_absolute_position": 1000
-                    }
-                },
-                {
-                    "participant_id": 2,
-                    "enabled": true,
-                    "limits": {
-                        "max_order_quantity": 100,
-                        "max_open_order_quantity": 1000,
-                        "max_absolute_position": 1000
-                    }
-                }
-            ],
-            "accounts": state.accounts(),
-            "holdings": legacy_holdings,
-            "ownership": [],
-            "snapshot": {
-                "instrument_id": 1,
-                "represented_sequence": 0,
-                "checksum": snapshot.checksum,
-                "package_json": snapshot.package_json
-            }
-        });
-        let first = EngineSnapshotEnvelope::from_persisted_json(&legacy.to_string()).unwrap();
-        let second = EngineSnapshotEnvelope::from_persisted_json(&legacy.to_string()).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(first.state.listings().len(), 1);
-        assert_eq!(first.state.sequence(), EventSequence::new(0));
     }
 
     #[test]

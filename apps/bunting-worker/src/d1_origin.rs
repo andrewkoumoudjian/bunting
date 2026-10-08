@@ -83,7 +83,7 @@ pub async fn load_run(database: &D1Database, run_id: &str) -> Result<RunState, O
         .await
         .map_err(|_| OriginError::Unavailable)?
         .ok_or(OriginError::UnknownRun)?;
-    EngineSnapshotEnvelope::from_persisted_json(&row.state_json)
+    EngineSnapshotEnvelope::from_json(&row.state_json)
         .map(|envelope| envelope.state)
         .map_err(|_| OriginError::Unavailable)
 }

@@ -10,7 +10,7 @@
 use bunting_market_events::{
     AdvancedOrderPolicy, PegReference, Side as BuntingSide, TimeInForcePolicy,
 };
-use bunting_market_types::{OrderId, PriceTicks, QuantityLots};
+use bunting_market_types::{PriceTicks, QuantityLots};
 use orderbook_rs::orderbook::OrderBookSnapshotPackage;
 use orderbook_rs::orderbook::modifications::OrderQuantity;
 use orderbook_rs::{DefaultOrderBook, Id, OrderBookError, Side, TradeResult};
@@ -72,17 +72,10 @@ pub struct SnapshotPackage {
 /// Checked protocol-to-upstream conversion failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConversionError {
-    /// The external order identifier exceeds the sequential upstream range.
-    OrderIdOutOfRange,
     /// Prices must be positive and representable as `u128`.
     InvalidPrice,
     /// Quantities must be positive and representable as `u64`.
     InvalidQuantity,
-}
-
-/// Converts a Bunting order identifier into the supported upstream range.
-pub fn to_upstream_order_id(order_id: OrderId) -> Result<u64, ConversionError> {
-    u64::try_from(order_id.get()).map_err(|_| ConversionError::OrderIdOutOfRange)
 }
 
 /// Converts a positive fixed-point price into upstream ticks.
@@ -526,10 +519,6 @@ mod tests {
 
     #[test]
     fn checked_conversions_reject_invalid_values() {
-        assert_eq!(
-            to_upstream_order_id(OrderId::new(u128::from(u64::MAX) + 1)),
-            Err(ConversionError::OrderIdOutOfRange)
-        );
         assert_eq!(
             to_upstream_price(PriceTicks(0)),
             Err(ConversionError::InvalidPrice)
