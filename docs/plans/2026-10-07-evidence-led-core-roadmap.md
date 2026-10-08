@@ -4,6 +4,8 @@ Status: **proposed development roadmap**, documentation only. Audited source: ma
 
 **Agent and market-flow research (2026-10-08):** [source-pinned Rust/C++ implementation comparison, academic models, observed agent gaps and integration gates](../research/2026-10-08-agent-market-simulation-implementations.md). This is a proposed Slice 5 research input, not an accepted architecture change or implemented realism claim.
 
+The [expanded market and agent algorithm survey](../research/2026-10-08-expanded-market-algorithm-survey.md) provides a proposed research matrix covering exchange allocation, auction clearing, queue-reactive/Hawkes flow, adaptive trading agents, execution and cross-venue routing. This is documentation only and does **not** modify accepted venue matching or admission batching policies.
+
 ## Objective and release definition
 
 Release a **headless reusable Rust simulation engine** that owns matching, orders, economic posting, agent and calendar time, deterministic replay and market data. It must operate in-process with no TUI, FIX, Cloudflare, Wasmer, internet access or system wall-clock in the transition logic.

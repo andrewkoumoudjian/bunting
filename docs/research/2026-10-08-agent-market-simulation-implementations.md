@@ -4,6 +4,8 @@
 **Bunting source baseline:** [main@411e0baf](https://github.com/andrewkoumoudjian/bunting/tree/411e0baf767d4c81c27308f25117f1013bbd4161).  
 **Existing authority:** [engine roadmap](../plans/2026-10-07-evidence-led-core-roadmap.md), [independent core audit](2026-10-07-independent-core-architecture-audit.md), [ADR 0019](../adr/0019-bunting-engine-package-owns-orderbook-rs.md), [ADR 0024](../adr/0024-discrete-matching-interval-fairness.md), [proposed ADR 0028](../adr/0028-proposed-headless-run-authority.md).
 
+For the [broader venue, order-flow and strategy algorithm survey](2026-10-08-expanded-market-algorithm-survey.md), including FIFO/pro-rata/auction policies, ZIP/GDX/AA/PRZI, Hawkes/deep generation, empirical acceptance criteria and source-pinned projects, read the expanded October 8 companion note.
+
 ## Recommendation
 
 Keep Bunting's **one Rust authoritative market engine** and its private OrderBook-rs matcher integration. Do not add another production matching engine, shadow economic ledger, or C++ sidecar. Implement causal, deterministic, lightweight synthetic liquidity and heterogeneous agents *outside the venue authority*, submitting ordinary authorized participant commands. Research queue-reactive state-dependent point processes first; retain simple seeded zero-intelligence flow as the falsifiable baseline, then introduce inventory-aware market makers, execution agents, cross-venue arbitrage and, only if necessary, Hawkes excitation.
