@@ -118,6 +118,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	order := outbound("D", 3)
 	order.Body.SetString(11, "1")
 	order.Body.SetString(48, "1")
+	order.Body.SetString(207, "1")
 	order.Body.SetString(54, "1")
 	order.Body.SetString(38, "5")
 	order.Body.SetString(40, "2")
@@ -130,6 +131,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	book := outboundFor("V", 2, "TEAM2", "team2", "bunting-team2-dev")
 	book.Body.SetString(262, "shared-book")
 	book.Body.SetString(48, "1")
+	book.Body.SetString(207, "1")
 	book.Body.SetString(263, "0")
 	book.Body.SetInt(264, 10)
 	entryTypes := quickfix.NewRepeatingGroup(267, quickfix.GroupTemplate{
@@ -143,6 +145,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	}
 	snapshot := parseInbound(t, readFrame(t, secondReader))
 	assertField(t, &snapshot.Header.FieldMap, 35, "W")
+	assertField(t, &snapshot.Body.FieldMap, 207, "1")
 	assertField(t, &snapshot.Body.FieldMap, 270, "99")
 }
 
