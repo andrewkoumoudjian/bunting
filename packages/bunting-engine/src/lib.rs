@@ -810,13 +810,16 @@ impl RunState {
             || self.ownership.len() > MAX_ORDERS
             || self.next_upstream_order_id == 0
             || self.upstream_to_canonical.len() != self.ownership.len()
-            || self.upstream_to_canonical.iter().any(|(upstream, canonical)| {
-                *upstream == 0
-                    || *upstream >= self.next_upstream_order_id
-                    || self.ownership.get(canonical).is_none_or(|owned| {
-                        owned.order_id != *canonical || owned.upstream_order_id != *upstream
-                    })
-            })
+            || self
+                .upstream_to_canonical
+                .iter()
+                .any(|(upstream, canonical)| {
+                    *upstream == 0
+                        || *upstream >= self.next_upstream_order_id
+                        || self.ownership.get(canonical).is_none_or(|owned| {
+                            owned.order_id != *canonical || owned.upstream_order_id != *upstream
+                        })
+                })
             || self.ownership.iter().any(|(canonical, owned)| {
                 *canonical != owned.order_id
                     || self.upstream_to_canonical.get(&owned.upstream_order_id) != Some(canonical)
@@ -2093,7 +2096,10 @@ mod tests {
         let replay_start = EngineSnapshotEnvelope::from_json(&snapshot.to_json().unwrap())
             .unwrap()
             .state;
-        assert_eq!(replay_start.state_hash().unwrap(), state.state_hash().unwrap());
+        assert_eq!(
+            replay_start.state_hash().unwrap(),
+            state.state_hash().unwrap()
+        );
 
         let first_buy = submit(&state, 3, 1, 123, 1, Side::Buy, 110, 2);
         let filled = state.transition(&first_buy, None).unwrap();
@@ -2107,9 +2113,15 @@ mod tests {
             } if *maker_order_id == large && *taker_order_id == OrderId::new(123)
         )));
         let replayed = replay_start.transition(&first_buy, None).unwrap();
-        assert_eq!(replayed.candidate.state_hash().unwrap(), filled.candidate.state_hash().unwrap());
+        assert_eq!(
+            replayed.candidate.state_hash().unwrap(),
+            filled.candidate.state_hash().unwrap()
+        );
         state = filled.candidate;
-        assert_eq!(state.upstream_to_canonical.get(&3), Some(&OrderId::new(123)));
+        assert_eq!(
+            state.upstream_to_canonical.get(&3),
+            Some(&OrderId::new(123))
+        );
         assert_eq!(state.next_upstream_order_id, 4);
 
         let cancel = Command {
@@ -2130,8 +2142,14 @@ mod tests {
             event.payload,
             EventPayload::OrderCanceled { order_id, .. } if order_id == small
         )));
-        assert_eq!(cancelled.candidate.ownership()[&small].state, OwnedOrderState::Canceled);
-        assert_eq!(cancelled.candidate.upstream_to_canonical.get(&1), Some(&large));
+        assert_eq!(
+            cancelled.candidate.ownership()[&small].state,
+            OwnedOrderState::Canceled
+        );
+        assert_eq!(
+            cancelled.candidate.upstream_to_canonical.get(&1),
+            Some(&large)
+        );
         assert_eq!(cancelled.candidate.next_upstream_order_id, 4);
     }
 
@@ -2140,8 +2158,14 @@ mod tests {
         let state = run();
         let mut value = serde_json::to_value(state.snapshot_envelope().unwrap()).unwrap();
         value["schema_version"] = serde_json::json!(1);
-        value["state"].as_object_mut().unwrap().remove("next_upstream_order_id");
-        value["state"].as_object_mut().unwrap().remove("upstream_to_canonical");
+        value["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("next_upstream_order_id");
+        value["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("upstream_to_canonical");
         assert_eq!(
             EngineSnapshotEnvelope::from_json(&value.to_string()),
             Err(SnapshotError::UnsupportedVersion)
