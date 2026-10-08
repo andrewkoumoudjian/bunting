@@ -103,6 +103,16 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked --workspace
 
+      # WASIX's compiler links host-side build scripts through GCC with
+      # -fuse-ld=lld. Ensure both the linker driver and binutils are present;
+      # ordinary host cargo test does not exercise this cross-build path.
+      - name: Install native linkers for WASIX host build scripts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils lld
+          command -v ld
+          command -v ld.lld
+
       - name: Install Go for external FIX interoperability
         uses: actions/setup-go@v5
         with:
