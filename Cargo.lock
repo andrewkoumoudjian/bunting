@@ -333,6 +333,7 @@ dependencies = [
  "quarcc-execution-engine",
  "serde",
  "serde_json",
+ "sha2",
  "simfix-mapping",
  "simfix-session",
  "simfix-wire",

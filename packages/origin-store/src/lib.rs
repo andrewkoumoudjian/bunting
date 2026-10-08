@@ -22,7 +22,8 @@ pub struct CommandResult {
 }
 
 /// One atomic expected-version commit request.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitRequest {
     pub run_id: RunId,
     pub command_id: CommandId,
@@ -75,7 +76,8 @@ impl CommitRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientCommandKey {
     pub actor: ParticipantId,
     pub session_id: SessionId,
