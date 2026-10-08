@@ -506,6 +506,10 @@ pub struct RunState {
     accounts: AccountProjection,
     holdings: HoldingProjection,
     ownership: BTreeMap<OrderId, OwnedOrder>,
+    /// Replayable reverse index for canonical orders exceeding the u64 matcher range.
+    /// Empty legacy runs serialize unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    upstream_order_aliases: BTreeMap<u64, OrderId>,
     #[serde(default)]
     nbc_compatibility: Option<NbcCompatibilityState>,
     #[serde(default)]
@@ -650,6 +654,7 @@ impl RunState {
             accounts,
             holdings,
             ownership: BTreeMap::new(),
+            upstream_order_aliases: BTreeMap::new(),
             nbc_compatibility: None,
             simulation,
         })
@@ -802,6 +807,22 @@ impl RunState {
             || self.listings.len() > usize::from(self.config.max_listings)
             || self.participants.len() > MAX_PARTICIPANTS
             || self.ownership.len() > MAX_ORDERS
+            || self.upstream_order_aliases.len() > self.ownership.len()
+            || self.upstream_order_aliases.iter().any(|(upstream, canonical)| {
+                *upstream == 0
+                    || self
+                        .ownership
+                        .get(canonical)
+                        .is_none_or(|owned| owned.upstream_order_id != *upstream)
+            })
+            || self.ownership.iter().any(|(id, owned)| {
+                *id != owned.order_id
+                    || owned.upstream_order_id == 0
+                    || (u128::from(owned.upstream_order_id) != id.get()
+                        && self.upstream_order_aliases.get(&owned.upstream_order_id) != Some(id))
+                    || (u128::from(owned.upstream_order_id) == id.get()
+                        && self.upstream_order_aliases.contains_key(&owned.upstream_order_id))
+            })
             || self
                 .nbc_compatibility
                 .as_ref()
@@ -891,6 +912,7 @@ impl RunState {
                         &mut candidate.simulation,
                         &risk,
                         &mut candidate.ownership,
+                        &mut candidate.upstream_order_aliases,
                         &mut payloads,
                     )?;
                     candidate.replace_snapshot(listing_key, next_sequence, &book)?;
@@ -1548,6 +1570,38 @@ impl From<SnapshotError> for EngineError {
     }
 }
 
+/// Returns a lossless upstream ID and whether it requires a persisted alias.
+/// Existing u64 canonical IDs keep their legacy values when unclaimed.
+fn upstream_id_for_submission(
+    canonical: OrderId,
+    ownership: &BTreeMap<OrderId, OwnedOrder>,
+    aliases: &BTreeMap<u64, OrderId>,
+) -> Option<(u64, bool)> {
+    if canonical.get() == 0 {
+        return None;
+    }
+    if let Ok(direct) = to_upstream_order_id(canonical) {
+        if !aliases.contains_key(&direct) {
+            return Some((direct, false));
+        }
+    }
+    let mut candidate = match aliases.keys().next().copied() {
+        Some(lowest) => lowest.checked_sub(1)?,
+        None => u64::MAX,
+    };
+    loop {
+        if candidate == 0 {
+            return None;
+        }
+        if !aliases.contains_key(&candidate)
+            && !ownership.contains_key(&OrderId::new(u128::from(candidate)))
+        {
+            return Some((candidate, true));
+        }
+        candidate = candidate.checked_sub(1)?;
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1562,6 +1616,7 @@ fn prepare_submit(
     simulation: &mut SimulationState,
     risk: &RiskState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
+    aliases: &mut BTreeMap<u64, OrderId>,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<Result<(), RejectCode>, EngineError> {
     if ownership.contains_key(&order.order_id) {
@@ -1570,7 +1625,9 @@ fn prepare_submit(
     if ownership.len() >= MAX_ORDERS {
         return Ok(Err(RejectCode::MaxOpenOrderQuantity));
     }
-    let Ok(upstream_id) = to_upstream_order_id(order.order_id) else {
+    let Some((upstream_id, aliased)) =
+        upstream_id_for_submission(order.order_id, ownership, aliases)
+    else {
         return Ok(Err(RejectCode::InvalidOrderId));
     };
     let Ok(upstream_quantity) = to_upstream_quantity(order.quantity) else {
@@ -1623,6 +1680,9 @@ fn prepare_submit(
         reservation_price,
         order.quantity,
     )?;
+    if aliased {
+        aliases.insert(upstream_id, order.order_id);
+    }
     ownership.insert(
         order.order_id,
         OwnedOrder {
@@ -1688,6 +1748,7 @@ fn prepare_submit(
             ledger,
             simulation,
             ownership,
+            aliases,
             payloads,
         )?;
     }
@@ -1743,15 +1804,17 @@ fn apply_trades(
     ledger: &mut Ledger,
     simulation: &mut SimulationState,
     ownership: &mut BTreeMap<OrderId, OwnedOrder>,
+    aliases: &BTreeMap<u64, OrderId>,
     payloads: &mut Vec<EventPayload>,
 ) -> Result<(), EngineError> {
     for transaction in &trade_info.transactions {
         let maker_upstream = sequential_id_from_text(&transaction.maker_order_id)
             .ok_or(EngineError::OwnershipInvariant)?;
-        // Bunting reserves upstream sequential order IDs as the exact u64
-        // projection of its canonical OrderId, so the owner map is the index.
-        // Do not scan all historical orders for every fill.
-        let maker_id = OrderId::new(u128::from(maker_upstream));
+        // Alias index preserves full-width canonical IDs for upstream maker fills.
+        let maker_id = aliases
+            .get(&maker_upstream)
+            .copied()
+            .unwrap_or(OrderId::new(u128::from(maker_upstream)));
         let maker = ownership
             .get(&maker_id)
             .filter(|owned| owned.upstream_order_id == maker_upstream)
