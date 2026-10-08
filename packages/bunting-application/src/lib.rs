@@ -7,7 +7,8 @@ pub mod competition;
 use bunting_api_contract::{ActorIdentity, ActorRole};
 use bunting_command_transaction::{
     CachedSnapshot, CommandTransaction, ExecutedTransaction, PreparedCommand, SnapshotCache,
-    TransactionError, prepare_command, prepare_simulation_command,
+    TransactionError, prepare_command, prepare_command_owned, prepare_simulation_command,
+    prepare_simulation_command_owned,
 };
 use bunting_engine::RunState;
 use bunting_market_events::{
@@ -187,6 +188,17 @@ pub fn prepare_authenticated(
     prepare_command(command, candidate, cached).map_err(ApplicationError::from)
 }
 
+/// Prepares an owned run without copying its histories or book snapshots.
+pub fn prepare_authenticated_owned(
+    actor: &VerifiedActor,
+    command: &Command,
+    candidate: RunState,
+    cached: Option<&CachedSnapshot>,
+) -> Result<PreparedCommand, ApplicationError> {
+    authorize_command(actor, command)?;
+    prepare_command_owned(command, candidate, cached).map_err(ApplicationError::from)
+}
+
 /// Worker-compatible authenticated simulation prepare step.
 pub fn prepare_authenticated_simulation(
     actor: &VerifiedActor,
@@ -195,6 +207,16 @@ pub fn prepare_authenticated_simulation(
 ) -> Result<PreparedCommand, ApplicationError> {
     authorize_simulation_command(actor, request)?;
     prepare_simulation_command(request, state).map_err(ApplicationError::from)
+}
+
+/// Prepares an owned administrative run without copying its state.
+pub fn prepare_authenticated_simulation_owned(
+    actor: &VerifiedActor,
+    request: &SimulationCommandRequest,
+    state: RunState,
+) -> Result<PreparedCommand, ApplicationError> {
+    authorize_simulation_command(actor, request)?;
+    prepare_simulation_command_owned(request, state).map_err(ApplicationError::from)
 }
 
 #[derive(Debug)]

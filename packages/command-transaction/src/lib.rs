@@ -336,7 +336,7 @@ pub fn prepare_command(
 
 /// A loaded run is already owned by the transaction; consume it rather than
 /// copying every book snapshot, account and history before staging a candidate.
-fn prepare_command_owned(
+pub fn prepare_command_owned(
     command: &Command,
     candidate: RunState,
     cached: Option<&CachedSnapshot>,
@@ -386,7 +386,8 @@ pub fn prepare_simulation_command(
     prepared_simulation_outcome(request, state.transition_simulation(request)?)
 }
 
-fn prepare_simulation_command_owned(
+/// Prepares an administration transition by consuming an already loaded run.
+pub fn prepare_simulation_command_owned(
     request: &SimulationCommandRequest,
     state: RunState,
 ) -> Result<PreparedCommand, TransactionError> {

@@ -16,7 +16,7 @@ use bunting_api_contract::{
 };
 use bunting_application::{
     VerifiedActor, derive_session_id, namespace_command_id, namespace_order_id,
-    prepare_authenticated, prepare_authenticated_simulation, project_market,
+    prepare_authenticated_owned, prepare_authenticated_simulation_owned, project_market,
 };
 use bunting_browser_wire::{
     Call, ErrorCode, Method, ParsedRequest, Request as WireRequest, Response as WireResponse,
@@ -489,7 +489,7 @@ pub(crate) async fn execute_command_detailed(
     };
     let actor = verified_participant(command.actor)?;
     let mut prepared =
-        prepare_authenticated(&actor, &command, &state, cached.as_ref()).map_err(|error| {
+        prepare_authenticated_owned(&actor, &command, state, cached.as_ref()).map_err(|error| {
             match error {
                 bunting_application::ApplicationError::Transaction(transaction) => {
                     map_transaction_error(transaction)
@@ -565,7 +565,7 @@ pub(crate) async fn execute_simulation_detailed(
         .await
         .map_err(|error| map_origin_error(&error))?;
     let mut prepared =
-        prepare_authenticated_simulation(actor, &request, &state).map_err(|error| match error {
+        prepare_authenticated_simulation_owned(actor, &request, state).map_err(|error| match error {
             bunting_application::ApplicationError::Transaction(transaction) => {
                 map_transaction_error(transaction)
             }
