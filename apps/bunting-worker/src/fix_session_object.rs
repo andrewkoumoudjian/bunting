@@ -336,19 +336,15 @@ impl FixSessionObject {
             }
             InboundApplication::MarketDataRequest {
                 request_id,
-                instrument_id,
+                listing_key,
                 ..
-            } => match load_run(&self.environment, stored.run_id, instrument_id)
+            } => match load_run(&self.environment, stored.run_id, listing_key.instrument_id)
                 .await
-                .and_then(|state| {
-                    let key = state.listing_key_for_instrument(instrument_id)
-                        .map_err(|_| crate::ProcedureError::NotFound)?;
-                    snapshot_output(&state, key)
-                })
+                .and_then(|state| snapshot_output(&state, listing_key))
             {
                 Ok(snapshot) => vec![market_snapshot(
                     &request_id,
-                    instrument_id,
+                    listing_key,
                     &snapshot
                         .bids
                         .iter()

@@ -3,7 +3,8 @@
 
 use bunting_market_events::{NewsAudience, OrderKind, Side};
 use bunting_market_types::{
-    CurrencyId, InstrumentId, MoneyMinor, NewsId, ParticipantId, PriceTicks, QuantityLots,
+    CurrencyId, InstrumentId, ListingKey, MoneyMinor, NewsId, ParticipantId, PriceTicks, QuantityLots,
+    VenueId,
 };
 use quarcc_execution_engine::{
     ExecutionIntent, NormalizedVenueReport, VenueReportKind,
@@ -25,7 +26,7 @@ pub enum InboundApplication {
     Intent(ExecutionIntent),
     MarketDataRequest {
         request_id: String,
-        instrument_id: InstrumentId,
+        listing_key: ListingKey,
         subscription: bool,
         market_depth: usize,
         entry_types: Vec<MarketDataEntryType>,
@@ -180,7 +181,10 @@ pub fn map_inbound(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(InboundApplication::MarketDataRequest {
                 request_id: required(message, 262)?.to_owned(),
-                instrument_id: InstrumentId::new(parse(message, 48)?),
+                listing_key: ListingKey::new(
+                    VenueId::new(parse(message, 207)?),
+                    InstrumentId::new(parse(message, 48)?),
+                ),
                 subscription,
                 market_depth: parse(message, 264)?,
                 entry_types,
@@ -329,13 +333,14 @@ pub fn map_execution_report(report: &NormalizedVenueReport) -> Result<FixMessage
 #[must_use]
 pub fn market_snapshot(
     request_id: &str,
-    instrument_id: InstrumentId,
+    listing_key: ListingKey,
     bids: &[(PriceTicks, QuantityLots)],
     asks: &[(PriceTicks, QuantityLots)],
 ) -> FixMessage {
     let mut message = FixMessage::new("W");
     message.push(262, request_id);
-    message.push(48, instrument_id.get().to_string());
+    message.push(48, listing_key.instrument_id.get().to_string());
+    message.push(207, listing_key.venue_id.get().to_string());
     message.push(268, (bids.len() + asks.len()).to_string());
     for (price, quantity) in bids {
         message.push(269, "0");
@@ -502,6 +507,7 @@ mod tests {
             (269, "0"),
             (269, "1"),
             (48, "7"),
+            (207, "1"),
         ] {
             market.push(tag, value);
         }
@@ -525,7 +531,7 @@ mod tests {
     fn snapshot_and_incremental_messages_use_competition_group_layout() {
         let snapshot = market_snapshot(
             "book",
-            InstrumentId::new(7),
+            ListingKey::new(VenueId::new(1), InstrumentId::new(7)),
             &[(PriceTicks::new(100), QuantityLots::new(2))],
             &[(PriceTicks::new(101), QuantityLots::new(3))],
         );

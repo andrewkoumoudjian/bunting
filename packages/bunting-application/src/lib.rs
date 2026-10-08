@@ -471,7 +471,7 @@ pub enum FixApplicationRequest {
     Command(Command),
     MarketData {
         request_id: String,
-        instrument_id: InstrumentId,
+        listing_key: ListingKey,
         subscription: bool,
         market_depth: usize,
     },
@@ -542,13 +542,13 @@ impl FixApplicationState {
             }
             InboundApplication::MarketDataRequest {
                 request_id,
-                instrument_id,
+                listing_key,
                 subscription,
                 market_depth,
                 ..
             } => Ok(FixApplicationRequest::MarketData {
                 request_id,
-                instrument_id,
+                listing_key,
                 subscription,
                 market_depth,
             }),

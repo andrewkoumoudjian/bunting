@@ -251,15 +251,15 @@ pub(crate) fn handle_fix_connection(
                     }
                     Ok(FixApplicationRequest::MarketData {
                         request_id,
-                        instrument_id,
+                        listing_key,
                         market_depth,
                         ..
                     }) => {
-                        let projection = project_market(&state, instrument_id)
+                        let projection = project_market(&state, listing_key)
                             .map_err(|error| format!("market projection failed: {error}"))?;
                         let bids = typed_levels(&projection.bids, market_depth);
                         let asks = typed_levels(&projection.asks, market_depth);
-                        vec![market_snapshot(&request_id, instrument_id, &bids, &asks)]
+                        vec![market_snapshot(&request_id, listing_key, &bids, &asks)]
                     }
                     Ok(FixApplicationRequest::Competition(request)) => competition_messages(
                         &service,
