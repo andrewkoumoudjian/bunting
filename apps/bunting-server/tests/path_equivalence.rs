@@ -65,7 +65,9 @@ fn expected_command() -> Command {
         logical_time: LogicalTimeNs::new(55),
         expected_sequence: EventSequence::new(0),
         actor: ParticipantId::new(7),
-        payload: CommandPayload::SubmitOrder(SubmitOrder {
+        payload: CommandPayload::SubmitOrderAtListing {
+            listing_key: ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
+            order: SubmitOrder {
             order_id: OrderId::new(1),
             instrument_id: InstrumentId::new(1),
             participant_id: ParticipantId::new(7),
@@ -74,7 +76,8 @@ fn expected_command() -> Command {
             kind: OrderKind::Limit {
                 price: PriceTicks::new(101),
             },
-        }),
+            },
+        },
     }
 }
 
@@ -99,6 +102,7 @@ fn native_fix_and_worker_prepare_commit_identical_authoritative_state()
     for (tag, value) in [
         (11, "1"),
         (48, "1"),
+        (207, "1"),
         (54, "1"),
         (38, "3"),
         (40, "2"),
