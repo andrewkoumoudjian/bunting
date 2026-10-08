@@ -106,7 +106,7 @@ pub(crate) fn replay(
             truncate_tail(&file, offset)?;
             return Ok(());
         }
-        let mut header = [0_u8; HEADER_SIZE as usize];
+        let mut header = [0_u8; 48];
         file.read_exact(&mut header)
             .map_err(|_| OriginError::Unavailable)?;
         if header[..8] != MAGIC {
