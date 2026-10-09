@@ -1,6 +1,6 @@
 # Reference adoption, dependency, and source-copy policy
 
-ADR 0013 defines the Worker/OrderBook-rs market path. ADR 0014 defines market-engine versus participant execution-engine authority. ADR 0018 supersedes the selectable-engine model and requires one production `bunting-engine`; ADR 0019 makes the OrderBook-rs adapter internal to that central package.
+Reconciled 2026-10-09 (ADR 0033). ADR 0018 requires one production `bunting-engine` and carries ADR 0014's market-versus-participant authority split. ADR 0029 replaced OrderBook-rs with the engine's own book; OrderBook-rs is now a development-only oracle. ADR 0022 removed the Cloudflare command Worker, so workers-rs is not a current dependency. ADR 0032 makes NBC reference evidence only.
 
 The authoritative functionality inventory is [`reference-functionality-audit.md`](reference-functionality-audit.md). This document records adoption policy and disposition; it must not redefine a reference’s role without updating the source-backed audit first.
 
@@ -26,29 +26,27 @@ For every reference or vendored component, record:
 - Copy or adapt source only after file-level license review and when a normal dependency cannot satisfy the requirement.
 - A close adaptation records repository, commit, path, SPDX license, retained behavior, and local divergence.
 - A whole-repository copy requires a dedicated ADR; ADR 0017 authorizes only the selected NBC JAR-derived port under its provenance rules.
-- Worker-bound dependencies must pass a minimal-feature `wasm32-unknown-unknown` build and size review.
-- ADR 0017 authorizes NBC JAR translation and redistribution. Other NBC material and QUARCC remain restricted without documented authority.
+- Dependencies of host-neutral packages (`bunting-engine`, protocol packages) must pass a minimal-feature `wasm32-unknown-unknown` build and size review. Server dependencies must build natively and must not be WASIX-only (ADR 0033).
+- ADR 0017 authorizes NBC JAR translation and redistribution; ADR 0032 limits NBC to reference evidence, so new NBC translation into production code needs a new ADR. Other NBC material and QUARCC remain restricted without documented authority.
 - Reference behavior, Bunting-added behavior, and unresolved behavior remain explicitly separated.
 
 ## Approved production dependencies
 
 | Dependency | Approved version/use | Boundary |
 |---|---|---|
-| `worker` / workers-rs | `0.8.5`; Worker runtime, Router/HTTP, WebSocket, Cache API, D1 and selected bindings | Platform only; no market semantics |
-| `orderbook-rs` | `0.10.3`, `default-features = false`; unified engine’s matching/order-book kernel | Matching/book behavior; Bunting owns run, identity, accounts, persistence, protocols and deployment |
-| `pricelevel` | `0.8.4`; transitive order/price-level type identity | Lower-level order and per-price queue substrate |
-| `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; excluded from the Worker dependency graph and no market semantics |
-| `rustls` / `tokio-rustls` / `rustls-native-certs` / `rustls-pemfile` | `0.23.42` / `0.26.4` / `0.8.4` / `2.2.0`; native FIX initiator TLS, platform trust roots and optional PEM CA loading | Native `bunting-tui` transport only; excluded from the Worker dependency graph, no FIX sequencing and no market semantics |
+| `ratatui` / `crossterm` | `0.30.2` / `0.29.0`; native local-test terminal UI and terminal event backend | Native app presentation/input only; no market semantics |
+| `rustls` / `tokio-rustls` / `rustls-native-certs` / `rustls-pemfile` | `0.23.42` / `0.26.4` / `0.8.4` / `2.2.0`; native FIX initiator TLS, platform trust roots and optional PEM CA loading | Native client transport only (`bunting-tui`); no FIX sequencing and no market semantics. Server-side in-process mutual TLS (ADR 0031) needs its own adoption row before use |
 | `rustyfix-dictionary` | exact crates.io release `0.7.4`, Apache-2.0, upstream source commit `2f0ef7830553d482765c14e3c4b32be3432d57b0`; features `fix50sp2`, `fixt11` only | Production standard message/field/datatype lookup in `simfix-wire`; no engine, session, transport or copied dictionary resources, and FIX Latest Orchestra remains normative |
-| Wasmer / cargo-wasix / WASIX Rust | Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`; cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`; toolchain `v2026-07-07.3+rust-1.96` | Production build and runtime for the WASI competition server under ADR 0027; no market semantics, no Worker dependency, and filesystem/network capabilities remain explicit |
+| Wasmer / cargo-wasix / WASIX Rust | Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`; cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`; toolchain `v2026-07-07.3+rust-1.96` | Current packaging and runtime for the server under ADR 0027; not a binding long-term host (ADR 0033); no market semantics, and filesystem/network capabilities remain explicit |
 
-The first-party adapter now lives in a private `packages/bunting-engine` module and the transitional `packages/orderbook` crate has been removed after production callers migrated. The engine module is not an upstream source copy.
+The engine's order book (`packages/bunting-engine/src/book.rs`, ADR 0029) is first-party code, not an upstream source copy. The former OrderBook-rs adapter, the `packages/orderbook` crate and the workers-rs Worker are removed.
 
 ## Approved development-only conformance oracles
 
 | Candidate | Observed version/source | Intended boundary |
 |---|---|---|
 | `@trpc/server` / `@trpc/client` | `11.18.0`, source git head `6aec1578a899df50a17e4e78d5512a099b574c18`, MIT; historical manifests and transport entrypoints remain recorded in the functionality audit | Retired oracle. The Node harness and fixtures were removed on 2026-07-28 after tRPC ceased to be an architecture or runtime dependency; this row preserves identity only and authorizes no active dependency. |
+| `orderbook-rs` / `pricelevel` | `=0.10.3` / `=0.8.4`, `default-features = false`, `[dev-dependencies]` of `bunting-engine` only | Differential matching oracle for the owned book (ADR 0029). CI asserts it is absent from `bunting-engine`'s normal dependency tree. |
 | `quickfixgo/quickfix` | exact Go module `v0.9.10`, QuickFIX Software License 1.0, `github.com/quickfixgo/quickfix` | Development-only external FIXT.1.1/FIX 5.0 SP2 serializer/parser oracle under `tests/interop/quickfixgo`; it drives the native TCP acceptor and is absent from every production manifest. |
 
 ## Audited disposition matrix
@@ -57,12 +55,12 @@ The first-party adapter now lives in a private `packages/bunting-engine` module 
 
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
-| `orderbook-rs` | Complete reusable matching/order-book kernel with lifecycle, risk hooks, fees, snapshots/replay helpers, depth/analytics and optional native layers | Production matching dependency for the unified engine |
+| `orderbook-rs` | Complete reusable matching/order-book kernel with lifecycle, risk hooks, fees, snapshots/replay helpers, depth/analytics and optional native layers | Development-only differential oracle (ADR 0029); not a production dependency |
 | `pricelevel` | Order-domain and per-price concurrent queue/matching substrate | Approved transitive dependency |
 | `liquibook` | Embeddable C++ matching kernel with application callbacks and optional depth | Independent matching oracle and focused fixture source |
 | `exchange-core` | Full Java exchange core: matching, risk/accounting, commands/reports, journaling and snapshots | Full-exchange architecture and invariant oracle; no runtime dependency |
-| `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Future options dependency candidate; evaluate API/dependencies/Wasm first |
-| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | Authorized compatibility translation input to the unified engine under ADR 0017 and ADR 0018; compatibility claims require JAR-linked evidence |
+| `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Design reference only: it builds on OrderBook-rs leaf books, which ADR 0029's single owned book excludes from production. Options need Bunting-native book semantics |
+| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | Reference evidence only (ADR 0032); the compatibility module is scheduled for removal. ADR 0017 still governs reading the JAR |
 | `abides` | Agent-based discrete-event market simulator with exchange agent, messaging and configurable latency | Market-simulation architecture and experimental oracle |
 | `fauxchange` | Reserved/planned project with no implementation API | No code adoption; roadmap reference only |
 
@@ -93,7 +91,7 @@ Do not create one generic `packages/fix` or `packages/sbe` dumping ground before
 
 | Reference | Actual implemented role | Disposition |
 |---|---|---|
-| `workers-rs` | Official Rust bindings, macros and build tooling for Cloudflare Workers | Production platform dependency |
+| `workers-rs` | Official Rust bindings, macros and build tooling for Cloudflare Workers | Not a current dependency (Worker removed, ADR 0022); candidate only for a future read-only publisher |
 | `cqrs` | Generic CQRS/event-sourcing aggregate and persistence framework | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
 | `nexosim` | General component-based discrete-event simulator with custom async executor and save/restore | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
 | `wirefilter` | Typed filter parser, compiler and execution engine | Mirror deregistered; consult published crate/upstream pin recorded in the audit |
@@ -139,15 +137,15 @@ The Rust source is a participant market-making application and adapter. It does 
 
 ## Fork and vendoring policy
 
-A release-blocking OrderBook-rs issue should be handled in this order:
+A release-blocking issue in any production dependency should be handled in this order:
 
 1. feature/configuration change;
 2. upstream issue and contribution;
 3. released upstream fix;
 4. dedicated pinned fork repository;
-5. narrowly vendored source under `vendor/orderbook-rs` only when repository or build constraints require it.
+5. narrowly vendored source under `vendor/<name>` only when repository or build constraints require it.
 
-Do not place copied upstream source under `packages/orderbook` or `packages/bunting-engine`. `packages/` contains first-party Bunting packages and adapters; `vendor/` contains approved copied/patched third-party source.
+Do not place copied upstream source under `packages/`. `packages/` contains first-party Bunting packages and adapters; `vendor/` contains approved copied/patched third-party source.
 
 Any fork or vendored source requires:
 

@@ -1,8 +1,15 @@
 # Bunting
 
-Bunting is a Rust market-simulation and exchange-testing platform with a
-Wasmer-hosted WASI FIX/TCP competition venue and an optional Cloudflare
-publication edge.
+Bunting is a Rust market-simulation and exchange-testing platform: one
+deterministic engine that owns matching, orders, the economic ledger, logical
+time and replay, served by one venue process to participants over FIX (and,
+as the accepted target, a certified Bunting Native Protocol). It underpins a
+RIT-class classroom simulator and a QUARCC competition venue. Cloudflare is an
+optional read-only publisher of results.
+
+> **Agents and contributors:** start with [`AGENTS.md`](AGENTS.md) and the
+> [documentation status map](docs/README.md). Many older documents are kept as
+> history and are marked "do not follow".
 
 ## Install
 
@@ -46,9 +53,12 @@ bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
 
 `bunting-server` grants Wasmer networking and only the directories referenced
 by the selected configuration. `bunting` and `bunting-tui` remain native
-because terminal and language-binding APIs are platform-specific. Build and
-deploy the Cloudflare publication Worker separately using its Wrangler
-configuration under `apps/bunting-worker`.
+because terminal and language-binding APIs are platform-specific. No
+Cloudflare publication Worker is currently built (removed in `eed8e00`; see
+ADR 0022).
+
+The server currently ships as a WASIX module (ADR 0027). WASIX is not a
+binding long-term host (ADR 0033); native server packaging is under evaluation.
 
 From a checkout, build the portable module and a host-specific Wasmer artifact,
 then run it:
@@ -63,60 +73,53 @@ The pinned build uses cargo-wasix `0.1.28`, WASIX toolchain
 
 ## Engine model
 
-Bunting distinguishes venue-side market engines from participant-side execution engines.
+Bunting separates the venue-side market engine from participant-side
+execution engines.
 
-- The current default market path uses released [`OrderBook-rs`](https://github.com/joaquinbejar/OrderBook-rs) `0.10.3` for matching and order-book behavior.
-- Bunting adds venue identity, canonical events, participant ledger/risk, origin persistence, recovery, browser transport, and outbound FIX/TCP around that kernel.
-- NBC configuration, scheduling, synchronization, and provenance live inside `bunting-engine`; its translated matcher is retained only as a differential test oracle.
-- QUARCC is a portable Rust participant execution engine with Bunting and Rust/WASM adapters. Humans and FIX sessions may bypass it, while built-in agents always use it.
+- `bunting-engine` is the only market authority. It owns a private,
+  deterministic price-time order book keyed by 128-bit order IDs
+  ([ADR 0029](docs/adr/0029-bunting-owned-deterministic-order-book.md)), one
+  economic ledger (cash, reservations, fees, positions, cost basis, P&L, FX),
+  listing-scoped books and market data, the simulation domain (tenders, OTC,
+  news, facilities, scoring) and canonical events.
+- [OrderBook-rs](https://github.com/joaquinbejar/OrderBook-rs) is a
+  development-only differential oracle, not a production dependency.
+- QUARCC is a portable Rust participant execution engine with Bunting and
+  Rust/WASM adapters. Humans and FIX sessions may bypass it; built-in agents
+  always use it.
+- NBC is reference evidence only
+  ([ADR 0032](docs/adr/0032-proposed-nbc-reference-only.md)); its remaining
+  compatibility module is scheduled for removal.
 
-See:
+See [`docs/architecture.md`](docs/architecture.md) for what is implemented
+now versus the accepted target.
 
-- [`docs/adr/0013-worker-orderbook-rs-kernel.md`](docs/adr/0013-worker-orderbook-rs-kernel.md)
-- [`docs/adr/0014-market-and-execution-engine-boundaries.md`](docs/adr/0014-market-and-execution-engine-boundaries.md)
-- [`docs/adr/0016-native-rust-trpc-worker.md`](docs/adr/0016-native-rust-trpc-worker.md)
-- [`docs/adr/0017-authorized-nbc-jar-port.md`](docs/adr/0017-authorized-nbc-jar-port.md)
-- [`docs/adr/0020-transport-neutral-engine-and-outbound-fix-tcp.md`](docs/adr/0020-transport-neutral-engine-and-outbound-fix-tcp.md)
-- [`docs/reference-functionality-audit.md`](docs/reference-functionality-audit.md)
-- [`docs/reference-adoption.md`](docs/reference-adoption.md)
-- [`docs/architecture.md`](docs/architecture.md)
-- [`docs/deployment.md`](docs/deployment.md)
+## Status and priorities
 
-## Core-first development priorities
+Implemented through `1d857d1` (see
+[`docs/implementation-log/`](docs/implementation-log/2026-10-07-core-slice-0.md)):
+single ledger, explicit listing identity and venue market data, owned order
+book, append-only native origin journal, removal of the Cloudflare command
+Worker.
 
-The immediate priority is a **robust, deterministic, high-performance Rust market
-simulator**, before further expansion of RIT-class UI or QUARCC competition
-features. The [independent October 7 architecture audit](docs/research/2026-10-07-independent-core-architecture-audit.md)
-verifies the implementation at `0fdbd130` and compares architectural alternatives;
-the [revised implementation roadmap](docs/plans/2026-10-07-evidence-led-core-roadmap.md)
-orders concrete correctness, performance, recovery and multi-day work.
-[Proposed ADR 0028](docs/adr/0028-proposed-headless-run-authority.md) records
-potential changes without superseding accepted decisions. The [earlier status
-audit](docs/core-engine-status-2026-10-07.md) and [earlier roadmap](docs/plans/core-first-market-simulator.md)
-remain historical context, not current implementation proof. No production
-repairs have been implemented by this research handoff.
+Current priorities and their order are in the
+[October 9 exploration note §8](docs/research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan):
+deliver fills to every affected participant, move per-participant limits into
+the engine, replace full-state per-command persistence with a command journal,
+latency-modeled continuous admission
+([ADR 0030](docs/adr/0030-proposed-latency-modeled-continuous-admission.md)),
+full archive replay, multi-day calendar, and the certified native protocol and
+app ([ADR 0031](docs/adr/0031-proposed-bunting-native-client-protocol.md)).
+Accepted Target decisions are not implemented until the implementation log
+says so.
 
-For source-backed agent and synthetic-liquidity implementation options, see the
-[October 8 agent/market simulation research note](docs/research/2026-10-08-agent-market-simulation-implementations.md).
-It is documentation only; no models or external code were imported by that review.
-
-The [October 9 exploration note](docs/research/2026-10-09-exploration-and-next-steps.md)
-maps the roadmap to the code at `1d857d1`, records measured per-command state
-costs, lists verified venue/persistence gaps and proposes dependency-ordered
-next steps. It is a proposal; it supersedes no ADR.
-
-## Current architecture
-
-- `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.
-- The origin event/version store remains authoritative for accepted commands, canonical events, idempotency, projections and optimistic concurrency.
-- Cache misses or evictions are normal recovery events.
-- Browser clients use the bounded `/api` fetch/stream contract; internal Worker components call Rust application functions directly.
-- FIX session Durable Objects initiate outbound raw TCP and persist session state, but never own market authority or accept inbound raw TCP.
-- User strategy outputs enter through the normal authenticated command/risk/persistence path.
+Earlier research: [October 7 architecture audit](docs/research/2026-10-07-independent-core-architecture-audit.md),
+[October 8 agent/market simulation research](docs/research/2026-10-08-agent-market-simulation-implementations.md),
+[October 8 algorithm survey](docs/research/2026-10-08-expanded-market-algorithm-survey.md).
 
 ## Reference policy
 
-`ref/` is read-only evidence. It contains 25 Git submodules and three checked-in source/asset trees. It is never a production path dependency.
+`ref/` is read-only evidence. It contains 17 Git submodules and three checked-in source/asset trees. It is never a production path dependency.
 
 `vendor/` currently contains no implementation. It is reserved for explicitly approved copied/patched third-party source with licenses, notices, upstream metadata and patch records.
 
@@ -124,50 +127,32 @@ Do not classify a reference by its name. The source-backed inventory is in [`doc
 
 ## Repository organization
 
-The workspace is rooted at the repository `Cargo.toml`. Reusable first-party Rust crates live under `packages/`, the curated composition crate lives under `bunting-rs/`, and deployable applications live under `apps/`.
-
-Future packages appear only with real source, tests, and a reviewed package boundary. Generated release assembly belongs under ignored `out/` paths.
-
-Read the complete move map and Codex execution contract in [`docs/repository-reorganization.md`](docs/repository-reorganization.md).
+The workspace is rooted at the repository `Cargo.toml`. Reusable first-party
+Rust crates live under `packages/`, the curated composition crate under
+`bunting-rs/`, deployable applications under `apps/`, and language bindings
+under `bindings/`. Future packages appear only with real source, tests and a
+reviewed package boundary. Generated release assembly belongs under ignored
+`out/` paths.
 
 ## Current workspace
 
-- `market-types`: checked Bunting identifiers and fixed-point values;
-- `market-events`: protocol-neutral commands and canonical event envelopes;
-- `bunting-engine`: the sole authoritative engine and private version-pinned adapter around `OrderBook-rs`;
-- `ledger`: participant cash, position and reservation projections;
-- `risk-engine`: participant/account controls not supplied by the upstream book;
-- `origin-store`: authoritative projections, idempotency, expected-version commits and recovery metadata;
-- `command-transaction`: recovery, risk, matching, accounting and commit orchestration;
-- `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: portable participant execution, venue mapping, and browser bindings;
-- `bunting-agents`: deterministic built-in policies composed with mandatory QUARCC execution;
-- `bunting-runtime`: deterministic built-in participant scheduling shared by the server and local FIX fixture;
-- `simfix-wire`, `simfix-session`, and `simfix-mapping`: FIX framing, session recovery, and application mapping;
-- `apps/bunting-worker/worker-cache`: immutable Cloudflare Cache snapshot adapter;
-- `bunting-rs`: thin portable composition crate with curated first-party re-exports and product metadata;
-- `apps/bunting-worker`: browser API and outbound FIX-session Worker entrypoint.
-- `apps/bunting-cli`: native TUI, initialization, replay, scoring, and compatibility command.
-- `apps/bunting-server`: Wasmer-hosted WASI FIX/TCP server, durable origin, and admin health surface.
-- `apps/bunting-tui`: Longbridge-derived native Ratatui trading workstation and FIX/TCP test harness; run it with `cargo run --locked -p bunting-tui`.
-
-## Native Worker transports
-
-The Worker exposes bounded `GET|POST /api/<procedure>` handlers for browser clients. Authenticated FIX-session control requests address `/fix-sessions/<id>/...`; each object opens outbound TCP to an external acceptor.
-
-Actor identity comes from the server-configured participant claim associated with the verified bearer token. No request header or procedure input can select a participant.
-
-Deployment and migration commands use the Worker config at `apps/bunting-worker/wrangler.toml`:
-
-```bash
-npx wrangler d1 create bunting-origin
-npx wrangler d1 migrations apply bunting-origin --config apps/bunting-worker/wrangler.toml --remote
-npx wrangler secret put BUNTING_API_TOKEN --config apps/bunting-worker/wrangler.toml
-npx wrangler secret put BUNTING_API_PARTICIPANT_ID --config apps/bunting-worker/wrangler.toml
-```
-
-Set `BUNTING_FIX_DESTINATIONS` in the environment-specific Wrangler configuration to a comma-separated allowlist of exact `host:port` acceptor destinations before enabling FIX sessions.
-
-Scenario/orchestration code provisions runs before order entry. Command procedures return a typed `NOT_FOUND` error instead of creating authoritative state implicitly.
+- `market-types`: checked identifiers and fixed-point values;
+- `market-events`: canonical commands, events and envelopes;
+- `bunting-engine`: the sole authoritative engine, owned order book and simulation domain;
+- `ledger`: the single economic ledger;
+- `risk-engine`: pure order admission over ledger counters;
+- `origin-store`: commit contract, idempotency and expected-version checks;
+- `command-transaction`: recovery, transition and commit orchestration;
+- `bunting-application`: transport-neutral application service and FIX mapping;
+- `quarcc-execution-engine`, `quarcc-bunting-adapter`, `quarcc-execution-wasm`: participant execution, venue mapping and Wasm bindings;
+- `bunting-agents`, `bunting-runtime`: deterministic built-in participants and scheduling;
+- `simfix-wire`, `simfix-session`, `simfix-mapping`: FIX framing, session recovery and application mapping;
+- `bunting-api-contract`: shared identity/role types (its browser procedures and `browser-wire` are retired under ADR 0031);
+- `bunting-rs`: composition crate and competition archive replay;
+- `apps/bunting-server`: venue host (FIX acceptor, admin, writer, durable origin, built-in agents);
+- `apps/bunting-cli`: native CLI (TUI, init, replay, scoring);
+- `apps/bunting-tui`: Longbridge-derived Ratatui trading terminal and FIX test harness;
+- `bindings/*`: C ABI, Python and C++ bindings over `bunting-rs`.
 
 ## Checks
 
@@ -176,7 +161,7 @@ cargo metadata --locked --format-version 1 --no-deps
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-cargo tree --locked -p bunting-engine | grep -F 'orderbook-rs v0.10.3'
+! cargo tree --locked -p bunting-engine -e normal | grep -q 'orderbook-rs'
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```

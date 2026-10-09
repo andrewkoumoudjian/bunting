@@ -4,6 +4,14 @@ Status: authoritative classification baseline for repository planning
 
 Last reviewed: 2026-07-29
 
+> **Disposition reconciliation 2026-10-09 (ADR 0033).** Source observations
+> below are unchanged. Dispositions were updated where later accepted ADRs
+> changed a reference's role: OrderBook-rs/PriceLevel are development-only
+> oracles (ADR 0029); workers-rs is not a current dependency (ADR 0022); NBC
+> is reference evidence only (ADR 0032). Where any remaining sentence below
+> describes a Worker, D1 or OrderBook-rs production path, it is historical
+> context, not an instruction.
+
 ## Purpose
 
 This document records what each checked-in or submodule reference actually implements. It replaces role guesses based on repository names and separates:
@@ -145,7 +153,7 @@ A complete reusable matching and order-book kernel, not a complete Bunting deplo
 - depth, metrics, impact/placement analysis, snapshots, checksum validation, restore, sequencer/journal helpers, and optional wire/journal/NATS/metrics layers;
 - deterministic host-supplied time paths needed for replay-sensitive operations.
 
-The crate depends on `pricelevel` for the price-level/order substrate and exposes optional native/runtime features. Bunting uses released `orderbook-rs = 0.10.3` with `default-features = false` privately inside `packages/bunting-engine`; features visible on newer upstream revisions must not be attributed to the pinned release without checking that pin.
+The crate depends on `pricelevel` for the price-level/order substrate and exposes optional native/runtime features. Bunting pins released `orderbook-rs = 0.10.3` with `default-features = false` as a `bunting-engine` dev-dependency oracle; features visible on newer upstream revisions must not be attributed to the pinned release without checking that pin.
 
 ### It is not
 
@@ -155,7 +163,7 @@ The crate depends on `pricelevel` for the price-level/order substrate and expose
 
 ### Bunting disposition
 
-Approved production matching dependency through the private `packages/bunting-engine` adapter. The transitional `packages/orderbook` crate has been removed. Prefer the released crate and upstream contributions; the engine boundary may not contain an undisclosed fork.
+Development-only differential oracle for the engine-owned book (ADR 0029), declared only in `bunting-engine` `[dev-dependencies]`. It must not return as a production dependency without a superseding ADR. (Historical: it was the production matcher behind a private adapter until 2026-10-08.)
 
 Evidence: upstream `README.md`, `Cargo.toml`, `src/lib.rs`; Bunting ADR 0013.
 
@@ -176,7 +184,7 @@ A complete order book across prices, market engine, exchange, scheduler, protoco
 
 ### Bunting disposition
 
-Approved transitive production dependency pinned for type identity with OrderBook-rs. Do not build a parallel Bunting price-level implementation.
+Development-only, transitively through the OrderBook-rs oracle. The engine's own book owns price levels (ADR 0029); do not add a second Bunting book or price-level implementation alongside it.
 
 Evidence: upstream `README.md`, `Cargo.toml`.
 
@@ -246,7 +254,7 @@ An independent leaf matching implementation or a general equity exchange core.
 
 ### Bunting disposition
 
-Future options-package dependency candidate. Adopt through its API only after options scope, dependency size, numerical policy, and Wasm suitability are approved.
+Design reference only. It matches through OrderBook-rs leaf books, which ADR 0029's single owned book excludes from production. Options require Bunting-native book semantics and an ADR.
 
 Evidence: upstream `README.md`, `Cargo.toml`.
 
@@ -292,7 +300,7 @@ Merely scenario data. The observable package and authorized JAR are a venue-side
 
 ### Bunting disposition
 
-Authorized compatibility translation input to the single `packages/bunting-engine` target under ADR 0018. The existing `packages/nbc-market-engine` crate is transitional evidence-bearing code until its proven behavior is integrated. The port document must label each behavior as externally observed, bytecode-observed, translated, inferred, Bunting-added or unresolved. Exact compatibility claims require reproducible JAR-versus-Rust evidence.
+Reference evidence only (ADR 0032). Bunting does not target NBC compatibility; the engine's `compatibility::nbc` module is scheduled for removal and `packages/nbc-market-engine` no longer exists. ADR 0017 still governs reading or quoting the JAR. Any NBC-inspired feature is specified as Bunting-native behavior.
 
 Evidence: `ref/nbc_engine/app/README.md`, `application.yml`, scenario JSON; `ref/nbc-hft-simulation`; `ref/ritc_mm/API_REFERENCE.md` and adapter.
 
@@ -471,7 +479,7 @@ A participant-side quantitative market-making library containing pure models plu
 - Avellaneda–Stoikov and related quoting models, grid/adaptive behavior, inventory/risk controls, analytics and VPIN-like measures;
 - quote/order intent generation and backtesting;
 - optional data feeds, persistence, event, API/metrics, options, option-chain, and multi-underlying features;
-- an older direct dependency on OrderBook-rs than Bunting’s current production version.
+- an older direct dependency on OrderBook-rs than the version Bunting pins as its development oracle.
 
 ### It is not
 
@@ -633,7 +641,7 @@ The official Rust binding/build ecosystem for Cloudflare Workers. Its workspace 
 
 ### Bunting disposition
 
-Approved production platform dependency. Use official APIs; do not reimplement platform bindings.
+Not a current dependency: the Worker was removed (ADR 0022, `eed8e00`). Candidate only for a future read-only publisher of immutable exports; use official APIs if adopted.
 
 Evidence: upstream `README.md`, root `Cargo.toml`.
 
@@ -791,7 +799,7 @@ Some may be transitive dependencies or previously researched repositories. They 
 
 # H. Corrected architecture implications
 
-1. **Bunting has one production market engine.** OrderBook-rs supplies its matching kernel, while NBC contributes complete provenance-linked venue compatibility behavior; NBC cannot be reduced to scenarios or registered as a second production kernel, and its current snapshot does not prove internal matching or agent formulas.
+1. **Bunting has one production market engine** with its own deterministic book (ADR 0029). OrderBook-rs is a development oracle. NBC is reference evidence only (ADR 0032) and is never a second production kernel.
 2. **QUARCC, RITC market making, NautilusTrader, Barter, market-maker-rs, and the NBC student client are participant-side systems.** They belong around the client/execution/strategy boundary.
 3. **OrderBook-rs, PriceLevel, and Liquibook are matching/order-book components of different scope.** exchange-core is a full exchange core.
 4. **FIX and SBE repositories are layered protocol workspaces.** Adoption must be per subcrate/layer.
@@ -827,4 +835,4 @@ Evidence classification: the upstream tree, dependency versions and commit are *
 - record exact gitlink SHAs for all 25 submodules in a generated or reviewed manifest;
 - remove absent references from authoritative matrices or add them properly;
 - do not create `packages/fix` or another catch-all package before selecting concrete codec/session/transport boundaries;
-- do not create an OrderBook-rs source copy under `packages/`; keep the first-party adapter there and place any approved patched upstream source under `vendor/` or a dedicated fork repository.
+- do not create upstream source copies under `packages/`; place any approved patched upstream source under `vendor/` or a dedicated fork repository. (The former OrderBook-rs adapter was replaced by the owned book, ADR 0029.)
