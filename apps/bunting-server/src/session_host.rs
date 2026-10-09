@@ -235,8 +235,7 @@ pub(crate) fn handle_fix_connection(
                                     CommandPayload::CancelOrder(cancel) => {
                                         open_orders.remove(&cancel.order_id);
                                     }
-                                    CommandPayload::ActivateKillSwitch
-                                    | CommandPayload::NbcDone(_) => {}
+                                    CommandPayload::ActivateKillSwitch => {}
                                 }
                             }
                             application

@@ -135,7 +135,7 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
             Some(order.participant_id)
         }
         CommandPayload::CancelOrder(cancel) => Some(cancel.participant_id),
-        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
+        CommandPayload::ActivateKillSwitch => None,
     };
     if payload_participant.is_some_and(|value| value != participant) {
         return Err(ApplicationError::ActorMismatch);
@@ -587,7 +587,7 @@ pub fn listing_for_command(state: &RunState, command: &Command) -> Option<Listin
             .ownership()
             .get(&cancel.order_id)
             .map(|owned| owned.listing_key),
-        CommandPayload::ActivateKillSwitch | CommandPayload::NbcDone(_) => None,
+        CommandPayload::ActivateKillSwitch => None,
     }
 }
 

@@ -88,8 +88,8 @@ execution engines.
   Rust/WASM adapters. Humans and FIX sessions may bypass it; built-in agents
   always use it.
 - NBC is reference evidence only
-  ([ADR 0032](docs/adr/0032-proposed-nbc-reference-only.md)); its remaining
-  compatibility module is scheduled for removal.
+  ([ADR 0032](docs/adr/0032-proposed-nbc-reference-only.md)); the engine's
+  NBC compatibility surface was removed in slice 11.
 
 See [`docs/architecture.md`](docs/architecture.md) for what is implemented
 now versus the accepted target.

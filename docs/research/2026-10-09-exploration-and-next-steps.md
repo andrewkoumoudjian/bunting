@@ -432,7 +432,7 @@ host neutrality regardless of what the server ships as.
 | Order | Step | Why now |
 |---|---|---|
 | 1 | **Step 0** quick wins + owner review of ADRs 0030–0032 | Docs currently mislead agents; decisions unblock everything else |
-| 2 | **NBC removal** (ADR 0032, ~1 day) | Shrinks the engine and schema before the Step 3 refactor |
+| 2 | ~~**NBC removal**~~ — **done in slice 11** (ADR 0032) | Shrinks the engine and schema before the Step 3 refactor |
 | 3 | **Step 1** fills reach makers; engine-owned live-order limit | Competition is unusable for passive strategies without it |
 | 4 | **Step 2** measurement baseline + native-vs-WASIX hash/latency parity | Feeds the host ADR and proves Step 3 |
 | 5 | **Step 3** writer-owned live state + command journal | ~1000× gap between matching and per-command overhead; needed by both products |

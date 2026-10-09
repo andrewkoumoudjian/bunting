@@ -300,7 +300,7 @@ Merely scenario data. The observable package and authorized JAR are a venue-side
 
 ### Bunting disposition
 
-Reference evidence only (ADR 0032). Bunting does not target NBC compatibility; the engine's `compatibility::nbc` module is scheduled for removal and `packages/nbc-market-engine` no longer exists. ADR 0017 still governs reading or quoting the JAR. Any NBC-inspired feature is specified as Bunting-native behavior.
+Reference evidence only (ADR 0032). Bunting does not target NBC compatibility; the engine's NBC compatibility surface was removed in slice 11 and `packages/nbc-market-engine` no longer exists. ADR 0017 still governs reading or quoting the JAR. Any NBC-inspired feature is specified as Bunting-native behavior.
 
 Evidence: `ref/nbc_engine/app/README.md`, `application.yml`, scenario JSON; `ref/nbc-hft-simulation`; `ref/ritc_mm/API_REFERENCE.md` and adapter.
 

@@ -60,7 +60,7 @@ The engine's order book (`packages/bunting-engine/src/book.rs`, ADR 0029) is fir
 | `liquibook` | Embeddable C++ matching kernel with application callbacks and optional depth | Independent matching oracle and focused fixture source |
 | `exchange-core` | Full Java exchange core: matching, risk/accounting, commands/reports, journaling and snapshots | Full-exchange architecture and invariant oracle; no runtime dependency |
 | `option-chain-orderbook` | Options hierarchy and aggregation built on OrderBook-rs leaf books | Design reference only: it builds on OrderBook-rs leaf books, which ADR 0029's single owned book excludes from production. Options need Bunting-native book semantics |
-| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | Reference evidence only (ADR 0032); the compatibility module is scheduled for removal. ADR 0017 still governs reading the JAR |
+| `nbc_engine` | Packaged NBC exchange simulator assets/config/scenarios and observable venue protocol; the direct snapshot lacks implementation source/JAR, while the pinned client tree contains the project-owner-authorized JAR | Reference evidence only (ADR 0032); the engine's compatibility surface was removed in slice 11. ADR 0017 still governs reading the JAR |
 | `abides` | Agent-based discrete-event market simulator with exchange agent, messaging and configurable latency | Market-simulation architecture and experimental oracle |
 | `fauxchange` | Reserved/planned project with no implementation API | No code adoption; roadmap reference only |
 

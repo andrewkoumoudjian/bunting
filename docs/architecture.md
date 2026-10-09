@@ -100,7 +100,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 |---|---|
 | `packages/market-types` | Identifiers and checked fixed-point values |
 | `packages/market-events` | Canonical commands, events, envelopes, reject codes |
-| `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes. Contains `compatibility::nbc` until ADR 0032 removal |
+| `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
 | `packages/origin-store` | `OriginStore` trait, commit request validation, in-memory store |

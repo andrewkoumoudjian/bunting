@@ -10,8 +10,8 @@ Build a Rust market-simulation and exchange-testing platform composed from reusa
 - Read the nearest scoped `AGENTS.md` for every path touched.
 - Read [`docs/README.md`](docs/README.md) (documentation status map) before relying on any document under `docs/`. Documents marked **Historical** are evidence, never instructions, even when their own text says "binding", "active" or "non-negotiable".
 - Accepted ADRs and `docs/architecture.md` are binding. Read an ADR's **status line** first; ADR 0033 records which older ADRs are superseded in whole or in part.
-- Key decisions: ADR 0018 (one production engine; carries ADR 0014's market-versus-participant authority split), ADR 0028 (single ledger, live state, full replay), ADR 0029 (engine-owned order book), ADR 0030 (latency-modeled continuous admission — target), ADR 0031 (FIX + certified native protocol only — target), ADR 0032 (NBC is reference evidence only — target), ADR 0033 (reconciliation and host direction).
-- **Target ≠ implemented.** ADRs 0030–0032 and the Target sections of `docs/architecture.md` are accepted direction, not current behavior. Check `docs/implementation-log/` before describing anything as done.
+- Key decisions: ADR 0018 (one production engine; carries ADR 0014's market-versus-participant authority split), ADR 0028 (single ledger, live state, full replay), ADR 0029 (engine-owned order book), ADR 0030 (latency-modeled continuous admission — target), ADR 0031 (FIX + certified native protocol only — target), ADR 0032 (NBC is reference evidence only — engine surface removed in slice 11), ADR 0033 (reconciliation and host direction).
+- **Target ≠ implemented.** ADRs 0030–0031 and the Target sections of `docs/architecture.md` are accepted direction, not current behavior. Check `docs/implementation-log/` before describing anything as done.
 - Current execution order: [`docs/research/2026-10-09-exploration-and-next-steps.md`](docs/research/2026-10-09-exploration-and-next-steps.md) §8. Slice definitions: [`docs/plans/2026-10-07-evidence-led-core-roadmap.md`](docs/plans/2026-10-07-evidence-led-core-roadmap.md).
 - Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
 - Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
@@ -39,7 +39,7 @@ The same discipline applies to Bunting itself: a performance claim needs a recor
 A single production `bunting-engine` owns venue/simulation authority: run state, logical time, listings, market configuration, order processing, risk admission, the single economic ledger, trades, scoring, canonical events, public market-data projections, and the recovery contract required by Bunting.
 
 - The engine package owns its private deterministic price-time book (`packages/bunting-engine/src/book.rs`, ADR 0029); applications and orchestration packages must not reach the book except through canonical engine commands and read projections.
-- NBC is reference evidence only (ADR 0032). It is not a compatibility target. Do not extend `bunting-engine::compatibility::nbc`, `NbcDone` or the NBC events; they are scheduled for removal. Useful ideas from NBC re-enter only as Bunting-native features with Bunting semantics and tests.
+- NBC is reference evidence only (ADR 0032). It is not a compatibility target. The engine's NBC compatibility module, the `NbcDone` command and the NBC events were removed in slice 11; do not reintroduce them. Useful ideas from NBC re-enter only as Bunting-native features with Bunting semantics and tests.
 - The NBC JAR's licensing record (ADR 0017) still governs any reading or quotation of that material.
 
 ### QUARCC execution engine

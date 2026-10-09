@@ -97,12 +97,6 @@ pub struct CancelOrder {
     pub participant_id: ParticipantId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NbcDone {
-    pub participant_id: ParticipantId,
-    pub step: u32,
-}
-
 /// Deterministic logical-clock execution policy.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "mode")]
@@ -261,7 +255,6 @@ pub enum CommandPayload {
     },
     CancelOrder(CancelOrder),
     ActivateKillSwitch,
-    NbcDone(NbcDone),
 }
 
 /// Administrator/simulation command envelope separate from participant order flow.
@@ -475,16 +468,6 @@ pub enum EventPayload {
         delta: MoneyMinor,
     },
     KillSwitchActivated,
-    NbcParticipantDone {
-        participant_id: ParticipantId,
-        step: u32,
-    },
-    NbcStepAdvanced {
-        executed_step: u32,
-        current_step: u32,
-        triggered_event_ids: Vec<String>,
-        completed: bool,
-    },
     Simulation(SimulationEvent),
 }
 

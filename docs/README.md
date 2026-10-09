@@ -47,7 +47,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0029 | Engine-owned deterministic order book |
 | 0030 | **Target:** latency-modeled continuous admission (replaces 0024 intervals) |
 | 0031 | **Target:** FIX + certified Bunting Native Protocol only; app via `bunting-client` |
-| 0032 | **Target:** NBC is reference evidence only; remove compatibility surface |
+| 0032 | NBC is reference evidence only; engine surface removed (slice 11) |
 | 0033 | Guidance reconciliation and status amendments |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
