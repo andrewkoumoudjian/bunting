@@ -100,6 +100,11 @@ For source-backed agent and synthetic-liquidity implementation options, see the
 [October 8 agent/market simulation research note](docs/research/2026-10-08-agent-market-simulation-implementations.md).
 It is documentation only; no models or external code were imported by that review.
 
+The [October 9 exploration note](docs/research/2026-10-09-exploration-and-next-steps.md)
+maps the roadmap to the code at `1d857d1`, records measured per-command state
+costs, lists verified venue/persistence gaps and proposes dependency-ordered
+next steps. It is a proposal; it supersedes no ADR.
+
 ## Current architecture
 
 - `OrderBook-rs` snapshots are checksum-protected and stored through the Cloudflare Workers Cache API under immutable, content-addressed keys.
