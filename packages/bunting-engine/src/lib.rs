@@ -1064,38 +1064,75 @@ impl RunState {
         self.clone().transition_owned(command)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one explicit match keeps every order-flow command on the same staged transition path"
-    )]
+    /// Consuming transition: the outcome carries the new state. An error
+    /// drops the state, so callers that must keep it use [`Self::apply`].
     pub fn transition_owned(self, command: &Command) -> Result<TransitionOutcome, EngineError> {
         let mut candidate = self;
-        if candidate.run_id != command.run_id || candidate.sequence != command.expected_sequence {
+        let applied = candidate.apply(command).map_err(ApplyError::into_inner)?;
+        Ok(applied.into_outcome(candidate))
+    }
+
+    /// Applies one command to this state in place.
+    ///
+    /// Contract: [`ApplyError::Unchanged`] is returned only before the first
+    /// mutation, so the state is exactly as it was. [`ApplyError::Poisoned`]
+    /// means a mid-transition invariant failed after mutation began; the
+    /// caller must discard this value and rebuild it from committed state.
+    pub fn apply(&mut self, command: &Command) -> Result<Applied, ApplyError> {
+        let next_sequence = self
+            .preflight(command.run_id, command.expected_sequence)
+            .map_err(ApplyError::Unchanged)?;
+        // Listing resolution depends only on immutable listings, so resolving
+        // it before expiries are processed cannot change any outcome.
+        let listing_key = match &command.payload {
+            CommandPayload::SubmitOrderAtListing { order, listing_key } => {
+                if listing_key.instrument_id != order.instrument_id
+                    || !self.listings.contains_key(listing_key)
+                {
+                    return Err(ApplyError::Unchanged(EngineError::UnknownListing));
+                }
+                Some(*listing_key)
+            }
+            CommandPayload::SubmitOrder(order) => Some(
+                self.listing_key_for_instrument(order.instrument_id)
+                    .map_err(ApplyError::Unchanged)?,
+            ),
+            CommandPayload::CancelOrder(_) | CommandPayload::ActivateKillSwitch => None,
+        };
+        self.apply_validated(command, next_sequence, listing_key)
+            .map_err(ApplyError::Poisoned)
+    }
+
+    /// Checks run identity and optimistic sequence without mutating.
+    fn preflight(
+        &self,
+        run_id: RunId,
+        expected_sequence: EventSequence,
+    ) -> Result<EventSequence, EngineError> {
+        if self.run_id != run_id || self.sequence != expected_sequence {
             return Err(EngineError::SequenceConflict {
-                current: candidate.sequence,
+                current: self.sequence,
             });
         }
-        let next_sequence = candidate
-            .sequence
+        self.sequence
             .checked_add(EventSequence::new(1))
-            .ok_or(EngineError::SequenceOverflow)?;
+            .ok_or(EngineError::SequenceOverflow)
+    }
+
+    fn apply_validated(
+        &mut self,
+        command: &Command,
+        next_sequence: EventSequence,
+        listing_key: Option<ListingKey>,
+    ) -> Result<Applied, EngineError> {
+        let candidate = self;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         candidate.expire_due(command.logical_time, &mut payloads, &mut changed_listings)?;
         let (accepted, reject_code, order_id) = match &command.payload {
             CommandPayload::SubmitOrder(order)
             | CommandPayload::SubmitOrderAtListing { order, .. } => {
-                let listing_key = match &command.payload {
-                    CommandPayload::SubmitOrderAtListing { listing_key, .. } => {
-                        if listing_key.instrument_id != order.instrument_id
-                            || !candidate.listings.contains_key(listing_key)
-                        {
-                            return Err(EngineError::UnknownListing);
-                        }
-                        *listing_key
-                    }
-                    _ => candidate.listing_key_for_instrument(order.instrument_id)?,
-                };
+                let listing_key = listing_key.ok_or(EngineError::UnknownListing)?;
                 payloads.push(EventPayload::OrderReceived {
                     order: order.clone(),
                     listing_key: Some(listing_key),
@@ -1180,7 +1217,7 @@ impl RunState {
         reason = "the shared commit tail receives every staged transition fact"
     )]
     fn finish(
-        mut self,
+        &mut self,
         command: &Command,
         next_sequence: EventSequence,
         payloads: Vec<EventPayload>,
@@ -1188,7 +1225,7 @@ impl RunState {
         accepted: bool,
         reject_code: Option<String>,
         order_id: Option<OrderId>,
-    ) -> Result<TransitionOutcome, EngineError> {
+    ) -> Result<Applied, EngineError> {
         for payload in &payloads {
             self.simulation
                 .project_event(command.logical_time, payload)
@@ -1204,8 +1241,7 @@ impl RunState {
         self.event_sequence = events
             .last()
             .map_or(self.event_sequence, |event| event.sequence);
-        Ok(TransitionOutcome {
-            candidate: self,
+        Ok(Applied {
             events,
             accepted,
             reject_code,
@@ -1588,10 +1624,48 @@ impl RunState {
         self.clone().transition_simulation_owned(request)
     }
 
+    /// Consuming simulation transition; an error drops the state.
     pub fn transition_simulation_owned(
         self,
         request: &SimulationCommandRequest,
     ) -> Result<TransitionOutcome, EngineError> {
+        let mut candidate = self;
+        let next_sequence = candidate.preflight(request.run_id, request.expected_sequence)?;
+        let applied = candidate.apply_simulation_validated(request, next_sequence)?;
+        Ok(applied.into_outcome(candidate))
+    }
+
+    /// Applies one simulation-administration command in place, with the same
+    /// contract as [`Self::apply`]. Mass cancel runs in place; its only
+    /// failures are invariant violations. Every other simulation command can
+    /// be refused part-way by its domain rules, so it is staged on a copy and
+    /// swapped in on success. These are operator-rate commands, never the
+    /// order hot path.
+    pub fn apply_simulation(
+        &mut self,
+        request: &SimulationCommandRequest,
+    ) -> Result<Applied, ApplyError> {
+        let next_sequence = self
+            .preflight(request.run_id, request.expected_sequence)
+            .map_err(ApplyError::Unchanged)?;
+        if matches!(request.payload, SimulationCommand::MassCancel { .. }) {
+            return self
+                .apply_simulation_validated(request, next_sequence)
+                .map_err(ApplyError::Poisoned);
+        }
+        let mut candidate = self.clone();
+        let applied = candidate
+            .apply_simulation_validated(request, next_sequence)
+            .map_err(ApplyError::Unchanged)?;
+        *self = candidate;
+        Ok(applied)
+    }
+
+    fn apply_simulation_validated(
+        &mut self,
+        request: &SimulationCommandRequest,
+        next_sequence: EventSequence,
+    ) -> Result<Applied, EngineError> {
         let metadata = Command {
             run_id: request.run_id,
             command_id: request.command_id,
@@ -1601,16 +1675,7 @@ impl RunState {
             actor: request.actor,
             payload: CommandPayload::ActivateKillSwitch,
         };
-        let mut candidate = self;
-        if candidate.run_id != request.run_id || candidate.sequence != request.expected_sequence {
-            return Err(EngineError::SequenceConflict {
-                current: candidate.sequence,
-            });
-        }
-        let next_sequence = candidate
-            .sequence
-            .checked_add(EventSequence::new(1))
-            .ok_or(EngineError::SequenceOverflow)?;
+        let candidate = self;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
         candidate.expire_due(request.logical_time, &mut payloads, &mut changed_listings)?;
@@ -1673,6 +1738,63 @@ impl RunState {
         )
     }
 }
+
+/// Committed facts of one in-place transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Applied {
+    pub events: Vec<EventEnvelope>,
+    pub accepted: bool,
+    pub reject_code: Option<String>,
+    pub order_id: Option<OrderId>,
+    pub changed_listings: BTreeSet<ListingKey>,
+}
+
+impl Applied {
+    fn into_outcome(self, candidate: RunState) -> TransitionOutcome {
+        TransitionOutcome {
+            candidate,
+            events: self.events,
+            accepted: self.accepted,
+            reject_code: self.reject_code,
+            order_id: self.order_id,
+            changed_listings: self.changed_listings,
+        }
+    }
+}
+
+/// Failure of an in-place transition, classified by what happened to the state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplyError {
+    /// Refused before any mutation; the state is unchanged.
+    Unchanged(EngineError),
+    /// Failed after mutation began; the state must be discarded and rebuilt
+    /// from the last committed state.
+    Poisoned(EngineError),
+}
+
+impl ApplyError {
+    #[must_use]
+    pub const fn error(&self) -> &EngineError {
+        match self {
+            Self::Unchanged(error) | Self::Poisoned(error) => error,
+        }
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> EngineError {
+        match self {
+            Self::Unchanged(error) | Self::Poisoned(error) => error,
+        }
+    }
+}
+
+impl fmt::Display for ApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl std::error::Error for ApplyError {}
 
 /// Candidate result of one authoritative engine transition.
 #[derive(Clone, Debug)]
@@ -2861,6 +2983,137 @@ mod tests {
             EngineError::OwnershipInvariant
         );
         assert_eq!(state.state_hash().unwrap(), before);
+    }
+
+    #[test]
+    fn apply_refusals_before_mutation_leave_state_unchanged() {
+        let mut state = run();
+        // A GTD order that is already due when each refused command arrives,
+        // so any refusal after expiry processing would be visible.
+        let mut gtd = submit(&state, 1, 1, 1, 1, Side::Buy, 100, 1);
+        if let CommandPayload::SubmitOrder(order) = &mut gtd.payload {
+            order.kind = OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(100),
+                time_in_force: TimeInForcePolicy::Gtd {
+                    expires_at: LogicalTimeNs::new(1_500_000),
+                },
+                post_only: false,
+                display_quantity: None,
+            };
+        }
+        state.apply(&gtd).unwrap();
+        let before = state.clone();
+
+        let mut unknown = submit(&state, 2, 1, 2, 1, Side::Buy, 100, 1);
+        let CommandPayload::SubmitOrder(order) = unknown.payload.clone() else {
+            unreachable!("submit builds a SubmitOrder");
+        };
+        unknown.payload = CommandPayload::SubmitOrderAtListing {
+            order,
+            listing_key: ListingKey::new(VenueId::new(9), InstrumentId::new(1)),
+        };
+        assert_eq!(
+            state.apply(&unknown),
+            Err(ApplyError::Unchanged(EngineError::UnknownListing))
+        );
+        assert_eq!(state, before);
+
+        let mut outdated = submit(&state, 3, 1, 3, 1, Side::Buy, 100, 1);
+        outdated.expected_sequence = EventSequence::new(0);
+        assert!(matches!(
+            state.apply(&outdated),
+            Err(ApplyError::Unchanged(EngineError::SequenceConflict { .. }))
+        ));
+        assert_eq!(state, before);
+
+        // Refused by a simulation domain rule after the expiry would have run.
+        let resume = SimulationCommandRequest {
+            run_id: state.run_id(),
+            command_id: CommandId::new(4),
+            correlation_id: CorrelationId::new(4),
+            logical_time: LogicalTimeNs::new(4_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(1),
+            payload: SimulationCommand::ResumeRun,
+        };
+        assert!(matches!(
+            state.apply_simulation(&resume),
+            Err(ApplyError::Unchanged(EngineError::Simulation(_)))
+        ));
+        assert_eq!(state, before);
+
+        // The expiry still happens, once, on the next accepted command.
+        let next = submit(&state, 5, 1, 5, 1, Side::Buy, 100, 1);
+        let applied = state.apply(&next).unwrap();
+        assert!(applied.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCanceled {
+                reason: CancelReason::Expired,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn apply_matches_consuming_transition_and_classifies_poisoning() {
+        let mut live = run();
+        let mut owned = run();
+        let orders = [
+            (1, 1, Side::Sell, 101, 5),
+            (2, 1, Side::Sell, 100, 5),
+            (2, 2, Side::Buy, 101, 7),
+            (1, 2, Side::Buy, 99, 3),
+            (2, 1, Side::Sell, 99, 4),
+        ];
+        for (index, (participant, instrument, side, price, quantity)) in
+            orders.into_iter().enumerate()
+        {
+            let id = u128::try_from(index + 1).unwrap();
+            let command = submit(
+                &live,
+                id,
+                participant,
+                id,
+                instrument,
+                side,
+                price,
+                quantity,
+            );
+            let applied = live.apply(&command).unwrap();
+            let outcome = owned.transition_owned(&command).unwrap();
+            assert_eq!(applied.events, outcome.events);
+            assert_eq!(applied.changed_listings, outcome.changed_listings);
+            owned = outcome.candidate;
+            assert_eq!(live, owned);
+        }
+
+        // An invariant failure after staging began poisons the live value.
+        let resting = live
+            .ownership
+            .values()
+            .find(|order| order.state == OwnedOrderState::Active)
+            .map(|order| (order.order_id, order.participant_id))
+            .unwrap();
+        live.ownership
+            .get_mut(&resting.0)
+            .unwrap()
+            .remaining_quantity = QuantityLots::new(999);
+        let cancel = Command {
+            run_id: live.run_id(),
+            command_id: CommandId::new(99),
+            correlation_id: CorrelationId::new(99),
+            logical_time: LogicalTimeNs::new(99_000_000),
+            expected_sequence: live.sequence(),
+            actor: resting.1,
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: resting.0,
+                participant_id: resting.1,
+            }),
+        };
+        assert_eq!(
+            live.apply(&cancel),
+            Err(ApplyError::Poisoned(EngineError::OwnershipInvariant))
+        );
     }
 
     #[test]
