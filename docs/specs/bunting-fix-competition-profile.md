@@ -18,8 +18,9 @@ an implementation claim.
 ## Session, authentication and topology
 
 The wire format is standard SOH-delimited FIXT.1.1 with BodyLength and CheckSum.
-Native Bunting may be a TCP/TLS acceptor. Cloudflare Bunting is always the TCP
-initiator to an external acceptor; there is no Worker raw-TCP ingress.
+The native venue is the TCP/TLS acceptor (ADR 0022/0023). Cloudflare has no FIX
+role: there is no Worker initiator or raw-TCP ingress. Admission timing follows
+the implemented interval policy until ADR 0030's sequencer lands.
 
 Logon `A` requires standard sender/target IDs, sequence/time, encryption method,
 heartbeat interval, `DefaultApplVerID(1137)=9`, Username `553`, Password `554` or an approved credential

@@ -6,9 +6,9 @@ References are commit-pinned research and provenance. Production manifests use r
 
 | Path | Upstream pin | License | Status |
 |---|---|---|---|
-| `ref/orderbook-rs` | `575de34260b0fce346372074b6b938df058693a8` | MIT | production crate `0.10.3` |
+| `ref/orderbook-rs` | `575de34260b0fce346372074b6b938df058693a8` | MIT | dev-only differential oracle `0.10.3` (ADR 0029) |
 | `ref/pricelevel` | `a5b61671391295783d0e35ba68fdf4a9702dee60` | MIT | production transitive crate `0.8.4` |
-| `ref/workers-rs` | `5f2d6c9192377451d43910098738624474196364` | Apache-2.0 | production Worker/Cache runtime |
+| `ref/workers-rs` | `5f2d6c9192377451d43910098738624474196364` | Apache-2.0 | not a current dependency (Worker removed, ADR 0022) |
 
 The production server runtime is not mirrored under `ref/`. ADR 0027 pins
 Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`,
@@ -19,7 +19,7 @@ and WASIX Rust toolchain `v2026-07-07.3+rust-1.96`.
 
 | Path | Pin | Role |
 |---|---|---|
-| `ref/option-chain-orderbook` | `19e8e45bf122c3ebe3e1784f73e04adba2781ea6` | future options hierarchy built on OrderBook-rs |
+| `ref/option-chain-orderbook` | `19e8e45bf122c3ebe3e1784f73e04adba2781ea6` | design reference only; built on OrderBook-rs books (ADR 0029) |
 | `ref/market-maker-rs` | repository gitlink | market-making formulas and strategy decomposition |
 | `ref/ironsbe` | `cf365e4815c04ff31acd81568952e9ff477c6d89` | future SBE codec/schema/codegen candidate |
 | `ref/fauxchange` | `293bdc52bedc816f76da5db106f44535e4438593` | design intent only; no implementation exists |

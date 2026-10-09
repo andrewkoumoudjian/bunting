@@ -23,7 +23,7 @@ The existing file is not a crate to port. It is a behavior inventory that must b
 3. protocol-neutral desired-versus-live order reconciliation;
 4. a native host that composes those parts with canonical risk and account state.
 
-None of those parts belongs in matching, ledger or the authoritative Durable Object runtime.
+None of those parts belongs in matching, ledger or the authoritative venue runtime.
 
 ## Exact Bunting target layout
 

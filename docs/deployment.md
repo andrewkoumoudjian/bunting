@@ -1,6 +1,8 @@
 # Bunting deployment guide
 
-The Wasmer-hosted WASI server is the primary competition venue under ADR 0027.
+The server currently ships as a Wasmer-hosted WASIX module (ADR 0027). WASIX is
+the current packaging, not a binding long-term host (ADR 0033); keep the server
+native-buildable.
 It serves the concurrent rostered market defined by ADR 0023, while Cloudflare
 is a read-only publication wrapper under ADR 0022.
 
@@ -66,9 +68,9 @@ session directories; the installed launcher resolves and mounts them.
 The hosted smoke gate is complete only after the terminator presents a valid
 client certificate, two rostered clients complete FIX Logon, one participant's
 order is visible to the other, and a restart returns the acknowledged run and
-session sequences from the same files. A plaintext public bind, shared origin
-file, native-only smoke, or cross-compile without Wasmer execution fails the
-deployment contract.
+session sequences from the same files. A plaintext public bind or shared origin file fails the deployment contract.
+For the current WASIX packaging, a native-only smoke or cross-compile without
+Wasmer execution does not validate the release artifact.
 
 ## Cloudflare publication wrapper
 
@@ -85,3 +87,6 @@ routes, outbound FIX Durable Objects and its Workers Cache crate) was removed on
 No Cloudflare artifact is currently built. A replacement publisher must only read
 immutable, checksum-addressed archives, leaderboards and snapshots exported by the
 native venue after commit; it must not accept participant commands.
+
+Organizers should also read the known limitations at the end of
+[`RUNBOOK.md`](../RUNBOOK.md) before a live event.

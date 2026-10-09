@@ -17,8 +17,9 @@ the committed result. Adapters cannot receive mutable engine state or invent
 facts, sequence numbers, fills, balances or scores.
 
 The service boundary is the public Rust contract consumed in process by native
-servers, FIX mapping, browser handlers and built-in agents. Transport
-sessions, origin persistence and cache adapters remain outside `bunting-engine`.
+servers, FIX mapping, the Bunting Native Protocol (ADR 0031, target) and
+built-in agents. Transport sessions and origin persistence remain outside
+`bunting-engine`.
 FIX sequence numbers remain distinct from committed Bunting event sequences.
 
 ## Deployment contracts
@@ -26,16 +27,16 @@ FIX sequence numbers remain distinct from committed Bunting event sequences.
 ### Native local or server deployment
 
 A native host may accept inbound standard FIXT.1.1 with FIX 5.0 SP2 application
-semantics over TCP or TLS. The acceptor
+semantics over TCP or TLS, and (target, ADR 0031) the Bunting Native Protocol
+over mutual TLS. No other participant interface exists. The acceptor
 owns sockets, TLS, FIX sessions, bounded journals and reconnect policy, then
 calls the application service in process. It is not a second exchange service.
 
 ### Cloudflare publication deployment
 
-The native Rust Worker accepts browser-compatible HTTPS reads for immutable
-public snapshots, run archives, and leaderboards exported by the native venue.
-Workers Cache contains checksum-addressed public artifacts and never
-coordinates a transaction. Cloudflare owns no participant session, command,
+A future read-only publisher (none is built today) may serve immutable public
+snapshots, run archives and leaderboards exported by the native venue as
+checksum-addressed artifacts. It never coordinates a transaction. Cloudflare owns no participant session, command,
 event sequence, or recovery root.
 
 ```text
@@ -88,7 +89,7 @@ Every mutation carries command ID, correlation ID and expected run version.
 Duplicate IDs return the original committed result; conflicting reuse rejects.
 An optimistic-version loser reloads and may retry only under a bounded policy
 without changing external IDs. Complete snapshots include all authoritative and
-deterministic engine state; OrderBook-rs state is one nested component.
+deterministic engine state, including the engine-owned books (ADR 0029).
 
 Streams start with a snapshot and continue with committed-sequence updates. A
 resume cursor receives an available tail or a reset plus current snapshot.
@@ -101,13 +102,13 @@ recovery cursor. No recovery guarantee depends on isolate affinity.
 The profile in [`bunting-fix-competition-profile.md`](bunting-fix-competition-profile.md)
 is a complete competition interface. A participant can observe every fact the
 competition makes visible to that participant and perform every permitted
-participant action through FIX alone. Browser and Ratatui clients are views over
+participant action through FIX alone. The app, Ratatui and binding clients are views over
 the same service and cannot expose an exclusive competition capability.
 
 Instructor and platform-administrator operations need not be participant FIX
 operations, but the profile defines admin-audience extensions so native operator
 tools can use the same session model. Unsupported engine capabilities reject
-explicitly; they never silently fall back to a browser-only path.
+explicitly; they never silently fall back to a client-only path.
 
 ## Versioned policy boundary for unresolved RIT behavior
 

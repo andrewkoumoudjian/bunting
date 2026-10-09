@@ -8,7 +8,7 @@ Bunting is building a RIT-class educational market-simulation platform on its ex
 
 1. **Officially documented:** the Rotman RIT overview describes instructor casefiles, periods/iterations, centralized limit-order books, API/RTD access, AI order flow, institutional workflows, multi-marketplace cases, targeted news, product families, monitoring and reports.
 2. **Binary-observed:** the static MSI audit records exact packaged types, fields, routes, RTD topics and protocol surfaces under [`../research/rit-binary-audit/`](../research/rit-binary-audit/).
-3. **Bunting-added:** state models, package boundaries, deterministic ordering, browser/application procedures, event schemas and implementation policies are independent Bunting decisions.
+3. **Bunting-added:** state models, package boundaries, deterministic ordering, native-protocol/application procedures, event schemas and implementation policies are independent Bunting decisions.
 
 Rotman publishes external behavior and says server casefiles are open and customizable for RIT instructors. That does not establish source access or redistribution rights for the server application or casefile corpus. Bunting therefore implements independently from documented behavior and authorized observations; unresolved formulas remain unresolved.
 
@@ -16,35 +16,38 @@ Official capability source: [Rotman Interactive Trader overview and features](ht
 
 ## Binding architecture
 
-`packages/bunting-engine` is the central market-simulation package. It directly integrates released `orderbook-rs = 0.10.3` as its private production matcher and owns the authoritative run transition. The adapter and tests have moved into the engine package and the transitional `packages/orderbook` crate is removed.
+Reconciled 2026-10-09 with ADRs 0029–0033; see [`../architecture.md`](../architecture.md) for current-versus-target detail.
 
-The production dependency direction is:
+`packages/bunting-engine` is the central market-simulation package. It owns a private deterministic price-time order book per listing (ADR 0029), the single economic ledger, and the authoritative run transition. OrderBook-rs is a development-only oracle.
 
 ```text
 market types/events, ledger rules, risk rules
                   |
                   v
         packages/bunting-engine
-        - private OrderBook-rs adapter
+        - private owned order book per listing
         - run and logical clock
         - listings and participants
         - scenarios and scheduled actions
-        - agents, news, tenders and assets
+        - news, tenders, OTC, facilities and assets
         - settlement, scoring and full snapshot
                   |
        +----------+-----------+
        v                      v
-origin/cache/transaction   bunting-rs composition
+origin/journal/transaction  bunting-rs composition
        |                      |
        +----------+-----------+
                   v
-       native Rust Bunting Worker
-
-External FIX acceptor <- outbound Worker FIX/TCP initiator
-RIT REST/VBA/RTD -> external compatibility adapters -> browser/application contract
+         bunting-server (single venue process)
+         - admission sequencer (ADR 0030, target)
+         - FIX acceptor + Bunting Native Protocol (ADR 0031, target)
+                  ^
+                  |
+FIX clients; instructor/student app via bunting-client;
+RIT REST/VBA/RTD compatibility adapters run client-side over BNP
 ```
 
-There is no second matching engine, server-side FIX endpoint, REST router, Axum service, or transport-owned market state. A Rust stream-coordination Durable Object remains conditional under ADR 0016 and never owns commands or matching.
+There is no second matching engine, no REST/HTTP/browser command surface on the server, and no transport-owned market state. Built-in agents are participants whose commands pass the same admission path.
 
 ## Authoritative run aggregate
 
@@ -71,12 +74,12 @@ pub struct ListingKey {
 }
 ```
 
-The concrete types must use checked IDs and bounded collections. A listing is a venue-specific tradable OrderBook-rs book; an economic instrument may have several listings. One command may stage changes across several candidate books, accounts and facilities, but it commits one canonical event batch and one next run version or nothing.
+The concrete types must use checked IDs and bounded collections. A listing is a venue-specific tradable book owned by the engine; an economic instrument may have several listings. One command may stage changes across several candidate books, accounts and facilities, but it commits one canonical event batch and one next run version or nothing.
 
 The generalized transition remains:
 
 ```text
-authenticate and decode a browser or in-process adapter command
+authenticate and decode a FIX, native-protocol or in-process adapter command
   -> recover the complete run candidate
   -> validate role, scenario state and expected sequence
   -> reserve all affected cash, inventory and capacity
@@ -108,13 +111,13 @@ The requirement IDs below supplement the binary-derived `RIT-FEATURE-*` ledger. 
 
 | ID | Requirement | Engine owner | Evidence and acceptance |
 |---|---|---|---|
-| `SIM-MKT-001` | Maintain a private OrderBook-rs book per listing and expose no mutable matcher handle. | `matching` | ADR 0019; binary `0007`, `0015`-`0019`. Only engine transitions mutate a book. |
-| `SIM-MKT-002` | Support the useful upstream limit, market, IOC, FOK, post-only, iceberg/reserve, pegged, trailing-stop and market-to-limit surface incrementally. | `matching`, command policy | OrderBook-rs evidence. Each exposed order type has canonical events and regression tests. |
+| `SIM-MKT-001` | Maintain a private engine-owned book per listing and expose no mutable matcher handle. | `book` | ADR 0029; binary `0007`, `0015`-`0019`. Only engine transitions mutate a book. |
+| `SIM-MKT-002` | Support limit, market, IOC, FOK, GTD, DAY, post-only and iceberg now; add replace, stops and other types incrementally. | `book`, command policy | ADR 0029. Each order type needs Bunting semantics, book tests and oracle coverage where one exists before entering the schema. |
 | `SIM-MKT-003` | Preserve partial fills, price-time priority, ownership, STP, fees, expiry, mass cancel, kill/halt and typed rejection behavior. | `matching`, lifecycle | Upstream evidence; RIT priority details remain unresolved. Snapshot/replay preserves order state exactly. |
 | `SIM-MKT-004` | Support single, scoped bulk and compatibility-expression cancellation without embedding an unbounded expression runtime. | command policy | Binary `0009`. Grammar and atomicity remain compatibility-gated. |
 | `SIM-MKT-005` | Publish bounded committed L1, aggregated/raw L2, trades, OHLC/history, time-and-sales, volume, metrics and impact views. | market-data projection | Binary `0015`-`0019`, `0047`, `0050`. Reset and gap recovery use committed sequence cursors. |
 | `SIM-MKT-006` | Keep participant-private live/open/historical order projections distinct from public market data. | private projection | Binary `0020`; official monitoring. Ownership and audience tests prevent leakage. |
-| `SIM-MKT-007` | Record logical millisecond/nanosecond time on commands and events without promising a continuously executing one-millisecond Worker loop. | clock, event envelope | Official millisecond reporting; Bunting deployment constraint. |
+| `SIM-MKT-007` | Record logical millisecond/nanosecond time on commands and events without promising a continuously executing one-millisecond loop. | clock, event envelope | Official millisecond reporting; Bunting deployment constraint. |
 
 ### Accounts, accounting and risk
 
@@ -166,18 +169,18 @@ The requirement IDs below supplement the binary-derived `RIT-FEATURE-*` ledger. 
 
 | ID | Requirement | Owner | Evidence and acceptance |
 |---|---|---|---|
-| `SIM-OPS-001` | Keep the Rust-owned `bunting.v1` procedure contract transport-neutral, with bounded browser fetch/stream handlers and direct in-process Worker calls. | API contract/Worker | ADR 0020. Transport never owns market authority. |
-| `SIM-OPS-002` | Keep FIX in a Worker Durable Object that initiates outbound TCP, owns bounded session recovery, and calls the application transaction in process. | `apps/bunting-worker`, `simfix-*` | ADR 0020. FIX sequence remains distinct from engine event sequence. |
-| `SIM-OPS-003` | Implement RIT REST, VBA and RTD/Excel compatibility only in external adapters that authenticate and call the browser/application contract. | clients/adapters | Binary `0048`-`0058`. Windows COM never enters the Worker graph. |
+| `SIM-OPS-001` | Keep the application service transport-neutral; expose it only through FIX and the certified Bunting Native Protocol. | application service, `bunting-server` | ADR 0031. Transport never owns market authority. |
+| `SIM-OPS-002` | Accept FIX in the venue process with bounded session recovery, calling the application service in process. | `apps/bunting-server`, `simfix-*` | ADR 0022/0023. FIX sequence remains distinct from engine event sequence. |
+| `SIM-OPS-003` | Implement RIT REST, VBA and RTD/Excel compatibility only in client-side adapters that authenticate with a participant certificate and use the Bunting Native Protocol. | clients/adapters over `bunting-client` | Binary `0048`-`0058`; ADR 0031. Windows COM never enters the server graph. |
 | `SIM-OPS-004` | Apply verified role/participant identity, per-participant API throttles and scenario availability without trusting caller-selected participant headers. | auth/gateway/run policy | Official anonymous/credentialed access; binary `0027`; ADR 0016. |
 | `SIM-OPS-005` | Publish authorized public, participant-private and administrator projections with committed sequence, reset, gap and slow-consumer behavior. | projections/streams | Official monitoring; ADR 0011/0016. Private news/account state cannot leak. |
-| `SIM-OPS-006` | Freeze iteration state and generate participant reports, transaction logs, P&L, time-and-sales, OTC activity and leaderboards from committed snapshots/events. | reporting app/package when implemented | Official reports. Heavy CSV/XLSX/Parquet work stays outside the Worker hot path. |
-| `SIM-OPS-007` | Store authoritative commands/events/versions in origin, immutable public snapshots in Workers Cache, and large scenario/report artifacts in R2 only when implemented. | persistence/platform | Existing ADRs plus Bunting-added R2 boundary. Cache/R2 never coordinate transactions. |
-| `SIM-OPS-008` | Snapshot all books, ledger, clock, schedules, tenders, news, facilities, scoring, agents, RNG and compatibility state; replay must reproduce one canonical state hash. | engine recovery | ADR 0018/0019. Native and Wasm golden hashes match. |
-| `SIM-OPS-009` | Support inactive/paused remote-practice runs by persistence and on-demand reconstruction; optional wakeup coordination cannot become market authority. | Worker/platform | Official 24/7 availability reconciled with Cloudflare execution. |
-| `SIM-OPS-010` | Generate browser clients from the Rust contract and build student/instructor web applications as separate consumers, not as engine packages. | generated client and web apps | Official student/instructor terminals; ADR 0020 browser boundary. |
+| `SIM-OPS-006` | Freeze iteration state and generate participant reports, transaction logs, P&L, time-and-sales, OTC activity and leaderboards from committed snapshots/events. | reporting app/package when implemented | Official reports. Heavy CSV/XLSX/Parquet work stays outside the venue hot path. |
+| `SIM-OPS-007` | Store authoritative inputs, events and versions in the origin journal with periodic checkpoints; publish immutable public artifacts to Cloudflare only after commit. | persistence/publication | ADR 0022, ADR 0028. Publication never coordinates transactions. |
+| `SIM-OPS-008` | Snapshot all books, ledger, clock, schedules, tenders, news, facilities, scoring, agents, RNG and admission state; replay must reproduce one canonical state hash. | engine recovery | ADR 0018/0019. Native and Wasm golden hashes match. |
+| `SIM-OPS-009` | Support inactive/paused remote-practice runs by persistence and on-demand reconstruction from checkpoint plus journal. | `bunting-server`, origin | Official 24/7 availability. |
+| `SIM-OPS-010` | Build student/instructor applications on `bunting-client` as separate consumers, not as engine packages. | `bunting-client`, app, TUI | Official student/instructor terminals; ADR 0031. |
 
-Cloudflare platform roles remain governed by the existing ADRs and the official [D1](https://developers.cloudflare.com/d1/), [R2](https://developers.cloudflare.com/r2/), [Queues](https://developers.cloudflare.com/queues/) and [Durable Objects](https://developers.cloudflare.com/durable-objects/) documentation. Naming a service here does not approve its use; each binding lands only with a reviewed implementation and recovery contract.
+Cloudflare's only role is read-only publication of immutable exports (ADR 0022). Naming a service here does not approve its use.
 
 ## Procedure families
 
@@ -196,7 +199,7 @@ admin.publishNews | updateRunParameter | setParticipantLimits | monitor
 reports.generate | status | get
 ```
 
-Procedure names are requirements, not current API claims. Wide integer values remain validated decimal strings at the browser boundary, mutation batching remains rejected, and every mutation carries command, correlation and expected-sequence data.
+Procedure names are requirements, not current API claims. Wide integer values remain validated decimal strings at protocol boundaries, mutation batching remains rejected, and every mutation carries command, correlation and expected-sequence data.
 
 ## Package and dependency policy
 
@@ -217,7 +220,7 @@ Every implemented slice adds deterministic and recovery tests proportional to it
 - identical scenario/engine/model/seed/commands produce identical events and state hash;
 - private data never appears in another audience’s stream;
 - full snapshot plus tail replay equals uninterrupted execution;
-- no production caller can reach OrderBook-rs except through `bunting-engine`;
+- no production manifest depends on OrderBook-rs, and no caller reaches a book except through `bunting-engine` commands;
 - native and `wasm32-unknown-unknown` checks pass.
 
 Implementation order and review boundaries are maintained in [`../plans/unified-bunting-engine-roadmap.md`](../plans/unified-bunting-engine-roadmap.md).
