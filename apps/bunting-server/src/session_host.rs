@@ -80,7 +80,8 @@ pub(crate) fn handle_fix_connection(
             Ok::<_, String>((
                 FixSession::try_new(session_config.clone())
                     .map_err(|error| format!("invalid FIX session config: {error:?}"))?,
-                FixApplicationState::new(ExecutionConfig::default()),
+                FixApplicationState::new(ExecutionConfig::default())
+                    .with_identity_epoch(new_identity_epoch()),
             ))
         },
         |snapshot| {
@@ -644,6 +645,18 @@ fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|error| format!("invalid FIX snapshot: {error}"))
+}
+
+/// A value unique to each newly created FIX application state in this
+/// process lifetime and across restarts: wall-clock nanoseconds at creation
+/// plus a process-wide counter. It only namespaces identifiers; it never
+/// orders or times market events.
+fn new_identity_epoch() -> u128 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    (nanos << 64) | u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 fn epoch_millis() -> u64 {

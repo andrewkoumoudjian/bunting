@@ -12,7 +12,7 @@ use bunting_market_events::{
     SimulationCommandRequest,
 };
 use bunting_market_types::{
-    CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId,
+    CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, OrderId, ParticipantId,
     PriceTicks, QuantityLots, RunId, SessionId,
 };
 use bunting_origin_store::OriginStore;
@@ -412,6 +412,9 @@ pub struct FixApplicationSnapshot {
     pub adapter: BuntingExecutionAdapter,
     #[serde(default)]
     pub client_order_ids: BTreeMap<LocalOrderId, ClientOrderId>,
+    /// Host-assigned identity epoch; see [`FixApplicationState::with_identity_epoch`].
+    #[serde(default)]
+    pub identity_epoch: u128,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -441,6 +444,7 @@ pub struct FixApplicationState {
     adapter: BuntingExecutionAdapter,
     next_intent_id: u128,
     client_order_ids: BTreeMap<LocalOrderId, ClientOrderId>,
+    identity_epoch: u128,
 }
 
 impl FixApplicationState {
@@ -451,7 +455,18 @@ impl FixApplicationState {
             adapter: BuntingExecutionAdapter::default(),
             next_intent_id: 1,
             client_order_ids: BTreeMap::new(),
+            identity_epoch: 0,
         }
+    }
+
+    /// Sets the identity epoch that namespaces this session's canonical
+    /// command and order IDs. The host assigns a value unique to each newly
+    /// created application state; a restored state keeps its persisted epoch,
+    /// so orders from earlier connections still map back to this session.
+    #[must_use]
+    pub const fn with_identity_epoch(mut self, identity_epoch: u128) -> Self {
+        self.identity_epoch = identity_epoch;
+        self
     }
 
     pub fn restore(snapshot: FixApplicationSnapshot) -> Result<Self, ApplicationError> {
@@ -463,6 +478,7 @@ impl FixApplicationState {
             adapter: snapshot.adapter,
             next_intent_id: snapshot.next_intent_id,
             client_order_ids: snapshot.client_order_ids,
+            identity_epoch: snapshot.identity_epoch,
         })
     }
 
@@ -474,6 +490,7 @@ impl FixApplicationState {
             execution: self.execution.snapshot(),
             adapter: self.adapter.clone(),
             client_order_ids: self.client_order_ids.clone(),
+            identity_epoch: self.identity_epoch,
         }
     }
 
@@ -538,6 +555,24 @@ impl FixApplicationState {
                         correlation_id: context.correlation_id,
                     },
                 )?;
+                let namespace =
+                    session_namespace(context.run_id, context.actor, self.identity_epoch);
+                command.command_id = bunting_market_types::CommandId::new(canonical_id(
+                    namespace,
+                    command.command_id.get(),
+                )?);
+                match &mut command.payload {
+                    CommandPayload::SubmitOrder(order)
+                    | CommandPayload::SubmitOrderAtListing { order, .. } => {
+                        order.order_id =
+                            OrderId::new(canonical_id(namespace, order.order_id.get())?);
+                    }
+                    CommandPayload::CancelOrder(cancel) => {
+                        cancel.order_id =
+                            OrderId::new(canonical_id(namespace, cancel.order_id.get())?);
+                    }
+                    CommandPayload::ActivateKillSwitch => {}
+                }
                 if let CommandPayload::SubmitOrder(order) = &command.payload {
                     let listing_key = simfix_mapping::fix_order_listing(message)?
                         .ok_or(ApplicationError::UnknownListing)?;
@@ -560,7 +595,15 @@ impl FixApplicationState {
         actor: ParticipantId,
         events: &[bunting_market_events::EventEnvelope],
     ) -> Result<Vec<FixMessage>, ApplicationError> {
-        let mut reports = self.adapter.normalize_committed_events(actor, events)?;
+        let Some(first) = events.first() else {
+            return Ok(Vec::new());
+        };
+        let namespace = session_namespace(first.run_id, actor, self.identity_epoch);
+        let localized: Vec<_> = events
+            .iter()
+            .map(|event| localize_event(namespace, event))
+            .collect();
+        let mut reports = self.adapter.normalize_committed_events(actor, &localized)?;
         let mut messages = Vec::with_capacity(reports.len());
         for report in &mut reports {
             if report.client_order_id.is_none() {
@@ -574,6 +617,68 @@ impl FixApplicationState {
         }
         Ok(messages)
     }
+}
+
+/// 64-bit namespace for one participant session's canonical IDs.
+fn session_namespace(run_id: RunId, actor: ParticipantId, identity_epoch: u128) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"bunting.fix-session-namespace.v1");
+    hasher.update(run_id.get().to_be_bytes());
+    hasher.update(actor.get().to_be_bytes());
+    hasher.update(identity_epoch.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes).max(1)
+}
+
+/// Places a session-local ID in its session's namespace. Local IDs are
+/// bounded counters; anything wider is rejected rather than truncated.
+fn canonical_id(namespace: u64, local: u128) -> Result<u128, ApplicationError> {
+    if local == 0 || local > u128::from(u64::MAX) {
+        return Err(ApplicationError::InvalidIdentity);
+    }
+    Ok((u128::from(namespace) << 64) | local)
+}
+
+/// Maps a canonical order ID back to this session's local ID. IDs from other
+/// namespaces stay at or above 2^64, so they can never equal a local ID.
+const fn local_id(namespace: u64, canonical: u128) -> u128 {
+    let high = canonical >> 64;
+    if high == namespace as u128 {
+        canonical & (u64::MAX as u128)
+    } else if high == 0 {
+        canonical | (1 << 127)
+    } else {
+        canonical
+    }
+}
+
+fn localize_event(
+    namespace: u64,
+    event: &bunting_market_events::EventEnvelope,
+) -> bunting_market_events::EventEnvelope {
+    let local = |id: OrderId| OrderId::new(local_id(namespace, id.get()));
+    let mut event = event.clone();
+    match &mut event.payload {
+        EventPayload::OrderReceived { order, .. } => order.order_id = local(order.order_id),
+        EventPayload::OrderAccepted { order_id }
+        | EventPayload::OrderRested { order_id, .. }
+        | EventPayload::OrderReduced { order_id, .. }
+        | EventPayload::OrderCompleted { order_id }
+        | EventPayload::OrderCanceled { order_id, .. } => *order_id = local(*order_id),
+        EventPayload::OrderRejected { order_id, .. } => *order_id = order_id.map(local),
+        EventPayload::TradeExecuted {
+            maker_order_id,
+            taker_order_id,
+            ..
+        } => {
+            *maker_order_id = local(*maker_order_id);
+            *taker_order_id = local(*taker_order_id);
+        }
+        _ => {}
+    }
+    event
 }
 
 #[must_use]
@@ -894,6 +999,35 @@ mod tests {
         assert_ne!(
             namespace_command_id(run, actor, first, 1).get(),
             namespace_order_id(run, actor, first, 1).get()
+        );
+    }
+
+    #[test]
+    fn fix_session_ids_are_disjoint_and_map_back_only_to_their_session() {
+        let run = RunId::new(1);
+        let (one, two) = (ParticipantId::new(1), ParticipantId::new(2));
+        let first = session_namespace(run, one, 7);
+        let other_participant = session_namespace(run, two, 7);
+        let new_epoch = session_namespace(run, one, 8);
+        assert_ne!(first, other_participant);
+        assert_ne!(first, new_epoch);
+        assert_eq!(first, session_namespace(run, one, 7));
+
+        let mine = canonical_id(first, 1).unwrap();
+        let theirs = canonical_id(other_participant, 1).unwrap();
+        assert_ne!(mine, theirs);
+        assert!(mine > u128::from(u64::MAX));
+        assert_eq!(local_id(first, mine), 1);
+        // Foreign IDs, namespaced or not, never equal a local ID.
+        assert!(local_id(first, theirs) > u128::from(u64::MAX));
+        assert!(local_id(first, 1) > u128::from(u64::MAX));
+        assert_eq!(
+            canonical_id(first, 0),
+            Err(ApplicationError::InvalidIdentity)
+        );
+        assert_eq!(
+            canonical_id(first, u128::from(u64::MAX) + 1),
+            Err(ApplicationError::InvalidIdentity)
         );
     }
 }

@@ -90,13 +90,6 @@ fn expected_command() -> Command {
 #[test]
 fn fix_mapped_and_canonical_commands_commit_identical_authoritative_state()
 -> Result<(), Box<dyn std::error::Error>> {
-    let canonical_origin = InMemoryOrigin::new();
-    canonical_origin.insert_run(initial_run()).unwrap();
-    let command = expected_command();
-    ApplicationService::new(&canonical_origin)
-        .execute(&actor(), &command)
-        .unwrap();
-
     let native_origin = InMemoryOrigin::new();
     native_origin.insert_run(initial_run()).unwrap();
     let mut fix = FixApplicationState::new(ExecutionConfig::default());
@@ -127,7 +120,30 @@ fn fix_mapped_and_canonical_commands_commit_identical_authoritative_state()
     let FixApplicationRequest::Command(fix_command) = mapped else {
         return Err("FIX command expected".into());
     };
+    // FIX-local IDs (command 2, order 1) are namespaced per participant
+    // session so two sessions can never collide; everything else is identical.
+    let mut command = expected_command();
+    let CommandPayload::SubmitOrderAtListing { order, .. } = &mut command.payload else {
+        return Err("listing order expected".into());
+    };
+    let CommandPayload::SubmitOrderAtListing {
+        order: fix_order, ..
+    } = &fix_command.payload
+    else {
+        return Err("FIX listing order expected".into());
+    };
+    assert!(fix_command.command_id.get() > u128::from(u64::MAX));
+    assert_eq!(fix_command.command_id.get() & u128::from(u64::MAX), 2);
+    assert!(fix_order.order_id.get() > u128::from(u64::MAX));
+    assert_eq!(fix_order.order_id.get() & u128::from(u64::MAX), 1);
+    order.order_id = fix_order.order_id;
+    command.command_id = fix_command.command_id;
     assert_eq!(fix_command, command);
+    let canonical_origin = InMemoryOrigin::new();
+    canonical_origin.insert_run(initial_run()).unwrap();
+    ApplicationService::new(&canonical_origin)
+        .execute(&actor(), &command)
+        .unwrap();
     let native_execution = ApplicationService::new(&native_origin)
         .execute(&actor(), &fix_command)
         .unwrap();
