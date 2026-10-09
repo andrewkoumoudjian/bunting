@@ -222,3 +222,153 @@ listed as open in the implementation log's Slice 10 follow-ups.
   them in `bunting-server` or retire them; keeping an unserved contract
   invites drift.
 
+## 6. Proposed next steps (Bunting-added)
+
+Ordered by dependency and by how much each unblocks. Sizes are rough
+single-engineer estimates. Each step names its acceptance test so it can land
+as one reviewable PR in the style of the existing slices.
+
+### Step 0 — Quick wins (≤ 1 day total)
+
+| Change | Where | Why |
+|---|---|---|
+| Rewrite `docs/architecture.md` to the code as it is: owned book (ADR 0029), single WASI venue (ADR 0022), WAL origin, no Worker | `docs/architecture.md` | G10: a *binding* document currently instructs agents to use OrderBook-rs |
+| Fix README engine model, current architecture, workspace list, and replace the `orderbook-rs v0.10.3` check with the `AGENTS.md` absence check | `README.md` | G10 |
+| Change ADR 0028's "Decision (proposed, conditional on acceptance)" heading | `docs/adr/0028-…` | G10 |
+| Index idempotency records by `(RunId, CommandId)` | `apps/bunting-server/src/storage.rs` | G6 |
+| Replace the timing-dependent writer test with one that drives arrivals through an injected clock | `writer.rs` | G4 flake |
+| Decide G11: host the browser contract in `bunting-server` or delete it | `packages/bunting-api-contract`, `browser-wire`, `schemas/browser` | Unserved contract drifts |
+
+### Step 1 — Makers get their fills; engine owns live-order limits (2–4 days)
+
+Closes G1 and G2; the minimum for a usable competition venue.
+
+- Add a per-participant live-order count to `RunState` (maintained where
+  `ownership` changes: rest, fill, cancel, expiry, kill switch) and a
+  `max_live_orders` limit to `RiskLimits` admission. Delete the
+  connection-local `open_orders` set.
+- Add a bounded committed-event distributor in `bunting-server`: after a
+  successful commit the writer pushes `(event_sequence, events)` into
+  per-participant queues; each session thread drains its participant's queue
+  through the existing `committed_messages` mapping. Overflow disconnects with
+  a recovery cursor (ADR 0011 rule), never unbounded buffering.
+- **Acceptance:** in `apps/bunting-server/tests/path_equivalence.rs`, (a) a
+  maker resting on connection A receives an `ExecutionReport` when connection B
+  takes it; (b) a built-in agent fill against a human order reaches the human;
+  (c) 300 submit-and-fill cycles on one connection never trip the order limit;
+  (d) a reconnect cannot exceed the limit.
+
+### Step 2 — Measurement baseline (1–2 days)
+
+Turn `state_cost_probe` into a small bench binary covering the roadmap's
+workload table (passive build-up, mixed add/cancel/match, deep sweep) at
+in-process, in-process + journal, and end-to-end FIX layers. Record results in
+the implementation log. No thresholds yet; the point is a before/after for
+Step 3, and a native-vs-WASIX hash/latency comparison on the same frozen trace
+(ADR 0028 item 8).
+
+### Step 3 — Writer-owned live state and command-sourced journal (1–2 weeks)
+
+Closes G5–G7; finishes roadmap Slice 2. Section 4 shows this is where the
+per-order cost is.
+
+- One writer owns the live `RunState`. Commands transition it in place; no
+  `load_run` clone, no `committed_state` clone. This needs an engine entry
+  point such as `transition_in_place(&mut self, ..)` with a *no mutation on
+  error* guarantee. Today `transition_owned(self, ..)` consumes the state and
+  an `EngineError` drops it, so either validate-then-apply or an undo record
+  is needed; the guarantee must become an API contract with a test.
+  *Unresolved:* which of the two is cheaper for mass cancel and deep sweeps.
+- Journal record v2 = `{command or simulation command, admission metadata,
+  resulting events, event-hash chain}` — kilobytes, not megabytes. Keep a full
+  `state_hash` only at checkpoints (it costs 23 ms at 10k orders).
+- On append/fsync failure keep the existing poison-and-restart rule; restart
+  = checkpoint + **re-execute** journaled commands and compare events. Every
+  restart becomes a determinism check.
+- Checkpoints hold state only; events and command records go to append-only
+  segments. Replace store-wide `max_commands` with per-run, disk-backed bounds.
+- **Acceptance:** probe overhead becomes O(events per command) rather than
+  O(state); kill/restart before and after append, during checkpoint, and with
+  a torn tail all recover a committed prefix with identical hashes; a 1M-command
+  run does not hit a capacity error.
+
+### Step 4 — Full archive and recoverable agents (3–5 days, after Step 3)
+
+Closes G3 and G8; ADR 0028 item 5.
+
+- Archive v2 = genesis snapshot + the Step 3 journal. The replayer re-executes
+  ordinary, simulation and agent-issued commands and verifies events, final
+  hash and scores.
+- Recommendation: record agent-issued **commands** as ordinary inputs (replay
+  needs no agent code, which keeps ADR 0014's participant boundary) and
+  persist `RuntimeSnapshot` alongside each checkpoint so a restart resumes the
+  same RNG and wake schedule. Route agent commands through the same admission
+  path as FIX.
+- **Acceptance:** `tests/goldens/competition-full-run` replays from genesis
+  and from a mid-run checkpoint, including orders; a restart mid-run ends with
+  the same final hash as an uninterrupted run.
+
+### Step 5 — Admission policy as a recorded engine input (ADR + 3–5 days)
+
+Closes G4. First an owner decision (section 7, Q1), then either:
+
+- **Sealed interval batches:** the server collects arrivals for interval *k*,
+  seals them, and the writer applies `AdmitBatch { interval_id, ordering,
+  commands }` as one recorded input. Ordering is arrival FIFO or a seeded
+  permutation, written into the archive. No per-caller sleep.
+- **Continuous FIFO:** drop the interval gate, record arrival sequence, and
+  supersede ADR 0024 explicitly.
+
+### Step 6 — Calendar and multi-day (1–2 weeks)
+
+Closes G9; roadmap Slice 4. Scenario v3 adds a per-venue calendar in logical
+time (sessions, phases, holidays), DAY expiry at close, end-of-day marks and
+overnight carry. FIX admissions get logical time from the run clock at
+admission rather than epoch milliseconds, so one clock drives GTD/DAY.
+
+### Step 7 onward
+
+Calibrated agents (Slice 5, using the Oct 8 research notes), the five-day
+integrated acceptance run (Slice 6), then products: RIT REST adapter, TUI on
+the event feed, Cloudflare publisher reading archives (Slice 7).
+
+## 7. Brainstorm and open questions
+
+### Questions for the owner (they change the order above)
+
+1. **What does the competition promise about fairness?** Arrival-FIFO,
+   sealed-interval batches with a seeded permutation, or a frequent batch
+   auction. This decides Step 5 and whether ADR 0024 is clarified or replaced.
+2. **What is the next real deadline?** If a live QUARCC event comes first,
+   do Step 1 before anything else and cap run length; if classroom (RIT-class)
+   use comes first, Step 6 (sessions/DAY orders) rises.
+3. **Is Wasmer/WASIX still the primary host?** The Tokio acceptor, `flock`
+   writer lease and WASIX installer friction all add cost. Step 2's parity run
+   gives the data for a host ADR either way.
+4. **Browser trading UI: who hosts it?** Cloudflare is read-only by ADR 0022,
+   so an interactive browser client implies an HTTP/SSE adapter inside
+   `bunting-server`. If none is planned, retire the browser contract (G11).
+5. **NBC compatibility scope for the next quarter:** keep, or freeze until the
+   core gates pass?
+
+### Engineering ideas worth a spike
+
+- **Deterministic simulation testing of the venue.** Put clock, sockets and
+  disk behind traits so a seeded in-process harness can drive many FIX
+  sessions, slow consumers, crashes and torn writes reproducibly (the
+  FoundationDB/TigerBeetle approach). It fits the project's determinism goal
+  better than more wall-clock integration tests.
+- **Property tests for ledger conservation** over random command streams on
+  the owned book: cash + fees conserve, reservations release exactly once,
+  rejected commands change nothing. The matching oracle already exists; this
+  adds the economic oracle.
+- **`cargo fuzz` targets** for `simfix-wire` framing and scenario JSON
+  loading — the two untrusted-input parsers.
+- **Hot/cold state split.** Trade tapes, bars, news and score reports could be
+  event-derived projections outside the authoritative state, shrinking
+  checkpoints and the hashed state.
+- **Read snapshots for queries.** Market-data and account requests now
+  `recover()` (clone) the run per request (`session_host.rs:198`). After Step
+  3, publish an immutable `Arc` view per commit for readers.
+- **Event-hash chain** (hash(prev, event bytes)) as a cheap per-commit
+  integrity proof, with the full state hash at checkpoints only.
