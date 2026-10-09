@@ -1,6 +1,6 @@
 use crate::config::{FixConfig, StorageKind, TlsConfig};
+use crate::distributor::PublishingOrigin;
 use crate::session_host::handle_fix_connection;
-use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -14,7 +14,7 @@ pub(crate) fn run(
     config: &FixConfig,
     storage_kind: StorageKind,
     storage_path: Option<&str>,
-    origin: &Arc<NativeOrigin>,
+    origin: &Arc<PublishingOrigin>,
     writer: &Arc<AuthoritativeWriter>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)

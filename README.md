@@ -100,12 +100,14 @@ Implemented through `1d857d1` (see
 [`docs/implementation-log/`](docs/implementation-log/2026-10-07-core-slice-0.md)):
 single ledger, explicit listing identity and venue market data, owned order
 book, append-only native origin journal, removal of the Cloudflare command
-Worker.
+Worker, removal of NBC compatibility, and (slice 12) fills delivered to every
+affected participant, engine-owned live-order limits and per-session FIX
+identity namespacing.
 
 Current priorities and their order are in the
 [October 9 exploration note §8](docs/research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan):
-deliver fills to every affected participant, move per-participant limits into
-the engine, replace full-state per-command persistence with a command journal,
+a measurement baseline, replacing full-state per-command persistence with a
+command journal,
 latency-modeled continuous admission
 ([ADR 0030](docs/adr/0030-proposed-latency-modeled-continuous-admission.md)),
 full archive replay, multi-day calendar, and the certified native protocol and

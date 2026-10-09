@@ -251,6 +251,10 @@ as one reviewable PR in the style of the existing slices.
 
 ### Step 1 — Makers get their fills; engine owns live-order limits (2–4 days)
 
+> **Done in slice 12** (2026-10-09); see the implementation log. Test (b)
+> (agent fill reaches a human) is covered structurally — agents commit through
+> the same publishing origin — not by its own end-to-end test.
+
 Closes G1 and G2; the minimum for a usable competition venue.
 
 - Add a per-participant live-order count to `RunState` (maintained where
@@ -433,7 +437,7 @@ host neutrality regardless of what the server ships as.
 |---|---|---|
 | 1 | **Step 0** quick wins + owner review of ADRs 0030–0032 | Docs currently mislead agents; decisions unblock everything else |
 | 2 | ~~**NBC removal**~~ — **done in slice 11** (ADR 0032) | Shrinks the engine and schema before the Step 3 refactor |
-| 3 | **Step 1** fills reach makers; engine-owned live-order limit | Competition is unusable for passive strategies without it |
+| 3 | ~~**Step 1**~~ — **done in slice 12** (plus a cross-session ID collision fix it uncovered) | Competition is unusable for passive strategies without it |
 | 4 | **Step 2** measurement baseline + native-vs-WASIX hash/latency parity | Feeds the host ADR and proves Step 3 |
 | 5 | **Step 3** writer-owned live state + command journal | ~1000× gap between matching and per-command overhead; needed by both products |
 | 6 | **Latency-modeled sequencer** (ADR 0030): periodic RTT probes in `simfix-session`, windowed-min estimator, `(release, arrival)` queue, outbound hold, scenario latency table | Replaces the interval writer (G4); needs Step 3's journal to record admission inputs |

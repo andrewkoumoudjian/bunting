@@ -20,17 +20,24 @@
    events, policy values, and checksums. Live UI state is never settlement
    evidence.
 
-## Known limitations (verified 2026-10-09 at `1d857d1`)
+## Configuration change (slice 12)
+
+`fix.max_open_orders` was removed from the server configuration; a config that
+still sets it fails at startup with an explanation. Set
+`participants.<id>.limits.max_live_orders` in the scenario instead (the
+checked-in local scenario uses 256 for each human participant). Omitting it
+leaves that participant without a per-participant cap.
+
+## Known limitations (verified 2026-10-09; updated after slice 12)
 
 Plan events around these until the fixes listed in
 `docs/research/2026-10-09-exploration-and-next-steps.md` §8 land:
 
-- **Passive fills are not reported to the resting participant.** Execution
-  reports go only to the connection that sent the aggressing order. Teams
-  must poll account/discovery to learn about fills on their resting orders.
-- **`max_open_orders` counts every accepted order on a connection** and is
-  released only by an explicit cancel, not by fills or expiry. Active teams
-  can be falsely rejected; set the limit generously.
+- **Reports missed while disconnected are not replayed.** Fills are delivered
+  to every connected participant, but a team that is offline when its order
+  fills (or that falls more than 4,096 committed batches behind and is
+  disconnected) must request account/discovery after reconnecting to
+  resynchronize.
 - **The archive does not contain ordinary orders.** `bunting replay`/`judge`
   verify simulation/control commands only; they cannot recompute fills or
   P&L from orders. Keep the origin journal and event files for disputes.

@@ -53,7 +53,11 @@ pub struct FixConfig {
     pub max_connections: usize,
     pub matching_interval_ms: u64,
     pub max_messages_per_interval: usize,
-    pub max_open_orders: usize,
+    /// Removed: the per-participant live-order cap is the scenario's
+    /// `max_live_orders` risk limit, enforced by the engine. Present only so a
+    /// stale configuration fails with an explanation instead of being ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_orders: Option<usize>,
     pub max_interval_queue: usize,
     pub max_message_bytes: usize,
     pub max_journal_messages: usize,
@@ -161,7 +165,7 @@ impl ServerConfig {
                 max_connections: 2,
                 matching_interval_ms: 100,
                 max_messages_per_interval: 64,
-                max_open_orders: 256,
+                max_open_orders: None,
                 max_interval_queue: 256,
                 max_message_bytes: 16_384,
                 max_journal_messages: 4_096,
@@ -378,11 +382,16 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
     if fix.run_id == 0 {
         return Err(ConfigError("fix.run_id must be non-zero".to_owned()));
     }
+    if fix.max_open_orders.is_some() {
+        return Err(ConfigError(
+            "fix.max_open_orders was removed: set the per-participant `max_live_orders` risk limit in the scenario instead; the engine enforces it for every connection"
+                .to_owned(),
+        ));
+    }
     if fix.max_connections == 0
         || fix.max_connections > fix.roster.len()
         || !(1..=60_000).contains(&fix.matching_interval_ms)
         || fix.max_messages_per_interval == 0
-        || fix.max_open_orders == 0
         || fix.max_interval_queue == 0
         || !(256..=1_048_576).contains(&fix.max_message_bytes)
         || fix.max_journal_messages == 0
@@ -390,7 +399,7 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
         || fix.heartbeat_seconds == 0
     {
         return Err(ConfigError(
-            "FIX bounds are invalid; max_connections must fit the roster, matching_interval_ms must be 1..=60000, and message, order, interval queue, wire, heartbeat, journal and pending limits must be positive"
+            "FIX bounds are invalid; max_connections must fit the roster, matching_interval_ms must be 1..=60000, and message, interval queue, wire, heartbeat, journal and pending limits must be positive"
                 .to_owned(),
         ));
     }
@@ -421,7 +430,7 @@ mod tests {
             max_connections: 1,
             matching_interval_ms: 100,
             max_messages_per_interval: 64,
-            max_open_orders: 256,
+            max_open_orders: None,
             max_interval_queue: 256,
             max_message_bytes: 16_384,
             max_journal_messages: 1_024,
@@ -444,6 +453,19 @@ mod tests {
                 .map_err(|error| ConfigError(format!("profile JSON invalid: {error}")))?;
             config.validate()?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn removed_max_open_orders_fails_with_its_replacement() -> Result<(), ConfigError> {
+        let mut config = ServerConfig::local_default();
+        if let Some(fix) = config.fix.as_mut() {
+            fix.max_open_orders = Some(256);
+        }
+        let Err(error) = config.validate() else {
+            return Err(ConfigError("stale max_open_orders was accepted".to_owned()));
+        };
+        assert!(error.0.contains("max_live_orders"));
         Ok(())
     }
 

@@ -6,6 +6,7 @@ mod acceptor;
 mod admin;
 mod commit_journal;
 pub mod config;
+mod distributor;
 pub mod runtime;
 mod scenario;
 mod session_host;

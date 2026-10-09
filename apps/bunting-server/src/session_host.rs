@@ -1,5 +1,5 @@
 use crate::config::{FixConfig, RosterEntry};
-use crate::storage::NativeOrigin;
+use crate::distributor::{PublishingOrigin, Subscription};
 use crate::writer::AuthoritativeWriter;
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
@@ -11,9 +11,7 @@ use bunting_application::{
     project_market,
 };
 use bunting_engine::RunState;
-use bunting_market_events::{
-    CommandPayload, SimulationCommand, SimulationCommandRequest, TenderDecision,
-};
+use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
 use bunting_market_types::{
     CommandId, CorrelationId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots, RunId,
     TenderId,
@@ -27,7 +25,6 @@ use simfix_mapping::{
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
-use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -48,7 +45,7 @@ struct NativeFixSnapshot {
 pub(crate) fn handle_fix_connection(
     mut stream: TcpStream,
     config: &FixConfig,
-    origin: &NativeOrigin,
+    origin: &PublishingOrigin,
     writer: &AuthoritativeWriter,
     session_path: Option<&Path>,
 ) -> Result<(), String> {
@@ -127,11 +124,17 @@ pub(crate) fn handle_fix_connection(
     })
     .map_err(|error| format!("invalid configured actor: {error}"))?;
     let service = ApplicationService::new(origin);
+    // Subscribe before handling any message so no committed batch for this
+    // participant can fall between the subscription and the first command.
+    let subscription = origin.distributor().subscribe()?;
+    let participant = ParticipantId::new(credential.participant_id);
+    stream
+        .set_read_timeout(Some(DELIVERY_POLL))
+        .map_err(|error| format!("cannot configure FIX delivery poll: {error}"))?;
     let mut buffer = vec![0; config.max_message_bytes.min(16_384)];
     let mut interval_started = Instant::now();
     let interval = Duration::from_millis(config.matching_interval_ms);
     let mut interval_messages = 0_usize;
-    let mut open_orders = BTreeSet::new();
     loop {
         let count = match stream.read(&mut buffer) {
             Ok(0) => return Ok(()),
@@ -151,6 +154,14 @@ pub(crate) fn handle_fix_connection(
                     session_path,
                     &session,
                     &application,
+                )?;
+                deliver_committed(
+                    &subscription,
+                    participant,
+                    &mut application,
+                    &mut session,
+                    &mut stream,
+                    session_path,
                 )?;
                 continue;
             }
@@ -212,40 +223,14 @@ pub(crate) fn handle_fix_connection(
                     },
                 );
                 let outbound = match request {
+                    // Execution reports for every affected participant, this
+                    // one included, arrive through the committed-event
+                    // distributor; per-participant limits are engine risk.
                     Ok(FixApplicationRequest::Command(command)) => {
-                        if matches!(
-                            command.payload,
-                            CommandPayload::SubmitOrder(_)
-                                | CommandPayload::SubmitOrderAtListing { .. }
-                        ) && open_orders.len() >= config.max_open_orders
-                        {
-                            vec![business_reject(
-                                &message.msg_type,
-                                &format!("max_open_orders limit {}", config.max_open_orders),
-                            )]
-                        } else {
-                            let executed = service
-                                .execute(&actor, &command)
-                                .map_err(|error| format!("application command failed: {error}"))?;
-                            if executed.result.accepted {
-                                match &command.payload {
-                                    CommandPayload::SubmitOrder(order)
-                                    | CommandPayload::SubmitOrderAtListing { order, .. } => {
-                                        open_orders.insert(order.order_id);
-                                    }
-                                    CommandPayload::CancelOrder(cancel) => {
-                                        open_orders.remove(&cancel.order_id);
-                                    }
-                                    CommandPayload::ActivateKillSwitch => {}
-                                }
-                            }
-                            application
-                                .committed_messages(
-                                    ParticipantId::new(credential.participant_id),
-                                    &executed.events,
-                                )
-                                .map_err(|error| format!("FIX report mapping failed: {error}"))?
-                        }
+                        service
+                            .execute(&actor, &command)
+                            .map_err(|error| format!("application command failed: {error}"))?;
+                        Vec::new()
                     }
                     Ok(FixApplicationRequest::MarketData {
                         request_id,
@@ -277,8 +262,53 @@ pub(crate) fn handle_fix_connection(
                 session_path,
                 &application,
             )?;
+            deliver_committed(
+                &subscription,
+                participant,
+                &mut application,
+                &mut session,
+                &mut stream,
+                session_path,
+            )?;
         }
     }
+}
+
+/// A value unique to each newly created FIX application state in this
+/// process lifetime and across restarts: wall-clock nanoseconds at creation
+/// plus a process-wide counter. It only namespaces identifiers; it never
+/// orders or times market events.
+fn new_identity_epoch() -> u128 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    (nanos << 64) | u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// How long a session waits for inbound bytes before delivering committed
+/// reports and heartbeats; bounds the extra latency of an unsolicited fill.
+const DELIVERY_POLL: Duration = Duration::from_millis(20);
+
+/// Maps every queued committed batch to this participant's reports and sends
+/// them in commit order. Batches about other participants map to nothing.
+fn deliver_committed(
+    subscription: &Subscription<'_>,
+    participant: ParticipantId,
+    application: &mut FixApplicationState,
+    session: &mut FixSession,
+    stream: &mut TcpStream,
+    session_path: Option<&Path>,
+) -> Result<(), String> {
+    for batch in subscription.drain()? {
+        let messages = application
+            .committed_messages(participant, &batch)
+            .map_err(|error| format!("FIX report mapping failed: {error}"))?;
+        if !messages.is_empty() {
+            send_messages(session, stream, messages, session_path, application)?;
+        }
+    }
+    Ok(())
 }
 
 #[expect(
@@ -645,18 +675,6 @@ fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
     serde_json::from_slice(&bytes)
         .map(Some)
         .map_err(|error| format!("invalid FIX snapshot: {error}"))
-}
-
-/// A value unique to each newly created FIX application state in this
-/// process lifetime and across restarts: wall-clock nanoseconds at creation
-/// plus a process-wide counter. It only namespaces identifiers; it never
-/// orders or times market events.
-fn new_identity_epoch() -> u128 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    (nanos << 64) | u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 fn epoch_millis() -> u64 {

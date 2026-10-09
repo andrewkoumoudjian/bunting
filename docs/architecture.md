@@ -59,7 +59,8 @@ FIX client (contestant engine, bunting TUI)
    │  TCP; TLS only via a trusted terminating proxy
    ▼
 bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
-   ├─ FIX acceptor: one thread per session (simfix-wire/session/mapping)
+   ├─ FIX acceptor: one thread per session (simfix-wire/session/mapping),
+   │   each subscribed to the committed-event distributor (20 ms delivery poll)
    ├─ admin HTTP: /health, /admin/runs/<id>
    ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
    ├─ AuthoritativeWriter: sleep to 100 ms boundary, then arrival-ticket FIFO (ADR 0024)
@@ -137,7 +138,8 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 ### Current
 
 1. Session parses and bounds the FIX message; identity comes from configured
-   credentials.
+   credentials. Session-local command and order IDs are namespaced per
+   participant session (slice 12) before they become canonical IDs.
 2. `AuthoritativeWriter::execute_interval` waits for the interval boundary and
    arrival turn.
 3. Application recovers the run (clone), maps the message to a canonical
@@ -147,23 +149,25 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
    candidate `RunState`.
 5. Origin validates and commits (File: append + fsync journal frame, then apply
    to memory; checkpoint every 128 commands).
-6. Only the requesting session receives execution reports.
+6. `PublishingOrigin` publishes the committed events to the bounded
+   committed-event distributor; every connected session maps the batch to its
+   own participant's execution reports (slice 12), so resting makers receive
+   unsolicited fills. Per-participant live-order caps are engine risk
+   (`RiskLimits.max_live_orders`).
 
 Measured cost (2026-10-09 note §4): the transition is 6–27 µs; clones and
 full-state journaling cost 0.5–116 ms per command at 1k–100k resting orders.
 
-### Target (Steps 1, 3, 5 of the 2026-10-09 plan)
+### Target (Steps 3 and 5 of the 2026-10-09 plan; Step 1 landed in slice 12)
 
 - The writer owns the live `RunState`; transitions apply in place with a
   no-mutation-on-error contract; no per-command clones.
 - Journal records hold the input, admission metadata, resulting events and an
   event-hash chain; full state only in checkpoints. Recovery re-executes
   journaled inputs and compares events.
-- A committed-event distributor delivers private reports to every affected
-  participant (makers included) and public data per listing, bounded, with
-  resume cursors.
-- Per-participant live-order limits are enforced by engine risk admission, not
-  session state.
+- The distributor gains public per-listing market-data streams and resume
+  cursors so reports missed while disconnected are replayed (today they are
+  not).
 
 ## 7. Admission and fairness
 

@@ -1,5 +1,5 @@
 use crate::config::{DeploymentProfile, ScenarioRuntimeConfig, ServerConfig};
-use crate::storage::NativeOrigin;
+use crate::distributor::PublishingOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_application::{ApplicationService, VerifiedActor};
 use bunting_engine::{RunState, ScenarioDefinition};
@@ -32,7 +32,7 @@ pub(crate) fn bootstrap(
 }
 
 struct Host<'a> {
-    origin: &'a NativeOrigin,
+    origin: &'a PublishingOrigin,
 }
 
 impl RuntimeHost for Host<'_> {
@@ -56,7 +56,7 @@ impl RuntimeHost for Host<'_> {
 
 pub(crate) fn run(
     config: &ScenarioRuntimeConfig,
-    origin: &NativeOrigin,
+    origin: &PublishingOrigin,
     writer: &AuthoritativeWriter,
 ) -> Result<(), String> {
     let mut runtime = DeterministicRuntime::new(config.scheduler.clone())

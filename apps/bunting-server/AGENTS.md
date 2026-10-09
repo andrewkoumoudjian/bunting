@@ -11,10 +11,12 @@ in packages. Bound every connection, request, queue, journal and recovery file.
 - Participant interfaces are FIX and the Bunting Native Protocol only
   (ADR 0031, target). Do not add other command surfaces. TLS is moving
   in-process with mutual authentication; certificates map to actor identity.
-- Do not keep authority in session state. The connection-local `open_orders`
-  set and requester-only report delivery in `session_host.rs` are known
-  defects: limits belong to engine risk admission and reports to a committed
-  event distributor that reaches every affected participant.
+- Do not keep authority in session state. Per-participant limits are engine
+  risk admission; reports reach every affected participant through
+  `distributor.rs`, which publishes after each durable commit. Every mutating
+  path must commit through `PublishingOrigin` under the authoritative writer so
+  subscribers see batches in commit order; never publish before commit or
+  send reports inline from a command path.
 - `writer.rs` implements ADR 0024 intervals (current). The target is the
   ADR 0030 latency-modeled sequencer; do not build new behavior on the
   sleep-to-boundary writer, and route built-in agents through the same

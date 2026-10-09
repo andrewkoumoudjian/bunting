@@ -31,7 +31,8 @@
       "limits": {
         "max_order_quantity": 100000,
         "max_open_order_quantity": 1000000,
-        "max_absolute_position": 1000000
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
       },
       "initial_cash": {
         "1": 1000000000
@@ -44,7 +45,8 @@
       "limits": {
         "max_order_quantity": 100000,
         "max_open_order_quantity": 1000000,
-        "max_absolute_position": 1000000
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
       },
       "initial_cash": {
         "1": 1000000000

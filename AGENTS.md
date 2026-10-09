@@ -96,7 +96,8 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 
 Do not extend these patterns; each is scheduled for replacement (see the exploration note §5–§8):
 
-- **Adapter-held authority.** `session_host.rs` keeps a connection-local `open_orders` set and sends reports only to the requesting connection. Per-participant limits and report delivery belong to the engine and a committed-event distributor.
+- **Adapter-held authority** (fixed in slice 12; do not reintroduce). Per-participant limits are engine risk admission (`RiskLimits.max_live_orders`), and reports reach participants only through the committed-event distributor (`apps/bunting-server/src/distributor.rs`). Never keep limits, order sets or report routing in session state.
+- **Transport-local identities.** Session-local counters (QUARCC action/order IDs, FIX ClOrdID-derived IDs) are not canonical IDs. Every adapter must namespace them per participant session before they reach the engine (`bunting-application` does this for FIX since slice 12); two sessions must never be able to produce the same `CommandId` or `OrderId`.
 - **Per-command full-state copies.** `load_run` clones, `committed_state` clones and `CommitRequest.candidate` journals the whole `RunState`. Measured cost is milliseconds to over 100 ms per command versus microseconds for matching. New hot paths must not add clones or full-state serialization.
 - **Inputs outside the record.** Built-in agents commit under `writer.lock()` outside admission, and their runtime state is not persisted. Every cause of a state change must be a recorded, replayable input.
 - **Partial replay.** `CompetitionArchive` replays simulation commands only; do not call it a full trading replay.

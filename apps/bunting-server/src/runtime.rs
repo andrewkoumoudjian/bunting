@@ -1,4 +1,5 @@
 use crate::config::ServerConfig;
+use crate::distributor::{MAX_PENDING_BATCHES, PublishingOrigin};
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_engine::RunState;
@@ -53,7 +54,7 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
             Err(error) => return Err(origin_error(&error)),
         }
     }
-    let origin = Arc::new(origin);
+    let origin = Arc::new(PublishingOrigin::new(origin, MAX_PENDING_BATCHES));
     let (matching_interval_ms, max_interval_queue) =
         config.fix.as_ref().map_or((1, 1_024), |fix| {
             (fix.matching_interval_ms, fix.max_interval_queue)
@@ -68,7 +69,7 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let origin = origin.clone();
         let completed = completed.clone();
         spawn_host("bunting-admin", completed, move || {
-            crate::admin::run(&admin, &origin)
+            crate::admin::run(&admin, origin.inner())
         })?;
         task_count = task_count.saturating_add(1);
     }
