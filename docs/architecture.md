@@ -115,7 +115,6 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `apps/bunting-server` | Venue host: acceptor, admin, writer, storage, scenario runtime |
 | `apps/bunting-tui`, `apps/bunting-cli` | Native participant/operator terminal and CLI |
 | `bindings/*` | C ABI, Python, C++ over `bunting-rs` |
-| `tests/oracles/nbc-matcher` | Dev-only translated NBC matcher (fate decided under ADR 0032) |
 
 Dependency direction: `packages/*` → `bunting-rs` → `apps/*`, `bindings/*`.
 Packages never depend on apps.

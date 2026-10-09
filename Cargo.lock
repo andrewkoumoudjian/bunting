@@ -1134,17 +1134,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nbc-matcher-oracle"
-version = "0.1.0"
-dependencies = [
- "bunting-market-events",
- "bunting-market-types",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

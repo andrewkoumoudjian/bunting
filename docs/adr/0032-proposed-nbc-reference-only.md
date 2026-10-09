@@ -2,7 +2,8 @@
 
 - Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
   Decision items 2–3 **implemented in slice 11** (see `docs/implementation-log/`),
-  with JAR-observed fixtures kept as evidence; item 4 handled in the following commit.
+  with JAR-observed fixtures kept as evidence; item 4 implemented in slice 11b
+  (`nbc-matcher` retired: no test compared it with the engine book).
 - Would supersede: the NBC-compatibility clauses of ADR 0018 (NBC as a
   complete compatibility input/profile of the unified engine) and the NBC
   paragraphs of `AGENTS.md` "Engine roles" listed below.
