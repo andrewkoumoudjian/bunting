@@ -2,19 +2,21 @@
 
 ## Mission
 
-Build a Rust market-simulation and exchange-testing platform composed from reusable packages. The Wasmer-hosted WASI competition venue is the primary deployment target; Cloudflare is a read-only publication wrapper.
+Build a Rust market-simulation and exchange-testing platform composed from reusable packages: one headless, deterministic `bunting-engine` that owns market truth, served by one native venue process to participants over FIX and the certified Bunting Native Protocol. Two products sit on that engine: a RIT-class instructor/student simulator and a QUARCC competition venue. Cloudflare is only a read-only publisher of immutable exports.
 
 ## Instruction precedence
 
 - Read this file before changing the repository.
 - Read the nearest scoped `AGENTS.md` for every path touched.
-- Accepted ADRs and `docs/architecture.md` are binding.
-- ADR 0014 defines market-engine versus participant execution-engine authority; ADR 0018 supersedes its selectable-market-engine model with one production `bunting-engine`; ADR 0029 replaces OrderBook-rs with the engine's own deterministic order book; ADR 0028 (accepted) sets the single-ledger, live-state and full-replay direction.
+- Read [`docs/README.md`](docs/README.md) (documentation status map) before relying on any document under `docs/`. Documents marked **Historical** are evidence, never instructions, even when their own text says "binding", "active" or "non-negotiable".
+- Accepted ADRs and `docs/architecture.md` are binding. Read an ADR's **status line** first; ADR 0033 records which older ADRs are superseded in whole or in part.
+- Key decisions: ADR 0018 (one production engine; carries ADR 0014's market-versus-participant authority split), ADR 0028 (single ledger, live state, full replay), ADR 0029 (engine-owned order book), ADR 0030 (latency-modeled continuous admission — target), ADR 0031 (FIX + certified native protocol only — target), ADR 0032 (NBC is reference evidence only — target), ADR 0033 (reconciliation and host direction).
+- **Target ≠ implemented.** ADRs 0030–0032 and the Target sections of `docs/architecture.md` are accepted direction, not current behavior. Check `docs/implementation-log/` before describing anything as done.
+- Current execution order: [`docs/research/2026-10-09-exploration-and-next-steps.md`](docs/research/2026-10-09-exploration-and-next-steps.md) §8. Slice definitions: [`docs/plans/2026-10-07-evidence-led-core-roadmap.md`](docs/plans/2026-10-07-evidence-led-core-roadmap.md).
 - Read `docs/reference-functionality-audit.md` before using, moving, porting, comparing, or describing anything under `ref/` or `vendor/`.
 - Read `docs/reference-adoption.md` before adding a dependency, source adaptation, fork, vendored file, or conformance oracle.
-- Before reorganizing paths, read `docs/repository-reorganization.md` and follow its execution contract.
 
-When documents conflict, do not silently select the convenient interpretation. Reconcile the active ADR, source-backed audit, and implementation before changing code.
+When documents conflict, do not silently select the convenient interpretation. Reconcile the active ADR, source-backed audit, and implementation before changing code. If the conflict is not covered by an ADR, stop and record it rather than guessing.
 
 ## Evidence discipline
 
@@ -28,22 +30,23 @@ For every reference claim, distinguish:
 
 Never infer functionality from a repository name. Never treat `.gitmodules` branch metadata as the checked-out commit. Verify submodule pins with `git ls-tree HEAD` and `git -C ref/<name> rev-parse HEAD`.
 
+The same discipline applies to Bunting itself: a performance claim needs a recorded measurement (workload, hardware, build profile, commit); a "tests pass" claim needs the command that ran. Record both in `docs/implementation-log/`.
+
 ## Engine roles
 
 ### Market engine
 
-A single production `bunting-engine` owns venue/simulation authority: run state, time or step advancement where applicable, market configuration, order processing, trades, public market data, and the recovery contract required by Bunting.
+A single production `bunting-engine` owns venue/simulation authority: run state, logical time, listings, market configuration, order processing, risk admission, the single economic ledger, trades, scoring, canonical events, public market-data projections, and the recovery contract required by Bunting.
 
 - The engine package owns its private deterministic price-time book (`packages/bunting-engine/src/book.rs`, ADR 0029); applications and orchestration packages must not reach the book except through canonical engine commands and read projections.
-- NBC is a complete compatibility input to the unified engine. Do not describe NBC as only scenario JSON, a scheduler helper, or a collection of agent models, and do not create a second selectable venue kernel.
-- The direct NBC snapshot lacks the Java implementation and named JAR; the separately pinned JAR is authorized under ADR 0017 for bytecode inspection, Rust translation and redistribution. Cite bytecode or differential evidence before claiming exact internal equivalence.
-- NBC-specific scenario, scheduler, agent, scoring and protocol behavior remains visibly provenance-linked inside the unified engine; any incompatibility with OrderBook-rs is an explicit unresolved gap or reviewed extension, not an implicit second matcher.
+- NBC is reference evidence only (ADR 0032). It is not a compatibility target. Do not extend `bunting-engine::compatibility::nbc`, `NbcDone` or the NBC events; they are scheduled for removal. Useful ideas from NBC re-enter only as Bunting-native features with Bunting semantics and tests.
+- The NBC JAR's licensing record (ADR 0017) still governs any reading or quotation of that material.
 
 ### QUARCC execution engine
 
 The QUARCC trading engine is an optional external participant-side execution/OMS engine for users, traders, and strategies. Its recorded source includes strategy signals, submit/cancel/replace, order managers, gateway/feed boundaries, participant risk, ID mapping, journal/store abstractions, positions, kill switch, market-data streaming, gRPC and Python clients.
 
-It must never become authoritative market state or directly mutate a market engine. Bunting must run without it. The existing `quarcc.v1` compatibility crate is the first surface of the port, not its final scope.
+It must never become authoritative market state or directly mutate a market engine. Bunting must run without it. The existing `quarcc.v1` compatibility crate is the first surface of the port, not its final scope. Built-in agents compose with it (`packages/bunting-agents`).
 
 ### Other participant-side references
 
@@ -57,15 +60,16 @@ The repository root remains one Cargo workspace and owns the single `Cargo.lock`
 - `bunting-rs/`: integrated Bunting product/library that imports packages, configures the unified engine, and exposes the curated public API.
 - `bunting-rs/crates/`: Bunting-private glue only when code has no reusable package role.
 - `apps/`: deployable binaries, CLIs, and gateways that depend on `bunting-rs` or public package APIs.
-- `scenarios/`: human-reviewable scenario documents, fixtures, and provenance. Runtime NBC-compatible logic belongs in `packages/bunting-engine`.
+- `bindings/`: language bindings over the `bunting-rs` façade (ADR 0026).
+- `scenarios/`: human-reviewable scenario documents, fixtures, and provenance.
 - `schemas/`: versioned protocol and file schemas.
-- `tests/`: cross-package, cross-engine, protocol, and deployment tests.
+- `tests/`: cross-package, protocol, oracle and deployment tests.
 - `tools/`: repository automation and release tooling.
 - `ref/`: read-only source evidence and provenance; never a production path dependency.
 - `vendor/`: approved copied/patched third-party source with license, exact upstream revision, notices, and patch log.
 - `out/`: generated release bundles; ignored and never source of truth.
 
-Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, justified private Bunting crates, and `apps/*`.
+Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, justified private Bunting crates, `apps/*` and `bindings/*`.
 
 ## Package discipline
 
@@ -74,22 +78,33 @@ Do not create a nested Cargo workspace in `bunting-rs`. The root workspace inclu
 - Packages must not depend on `bunting-rs` or `apps/`; dependency flow is packages -> `bunting-rs` -> apps.
 - Avoid generic `common`, `utils`, `algorithms`, `fix`, or `protocols` dumping grounds. Name packages after a concrete responsibility such as `fix-tagvalue`, `fix-session`, `execution-reconciliation`, or `market-making-models` when implementation justifies them.
 - Keep mechanical moves separate from semantic renames and feature work.
-- Use `git mv`, preserve package names during repository reorganization, and repair Cargo, CI, Wrangler, migrations, docs, scripts, and scoped instructions atomically.
+- Use `git mv`, preserve package names during moves, and repair Cargo, CI, release tooling, docs, scripts, scoped instructions and `docs/README.md` atomically.
 - Do not create empty package directories to represent future ideas.
 
 ## Binding architecture decisions
 
 - OrderBook-rs is a dev-dependency differential oracle only; it must never return as a production dependency without a superseding ADR.
 - Keep exactly one book implementation. New order types need Bunting-level semantics, book tests and oracle coverage where an oracle exists before entering the command schema.
-- NBC compatibility behavior runs on the same engine book; a second production matcher is prohibited.
-- The primary deployment target is one Wasmer-hosted Rust WASI competition venue that accepts bounded inbound FIX/TCP sessions and calls application functions in-process. WASIX supplies the required socket/thread extensions under ADR 0027. Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts inbound raw TCP or owns market commands or origin truth.
-- No Cloudflare Worker is currently built; the former D1/command Worker was removed as a second authority. Any future publisher reads immutable post-commit exports only.
+- One native venue process is the only market authority: it accepts bounded participant sessions and calls application functions in-process (ADR 0022). Cloudflare publishes immutable leaderboards, run archives and public snapshots; it never accepts participant commands, inbound raw TCP, or owns origin truth. No Cloudflare Worker is currently built; any future publisher reads immutable post-commit exports only.
+- Participant interfaces are **FIX and the Bunting Native Protocol only** (ADR 0031). Do not add REST, gRPC, WebSocket or browser command surfaces. Do not extend `browser-wire` or the browser procedures in `bunting-api-contract`; they are retired once BNP covers them.
+- Admission target is continuous price-time matching with latency-modeled ordering (ADR 0030). The ADR 0024 interval writer is the current implementation; do not build new features on its sleep-to-boundary behavior.
+- Hosting: the release currently packages the server for WASIX (ADR 0027), but WASIX is not a binding long-term host (ADR 0033). Keep the server buildable and testable natively and add no WASIX-only dependencies or code paths.
 - Accepted commands, canonical events, idempotency, and optimistic versions remain authoritative in the origin store.
-- Commit authoritative state before acknowledgement, cache publication, or stream publication.
+- Commit authoritative state before acknowledgement or any stream/report publication.
+
+## Known traps (verified 2026-10-09)
+
+Do not extend these patterns; each is scheduled for replacement (see the exploration note §5–§8):
+
+- **Adapter-held authority.** `session_host.rs` keeps a connection-local `open_orders` set and sends reports only to the requesting connection. Per-participant limits and report delivery belong to the engine and a committed-event distributor.
+- **Per-command full-state copies.** `load_run` clones, `committed_state` clones and `CommitRequest.candidate` journals the whole `RunState`. Measured cost is milliseconds to over 100 ms per command versus microseconds for matching. New hot paths must not add clones or full-state serialization.
+- **Inputs outside the record.** Built-in agents commit under `writer.lock()` outside admission, and their runtime state is not persisted. Every cause of a state change must be a recorded, replayable input.
+- **Partial replay.** `CompetitionArchive` replays simulation commands only; do not call it a full trading replay.
+- **Two clocks.** FIX admissions are stamped from wall-clock epoch milliseconds. New time-dependent features use the run's logical clock.
 
 ## Authority boundaries
 
-The Bunting engine owns venue-side identities, matching results, canonical events, authoritative ledger projections, scenario/run state, and market-data publication.
+The Bunting engine owns venue-side identities, matching results, canonical events, the authoritative ledger, scenario/run state, and market-data publication.
 
 Participant-side packages own local order intent, venue reconciliation, strategy state, participant risk, and client/gateway connectivity. They submit ordinary commands and consume committed reports.
 
@@ -101,12 +116,12 @@ No client, strategy, execution engine, adapter, or agent may mutate a market eng
 - Preserve exact repositories, commits, paths, and licenses for copied/adapted material.
 - Prefer stable upstream APIs over copied implementation.
 - Update `docs/reference-functionality-audit.md` before changing a reference’s role or adoption disposition.
-- NBC JAR translation and redistribution are authorized by ADR 0017 with file-level provenance and divergence records. Other unlicensed NBC material and QUARCC sources remain restricted to their documented authority/license rules.
+- NBC JAR reading and translation are authorized by ADR 0017 with file-level provenance; NBC is otherwise reference evidence only (ADR 0032). Other unlicensed NBC material and QUARCC sources remain restricted to their documented authority/license rules.
 - Specification-derived protocol files can have obligations different from the implementation code; review both.
 - `bunting-engine` and the protocol packages must stay host-neutral and compile for `wasm32-unknown-unknown`.
 - Keep fixed-point and checked arithmetic at market, protocol, execution, and ledger boundaries.
 - Keep all request, event, snapshot, queue, subscription, and recovery buffers bounded.
-- Do not commit `target/`, Worker `build/`, `out/`, database, credential, or secret files.
+- Do not commit `target/`, `out/`, database, credential, private key, certificate-authority or secret files.
 
 ## Required checks
 
@@ -129,4 +144,8 @@ git diff --check
 
 For reference changes, also verify gitlink pins, licenses, manifests/features, and the audit/adoption documents.
 
-For path changes, also verify Worker build output, migration discovery, release assembly under ignored `out/`, stale-path searches, dependency direction, and active documentation of NBC/QUARCC roles.
+For path changes, also verify release assembly under ignored `out/`, stale-path searches, dependency direction, `docs/README.md`, and scoped instructions.
+
+For changes that supersede a document or ADR, update `docs/README.md`, add the historical banner, and amend the old ADR's status line in the same commit.
+
+When a slice lands, append it to `docs/implementation-log/` with commits, what changed, which checks ran, and what remains.

@@ -1,4 +1,6 @@
 # Browser wire package instructions
 
-Keep this package sans-I/O and market-neutral. It owns the bounded JSON fetch
-contract used by browser and Rust/WASM clients. FIX belongs to `simfix-*`.
+**Scheduled for retirement (ADR 0031).** This package has had no server since
+the Worker removal (`eed8e00`). Do not extend it or add consumers; participant
+traffic uses FIX or the Bunting Native Protocol. Keep it compiling until it is
+removed.

@@ -2,11 +2,13 @@
 
 This crate is development-only translated evidence authorized by ADR 0017. It
 must never be linked into production packages or exposed as a selectable market
-engine.
+engine. NBC is reference evidence only (ADR 0032). Observed 2026-10-09: this
+crate is a standalone workspace member and no test compares it with the engine
+book, so it is not currently acting as an oracle. Keep it only if a
+differential test shows it catches matching differences the OrderBook-rs
+oracle misses; otherwise retire it.
 
-- Every translated module must cite exact JAR class or resource hashes in the translation ledger.
-- Preserve unresolved reference parameters as inert provenance; they must not drive behavior.
-- Use exact checked units and deterministic hashes without floating-point authority.
-- Do not add scheduling, agents, scoring, or recovery behavior here; proven
-  non-matching compatibility belongs in `packages/bunting-engine`.
-- Keep native and `wasm32-unknown-unknown` compatibility.
+- Do not add features here; no scheduling, agents, scoring, recovery or
+  compatibility behavior moves from here into `packages/bunting-engine`.
+- Every translated module cites exact JAR class or resource hashes in the translation ledger.
+- Keep native and `wasm32-unknown-unknown` compatibility while it exists.
