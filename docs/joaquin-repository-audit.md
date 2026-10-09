@@ -1,5 +1,8 @@
 # Joaquín Bejar Rust repository audit
 
+> **Historical — do not follow as instructions.** OrderBook-rs-era dependency audit; OrderBook-rs is a dev-only oracle under ADR 0029.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 This audit focuses on repositories materially related to Bunting's exchange, market-data, strategy, protocol, and simulation requirements. Presence in this document is not automatic dependency approval.
 
 ## Adopt now

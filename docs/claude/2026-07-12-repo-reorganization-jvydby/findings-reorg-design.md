@@ -1,5 +1,8 @@
 # Findings — reorganization design (Cargo mechanics)
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 Derived 2026-07-12. This is the design reasoning that fed the plan. Where it differs from the
 authoritative `docs/repository-reorganization.md` + ADR-0014 on `main`, defer to those (see the
 session `README.md` reconciliation table).

@@ -1,5 +1,8 @@
 # Corrected Bunting implementation plan
 
+> **Historical — do not follow as instructions.** Completed plan; deployment target superseded by ADR 0022.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 Status: completed historical execution plan; deployment target superseded by ADR 0022 and [`competition-platform-reorganization.md`](competition-platform-reorganization.md)
 
 The production hardening sequence is tracked in

@@ -1,5 +1,8 @@
 # Bunting production-readiness plan
 
+> **Historical — do not follow as instructions.** July 2026 plan against `7965909`; superseded by the 2026-10-07 roadmap, the implementation log and the 2026-10-09 exploration note §8.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 Status: active, persisted 2026-07-21
 
 ## Verified baseline

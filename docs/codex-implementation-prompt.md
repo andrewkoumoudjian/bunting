@@ -1,5 +1,8 @@
 # Codex implementation contract
 
+> **Historical — do not follow as instructions.** Worker/D1/Workers Cache runtime and OrderBook-rs-as-production-matcher instructions; superseded by ADRs 0022, 0029 and 0033.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Read `AGENTS.md`, ADR 0013, ADR 0014, ADR 0017, ADR 0018, ADR 0019, ADR 0020 and the nearest scoped instructions before changing code. Active sequencing lives in [`plans/corrected-bunting-implementation-plan.md`](plans/corrected-bunting-implementation-plan.md).
 
 ## Repository paths

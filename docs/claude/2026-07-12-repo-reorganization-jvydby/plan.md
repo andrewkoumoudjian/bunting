@@ -1,5 +1,8 @@
 # Bunting — repository reorganization + codex handoff plan
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 ## Context
 
 Bunting is a Rust stock-market simulation / exchange-testing platform that runs as a

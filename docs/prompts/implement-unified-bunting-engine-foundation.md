@@ -1,5 +1,8 @@
 # Implementation prompt: central unified Bunting engine foundation
 
+> **Historical — do not follow as instructions.** Old agent prompt (OrderBook-rs adapter, NBC compatibility); do not reuse. Superseded by ADRs 0029, 0032 and 0033.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 Work in `andrewkoumoudjian/bunting` from the latest clean `main` after documentation PR #15. Create branch `feat/unified-bunting-engine-foundation`. Do not implement later RIT feature families in this PR.
 
 Read and treat as binding before editing:

@@ -1,5 +1,12 @@
 # Evidence-led core engine roadmap — 2026-10-07
 
+> **Status update 2026-10-09:** slice definitions remain current; the
+> execution **order** and several decisions changed. Follow
+> [the exploration note §8](../research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan)
+> for ordering, ADR 0029 for matching (OrderBook-rs is a dev-only oracle), ADR
+> 0030 for fairness (replaces the interval questions below) and ADR 0033 for
+> hosting. Slices 0 and 1 are done per `../implementation-log/`.
+
 Status: **proposed development roadmap**, documentation only. Audited source: main@0fdbd130a59b212ac6cae1d3b78000acd94fb9b2; no code or tests changed in this handoff. The [independent architecture audit](../research/2026-10-07-independent-core-architecture-audit.md) gives the mechanism, alternatives, exact source pointers, external literature and limits. [Proposed ADR 0028](../adr/0028-proposed-headless-run-authority.md) identifies changes requiring architecture acceptance.
 
 **Agent and market-flow research (2026-10-08):** [source-pinned Rust/C++ implementation comparison, academic models, observed agent gaps and integration gates](../research/2026-10-08-agent-market-simulation-implementations.md). This is a proposed Slice 5 research input, not an accepted architecture change or implemented realism claim.

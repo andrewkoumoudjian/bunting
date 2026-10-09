@@ -1,5 +1,8 @@
 # Findings — branches & pull requests
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 Captured 2026-07-12 via the GitHub API (`list_branches`, `list_pull_requests`) and local git.
 
 ## Pull requests

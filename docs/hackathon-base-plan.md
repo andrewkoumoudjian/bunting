@@ -1,5 +1,8 @@
 # Bunting as a trading-competition platform
 
+> **Historical — do not follow as instructions.** Early competition proposal superseded by ADRs 0022–0025 and 0030–0031.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Status: proposal. Companion to `docs/streamlining-audit.md`, which records what
 the repository is today.
 

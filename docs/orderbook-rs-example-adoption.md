@@ -1,5 +1,8 @@
 # OrderBook-rs example adoption map
 
+> **Historical — do not follow as instructions.** OrderBook-rs is no longer a production dependency (ADR 0029); do not adopt its examples into the engine.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Audited upstream revision:
 
 ```text

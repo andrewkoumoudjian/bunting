@@ -1,5 +1,8 @@
 # NBC scenario source catalog and provenance
 
+> **Historical — do not follow as instructions.** NBC is reference evidence only (ADR 0032); this record is provenance, not a compatibility requirement.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 This catalog is the first artifact in the NBC port. It records the imported scenario inputs before any algorithm or Java runtime is ported.
 
 The files remain reference evidence. This document does not declare them canonical Bunting scenarios and does not resolve their license or the meaning of every numeric parameter.

@@ -1,5 +1,8 @@
 # Core implementation questions and binding answers
 
+> **Historical — do not follow as instructions.** Its "binding answers" (Cloudflare Worker runtime, OrderBook-rs kernel, no Bunting-owned book, NBC compatibility) are superseded by ADRs 0022, 0029, 0031, 0032 and 0033.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 ADR 0013, ADR 0017, ADR 0018, ADR 0019 and ADR 0020 are authoritative when older documents disagree. ADR 0020 supersedes ADR 0016's universal-tRPC boundary.
 
 ## Decision index

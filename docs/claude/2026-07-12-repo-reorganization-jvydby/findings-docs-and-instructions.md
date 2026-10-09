@@ -1,5 +1,8 @@
 # Findings — documentation & agent-instruction inventory
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 Captured 2026-07-12 from a read-only pass over every doc and `AGENTS.md`.
 
 ## Summary counts

@@ -1,5 +1,8 @@
 # Implementation pathway
 
+> **Historical — do not follow as instructions.** Worker/OrderBook-rs pathway superseded by ADRs 0022, 0028, 0029 and the 2026-10-09 exploration note §8.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 This pathway implements ADR 0013, ADR 0014, ADR 0017, ADR 0018, ADR 0019 and ADR 0020. ADR 0020 supersedes ADR 0016 where it made tRPC the universal application boundary. Production uses one `bunting-engine`, browser-compatible fetch/stream transport, and Worker-initiated outbound FIX/TCP with direct in-process application calls. Reference and port decisions are governed by `reference-functionality-audit.md` and `reference-adoption.md`.
 
 ## Completed foundation

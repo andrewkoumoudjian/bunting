@@ -1,0 +1,103 @@
+# Documentation status map
+
+Read this before relying on any document under `docs/`. Bunting keeps old
+plans, prompts and audits as evidence, but many of them describe designs that
+were later replaced (Cloudflare Worker authority, OrderBook-rs as the
+production matcher, tRPC, NBC compatibility). A document's status here
+overrides anything the document says about itself.
+
+Status meanings:
+
+- **Binding** — instructions an agent must follow.
+- **Current** — accurate description of the code or reference evidence today.
+- **Target** — accepted direction that is *not yet implemented*; do not
+  describe it as done.
+- **Historical** — superseded; read only as decision history. Every
+  historical document carries a banner at the top.
+
+Last reconciled: 2026-10-09 against `main@1d857d1` (ADR 0033).
+
+## Start here
+
+1. [`../AGENTS.md`](../AGENTS.md) and the nearest scoped `AGENTS.md`.
+2. [`architecture.md`](architecture.md) — what exists now and what is target.
+3. [`research/2026-10-09-exploration-and-next-steps.md`](research/2026-10-09-exploration-and-next-steps.md)
+   §8 — owner decisions and the current step order.
+4. [`implementation-log/`](implementation-log/) — what each slice actually
+   changed and which checks ran.
+
+## Architecture decisions (`adr/`)
+
+ADR status lines are authoritative; read the status line before the decision
+text. ADR 0033 reconciles statuses as of 2026-10-09.
+
+| Governing now | Topic |
+|---|---|
+| 0003 (event-sourcing part) | Event-sourced state |
+| 0009, 0010 | Fixed-point numerics, scenario determinism |
+| 0011 (protocol semantics part) | Committed-sequence streams, reset, coalescing, backpressure |
+| 0018 (as amended) | One authoritative engine; carries ADR 0014's split — participant execution engines never own market state |
+| 0017 | Licensing record for the NBC JAR (evidence use only, see 0032) |
+| 0021, 0023 | FIX dictionary/profile, concurrent FIX sessions |
+| 0022 | Single native venue; Cloudflare read-only publication; no Worker built |
+| 0025 + 0028 item 5 | Run archive; must expand to every economic input |
+| 0026 | Language bindings and FFI lints |
+| 0027 | WASIX — **current packaging only**, host still open |
+| 0028 | Headless run authority, single ledger, live state, full replay |
+| 0029 | Engine-owned deterministic order book |
+| 0030 | **Target:** latency-modeled continuous admission (replaces 0024 intervals) |
+| 0031 | **Target:** FIX + certified Bunting Native Protocol only; app via `bunting-client` |
+| 0032 | **Target:** NBC is reference evidence only; remove compatibility surface |
+| 0033 | Guidance reconciliation and status amendments |
+
+Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
+transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
+0016, 0019 (in part), 0020 (in part), 0024 (target replaced; still
+implemented).
+
+## Documents
+
+| Path | Status | Notes |
+|---|---|---|
+| `AGENTS.md` (this dir) | Binding | Documentation rules |
+| `architecture.md` | Binding | Current state and target, labeled separately |
+| `deployment.md` | Current | Describes the WASIX packaging that ships today |
+| `reference-functionality-audit.md` | Binding for `ref/`/`vendor/` claims | Read before describing any reference |
+| `reference-adoption.md` | Binding for dependencies | Read before adding dependencies or copied code |
+| `reference-inventory.md` | Current | Submodule pins |
+| `implementation-log/` | Current | Per-slice record of changes and checks |
+| `plans/2026-10-07-evidence-led-core-roadmap.md` | Current (slice definitions) | Ordering superseded by the 2026-10-09 note §8 |
+| `research/` | Current as dated evidence | Point-in-time; later commits may have changed the code |
+| `specs/bunting-product-contract.md` | Target | Product boundary; interfaces per ADR 0031 |
+| `specs/bunting-fix-competition-profile.md` | Current | FIX profile; admission timing changes with ADR 0030 |
+| `specs/competition-policies-v1.md` | Current | Implemented competition policies |
+| `specs/rit-class-market-simulation.md` | Target | RIT-class feature requirements |
+| `specs/rit-tui-parity-matrix.md` | Target | RIT workflow parity for the app/TUI |
+| `ports/quarcc-trading-engine.md` | Current | QUARCC port record |
+| `ports/ritc-market-making.md` | Current | RITC participant reference |
+| `ports/nbc-*.md`, `ports/nbc-*.json`, `ports/nbc-*.tsv` | Historical provenance | NBC is reference only (ADR 0032) |
+| `codex-implementation-prompt.md` | Historical | Worker/OrderBook-rs era instructions |
+| `core-implementation-questions.md` | Historical | Its "binding answers" are superseded |
+| `implementation-pathway.md` | Historical | Worker/OrderBook-rs pathway |
+| `core-engine-status-2026-10-07.md` | Historical | Superseded by the independent audit and implementation log |
+| `hackathon-base-plan.md` | Historical | Early competition proposal |
+| `streamlining-audit.md` | Historical | Early exploration report |
+| `joaquin-repository-audit.md` | Historical | OrderBook-rs-era dependency audit |
+| `orderbook-rs-example-adoption.md` | Historical | OrderBook-rs is a dev-only oracle |
+| `rust-reference-sprint-map.md` | Historical | Early sprint reference map |
+| `repository-reorganization.md` | Historical | Completed July move; durable rules live in `AGENTS.md` |
+| `plans/` (all except the 2026-10-07 roadmap) | Historical | Completed or superseded plans and worktree handoffs |
+| `prompts/` | Historical | Old agent prompts; do not reuse |
+| `claude/` | Historical | Archived 2026-07-12 planning session |
+
+## Root-level participant documents
+
+`PROTOCOL.md` (generated by `tools/generate_protocol.py`), `RULES.md`,
+`RUNBOOK.md` and `SCORING.md` describe the competition **as currently
+implemented** (including discrete intervals). Update them in the same change
+that implements ADR 0030 or 0031 behavior, never ahead of it.
+
+## Keeping this map true
+
+Any change that supersedes a document updates this table and adds the
+historical banner in the same commit.

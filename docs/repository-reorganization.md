@@ -1,5 +1,8 @@
 # Repository reorganization and Codex execution plan
 
+> **Historical — do not follow as instructions.** The July 2026 mechanical move is complete; its Worker paths no longer exist. Durable path rules live in root `AGENTS.md` (Package discipline).
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Status: source-audited planning baseline for the next focused pull request
 
 Last reviewed: 2026-07-12

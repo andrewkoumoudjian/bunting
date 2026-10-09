@@ -1,5 +1,8 @@
 # Competition-platform reorganization plan
 
+> **Historical — do not follow as instructions.** Implemented July 2026 plan; current ordering is in the 2026-10-09 exploration note §8.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 Status: implemented. Phases 0–2 landed on 2026-07-28 and Phases 3–6 landed in
 dependency order on 2026-07-29. The selected organizer rules are discrete
 100-millisecond matching intervals, one shared market, the existing Bunting FIX

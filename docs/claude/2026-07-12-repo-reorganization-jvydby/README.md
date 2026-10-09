@@ -1,5 +1,8 @@
 # Claude session — repository reorganization planning (2026-07-12)
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 Branch: `claude/bunting-repo-reorganization-jvydby`
 Date: 2026-07-12
 Scope: **exploration, planning, and codex-handoff instruction design** for the Bunting

@@ -1,5 +1,8 @@
 # Bunting streamlining audit
 
+> **Historical — do not follow as instructions.** Early exploration report; its Worker-era recommendations are superseded by ADRs 0022 and 0029.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Status: exploration report, not an accepted ADR. Produced by reading the
 workspace manifests, `cargo metadata --locked`, source under `packages/`,
 `apps/`, `bunting-rs/`, the CI workflow, and every binding document under

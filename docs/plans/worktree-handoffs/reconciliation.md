@@ -1,5 +1,8 @@
 # Product reconciliation worktree handoff
 
+> **Historical — do not follow as instructions.** Completed July 2026 worktree handoff; do not resume.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 ## Branch and merge record
 
 - Branch: `codex/reconcile-bunting-product`

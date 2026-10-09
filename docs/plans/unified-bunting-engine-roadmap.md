@@ -1,5 +1,8 @@
 # Unified Bunting engine roadmap
 
+> **Historical — do not follow as instructions.** Engine roadmap from the OrderBook-rs/NBC-compatibility era; superseded by ADRs 0029 and 0032.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 Status: superseded for active sequencing by `corrected-bunting-implementation-plan.md`; retained as engine-scope history
 
 This roadmap implements ADR 0018, ADR 0019 and the [`RIT-class feature specification`](../specs/rit-class-market-simulation.md). It is derived from the RIT binary audit, official documented RIT capabilities, the current NBC translation ledger, the RITC and QUARCC port audits, the OrderBook-rs 0.10.3 surface, and the current Bunting vertical slice. It replaces any plan that completes `nbc-v1` as a separately selectable production kernel or leaves matching as an independently consumed peer package.

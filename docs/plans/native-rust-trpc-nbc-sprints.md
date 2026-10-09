@@ -1,5 +1,8 @@
 # Native Rust tRPC and NBC implementation sprints
 
+> **Historical — do not follow as instructions.** TRPC and NBC-compatibility sprints; superseded by ADRs 0022, 0031 and 0032.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 > **SUPERSEDED:** This is historical execution evidence. ADR 0022 and [`competition-platform-reorganization.md`](competition-platform-reorganization.md) now govern deployment; do not revive the tRPC-era or Worker-first product layout.
 
 Status: fully superseded for active sequencing by ADR 0020 and [`corrected-bunting-implementation-plan.md`](corrected-bunting-implementation-plan.md); retained for completed tRPC/NBC evidence history

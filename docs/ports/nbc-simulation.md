@@ -1,5 +1,8 @@
 # Port plan: NBC market engine to Rust
 
+> **Historical — do not follow as instructions.** NBC is reference evidence only (ADR 0032); this record is provenance, not a compatibility requirement.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 ## Role
 
 NBC is a venue-side market/exchange simulator. It is not merely a scenario catalog and it is not the participant client in `ref/nbc-hft-simulation`.

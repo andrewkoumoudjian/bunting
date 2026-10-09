@@ -1,5 +1,8 @@
 # Rust reference map for planned work
 
+> **Historical — do not follow as instructions.** Early sprint map tied to the Worker/OrderBook-rs plan; superseded by ADRs 0022 and 0029.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 ADR 0013 changes the central decision: OrderBook-rs is now the production kernel, not only an oracle.
 
 ## Production dependencies

@@ -1,5 +1,8 @@
 # Session log — 2026-07-12
 
+> **Historical — do not follow as instructions.** Archived 2026-07-12 planning session; its Worker-era design is superseded.
+> Current guidance: [`AGENTS.md`](../../../AGENTS.md) and the [documentation status map](../../../docs/README.md).
+
 Chronological record of the planning session on branch
 `claude/bunting-repo-reorganization-jvydby`. Task: explore the repo, plan the reorganization,
 write codex-handoff instructions, and recommend branch cleanup. Ran in plan mode (read-only)

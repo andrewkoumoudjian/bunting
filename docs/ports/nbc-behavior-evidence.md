@@ -1,5 +1,8 @@
 # NBC executable behavior evidence
 
+> **Historical — do not follow as instructions.** NBC is reference evidence only (ADR 0032); this record is provenance, not a compatibility requirement.
+> Current guidance: [`AGENTS.md`](../../AGENTS.md) and the [documentation status map](../../docs/README.md).
+
 This record applies only to the JAR at SHA-256
 `80afc2816970b2538dcaff808008bfebdce5426ac248c074859626605547e254`
 from gitlink `35b8050546679547dc737198ea13aa0ec8ed7db8`. The complete bounded

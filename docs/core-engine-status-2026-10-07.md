@@ -1,5 +1,8 @@
 # Bunting core-engine status and gap audit (2026-10-07)
 
+> **Historical — do not follow as instructions.** Superseded by the independent 2026-10-07 audit and `implementation-log/`; most listed defects were repaired in slices 0–10.
+> Current guidance: [`AGENTS.md`](../AGENTS.md) and the [documentation status map](../docs/README.md).
+
 Status: **source-backed assessment and proposed priorities**, not a statement that the proposed repairs are implemented.
 Audited `main`: [`a35f18490283c0865120b5bb66cb1132a36e5c00`](https://github.com/andrewkoumoudjian/bunting/commit/a35f18490283c0865120b5bb66cb1132a36e5c00).
 Companion execution plan: [`plans/core-first-market-simulator.md`](plans/core-first-market-simulator.md).
