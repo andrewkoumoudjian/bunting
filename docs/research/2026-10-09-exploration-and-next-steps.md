@@ -224,6 +224,10 @@ listed as open in the implementation log's Slice 10 follow-ups.
 
 ## 6. Proposed next steps (Bunting-added)
 
+> **Superseded ordering:** the owner answered section 7's questions on
+> 2026-10-09. Section 8 records those answers and the revised order; the step
+> descriptions below remain the detail for each step.
+
 Ordered by dependency and by how much each unblocks. Sizes are rough
 single-engineer estimates. Each step names its acceptance test so it can land
 as one reviewable PR in the style of the existing slices.
@@ -372,3 +376,72 @@ the event feed, Cloudflare publisher reading archives (Slice 7).
   3, publish an immutable `Arc` view per commit for readers.
 - **Event-hash chain** (hash(prev, event bytes)) as a cheap per-commit
   integrity proof, with the full state hash at checkpoints only.
+
+## 8. Owner decisions (2026-10-09) and revised plan
+
+### Answers
+
+| # | Question | Owner answer | Consequence |
+|---|---|---|---|
+| 1 | Fairness promise | "Most realistic for one and multiple venues. Maybe a simple algorithm that actually calculates connection distance from server to client." | [Proposed ADR 0030](../adr/0030-proposed-latency-modeled-continuous-admission.md): continuous price-time matching per listing; admission ordered by measured one-way delay removed and scenario path latency added; same model outbound. Replaces ADR 0024 intervals. |
+| 2 | Next deadline | Both a live competition and classroom use | Step 1 (fills reach makers) and the calendar/session work both stay high; Step 3 performance is needed by both. |
+| 3 | Wasmer/WASIX primary? | "No, not necessarily if there's better ways to run the binary anywhere" | Treat the host as a distribution question (below); decide with Step 2 data, then an ADR superseding ADR 0027. |
+| 4 | Browser UI host | "An app that connects to hosted server" | [Proposed ADR 0031](../adr/0031-proposed-bunting-native-client-protocol.md): app on a shared `bunting-client` crate; browser contract retired. |
+| 5 | NBC scope | "NBC is only a reference for a market engine, compatibility doesn't mean anything." | [Proposed ADR 0032](../adr/0032-proposed-nbc-reference-only.md): remove the NBC runtime surface; requires the listed `AGENTS.md` edits on acceptance. |
+| — | Interfaces | "Our own communication between certified server and clients as well as FIX protocol only." | ADR 0031: FIX + Bunting Native Protocol over in-process mutual TLS; nothing else. |
+
+The three ADRs are **proposed**. Until the owner accepts them, ADR 0018,
+0024 and 0027 and the current `AGENTS.md` remain binding, and no code on this
+branch acts on them.
+
+### Running the binary anywhere (answer 3)
+
+Observed: `release.yml` already builds native CLI/TUI/bindings for
+`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin` and
+`x86_64-pc-windows-msvc`, but ships the **server only as a WASIX module**.
+Durable file mode is Unix-only (`storage.rs:49-85`, `flock`; non-Unix is
+refused).
+
+Options, in recommended order (Bunting-added):
+
+1. **Native static server binaries** — `x86_64`/`aarch64` Linux musl plus
+   macOS, built in the existing release matrix. Runs on any VPS or laptop with
+   no runtime install. Native also exposes `TCP_INFO` kernel RTT (useful to ADR
+   0030's anti-gaming) and real threads for the session fan-out.
+2. **OCI container image** of the musl binary (distroless/scratch base) for
+   cloud hosts and Kubernetes; same binary as option 1.
+3. **WASIX** kept as an optional sandboxed target only if Step 2 shows parity
+   and the operators value the sandbox.
+
+Windows servers would need a `LockFileEx` writer lease before durable mode
+works; clients and the app run on Windows already.
+
+The engine keeps its `wasm32-unknown-unknown` gate either way; that protects
+host neutrality regardless of what the server ships as.
+
+### Revised order
+
+| Order | Step | Why now |
+|---|---|---|
+| 1 | **Step 0** quick wins + owner review of ADRs 0030–0032 | Docs currently mislead agents; decisions unblock everything else |
+| 2 | **NBC removal** (ADR 0032, ~1 day) | Shrinks the engine and schema before the Step 3 refactor |
+| 3 | **Step 1** fills reach makers; engine-owned live-order limit | Competition is unusable for passive strategies without it |
+| 4 | **Step 2** measurement baseline + native-vs-WASIX hash/latency parity | Feeds the host ADR and proves Step 3 |
+| 5 | **Step 3** writer-owned live state + command journal | ~1000× gap between matching and per-command overhead; needed by both products |
+| 6 | **Latency-modeled sequencer** (ADR 0030): periodic RTT probes in `simfix-session`, windowed-min estimator, `(release, arrival)` queue, outbound hold, scenario latency table | Replaces the interval writer (G4); needs Step 3's journal to record admission inputs |
+| 7 | **Step 4** full archive + recoverable agents | Agents get a location in the latency model and go through the same sequencer |
+| 8 | **Step 6** calendar, sessions, opening/closing auctions, multi-day | Classroom realism; auctions are also part of "most realistic" venues |
+| ∥ | **BNP + `bunting-client` + app** (ADR 0031) | Adapter work; can run in parallel from order 3 onward with a second contributor |
+| 9 | Host ADR superseding 0027, native release of the server | After Step 2 data |
+| 10 | Calibrated agents, integrated five-day acceptance | Roadmap Slices 5–6 |
+
+### Smallest tangible first PRs
+
+1. `docs`: rewrite `docs/architecture.md` and README to match `1d857d1`
+   (G10) — no behavior change, unblocks every future agent session.
+2. `refactor(engine)!`: remove NBC compatibility per ADR 0032.
+3. `fix(server)`: engine-owned per-participant live-order count replacing
+   connection-local `open_orders` (G2), with the four Step 1 acceptance tests.
+4. `feat(admission)`: a host-neutral, pure `LatencySequencer` (estimator +
+   priority queue + recorded admission record) with unit tests for ADR 0030's
+   ordering and anti-gaming properties, before wiring it into the server.
