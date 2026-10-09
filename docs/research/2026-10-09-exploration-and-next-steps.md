@@ -438,7 +438,7 @@ host neutrality regardless of what the server ships as.
 | 1 | **Step 0** quick wins + owner review of ADRs 0030–0032 | Docs currently mislead agents; decisions unblock everything else |
 | 2 | ~~**NBC removal**~~ — **done in slice 11** (ADR 0032) | Shrinks the engine and schema before the Step 3 refactor |
 | 3 | ~~**Step 1**~~ — **done in slice 12** (plus a cross-session ID collision fix it uncovered) | Competition is unusable for passive strategies without it |
-| 4 | **Step 2** measurement baseline + native-vs-WASIX hash/latency parity | Feeds the host ADR and proves Step 3 |
+| 4 | **Step 2** measurement baseline — **native baseline done in slice 13**; native-vs-WASIX parity still open (needs a WASIX toolchain) | Feeds the host ADR and proves Step 3 |
 | 5 | **Step 3** writer-owned live state + command journal | ~1000× gap between matching and per-command overhead; needed by both products |
 | 6 | **Latency-modeled sequencer** (ADR 0030): periodic RTT probes in `simfix-session`, windowed-min estimator, `(release, arrival)` queue, outbound hold, scenario latency table | Replaces the interval writer (G4); needs Step 3's journal to record admission inputs |
 | 7 | **Step 4** full archive + recoverable agents | Agents get a location in the latency model and go through the same sequencer |
