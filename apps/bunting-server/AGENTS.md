@@ -21,6 +21,10 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   ADR 0030 latency-modeled sequencer; do not build new behavior on the
   sleep-to-boundary writer, and route built-in agents through the same
   admission path as FIX.
-- Do not add per-command `RunState` clones or full-state serialization; the
-  target is a writer-owned live state with a command journal (exploration
-  note Step 3). Every acknowledged input must be recorded and replayable.
+- The origin owns the live runs; `storage.rs` appends one journal-format-2
+  record per committed input (`commit_journal.rs`) before acknowledging and
+  writes state-only checkpoints every `storage.checkpoint_interval` commands.
+  Restart re-executes the journal after the checkpoint and must reproduce it
+  exactly. Do not add per-command `RunState` clones or full-state
+  serialization, and do not write sockets inside `read_run` closures. Every
+  acknowledged input must be recorded and replayable.

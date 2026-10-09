@@ -211,9 +211,15 @@ where
             .map_err(ApplicationError::from)
     }
 
-    pub fn recover(&self, run_id: RunId) -> Result<RunState, ApplicationError> {
+    /// Reads the committed live run without copying it. `read` must not
+    /// execute commands through this service.
+    pub fn read<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, ApplicationError> {
         self.origin
-            .load_run(run_id)
+            .read_run(run_id, read)
             .map_err(TransactionError::from)
             .map_err(ApplicationError::from)
     }
@@ -926,7 +932,12 @@ mod tests {
         let executed = service.execute(&actor(7), &command()).unwrap();
         assert!(!executed.duplicate);
         assert_eq!(executed.result.committed_sequence, EventSequence::new(1));
-        assert_eq!(service.recover(RunId::new(1)).unwrap(), executed.state);
+        let mut expected = run();
+        expected.apply(&command()).unwrap();
+        assert_eq!(
+            service.read(RunId::new(1), RunState::clone).unwrap(),
+            expected
+        );
     }
 
     #[test]

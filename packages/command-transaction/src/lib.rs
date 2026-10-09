@@ -1,21 +1,22 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Sans-I/O recovery and commit coordination around `bunting-engine`.
+//! Command orchestration over the writer-owned origin.
+//!
+//! The origin applies each input to its live run in place, journals it and
+//! only then returns; this crate gives order flow and simulation commands
+//! one call shape and one error type.
 
-use bunting_engine::{EngineError, RunState, TransitionOutcome};
-use bunting_market_events::{Command, SimulationCommandRequest};
-use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError, OriginStore};
-use sha2::{Digest, Sha256};
+use bunting_engine::EngineError;
+use bunting_market_events::{Command, EventEnvelope, SimulationCommandRequest};
+use bunting_origin_store::{CommandResult, Executed, JournalInput, OriginError, OriginStore};
+pub use bunting_origin_store::{command_fingerprint, simulation_command_fingerprint};
 use std::fmt;
-
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransactionError {
     Origin(OriginError),
     IdempotencyConflict,
     Engine(EngineError),
-    Serialization,
 }
 
 impl fmt::Display for TransactionError {
@@ -30,14 +31,9 @@ impl From<OriginError> for TransactionError {
     fn from(error: OriginError) -> Self {
         match error {
             OriginError::IdempotencyConflict => Self::IdempotencyConflict,
+            OriginError::Engine(error) => Self::Engine(error),
             other => Self::Origin(other),
         }
-    }
-}
-
-impl From<EngineError> for TransactionError {
-    fn from(error: EngineError) -> Self {
-        Self::Engine(error)
     }
 }
 
@@ -46,17 +42,24 @@ pub struct CommandTransaction<'a, O> {
     origin: &'a O,
 }
 
-#[derive(Clone, Debug)]
-pub struct PreparedCommand {
-    pub commit: CommitRequest,
-}
-
-#[derive(Clone, Debug)]
+/// Committed facts of one command. The run itself stays with the origin;
+/// read it through [`OriginStore::read_run`].
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutedTransaction {
     pub result: CommandResult,
-    pub events: Vec<bunting_market_events::EventEnvelope>,
-    pub state: RunState,
+    /// Empty for a duplicate: its events were published when it committed.
+    pub events: Vec<EventEnvelope>,
     pub duplicate: bool,
+}
+
+impl From<Executed> for ExecutedTransaction {
+    fn from(executed: Executed) -> Self {
+        Self {
+            result: executed.result,
+            events: executed.events,
+            duplicate: executed.duplicate,
+        }
+    }
 }
 
 impl<'a, O> CommandTransaction<'a, O>
@@ -73,223 +76,35 @@ where
             .map(|executed| executed.result)
     }
 
-    /// Executes and returns the committed events and complete recovery state.
+    /// Executes one order-flow command and returns its committed events.
     pub fn execute_detailed(
         &self,
         command: &Command,
     ) -> Result<ExecutedTransaction, TransactionError> {
-        let fingerprint = command_fingerprint(command)?;
-        if let Some((stored_fingerprint, result)) = self
-            .origin
-            .find_command(command.run_id, command.command_id)?
-        {
-            return if stored_fingerprint == fingerprint {
-                Ok(ExecutedTransaction {
-                    result,
-                    events: Vec::new(),
-                    state: self.origin.load_run(command.run_id)?,
-                    duplicate: true,
-                })
-            } else {
-                Err(TransactionError::IdempotencyConflict)
-            };
-        }
-        let candidate = self.origin.load_run(command.run_id)?;
-        if candidate.sequence() != command.expected_sequence {
-            return Err(TransactionError::Origin(OriginError::VersionConflict {
-                current: candidate.sequence(),
-            }));
-        }
-        let prepared = prepare_command_owned(command, candidate)?;
-        let events = prepared.commit.events.clone();
-        let committed_state = prepared.commit.candidate.clone();
-        match self.origin.commit(prepared.commit)? {
-            CommitOutcome::Committed(result) => Ok(ExecutedTransaction {
-                result,
-                events,
-                state: committed_state,
-                duplicate: false,
-            }),
-            CommitOutcome::Duplicate(result) => Ok(ExecutedTransaction {
-                result,
-                events: Vec::new(),
-                state: self.origin.load_run(command.run_id)?,
-                duplicate: true,
-            }),
-        }
+        self.execute_input(&JournalInput::Command(command.clone()))
     }
 
-    /// Executes one simulation-domain command through the same atomic origin boundary.
+    /// Executes one simulation-domain command through the same origin path.
     pub fn execute_simulation_detailed(
         &self,
         request: &SimulationCommandRequest,
     ) -> Result<ExecutedTransaction, TransactionError> {
-        let fingerprint = simulation_command_fingerprint(request)?;
-        if let Some((stored_fingerprint, result)) = self
-            .origin
-            .find_command(request.run_id, request.command_id)?
-        {
-            return if stored_fingerprint == fingerprint {
-                Ok(ExecutedTransaction {
-                    result,
-                    events: Vec::new(),
-                    state: self.origin.load_run(request.run_id)?,
-                    duplicate: true,
-                })
-            } else {
-                Err(TransactionError::IdempotencyConflict)
-            };
-        }
-        let state = self.origin.load_run(request.run_id)?;
-        if state.sequence() != request.expected_sequence {
-            return Err(TransactionError::Origin(OriginError::VersionConflict {
-                current: state.sequence(),
-            }));
-        }
-        let prepared = prepare_simulation_command_owned(request, state)?;
-        let events = prepared.commit.events.clone();
-        let committed_state = prepared.commit.candidate.clone();
-        match self.origin.commit(prepared.commit)? {
-            CommitOutcome::Committed(result) => Ok(ExecutedTransaction {
-                result,
-                events,
-                state: committed_state,
-                duplicate: false,
-            }),
-            CommitOutcome::Duplicate(result) => Ok(ExecutedTransaction {
-                result,
-                events: Vec::new(),
-                state: self.origin.load_run(request.run_id)?,
-                duplicate: true,
-            }),
-        }
+        self.execute_input(&JournalInput::Simulation(request.clone()))
     }
-}
 
-/// Prepares the engine-owned candidate without origin I/O.
-pub fn prepare_command(
-    command: &Command,
-    candidate: &RunState,
-) -> Result<PreparedCommand, TransactionError> {
-    prepared_command_outcome(command, candidate.transition(command)?)
-}
-
-/// A loaded run is already owned by the transaction; consume it rather than
-/// copying every book snapshot, account and history before staging a candidate.
-pub fn prepare_command_owned(
-    command: &Command,
-    candidate: RunState,
-) -> Result<PreparedCommand, TransactionError> {
-    prepared_command_outcome(command, candidate.transition_owned(command)?)
-}
-
-fn prepared_command_outcome(
-    command: &Command,
-    outcome: TransitionOutcome,
-) -> Result<PreparedCommand, TransactionError> {
-    let TransitionOutcome {
-        candidate,
-        events,
-        accepted,
-        reject_code,
-        order_id,
-        ..
-    } = outcome;
-    let result = CommandResult {
-        accepted,
-        reject_code,
-        committed_sequence: candidate.sequence(),
-        order_id,
-    };
-    Ok(PreparedCommand {
-        commit: CommitRequest {
-            run_id: command.run_id,
-            command_id: command.command_id,
-            fingerprint: command_fingerprint(command)?,
-            client_key: None,
-            expected_version: command.expected_sequence,
-            events,
-            result,
-            candidate,
-        },
-    })
-}
-
-/// Prepares one simulation command without origin or cache I/O.
-pub fn prepare_simulation_command(
-    request: &SimulationCommandRequest,
-    state: &RunState,
-) -> Result<PreparedCommand, TransactionError> {
-    prepared_simulation_outcome(request, state.transition_simulation(request)?)
-}
-
-/// Prepares an administration transition by consuming an already loaded run.
-pub fn prepare_simulation_command_owned(
-    request: &SimulationCommandRequest,
-    state: RunState,
-) -> Result<PreparedCommand, TransactionError> {
-    prepared_simulation_outcome(request, state.transition_simulation_owned(request)?)
-}
-
-fn prepared_simulation_outcome(
-    request: &SimulationCommandRequest,
-    outcome: TransitionOutcome,
-) -> Result<PreparedCommand, TransactionError> {
-    let TransitionOutcome {
-        candidate,
-        events,
-        accepted,
-        reject_code,
-        order_id,
-        ..
-    } = outcome;
-    let result = CommandResult {
-        accepted,
-        reject_code,
-        committed_sequence: candidate.sequence(),
-        order_id,
-    };
-    Ok(PreparedCommand {
-        commit: CommitRequest {
-            run_id: request.run_id,
-            command_id: request.command_id,
-            fingerprint: simulation_command_fingerprint(request)?,
-            client_key: None,
-            expected_version: request.expected_sequence,
-            events,
-            result,
-            candidate,
-        },
-    })
-}
-
-pub fn command_fingerprint(command: &Command) -> Result<String, TransactionError> {
-    fingerprint(command)
-}
-
-/// Returns the stable idempotency fingerprint for a simulation-domain command.
-pub fn simulation_command_fingerprint(
-    command: &SimulationCommandRequest,
-) -> Result<String, TransactionError> {
-    fingerprint(command)
-}
-
-fn fingerprint(value: &impl serde::Serialize) -> Result<String, TransactionError> {
-    let bytes = serde_json::to_vec(value).map_err(|_| TransactionError::Serialization)?;
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        output.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-        output.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    fn execute_input(&self, input: &JournalInput) -> Result<ExecutedTransaction, TransactionError> {
+        self.origin
+            .execute(input)
+            .map(ExecutedTransaction::from)
+            .map_err(TransactionError::from)
     }
-    Ok(output)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
+    use bunting_engine::{ListingDefinition, ParticipantDefinition, RunState, ScenarioDefinition};
     use bunting_market_events::{
         CancelOrder, CommandPayload, OrderKind, Side, SimulationCommand, SimulationCommandRequest,
         SubmitOrder,
@@ -303,37 +118,6 @@ mod tests {
     use bunting_origin_store::{InMemoryOrigin, OriginStore};
     use bunting_risk_engine::RiskLimits;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct CommitRaceOrigin {
-        committed: InMemoryOrigin,
-        stale: RunState,
-        commit_attempted: AtomicBool,
-    }
-
-    impl OriginStore for CommitRaceOrigin {
-        fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
-            if self.commit_attempted.load(Ordering::SeqCst) {
-                self.committed.load_run(run_id)
-            } else {
-                Ok(self.stale.clone())
-            }
-        }
-
-        fn find_command(
-            &self,
-            _run_id: RunId,
-            _command_id: CommandId,
-        ) -> Result<Option<(String, CommandResult)>, OriginError> {
-            Ok(None)
-        }
-
-        fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
-            let outcome = self.committed.commit(request);
-            self.commit_attempted.store(true, Ordering::SeqCst);
-            outcome
-        }
-    }
 
     fn setup() -> InMemoryOrigin {
         let participant = |id| {
@@ -425,7 +209,7 @@ mod tests {
             }),
         };
         assert!(transaction.execute(&cancel).unwrap().accepted);
-        let restored = origin.load_run(RunId::new(1)).unwrap();
+        let restored = origin.clone_run(RunId::new(1)).unwrap();
         let envelope = restored.snapshot_envelope().unwrap();
         assert_eq!(
             bunting_engine::EngineSnapshotEnvelope::from_json(&envelope.to_json().unwrap())
@@ -450,7 +234,7 @@ mod tests {
             ))
         ));
         assert_eq!(
-            origin.load_run(RunId::new(1)).unwrap().sequence(),
+            origin.clone_run(RunId::new(1)).unwrap().sequence(),
             EventSequence::new(1)
         );
     }
@@ -474,31 +258,8 @@ mod tests {
         assert!(duplicate.duplicate);
         assert_eq!(duplicate.result, committed.result);
         assert_eq!(
-            origin.load_run(RunId::new(1)).unwrap().sequence(),
+            origin.clone_run(RunId::new(1)).unwrap().sequence(),
             EventSequence::new(1)
         );
-    }
-
-    #[test]
-    fn duplicate_commit_race_discards_local_events_and_reloads_origin_state() {
-        let origin = setup();
-        let stale = origin.load_run(RunId::new(1)).unwrap();
-        let command = submit(EventSequence::new(0), 10, 1, 1, Side::Buy, 100, 1);
-        CommandTransaction::new(&origin)
-            .execute_detailed(&command)
-            .unwrap();
-
-        let race = CommitRaceOrigin {
-            committed: origin,
-            stale,
-            commit_attempted: AtomicBool::new(false),
-        };
-        let duplicate = CommandTransaction::new(&race)
-            .execute_detailed(&command)
-            .unwrap();
-
-        assert!(duplicate.duplicate);
-        assert!(duplicate.events.is_empty());
-        assert_eq!(duplicate.state.sequence(), EventSequence::new(1));
     }
 }

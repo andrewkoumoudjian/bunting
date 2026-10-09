@@ -3,11 +3,14 @@
 //! Replays the same seeded command streams through three layers and reports
 //! per-command latency percentiles, throughput and bytes written:
 //!
-//! - `engine`: `RunState::transition_owned` applied in place (no copies);
-//! - `memory`: `CommandTransaction` over `InMemoryOrigin` (load clone,
-//!   candidate clone, commit);
-//! - `file`: `CommandTransaction` over the durable `FileOriginStore`
-//!   (adds full-state journal frame + fsync and 128-command checkpoints).
+//! - `engine`: `RunState::apply` in place, nothing else;
+//! - `memory`: `CommandTransaction` over `InMemoryOrigin` (writer-owned live
+//!   run: idempotency index, event-hash chain, in-memory checkpoints);
+//! - `file`: `CommandTransaction` over the durable `FileOriginStore` (adds
+//!   one command-sourced journal frame + fdatasync per command and a
+//!   state-only checkpoint every `CHECKPOINT_INTERVAL` commands).
+//!
+//! The byte column is the mean journal bytes per command (file layer only).
 //!
 //! Workloads follow the roadmap's measurement table: `passive` (90% resting
 //! submits / 10% cancels), `mixed` (40% passive / 30% cancel / 30% crossing)
@@ -38,6 +41,9 @@ use bunting_origin_store::{InMemoryOrigin, OriginStore};
 use bunting_risk_engine::RiskLimits;
 use bunting_server::config::{StorageConfig, StorageKind};
 use bunting_server::storage::FileOriginStore;
+
+/// Matches the shipped configuration profiles.
+const CHECKPOINT_INTERVAL: usize = 8_192;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -215,9 +221,8 @@ fn command(step: &Step, index: usize, expected: EventSequence) -> Command {
 struct Sample {
     nanos: Vec<u128>,
     total_nanos: u128,
-    /// Size of the final full-state journal frame payload (file layer only):
-    /// what one commit writes and fsyncs at the end of the run.
-    frame_bytes_end: usize,
+    /// Mean journal bytes appended per command (file layer only).
+    journal_bytes_per_command: usize,
     resting_at_end: usize,
     rejects: BTreeMap<String, usize>,
 }
@@ -248,11 +253,11 @@ fn report(workload: &str, layer: &str, mut sample: Sample, only_last_of: Option<
         u128::try_from(count).unwrap_or(0) * 1_000_000_000 / sample.total_nanos
     };
     println!(
-        "{workload:7} {layer:6} n={count:6} p50={:>8}us p99={:>8}us max={:>8}us  {throughput:>7} cmd/s  frame_end={:>9} B  resting_end={}",
+        "{workload:7} {layer:6} n={count:6} p50={:>8}us p99={:>8}us max={:>8}us  {throughput:>7} cmd/s  journal={:>6} B/cmd  resting_end={}",
         micros(percentile(&sample.nanos, 50, 100)),
         micros(percentile(&sample.nanos, 99, 100)),
         micros(sample.nanos.last().copied().unwrap_or(0)),
-        sample.frame_bytes_end,
+        sample.journal_bytes_per_command,
         sample.resting_at_end,
     );
     if !sample.rejects.is_empty() {
@@ -272,34 +277,28 @@ fn run_engine(steps: &[Step]) -> Result<Sample, Error> {
     for (index, step) in steps.iter().enumerate() {
         let command = command(step, index, state.sequence());
         let begin = Instant::now();
-        let outcome = state
-            .transition_owned(&command)
+        let applied = state
+            .apply(&command)
             .map_err(|error| format!("{error:?}"))?;
         nanos.push(begin.elapsed().as_nanos());
-        if let Some(code) = outcome.reject_code {
+        if let Some(code) = applied.reject_code {
             *rejects.entry(code).or_insert(0) += 1;
         }
-        state = outcome.candidate;
     }
     Ok(Sample {
         nanos,
         total_nanos: started.elapsed().as_nanos(),
-        frame_bytes_end: 0,
+        journal_bytes_per_command: 0,
         resting_at_end: resting(&state),
         rejects,
     })
 }
 
-fn run_transaction<O: OriginStore>(
-    origin: &O,
-    steps: &[Step],
-    durable: bool,
-) -> Result<Sample, Error> {
+fn run_transaction<O: OriginStore>(origin: &O, steps: &[Step]) -> Result<Sample, Error> {
     let transaction = CommandTransaction::new(origin);
     let mut expected = origin
-        .load_run(RUN)
-        .map_err(|error| format!("{error:?}"))?
-        .sequence();
+        .read_run(RUN, RunState::sequence)
+        .map_err(|error| format!("{error:?}"))?;
     let mut rejects = BTreeMap::new();
     let mut nanos = Vec::with_capacity(steps.len());
     let started = Instant::now();
@@ -316,16 +315,14 @@ fn run_transaction<O: OriginStore>(
         expected = result.committed_sequence;
     }
     let total_nanos = started.elapsed().as_nanos();
-    let state = origin.load_run(RUN).map_err(|error| format!("{error:?}"))?;
+    let resting_at_end = origin
+        .read_run(RUN, resting)
+        .map_err(|error| format!("{error:?}"))?;
     Ok(Sample {
         nanos,
         total_nanos,
-        frame_bytes_end: if durable {
-            serde_json::to_vec(&state)?.len()
-        } else {
-            0
-        },
-        resting_at_end: resting(&state),
+        journal_bytes_per_command: 0,
+        resting_at_end,
         rejects,
     })
 }
@@ -342,15 +339,20 @@ fn run_file(steps: &[Step], label: &str) -> Result<Sample, Error> {
             kind: StorageKind::File,
             path: Some(path.display().to_string()),
             max_runs: 1,
-            max_commands: 10_000_000,
+            max_commands_per_run: 10_000_000,
             max_events_per_run: 100_000_000,
+            checkpoint_interval: CHECKPOINT_INTERVAL,
+            max_commands: None,
         },
     )
     .map_err(|error| format!("{error:?}"))?;
     origin
         .insert_run(initial_run()?)
         .map_err(|error| format!("{error:?}"))?;
-    let sample = run_transaction(&origin, steps, true)?;
+    let genesis_bytes = std::fs::metadata(path.with_extension("wal"))?.len();
+    let mut sample = run_transaction(&origin, steps)?;
+    let journal_bytes = std::fs::metadata(path.with_extension("wal"))?.len() - genesis_bytes;
+    sample.journal_bytes_per_command = usize::try_from(journal_bytes)? / steps.len().max(1);
     drop(origin);
     let _ = std::fs::remove_dir_all(&directory);
     Ok(sample)
@@ -374,12 +376,7 @@ fn main() -> Result<(), Error> {
         memory
             .insert_run(initial_run()?)
             .map_err(|error| format!("{error:?}"))?;
-        report(
-            name,
-            "memory",
-            run_transaction(&memory, steps, false)?,
-            None,
-        );
+        report(name, "memory", run_transaction(&memory, steps)?, None);
         report(name, "file", run_file(steps, name)?, None);
     }
     let levels = 100;
@@ -392,7 +389,7 @@ fn main() -> Result<(), Error> {
     report(
         "sweep",
         "memory",
-        run_transaction(&memory, &steps, false)?,
+        run_transaction(&memory, &steps)?,
         Some(levels + 1),
     );
     report(

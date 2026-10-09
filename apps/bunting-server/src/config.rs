@@ -28,8 +28,27 @@ pub struct StorageConfig {
     pub kind: StorageKind,
     pub path: Option<String>,
     pub max_runs: usize,
-    pub max_commands: usize,
+    /// Committed commands per run; each costs one in-memory index entry.
+    pub max_commands_per_run: usize,
     pub max_events_per_run: usize,
+    /// Committed commands between state checkpoints. Bounds both restart
+    /// re-execution and in-memory rollback work.
+    pub checkpoint_interval: usize,
+    /// Removed: the store-wide command bound became `max_commands_per_run`.
+    /// Present only so a stale configuration fails with an explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_commands: Option<usize>,
+}
+
+impl StorageConfig {
+    #[must_use]
+    pub fn limits(&self) -> bunting_origin_store::RunLimits {
+        bunting_origin_store::RunLimits {
+            max_commands: self.max_commands_per_run,
+            max_events: u64::try_from(self.max_events_per_run).unwrap_or(u64::MAX),
+            checkpoint_interval: self.checkpoint_interval,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -138,8 +157,10 @@ impl ServerConfig {
                 kind: StorageKind::Memory,
                 path: None,
                 max_runs: 4,
-                max_commands: 10_000,
-                max_events_per_run: 100_000,
+                max_commands_per_run: 1_048_576,
+                max_events_per_run: 8_388_608,
+                checkpoint_interval: 8_192,
+                max_commands: None,
             },
             fix: Some(FixConfig {
                 bind: "127.0.0.1:9880".to_owned(),
@@ -231,12 +252,19 @@ impl ServerConfig {
                 self.version
             )));
         }
+        if self.storage.max_commands.is_some() {
+            return Err(ConfigError(
+                "storage.max_commands was removed: command bounds are per run; set storage.max_commands_per_run and storage.checkpoint_interval instead"
+                    .to_owned(),
+            ));
+        }
         if self.storage.max_runs == 0
-            || self.storage.max_commands == 0
+            || self.storage.max_commands_per_run == 0
             || self.storage.max_events_per_run == 0
+            || self.storage.checkpoint_interval == 0
         {
             return Err(ConfigError(
-                "storage bounds max_runs, max_commands and max_events_per_run must be positive"
+                "storage bounds max_runs, max_commands_per_run, max_events_per_run and checkpoint_interval must be positive"
                     .to_owned(),
             ));
         }

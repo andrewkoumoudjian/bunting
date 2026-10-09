@@ -207,15 +207,16 @@ pub(crate) fn handle_fix_connection(
             }
             interval_messages = interval_messages.saturating_add(1);
             let outbound = writer.execute_interval(|| {
-                let state = service
-                    .recover(RunId::new(config.run_id))
-                    .map_err(|error| format!("run recovery failed: {error}"))?;
+                let run_id = RunId::new(config.run_id);
+                let expected_sequence = service
+                    .read(run_id, RunState::sequence)
+                    .map_err(|error| format!("run read failed: {error}"))?;
                 let request = application.map_message(
                     &message,
                     &FixCommandContext {
                         actor: ParticipantId::new(credential.participant_id),
-                        run_id: RunId::new(config.run_id),
-                        expected_sequence: state.sequence(),
+                        run_id,
+                        expected_sequence,
                         logical_time: LogicalTimeNs::new(epoch_millis().saturating_mul(1_000_000)),
                         correlation_id: CorrelationId::new(u128::from(
                             session.snapshot().incoming_sequence,
@@ -238,7 +239,9 @@ pub(crate) fn handle_fix_connection(
                         market_depth,
                         ..
                     }) => {
-                        let projection = project_market(&state, listing_key)
+                        let projection = service
+                            .read(run_id, |state| project_market(state, listing_key))
+                            .map_err(|error| format!("run read failed: {error}"))?
                             .map_err(|error| format!("market projection failed: {error}"))?;
                         let bids = typed_levels(&projection.bids, market_depth);
                         let asks = typed_levels(&projection.asks, market_depth);
@@ -247,8 +250,8 @@ pub(crate) fn handle_fix_connection(
                     Ok(FixApplicationRequest::Competition(request)) => competition_messages(
                         &service,
                         &actor,
-                        &state,
-                        request,
+                        run_id,
+                        &request,
                         u128::from(session.snapshot().incoming_sequence),
                     )?,
                     Err(error) => vec![business_reject(&message.msg_type, &error.to_string())],
@@ -311,18 +314,87 @@ fn deliver_committed(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the exhaustive competition request router keeps projection and mutation authority visible"
-)]
+/// Commits a competition mutation, if the request carries one, and then
+/// builds the report from one borrowed read of the committed run.
 fn competition_messages<O: OriginStore>(
     service: &ApplicationService<'_, O>,
     actor: &VerifiedActor,
-    state: &RunState,
-    request: CompetitionRequest,
+    run_id: RunId,
+    request: &CompetitionRequest,
     request_id: u128,
 ) -> Result<Vec<FixMessage>, String> {
-    let report = match request {
+    let mutation = match request {
+        CompetitionRequest::Tender { action, tender_id } if *action != TenderAction::List => {
+            let decision = if *action == TenderAction::Accept {
+                TenderDecision::Accept
+            } else {
+                TenderDecision::Decline
+            };
+            Some((
+                SimulationCommand::DecideTender {
+                    tender_id: TenderId::new(
+                        tender_id.ok_or_else(|| "missing tender identity".to_owned())?,
+                    ),
+                    decision,
+                },
+                "tender decision failed",
+            ))
+        }
+        CompetitionRequest::RunControl {
+            action,
+            payload_json,
+        }
+        | CompetitionRequest::RiskAdmin {
+            action,
+            payload_json,
+        } => Some((
+            operator_command(action, payload_json.as_deref())?,
+            "operator command failed",
+        )),
+        _ => None,
+    };
+    if let Some((payload, context)) = mutation {
+        let (now, expected_sequence) = service
+            .read(run_id, |state| {
+                (state.simulation().clock.now, state.sequence())
+            })
+            .map_err(|error| error.to_string())?;
+        let participant = match request {
+            CompetitionRequest::Tender { .. } => actor
+                .participant_id()
+                .ok_or_else(|| "competition participant identity is unavailable".to_owned())?,
+            _ => ParticipantId::new(actor.identity().actor_id.get()),
+        };
+        service
+            .execute_simulation(
+                actor,
+                &SimulationCommandRequest {
+                    run_id,
+                    command_id: competition_command_id(request_id),
+                    correlation_id: CorrelationId::new(request_id),
+                    logical_time: now,
+                    expected_sequence,
+                    actor: participant,
+                    payload,
+                },
+            )
+            .map_err(|error| format!("{context}: {error}"))?;
+    }
+    let report = service
+        .read(run_id, |state| {
+            competition_report_for(state, actor, request)
+        })
+        .map_err(|error| error.to_string())??;
+    Ok(vec![report])
+}
+
+/// Read-only report for one competition request over the committed run.
+fn competition_report_for(
+    state: &RunState,
+    actor: &VerifiedActor,
+    request: &CompetitionRequest,
+) -> Result<FixMessage, String> {
+    match request {
         CompetitionRequest::Discovery => competition_report(
             "y",
             "public",
@@ -352,48 +424,18 @@ fn competition_messages<O: OriginStore>(
                 .map_err(|error| error.to_string())?
                 .news,
         ),
-        CompetitionRequest::Tender { action, tender_id } => {
-            let participant = actor
+        CompetitionRequest::Tender { .. } => {
+            actor
                 .participant_id()
                 .ok_or_else(|| "competition participant identity is unavailable".to_owned())?;
-            let current = if action == TenderAction::List {
-                state.clone()
-            } else {
-                let decision = if action == TenderAction::Accept {
-                    TenderDecision::Accept
-                } else {
-                    TenderDecision::Decline
-                };
-                service
-                    .execute_simulation(
-                        actor,
-                        &SimulationCommandRequest {
-                            run_id: state.run_id(),
-                            command_id: competition_command_id(request_id),
-                            correlation_id: CorrelationId::new(request_id),
-                            logical_time: state.simulation().clock.now,
-                            expected_sequence: state.sequence(),
-                            actor: participant,
-                            payload: SimulationCommand::DecideTender {
-                                tender_id: TenderId::new(
-                                    tender_id
-                                        .ok_or_else(|| "missing tender identity".to_owned())?,
-                                ),
-                                decision,
-                            },
-                        },
-                    )
-                    .map_err(|error| error.to_string())?
-                    .state
-            };
             competition_report(
                 "U6",
                 "private",
                 "tender",
                 "list",
                 "ok",
-                current.sequence().get(),
-                &news_tenders(&current, actor)
+                state.sequence().get(),
+                &news_tenders(state, actor)
                     .map_err(|error| error.to_string())?
                     .tenders,
             )
@@ -418,41 +460,18 @@ fn competition_messages<O: OriginStore>(
             state.sequence().get(),
             &risk_score(state, actor).map_err(|error| error.to_string())?,
         ),
-        CompetitionRequest::RunControl {
+        CompetitionRequest::RunControl { action, .. }
+        | CompetitionRequest::RiskAdmin { action, .. } => competition_report(
+            "UA",
+            "admin",
+            "run_control",
             action,
-            payload_json,
-        }
-        | CompetitionRequest::RiskAdmin {
-            action,
-            payload_json,
-        } => {
-            let executed = service
-                .execute_simulation(
-                    actor,
-                    &SimulationCommandRequest {
-                        run_id: state.run_id(),
-                        command_id: competition_command_id(request_id),
-                        correlation_id: CorrelationId::new(request_id),
-                        logical_time: state.simulation().clock.now,
-                        expected_sequence: state.sequence(),
-                        actor: ParticipantId::new(actor.identity().actor_id.get()),
-                        payload: operator_command(&action, payload_json.as_deref())?,
-                    },
-                )
-                .map_err(|error| format!("operator command failed: {error}"))?;
-            competition_report(
-                "UA",
-                "admin",
-                "run_control",
-                &action,
-                "committed",
-                executed.state.sequence().get(),
-                &discovery(&executed.state),
-            )
-        }
+            "committed",
+            state.sequence().get(),
+            &discovery(state),
+        ),
     }
-    .map_err(|error| format!("competition report mapping failed: {error:?}"))?;
-    Ok(vec![report])
+    .map_err(|error| format!("competition report mapping failed: {error:?}"))
 }
 
 const fn competition_command_id(sequence: u128) -> CommandId {

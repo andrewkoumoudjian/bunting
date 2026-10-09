@@ -41,8 +41,15 @@ Plan events around these until the fixes listed in
 - **The archive does not contain ordinary orders.** `bunting replay`/`judge`
   verify simulation/control commands only; they cannot recompute fills or
   P&L from orders. Keep the origin journal and event files for disputes.
-- **Default storage holds 10,000 commands across all runs.** After that every
-  command fails. Raise `storage.max_commands` and `max_events_per_run` for
-  long or busy rounds.
+- **Storage bounds are per run.** `storage.max_commands_per_run` and
+  `max_events_per_run` cap one run (the shipped profiles allow 1–2 million
+  commands); each committed command keeps one small index entry in memory.
+  A stale `storage.max_commands` key stops the server with an explanation.
+- **The journal is never compacted.** `<path>.wal` holds every committed
+  command of every run (it is the run's history); plan disk for its growth.
+  `<path>` is a state-only checkpoint that only speeds up restarts; deleting
+  it forces a full re-execution from genesis, never data loss. Stores written
+  before journal format 2 (slice 14) are refused at startup; archive them and
+  start a new run.
 - **Built-in agent state restarts from scratch** when the server restarts, so a
   restarted round is not identical to an uninterrupted one.

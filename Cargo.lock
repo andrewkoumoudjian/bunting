@@ -182,9 +182,6 @@ dependencies = [
  "bunting-market-types",
  "bunting-origin-store",
  "bunting-risk-engine",
- "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -255,6 +252,7 @@ dependencies = [
  "bunting-risk-engine",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

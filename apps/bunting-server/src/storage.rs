@@ -1,13 +1,14 @@
-use crate::commit_journal;
+use crate::commit_journal::{self, EntryRef, JournalEntry, JournalWriter};
 use crate::config::{StorageConfig, StorageKind};
 use bunting_engine::{EngineSnapshotEnvelope, RunState};
 use bunting_market_events::EventEnvelope;
-use bunting_market_types::{CommandId, EventSequence, RunId};
+use bunting_market_types::{CommandId, RunId};
 use bunting_origin_store::{
-    CommandResult, CommitOutcome, CommitRequest, InMemoryOrigin, OriginError, OriginStore,
+    CommandResult, Executed, Execution, InMemoryOrigin, JournalInput, LiveRun, OriginError,
+    OriginStore, RunLimits, RunRecovery,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,41 +17,45 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct StoredCommand {
-    run_id: RunId,
-    command_id: CommandId,
-    fingerprint: String,
-    result: CommandResult,
-}
+const CHECKPOINT_VERSION: u16 = 2;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct RunEvents {
-    run_id: RunId,
-    events: Vec<EventEnvelope>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// State-only restart accelerator. The journal stays authoritative: every
+/// checkpointed run must reappear, with the same chain value, in a replay of
+/// its journal records.
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct FileState {
-    runs: Vec<RunState>,
-    commands: Vec<StoredCommand>,
-    events: Vec<RunEvents>,
+struct Checkpoint {
+    version: u16,
+    runs: Vec<CheckpointRun>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointRun {
+    snapshot: EngineSnapshotEnvelope,
+    chain: String,
+}
+
+#[derive(Debug)]
+struct FileInner {
+    runs: BTreeMap<RunId, LiveRun>,
+    journal: JournalWriter,
+}
+
+/// Durable single-writer origin: the live runs are in memory, every
+/// committed input is appended to the journal before it is acknowledged.
 #[derive(Clone, Debug)]
 pub struct FileOriginStore {
     path: PathBuf,
-    state: Arc<Mutex<FileState>>,
-    /// An ambiguous write failure prevents further acknowledgments until a
-    /// process restart and journal-prefix recovery.
+    inner: Arc<Mutex<FileInner>>,
+    /// An ambiguous journal write prevents further acknowledgments until a
+    /// process restart re-verifies the journal.
     poisoned: Arc<AtomicBool>,
     /// OS-backed single-writer lease, held until the last store clone drops.
     #[cfg(unix)]
     _writer_lock: Arc<File>,
     max_runs: usize,
-    max_commands: usize,
-    max_events_per_run: usize,
+    limits: RunLimits,
 }
 
 impl FileOriginStore {
@@ -85,175 +90,156 @@ impl FileOriginStore {
         #[cfg(not(unix))]
         return Err(OriginError::Unavailable);
 
+        let limits = config.limits();
         let journal_path = commit_journal::path_for(&path);
-        if !path.exists() && journal_path.exists() {
-            // A journal without its genesis checkpoint is not a valid run.
-            return Err(OriginError::Unavailable);
+        if path.exists() && !journal_path.exists() {
+            // A checkpoint is only an accelerator for a journal it came from.
+            return Err(OriginError::InvalidCommit);
         }
-        let mut state = if path.exists() {
-            let bytes = fs::read(&path).map_err(|_| OriginError::Unavailable)?;
-            serde_json::from_slice(&bytes).map_err(|_| OriginError::Unavailable)?
-        } else {
-            FileState::default()
-        };
-        commit_journal::replay(&journal_path, |request| {
-            if check_record(
-                &state,
-                &request,
-                config.max_commands,
-                config.max_events_per_run,
-            )?
-            .is_none()
-            {
-                apply_record(&mut state, request)?;
-            }
-            Ok(())
-        })?;
+        let runs = recover(&path, &journal_path, limits, config.max_runs)?;
         let store = Self {
             path,
-            state: Arc::new(Mutex::new(state)),
+            inner: Arc::new(Mutex::new(FileInner {
+                runs,
+                journal: JournalWriter::open(&journal_path)?,
+            })),
             poisoned: Arc::new(AtomicBool::new(false)),
             #[cfg(unix)]
             _writer_lock: writer_lock,
             max_runs: config.max_runs,
-            max_commands: config.max_commands,
-            max_events_per_run: config.max_events_per_run,
+            limits,
         };
-        store.validate_loaded()?;
+        // Bound the next restart's re-execution if the recovered tail is long.
+        let mut inner = store.inner.lock().map_err(|_| OriginError::Unavailable)?;
+        if inner.runs.values().any(LiveRun::needs_checkpoint) {
+            for live in inner.runs.values_mut() {
+                live.checkpoint()?;
+            }
+            let _ = write_checkpoint(&store.path, &inner.runs);
+        }
+        drop(inner);
         Ok(store)
     }
 
-    /// Fail closed on any incomplete, duplicated or inconsistent committed
-    /// state, rather than starting an exchange from a plausible JSON file.
-    fn validate_loaded(&self) -> Result<(), OriginError> {
-        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
-        if state.runs.len() > self.max_runs || state.commands.len() > self.max_commands {
-            return Err(OriginError::Unavailable);
-        }
-        let mut runs = BTreeMap::new();
-        for run in &state.runs {
-            if runs.insert(run.run_id(), run).is_some() {
-                return Err(OriginError::InvalidCommit);
-            }
-            // Validate the exact engine schema and canonical snapshot hash.
-            // Do not attempt recovery from obsolete or structurally corrupt runs.
-            let envelope = run
-                .snapshot_envelope()
-                .and_then(|envelope| envelope.to_json())
-                .map_err(|_| OriginError::InvalidCommit)?;
-            EngineSnapshotEnvelope::from_json(&envelope).map_err(|_| OriginError::InvalidCommit)?;
-        }
-        let mut event_heads = BTreeMap::new();
-        let mut event_commands = BTreeSet::new();
-        for batch in &state.events {
-            if batch.events.len() > self.max_events_per_run
-                || !runs.contains_key(&batch.run_id)
-                || event_heads.contains_key(&batch.run_id)
-            {
-                return Err(OriginError::InvalidCommit);
-            }
-            let mut current = EventSequence::new(0);
-            for event in &batch.events {
-                let next = current
-                    .checked_add(EventSequence::new(1))
-                    .ok_or(OriginError::InvalidCommit)?;
-                if event.run_id != batch.run_id || event.sequence != next {
-                    return Err(OriginError::InvalidCommit);
-                }
-                event_commands.insert((batch.run_id, event.command_id));
-                current = next;
-            }
-            event_heads.insert(batch.run_id, current);
-        }
-        if runs.iter().any(|(run_id, run)| {
-            event_heads
-                .get(run_id)
-                .copied()
-                .unwrap_or(EventSequence::new(0))
-                != run.event_sequence()
-        }) {
-            return Err(OriginError::InvalidCommit);
-        }
-        let mut command_ids = BTreeSet::new();
-        for command in &state.commands {
-            let Some(run) = runs.get(&command.run_id) else {
-                return Err(OriginError::InvalidCommit);
-            };
-            if !command_ids.insert((command.run_id, command.command_id))
-                || !event_commands.contains(&(command.run_id, command.command_id))
-                || command.fingerprint.is_empty()
-                || command.result.committed_sequence.get() == 0
-                || command.result.committed_sequence > run.sequence()
-            {
-                return Err(OriginError::InvalidCommit);
-            }
-        }
-        Ok(())
-    }
-
     pub fn insert_run(&self, run: RunState) -> Result<(), OriginError> {
-        let mut state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        let mut inner = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        if let Some(existing) = state.runs.iter().find(|item| item.run_id() == run.run_id()) {
-            return if existing == &run {
+        if let Some(existing) = inner.runs.get(&run.run_id()) {
+            return if existing.state()? == &run {
                 Ok(())
             } else {
                 Err(OriginError::InvalidCommit)
             };
         }
-        if state.runs.len() >= self.max_runs {
-            return Err(OriginError::Unavailable);
+        if inner.runs.len() >= self.max_runs {
+            return Err(OriginError::CapacityExceeded);
         }
-        let mut candidate = state.clone();
-        candidate.runs.push(run);
-        persist(&self.path, &candidate)?;
-        *state = candidate;
-        // Checkpoint supersedes each previously committed journal entry.
-        // Leaving redundant entries on an I/O failure is safe on recovery.
-        let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
+        let snapshot =
+            EngineSnapshotEnvelope::new(run.clone()).map_err(|_| OriginError::InvalidCommit)?;
+        let live = LiveRun::genesis(run, self.limits)?;
+        if let Err(error) = inner.journal.append(&EntryRef::Genesis {
+            snapshot: &snapshot,
+        }) {
+            self.poisoned.store(true, Ordering::Release);
+            return Err(error);
+        }
+        inner.runs.insert(live.state()?.run_id(), live);
         Ok(())
     }
 
-    /// Force a durable, atomic checkpoint and compact the synced journal.
-    /// Failure to compact does not undo the checkpoint or committed commands.
+    /// Force a durable, atomic checkpoint of every run's live state.
     pub fn checkpoint(&self) -> Result<(), OriginError> {
-        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        let mut inner = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        persist(&self.path, &state)?;
-        let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
-        Ok(())
+        for live in inner.runs.values_mut() {
+            live.checkpoint()?;
+        }
+        write_checkpoint(&self.path, &inner.runs)
     }
 
+    /// Every committed event of one run, read back from the journal.
     pub fn events(&self, run_id: RunId) -> Result<Vec<EventEnvelope>, OriginError> {
-        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        let inner = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        Ok(state
-            .events
-            .iter()
-            .find(|item| item.run_id == run_id)
-            .map(|item| item.events.clone())
-            .unwrap_or_default())
+        if !inner.runs.contains_key(&run_id) {
+            return Err(OriginError::UnknownRun);
+        }
+        let mut events = Vec::new();
+        commit_journal::scan(&commit_journal::path_for(&self.path), false, |entry| {
+            if let JournalEntry::Command(record) = entry
+                && record.input.run_id() == run_id
+            {
+                events.extend(record.events);
+            }
+            Ok(())
+        })?;
+        Ok(events)
     }
 }
 
 impl OriginStore for FileOriginStore {
-    fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
-        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+        let mut guard = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        state
-            .runs
-            .iter()
-            .find(|run| run.run_id() == run_id)
-            .cloned()
-            .ok_or(OriginError::UnknownRun)
+        let FileInner { runs, journal } = &mut *guard;
+        let live = runs
+            .get_mut(&input.run_id())
+            .ok_or(OriginError::UnknownRun)?;
+        let record = match live.execute(input)? {
+            Execution::Duplicate(result) => {
+                return Ok(Executed {
+                    result,
+                    events: Vec::new(),
+                    duplicate: true,
+                });
+            }
+            Execution::Committed(record) => record,
+        };
+        // The live run already holds the transition; it becomes committed
+        // only when the journal frame is durable. A failed append might
+        // still have reached disk, so only a restart can resolve it.
+        if let Err(error) = journal.append(&EntryRef::Command(&record)) {
+            self.poisoned.store(true, Ordering::Release);
+            return Err(error);
+        }
+        if live.needs_checkpoint() {
+            live.checkpoint()?;
+            // Best effort: the journal is authoritative, so a failed
+            // checkpoint only lengthens the next restart's re-execution.
+            let _ = write_checkpoint(&self.path, runs);
+        }
+        let record = *record;
+        Ok(Executed {
+            result: record.result,
+            events: record.events,
+            duplicate: false,
+        })
+    }
+
+    fn read_run<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, OriginError> {
+        let inner = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(OriginError::Unavailable);
+        }
+        Ok(read(
+            inner
+                .runs
+                .get(&run_id)
+                .ok_or(OriginError::UnknownRun)?
+                .state()?,
+        ))
     }
 
     fn find_command(
@@ -261,134 +247,110 @@ impl OriginStore for FileOriginStore {
         run_id: RunId,
         command_id: CommandId,
     ) -> Result<Option<(String, CommandResult)>, OriginError> {
-        let state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
+        let inner = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
         }
-        Ok(state
-            .commands
-            .iter()
-            .find(|item| item.run_id == run_id && item.command_id == command_id)
-            .map(|item| (item.fingerprint.clone(), item.result.clone())))
-    }
-
-    fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
-        let mut state = self.state.lock().map_err(|_| OriginError::Unavailable)?;
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(OriginError::Unavailable);
-        }
-        if let Some(previous) =
-            check_record(&state, &request, self.max_commands, self.max_events_per_run)?
-        {
-            return Ok(CommitOutcome::Duplicate(previous));
-        }
-        // The journal is durable BEFORE the in-memory run and responses change.
-        // A failed append poisons the writer: its last frame might be complete,
-        // and only replay can resolve that ambiguity safely.
-        if let Err(error) = commit_journal::append(&commit_journal::path_for(&self.path), &request)
-        {
-            self.poisoned.store(true, Ordering::Release);
-            return Err(error);
-        }
-        let result = request.result.clone();
-        if let Err(error) = apply_record(&mut state, request) {
-            self.poisoned.store(true, Ordering::Release);
-            return Err(error);
-        }
-        // Periodically compact history to one atomically replaced checkpoint.
-        // Compaction is best effort after the journal commit and never causes a
-        // durable acknowledged order to be reported as rejected.
-        if state.commands.len() % commit_journal::CHECKPOINT_INTERVAL == 0
-            && persist(&self.path, &state).is_ok()
-        {
-            let _ = commit_journal::clear(&commit_journal::path_for(&self.path));
-        }
-        Ok(CommitOutcome::Committed(result))
+        Ok(inner
+            .runs
+            .get(&run_id)
+            .ok_or(OriginError::UnknownRun)?
+            .find(command_id))
     }
 }
 
-/// Reject idempotency collisions, version races, and invalid event cursors
-/// before any durable write. Reused without change during journal recovery.
-fn check_record(
-    state: &FileState,
-    request: &CommitRequest,
-    max_commands: usize,
-    max_events_per_run: usize,
-) -> Result<Option<CommandResult>, OriginError> {
-    if let Some(previous) = state
-        .commands
-        .iter()
-        .find(|item| item.run_id == request.run_id && item.command_id == request.command_id)
-    {
-        return if previous.fingerprint == request.fingerprint
-            && previous.result == request.result
-            && state.runs.iter().any(|run| {
-                run.run_id() == request.run_id
-                    && run.sequence() >= request.result.committed_sequence
-            }) {
-            Ok(Some(previous.result.clone()))
-        } else {
-            Err(OriginError::IdempotencyConflict)
-        };
+/// Rebuilds every run from the journal, starting each from its checkpoint
+/// when one exists. Records after a checkpoint are re-executed and must
+/// reproduce the journal exactly, so every restart is a determinism check.
+fn recover(
+    checkpoint_path: &Path,
+    journal_path: &Path,
+    limits: RunLimits,
+    max_runs: usize,
+) -> Result<BTreeMap<RunId, LiveRun>, OriginError> {
+    let mut checkpointed = BTreeMap::new();
+    if checkpoint_path.exists() {
+        let bytes = fs::read(checkpoint_path).map_err(|_| OriginError::Unavailable)?;
+        // Stores from before journal format 2 are rejected, not migrated.
+        let checkpoint: Checkpoint =
+            serde_json::from_slice(&bytes).map_err(|_| OriginError::InvalidCommit)?;
+        if checkpoint.version != CHECKPOINT_VERSION {
+            return Err(OriginError::InvalidCommit);
+        }
+        for run in checkpoint.runs {
+            run.snapshot
+                .verify()
+                .map_err(|_| OriginError::InvalidCommit)?;
+            let run_id = run.snapshot.state.run_id();
+            if checkpointed
+                .insert(run_id, (run.snapshot.state, run.chain))
+                .is_some()
+            {
+                return Err(OriginError::InvalidCommit);
+            }
+        }
     }
-    let run = state
-        .runs
-        .iter()
-        .find(|run| run.run_id() == request.run_id)
-        .ok_or(OriginError::UnknownRun)?;
-    if run.sequence() != request.expected_version {
-        return Err(OriginError::VersionConflict {
-            current: run.sequence(),
-        });
+    let mut recoveries = BTreeMap::<RunId, RunRecovery>::new();
+    commit_journal::scan(journal_path, true, |entry| match entry {
+        JournalEntry::Genesis { snapshot } => {
+            snapshot.verify().map_err(|_| OriginError::InvalidCommit)?;
+            let genesis = snapshot.state;
+            let run_id = genesis.run_id();
+            if recoveries.contains_key(&run_id) || recoveries.len() >= max_runs {
+                return Err(OriginError::InvalidCommit);
+            }
+            let checkpoint = checkpointed.remove(&run_id);
+            let recovery = RunRecovery::new(
+                genesis,
+                checkpoint
+                    .as_ref()
+                    .map(|(state, chain)| (state.clone(), chain.as_str())),
+                limits,
+            )?;
+            recoveries.insert(run_id, recovery);
+            Ok(())
+        }
+        JournalEntry::Command(record) => recoveries
+            .get_mut(&record.input.run_id())
+            .ok_or(OriginError::InvalidCommit)?
+            .replay(&record),
+    })?;
+    if !checkpointed.is_empty() {
+        // A checkpointed run has no genesis in the journal.
+        return Err(OriginError::InvalidCommit);
     }
-    request.validate_against(run.event_sequence())?;
-    if state.commands.len() >= max_commands {
-        return Err(OriginError::Unavailable);
-    }
-    let existing_events = state
-        .events
-        .iter()
-        .find(|batch| batch.run_id == request.run_id)
-        .map_or(0, |batch| batch.events.len());
-    if existing_events.saturating_add(request.events.len()) > max_events_per_run {
-        return Err(OriginError::Unavailable);
-    }
-    Ok(None)
+    recoveries
+        .into_iter()
+        .map(|(run_id, recovery)| Ok((run_id, recovery.finish()?)))
+        .collect()
 }
 
-fn apply_record(state: &mut FileState, request: CommitRequest) -> Result<(), OriginError> {
-    let run = state
-        .runs
-        .iter_mut()
-        .find(|run| run.run_id() == request.run_id)
-        .ok_or(OriginError::UnknownRun)?;
-    *run = request.candidate;
-    state.commands.push(StoredCommand {
-        run_id: request.run_id,
-        command_id: request.command_id,
-        fingerprint: request.fingerprint,
-        result: request.result,
-    });
-    if let Some(batch) = state
-        .events
-        .iter_mut()
-        .find(|batch| batch.run_id == request.run_id)
-    {
-        batch.events.extend(request.events);
-    } else {
-        state.events.push(RunEvents {
-            run_id: request.run_id,
-            events: request.events,
-        });
-    }
-    Ok(())
+fn write_checkpoint(path: &Path, runs: &BTreeMap<RunId, LiveRun>) -> Result<(), OriginError> {
+    let runs = runs
+        .values()
+        .map(|live| {
+            let (state, chain) = live.checkpoint_state();
+            Ok(CheckpointRun {
+                snapshot: EngineSnapshotEnvelope::new(state.clone())
+                    .map_err(|_| OriginError::InvalidCommit)?,
+                chain,
+            })
+        })
+        .collect::<Result<Vec<_>, OriginError>>()?;
+    persist(
+        path,
+        &Checkpoint {
+            version: CHECKPOINT_VERSION,
+            runs,
+        },
+    )
 }
 
-fn persist(path: &Path, state: &FileState) -> Result<(), OriginError> {
+fn persist(path: &Path, checkpoint: &Checkpoint) -> Result<(), OriginError> {
     if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
     }
-    let bytes = serde_json::to_vec(state).map_err(|_| OriginError::InvalidCommit)?;
+    let bytes = serde_json::to_vec(checkpoint).map_err(|_| OriginError::InvalidCommit)?;
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary).map_err(|_| OriginError::Unavailable)?;
     file.write_all(&bytes)
@@ -399,7 +361,7 @@ fn persist(path: &Path, state: &FileState) -> Result<(), OriginError> {
     fs::rename(&temporary, path).map_err(|_| OriginError::Unavailable)?;
     // A synced temporary file alone does not make the rename durable after a
     // sudden power loss. On POSIX, syncing the containing directory persists
-    // the directory entry that names the atomically replaced snapshot.
+    // the directory entry that names the atomically replaced checkpoint.
     #[cfg(unix)]
     {
         let directory = path
@@ -422,7 +384,7 @@ pub enum NativeOrigin {
 impl NativeOrigin {
     pub fn from_config(config: &StorageConfig) -> Result<Self, OriginError> {
         match config.kind {
-            StorageKind::Memory => Ok(Self::Memory(InMemoryOrigin::new())),
+            StorageKind::Memory => Ok(Self::Memory(InMemoryOrigin::with_limits(config.limits()))),
             StorageKind::File => Ok(Self::File(FileOriginStore::open(
                 config.path.as_deref().ok_or(OriginError::Unavailable)?,
                 config,
@@ -436,20 +398,24 @@ impl NativeOrigin {
             Self::File(store) => store.insert_run(run),
         }
     }
-
-    pub fn events(&self, run_id: RunId) -> Result<Vec<EventEnvelope>, OriginError> {
-        match self {
-            Self::Memory(store) => store.events(run_id),
-            Self::File(store) => store.events(run_id),
-        }
-    }
 }
 
 impl OriginStore for NativeOrigin {
-    fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
         match self {
-            Self::Memory(store) => store.load_run(run_id),
-            Self::File(store) => store.load_run(run_id),
+            Self::Memory(store) => store.execute(input),
+            Self::File(store) => store.execute(input),
+        }
+    }
+
+    fn read_run<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, OriginError> {
+        match self {
+            Self::Memory(store) => store.read_run(run_id, read),
+            Self::File(store) => store.read_run(run_id, read),
         }
     }
 
@@ -461,13 +427,6 @@ impl OriginStore for NativeOrigin {
         match self {
             Self::Memory(store) => store.find_command(run_id, command_id),
             Self::File(store) => store.find_command(run_id, command_id),
-        }
-    }
-
-    fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
-        match self {
-            Self::Memory(store) => store.commit(request),
-            Self::File(store) => store.commit(request),
         }
     }
 }

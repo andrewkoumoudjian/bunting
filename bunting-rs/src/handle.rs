@@ -21,15 +21,18 @@ impl BuntingHandle {
         Ok(Self { origin })
     }
 
-    /// Recovers one run from the owned origin.
+    /// Returns a copy of one committed run. Bindings receive whole runs, so
+    /// this façade pays one state copy per call; the origin itself does not.
     ///
     /// # Errors
     /// Returns an application error when the run is unavailable.
     pub fn recover(&self, run_id: RunId) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin).recover(run_id)
+        ApplicationService::new(&self.origin).read(run_id, RunState::clone)
     }
 
-    /// Executes one authenticated participant command.
+    /// Executes one authenticated participant command and returns a copy of
+    /// the committed run. With concurrent callers on one handle the copy can
+    /// already include later commands.
     ///
     /// # Errors
     /// Returns an application error when authorization, validation, execution,
@@ -39,12 +42,13 @@ impl BuntingHandle {
         actor: &VerifiedActor,
         command: &Command,
     ) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin)
-            .execute(actor, command)
-            .map(|executed| executed.state)
+        ApplicationService::new(&self.origin).execute(actor, command)?;
+        self.recover(command.run_id)
     }
 
-    /// Executes one authenticated operator/simulation command.
+    /// Executes one authenticated operator/simulation command and returns a copy of
+    /// the committed run. With concurrent callers on one handle the copy can
+    /// already include later commands.
     ///
     /// # Errors
     /// Returns an application error when authorization, validation, execution,
@@ -54,9 +58,8 @@ impl BuntingHandle {
         actor: &VerifiedActor,
         command: &SimulationCommandRequest,
     ) -> Result<RunState, ApplicationError> {
-        ApplicationService::new(&self.origin)
-            .execute_simulation(actor, command)
-            .map(|executed| executed.state)
+        ApplicationService::new(&self.origin).execute_simulation(actor, command)?;
+        self.recover(command.run_id)
     }
 
     /// Replays a JSON archive and returns the canonical result JSON.

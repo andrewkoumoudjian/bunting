@@ -789,13 +789,17 @@ impl Market {
 }
 
 impl RuntimeHost for Market {
-    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
+    fn read_state<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, RuntimeError> {
         if run_id != self.state.run_id() {
             return Err(RuntimeError::Host(
                 "runtime requested an unknown run".to_owned(),
             ));
         }
-        Ok(self.state.clone())
+        Ok(read(&self.state))
     }
 
     fn commit(

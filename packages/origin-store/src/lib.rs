@@ -1,14 +1,26 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Host-independent authoritative persistence contract for engine-owned state.
+//! Host-independent authoritative run ownership and journal contract.
+//!
+//! One writer owns each run's live [`RunState`]. An input is applied in place
+//! by `bunting-engine`, recorded as a command-sourced [`CommandRecord`]
+//! (input, result, canonical events and an event-hash chain) and only then
+//! acknowledged. Full state appears only at genesis and in checkpoints; a
+//! restart re-executes the journaled inputs after the last checkpoint and
+//! requires identical results, events and chain values.
 
 pub use bunting_engine::RunState;
-use bunting_market_events::EventEnvelope;
-use bunting_market_types::{CommandId, EventSequence, OrderId, ParticipantId, RunId, SessionId};
+use bunting_engine::{ApplyError, EngineError};
+use bunting_market_events::{Command, EventEnvelope, SimulationCommandRequest};
+use bunting_market_types::{CommandId, EventSequence, OrderId, RunId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+const GENESIS_DOMAIN: &[u8] = b"bunting.journal.v2.genesis\0";
 
 /// Stable persisted command response.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -20,83 +32,99 @@ pub struct CommandResult {
     pub order_id: Option<OrderId>,
 }
 
-/// One atomic expected-version commit request.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommitRequest {
-    pub run_id: RunId,
-    pub command_id: CommandId,
-    pub fingerprint: String,
-    /// Persisted transport idempotency namespace. The canonical command ID is
-    /// derived from these components before engine execution.
-    pub client_key: Option<ClientCommandKey>,
-    pub expected_version: EventSequence,
-    pub events: Vec<EventEnvelope>,
-    pub result: CommandResult,
-    /// Complete candidate state produced only by `bunting-engine`.
-    pub candidate: RunState,
+/// One authoritative input. Order flow and simulation administration share
+/// one ordered journal per run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournalInput {
+    Command(Command),
+    Simulation(SimulationCommandRequest),
 }
 
-impl CommitRequest {
-    /// Enforces one strictly ordered canonical event batch against the last
-    /// committed event cursor. Identical validation is required by every origin.
-    pub fn validate_against(
-        &self,
-        previous_event_sequence: EventSequence,
-    ) -> Result<(), OriginError> {
-        let next_version = self
-            .expected_version
-            .checked_add(EventSequence::new(1))
-            .ok_or(OriginError::InvalidCommit)?;
-        if self.candidate.run_id() != self.run_id
-            || self.candidate.sequence() != next_version
-            || self.result.committed_sequence != next_version
-            || self.fingerprint.is_empty()
-            || self.events.is_empty()
-        {
-            return Err(OriginError::InvalidCommit);
+impl JournalInput {
+    #[must_use]
+    pub const fn run_id(&self) -> RunId {
+        match self {
+            Self::Command(command) => command.run_id,
+            Self::Simulation(request) => request.run_id,
         }
-        let mut expected_event_sequence = previous_event_sequence;
-        for event in &self.events {
-            expected_event_sequence = expected_event_sequence
-                .checked_add(EventSequence::new(1))
-                .ok_or(OriginError::InvalidCommit)?;
-            if event.run_id != self.run_id
-                || event.command_id != self.command_id
-                || event.sequence != expected_event_sequence
-            {
-                return Err(OriginError::InvalidCommit);
-            }
+    }
+
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        match self {
+            Self::Command(command) => command.command_id,
+            Self::Simulation(request) => request.command_id,
         }
-        if self.candidate.event_sequence() != expected_event_sequence {
-            return Err(OriginError::InvalidCommit);
+    }
+
+    #[must_use]
+    pub const fn expected_sequence(&self) -> EventSequence {
+        match self {
+            Self::Command(command) => command.expected_sequence,
+            Self::Simulation(request) => request.expected_sequence,
         }
-        Ok(())
+    }
+
+    /// Stable idempotency fingerprint: SHA-256 of the inner value's JSON, so
+    /// it equals [`command_fingerprint`] or [`simulation_command_fingerprint`].
+    pub fn fingerprint(&self) -> Result<String, OriginError> {
+        self.fingerprint_bytes().map(|bytes| hex(&bytes))
+    }
+
+    fn fingerprint_bytes(&self) -> Result<[u8; 32], OriginError> {
+        match self {
+            Self::Command(command) => digest_json(command),
+            Self::Simulation(request) => digest_json(request),
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientCommandKey {
-    pub actor: ParticipantId,
-    pub session_id: SessionId,
-    pub local_command_id: u128,
-    pub local_order_id: Option<u128>,
+pub fn command_fingerprint(command: &Command) -> Result<String, OriginError> {
+    digest_json(command).map(|bytes| hex(&bytes))
 }
 
+pub fn simulation_command_fingerprint(
+    request: &SimulationCommandRequest,
+) -> Result<String, OriginError> {
+    digest_json(request).map(|bytes| hex(&bytes))
+}
+
+/// Durable record of one committed input.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandRecord {
+    pub input: JournalInput,
+    pub fingerprint: String,
+    pub result: CommandResult,
+    pub events: Vec<EventEnvelope>,
+    /// Hex SHA-256 of the previous chain value followed by the canonical JSON
+    /// of `events`. The first value derives from the genesis state hash.
+    pub chain: String,
+}
+
+/// Committed facts returned to the caller of [`OriginStore::execute`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CommitOutcome {
-    Committed(CommandResult),
-    Duplicate(CommandResult),
+pub struct Executed {
+    pub result: CommandResult,
+    /// Empty for a duplicate: its events were published when it committed.
+    pub events: Vec<EventEnvelope>,
+    pub duplicate: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OriginError {
     UnknownRun,
-    VersionConflict { current: EventSequence },
+    VersionConflict {
+        current: EventSequence,
+    },
     IdempotencyConflict,
     InvalidCommit,
     Unavailable,
+    /// A configured per-run bound would be exceeded; nothing was committed.
+    CapacityExceeded,
+    /// The engine refused the input; nothing was committed.
+    Engine(EngineError),
 }
 
 impl fmt::Display for OriginError {
@@ -107,9 +135,41 @@ impl fmt::Display for OriginError {
 
 impl std::error::Error for OriginError {}
 
-/// Atomic origin persistence boundary.
+/// Per-run bounds. Memory per committed command is one index entry; the
+/// journal itself lives in the host's durable store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RunLimits {
+    pub max_commands: usize,
+    pub max_events: u64,
+    /// Committed inputs between in-memory (and durable) checkpoints. Bounds
+    /// rebuild work after a poisoned transition and restart re-execution.
+    pub checkpoint_interval: usize,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self {
+            max_commands: 2_097_152,
+            max_events: 16_777_216,
+            checkpoint_interval: 8_192,
+        }
+    }
+}
+
+/// Atomic origin boundary: one writer per run, journal before acknowledgement.
 pub trait OriginStore {
-    fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError>;
+    /// Applies one input to the live run, records it durably and returns the
+    /// committed facts. A replay of a committed command ID with the same
+    /// fingerprint returns the original result as a duplicate.
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError>;
+
+    /// Reads the committed live run without copying it. `read` must not call
+    /// back into the store.
+    fn read_run<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, OriginError>;
 
     fn find_command(
         &self,
@@ -117,19 +177,314 @@ pub trait OriginStore {
         command_id: CommandId,
     ) -> Result<Option<(String, CommandResult)>, OriginError>;
 
-    fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError>;
+    /// Copies the committed run. This costs O(state); keep it off
+    /// per-command paths.
+    fn clone_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
+        self.read_run(run_id, RunState::clone)
+    }
 }
 
-#[derive(Debug, Default)]
-struct MemoryState {
-    runs: BTreeMap<RunId, RunState>,
-    commands: BTreeMap<(RunId, CommandId), (String, CommandResult)>,
-    events: BTreeMap<RunId, Vec<EventEnvelope>>,
+#[derive(Clone, Debug)]
+struct IndexedCommand {
+    fingerprint: [u8; 32],
+    result: CommandResult,
 }
 
+/// Outcome of [`LiveRun::execute`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Execution {
+    Duplicate(CommandResult),
+    /// Applied in memory; the host must persist the record before
+    /// acknowledging it, and must stop serving if that write fails.
+    Committed(Box<CommandRecord>),
+}
+
+/// The writer-owned state of one run.
+///
+/// `base` is the last checkpointed state and `tail` the inputs committed
+/// since, so a transition the engine reports as poisoned is rolled back by
+/// re-executing at most `checkpoint_interval` inputs, without any I/O.
+#[derive(Clone, Debug)]
+pub struct LiveRun {
+    state: RunState,
+    chain: [u8; 32],
+    base: RunState,
+    base_chain: [u8; 32],
+    tail: Vec<JournalInput>,
+    index: BTreeMap<CommandId, IndexedCommand>,
+    limits: RunLimits,
+    poisoned: bool,
+}
+
+impl LiveRun {
+    /// Starts a run from its genesis state.
+    pub fn genesis(state: RunState, limits: RunLimits) -> Result<Self, OriginError> {
+        let chain = genesis_chain(&state)?;
+        Ok(Self {
+            base: state.clone(),
+            base_chain: chain,
+            state,
+            chain,
+            tail: Vec::new(),
+            index: BTreeMap::new(),
+            limits,
+            poisoned: false,
+        })
+    }
+
+    /// The committed live state.
+    pub fn state(&self) -> Result<&RunState, OriginError> {
+        if self.poisoned {
+            return Err(OriginError::Unavailable);
+        }
+        Ok(&self.state)
+    }
+
+    #[must_use]
+    pub fn chain(&self) -> String {
+        hex(&self.chain)
+    }
+
+    /// The last checkpointed state and its chain value.
+    #[must_use]
+    pub fn checkpoint_state(&self) -> (&RunState, String) {
+        (&self.base, hex(&self.base_chain))
+    }
+
+    #[must_use]
+    pub fn command_count(&self) -> usize {
+        self.index.len()
+    }
+
+    #[must_use]
+    pub fn find(&self, command_id: CommandId) -> Option<(String, CommandResult)> {
+        self.index
+            .get(&command_id)
+            .map(|entry| (hex(&entry.fingerprint), entry.result.clone()))
+    }
+
+    /// Applies one input in place and returns the record to persist.
+    pub fn execute(&mut self, input: &JournalInput) -> Result<Execution, OriginError> {
+        if self.poisoned {
+            return Err(OriginError::Unavailable);
+        }
+        if input.run_id() != self.state.run_id() {
+            return Err(OriginError::UnknownRun);
+        }
+        let fingerprint = input.fingerprint_bytes()?;
+        if let Some(entry) = self.index.get(&input.command_id()) {
+            return if entry.fingerprint == fingerprint {
+                Ok(Execution::Duplicate(entry.result.clone()))
+            } else {
+                Err(OriginError::IdempotencyConflict)
+            };
+        }
+        if self.state.sequence() != input.expected_sequence() {
+            return Err(OriginError::VersionConflict {
+                current: self.state.sequence(),
+            });
+        }
+        if self.index.len() >= self.limits.max_commands {
+            return Err(OriginError::CapacityExceeded);
+        }
+        let applied = match input {
+            JournalInput::Command(command) => self.state.apply(command),
+            JournalInput::Simulation(request) => self.state.apply_simulation(request),
+        };
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(ApplyError::Unchanged(error)) => return Err(OriginError::Engine(error)),
+            Err(ApplyError::Poisoned(error)) => {
+                self.rebuild()?;
+                return Err(OriginError::Engine(error));
+            }
+        };
+        if self.state.event_sequence().get() > self.limits.max_events {
+            self.rebuild()?;
+            return Err(OriginError::CapacityExceeded);
+        }
+        let chain = next_chain(&self.chain, &applied.events)?;
+        let result = CommandResult {
+            accepted: applied.accepted,
+            reject_code: applied.reject_code,
+            committed_sequence: self.state.sequence(),
+            order_id: applied.order_id,
+        };
+        self.index.insert(
+            input.command_id(),
+            IndexedCommand {
+                fingerprint,
+                result: result.clone(),
+            },
+        );
+        self.tail.push(input.clone());
+        self.chain = chain;
+        Ok(Execution::Committed(Box::new(CommandRecord {
+            input: input.clone(),
+            fingerprint: hex(&fingerprint),
+            result,
+            events: applied.events,
+            chain: hex(&chain),
+        })))
+    }
+
+    #[must_use]
+    pub fn needs_checkpoint(&self) -> bool {
+        self.tail.len() >= self.limits.checkpoint_interval.max(1)
+    }
+
+    /// Makes the live state the rollback base. Costs one state copy, once
+    /// per `checkpoint_interval` commands.
+    pub fn checkpoint(&mut self) -> Result<(), OriginError> {
+        if self.poisoned {
+            return Err(OriginError::Unavailable);
+        }
+        self.base = self.state.clone();
+        self.base_chain = self.chain;
+        self.tail.clear();
+        Ok(())
+    }
+
+    /// Restores the last committed state from `base` and `tail`. A failure
+    /// here means the committed history no longer re-executes, so the run
+    /// stops serving until a restart re-verifies it.
+    fn rebuild(&mut self) -> Result<(), OriginError> {
+        let mut state = self.base.clone();
+        for input in &self.tail {
+            let replayed = match input {
+                JournalInput::Command(command) => state.apply(command).map(|_| ()),
+                JournalInput::Simulation(request) => state.apply_simulation(request).map(|_| ()),
+            };
+            if replayed.is_err() {
+                self.poisoned = true;
+                return Err(OriginError::Unavailable);
+            }
+        }
+        self.state = state;
+        Ok(())
+    }
+}
+
+/// Rebuilds one run from its genesis state, an optional checkpoint and its
+/// journal records in order. Records the checkpoint covers are verified by
+/// fingerprint, sequence and chain and indexed; later records are
+/// re-executed and must reproduce the journaled record exactly.
+#[derive(Debug)]
+pub struct RunRecovery {
+    live: LiveRun,
+    genesis_sequence: EventSequence,
+    replayed_through: EventSequence,
+    checkpoint_sequence: EventSequence,
+    checkpoint_chain: [u8; 32],
+}
+
+impl RunRecovery {
+    pub fn new(
+        genesis: RunState,
+        checkpoint: Option<(RunState, &str)>,
+        limits: RunLimits,
+    ) -> Result<Self, OriginError> {
+        let genesis_sequence = genesis.sequence();
+        let mut live = LiveRun::genesis(genesis, limits)?;
+        let (checkpoint_sequence, checkpoint_chain) = match checkpoint {
+            None => (genesis_sequence, live.chain),
+            Some((state, chain)) => {
+                if state.run_id() != live.state.run_id()
+                    || state.scenario_hash() != live.state.scenario_hash()
+                    || state.sequence() < genesis_sequence
+                {
+                    return Err(OriginError::InvalidCommit);
+                }
+                let chain = parse_hex(chain)?;
+                let sequence = state.sequence();
+                live.base = state.clone();
+                live.base_chain = chain;
+                live.state = state;
+                (sequence, chain)
+            }
+        };
+        let recovery = Self {
+            live,
+            genesis_sequence,
+            replayed_through: genesis_sequence,
+            checkpoint_sequence,
+            checkpoint_chain,
+        };
+        recovery.check_checkpoint_reached()?;
+        Ok(recovery)
+    }
+
+    /// Applies the next journal record of this run.
+    pub fn replay(&mut self, record: &CommandRecord) -> Result<(), OriginError> {
+        let sequence = record.result.committed_sequence;
+        let next = self
+            .replayed_through
+            .checked_add(EventSequence::new(1))
+            .ok_or(OriginError::InvalidCommit)?;
+        if sequence != next
+            || record.input.run_id() != self.live.state.run_id()
+            || record.input.expected_sequence() != self.replayed_through
+        {
+            return Err(OriginError::InvalidCommit);
+        }
+        if sequence <= self.checkpoint_sequence {
+            let fingerprint = record.input.fingerprint_bytes()?;
+            let chain = next_chain(&self.live.chain, &record.events)?;
+            if hex(&fingerprint) != record.fingerprint
+                || hex(&chain) != record.chain
+                || self.live.index.contains_key(&record.input.command_id())
+            {
+                return Err(OriginError::InvalidCommit);
+            }
+            self.live.index.insert(
+                record.input.command_id(),
+                IndexedCommand {
+                    fingerprint,
+                    result: record.result.clone(),
+                },
+            );
+            self.live.chain = chain;
+            self.replayed_through = sequence;
+            return self.check_checkpoint_reached();
+        }
+        match self.live.execute(&record.input) {
+            Ok(Execution::Committed(produced)) if produced.as_ref() == record => {
+                self.replayed_through = sequence;
+                Ok(())
+            }
+            _ => Err(OriginError::InvalidCommit),
+        }
+    }
+
+    /// Returns the recovered run once every journal record has been replayed.
+    pub fn finish(self) -> Result<LiveRun, OriginError> {
+        if self.replayed_through < self.checkpoint_sequence {
+            // The checkpoint claims commands the journal does not hold.
+            return Err(OriginError::InvalidCommit);
+        }
+        Ok(self.live)
+    }
+
+    #[must_use]
+    pub const fn genesis_sequence(&self) -> EventSequence {
+        self.genesis_sequence
+    }
+
+    fn check_checkpoint_reached(&self) -> Result<(), OriginError> {
+        if self.replayed_through == self.checkpoint_sequence
+            && self.live.chain != self.checkpoint_chain
+        {
+            return Err(OriginError::InvalidCommit);
+        }
+        Ok(())
+    }
+}
+
+/// Non-durable origin for tests, embeddings and local runs.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryOrigin {
-    inner: Arc<Mutex<MemoryState>>,
+    runs: Arc<Mutex<BTreeMap<RunId, LiveRun>>>,
+    limits: RunLimits,
 }
 
 impl InMemoryOrigin {
@@ -138,26 +493,62 @@ impl InMemoryOrigin {
         Self::default()
     }
 
-    pub fn insert_run(&self, run: RunState) -> Result<(), OriginError> {
-        let mut state = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
-        state.runs.insert(run.run_id(), run);
-        Ok(())
+    #[must_use]
+    pub fn with_limits(limits: RunLimits) -> Self {
+        Self {
+            runs: Arc::default(),
+            limits,
+        }
     }
 
-    pub fn events(&self, run_id: RunId) -> Result<Vec<EventEnvelope>, OriginError> {
-        let state = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
-        Ok(state.events.get(&run_id).cloned().unwrap_or_default())
+    pub fn insert_run(&self, run: RunState) -> Result<(), OriginError> {
+        let mut runs = self.runs.lock().map_err(|_| OriginError::Unavailable)?;
+        if let Some(existing) = runs.get(&run.run_id()) {
+            return if existing.state()? == &run {
+                Ok(())
+            } else {
+                Err(OriginError::InvalidCommit)
+            };
+        }
+        runs.insert(run.run_id(), LiveRun::genesis(run, self.limits)?);
+        Ok(())
     }
 }
 
 impl OriginStore for InMemoryOrigin {
-    fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
-        let state = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
-        state
-            .runs
-            .get(&run_id)
-            .cloned()
-            .ok_or(OriginError::UnknownRun)
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+        let mut runs = self.runs.lock().map_err(|_| OriginError::Unavailable)?;
+        let live = runs
+            .get_mut(&input.run_id())
+            .ok_or(OriginError::UnknownRun)?;
+        match live.execute(input)? {
+            Execution::Duplicate(result) => Ok(Executed {
+                result,
+                events: Vec::new(),
+                duplicate: true,
+            }),
+            Execution::Committed(record) => {
+                if live.needs_checkpoint() {
+                    live.checkpoint()?;
+                }
+                Ok(Executed {
+                    result: record.result,
+                    events: record.events,
+                    duplicate: false,
+                })
+            }
+        }
+    }
+
+    fn read_run<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, OriginError> {
+        let runs = self.runs.lock().map_err(|_| OriginError::Unavailable)?;
+        Ok(read(
+            runs.get(&run_id).ok_or(OriginError::UnknownRun)?.state()?,
+        ))
     }
 
     fn find_command(
@@ -165,216 +556,61 @@ impl OriginStore for InMemoryOrigin {
         run_id: RunId,
         command_id: CommandId,
     ) -> Result<Option<(String, CommandResult)>, OriginError> {
-        let state = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
-        Ok(state.commands.get(&(run_id, command_id)).cloned())
+        let runs = self.runs.lock().map_err(|_| OriginError::Unavailable)?;
+        Ok(runs
+            .get(&run_id)
+            .ok_or(OriginError::UnknownRun)?
+            .find(command_id))
     }
+}
 
-    fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
-        let mut state = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
-        if let Some((fingerprint, result)) =
-            state.commands.get(&(request.run_id, request.command_id))
-        {
-            return if fingerprint == &request.fingerprint {
-                Ok(CommitOutcome::Duplicate(result.clone()))
-            } else {
-                Err(OriginError::IdempotencyConflict)
-            };
-        }
-        let current = state
-            .runs
-            .get(&request.run_id)
-            .ok_or(OriginError::UnknownRun)?
-            .sequence();
-        if current != request.expected_version {
-            return Err(OriginError::VersionConflict { current });
-        }
-        let previous_events = state
-            .runs
-            .get(&request.run_id)
-            .ok_or(OriginError::UnknownRun)?
-            .event_sequence();
-        request.validate_against(previous_events)?;
-        state
-            .events
-            .entry(request.run_id)
-            .or_default()
-            .extend(request.events);
-        state.commands.insert(
-            (request.run_id, request.command_id),
-            (request.fingerprint, request.result.clone()),
-        );
-        state.runs.insert(request.run_id, request.candidate);
-        Ok(CommitOutcome::Committed(request.result))
+fn digest_json(value: &impl Serialize) -> Result<[u8; 32], OriginError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| OriginError::InvalidCommit)?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn genesis_chain(state: &RunState) -> Result<[u8; 32], OriginError> {
+    let state_hash = state.state_hash().map_err(|_| OriginError::InvalidCommit)?;
+    let mut hasher = Sha256::new();
+    hasher.update(GENESIS_DOMAIN);
+    hasher.update(state_hash.as_bytes());
+    Ok(hasher.finalize().into())
+}
+
+fn next_chain(previous: &[u8; 32], events: &[EventEnvelope]) -> Result<[u8; 32], OriginError> {
+    let bytes = serde_json::to_vec(events).map_err(|_| OriginError::InvalidCommit)?;
+    let mut hasher = Sha256::new();
+    hasher.update(previous);
+    hasher.update(bytes);
+    Ok(hasher.finalize().into())
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
+    output
+}
+
+fn parse_hex(value: &str) -> Result<[u8; 32], OriginError> {
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(OriginError::InvalidCommit),
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() != 64 {
+        return Err(OriginError::InvalidCommit);
+    }
+    let mut output = [0_u8; 32];
+    for (index, pair) in bytes.chunks_exact(2).enumerate() {
+        output[index] = (digit(pair[0])? << 4) | digit(pair[1])?;
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    use bunting_engine::{
-        ListingDefinition, ParticipantDefinition, ScenarioDefinition, TransitionOutcome,
-    };
-    use bunting_market_events::{Command, CommandPayload};
-    use bunting_market_types::CurrencyId;
-    use bunting_market_types::{
-        CorrelationId, InstrumentId, IterationId, ListingKey, LogicalTimeNs, MoneyMinor,
-        ParticipantId, PriceBounds, PriceTicks, QuantityLots, ScenarioId, ScenarioVersion, VenueId,
-    };
-    use bunting_risk_engine::RiskLimits;
-    use std::collections::BTreeMap;
-    use std::sync::Barrier;
-    use std::thread;
-
-    fn run() -> RunState {
-        let scenario = ScenarioDefinition::new(
-            ScenarioId::new(1),
-            ScenarioVersion::new(1),
-            [bunting_engine::InstrumentDefinition::new(
-                InstrumentId::new(1),
-                "BNT",
-                CurrencyId::new(1),
-                bunting_engine::InstrumentKind::Equity,
-            )
-            .with_opening_mark(PriceTicks::new(100))],
-            [ListingDefinition::new(
-                ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
-                "ONE".to_string(),
-                PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap(),
-            )
-            .unwrap()],
-            [ParticipantDefinition::new(
-                ParticipantId::new(1),
-                true,
-                RiskLimits::new(
-                    QuantityLots::new(100),
-                    QuantityLots::new(1_000),
-                    QuantityLots::new(1_000),
-                ),
-                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000))]),
-                BTreeMap::new(),
-            )],
-        )
-        .unwrap();
-        RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario).unwrap()
-    }
-
-    fn request(command_id: u128) -> CommitRequest {
-        let initial = run();
-        let command = Command {
-            run_id: initial.run_id(),
-            command_id: CommandId::new(command_id),
-            correlation_id: CorrelationId::new(command_id),
-            logical_time: LogicalTimeNs::new(1),
-            expected_sequence: initial.sequence(),
-            actor: ParticipantId::new(1),
-            payload: CommandPayload::ActivateKillSwitch,
-        };
-        let TransitionOutcome {
-            candidate, events, ..
-        } = initial.transition(&command).unwrap();
-        CommitRequest {
-            run_id: command.run_id,
-            command_id: command.command_id,
-            fingerprint: command_id.to_string(),
-            client_key: None,
-            expected_version: command.expected_sequence,
-            events,
-            result: CommandResult {
-                accepted: true,
-                reject_code: None,
-                committed_sequence: candidate.sequence(),
-                order_id: None,
-            },
-            candidate,
-        }
-    }
-
-    #[test]
-    fn same_expected_version_cannot_commit_twice() {
-        let origin = InMemoryOrigin::new();
-        origin.insert_run(run()).unwrap();
-        let barrier = Arc::new(Barrier::new(3));
-        let first_origin = origin.clone();
-        let first_barrier = barrier.clone();
-        let first = thread::spawn(move || {
-            first_barrier.wait();
-            first_origin.commit(request(1))
-        });
-        let second_origin = origin.clone();
-        let second_barrier = barrier.clone();
-        let second = thread::spawn(move || {
-            second_barrier.wait();
-            second_origin.commit(request(2))
-        });
-        barrier.wait();
-        let outcomes = [first.join(), second.join()];
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, Ok(Ok(CommitOutcome::Committed(_)))))
-                .count(),
-            1
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, Ok(Err(OriginError::VersionConflict { .. }))))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn origin_rejects_missing_reordered_and_cross_run_events_without_mutation() {
-        let origin = InMemoryOrigin::new();
-        origin.insert_run(run()).unwrap();
-        let original = origin.load_run(RunId::new(1)).unwrap();
-
-        let mut missing = request(1);
-        missing.events.clear();
-        assert_eq!(origin.commit(missing), Err(OriginError::InvalidCommit));
-
-        let mut wrong_run = request(2);
-        wrong_run.events[0].run_id = RunId::new(2);
-        assert_eq!(origin.commit(wrong_run), Err(OriginError::InvalidCommit));
-
-        let mut wrong_command = request(3);
-        wrong_command.events[0].command_id = CommandId::new(900);
-        assert_eq!(
-            origin.commit(wrong_command),
-            Err(OriginError::InvalidCommit)
-        );
-
-        let mut wrong_cursor = request(4);
-        wrong_cursor.events[0].sequence = EventSequence::new(9);
-        assert_eq!(origin.commit(wrong_cursor), Err(OriginError::InvalidCommit));
-
-        assert_eq!(origin.load_run(RunId::new(1)).unwrap(), original);
-        assert!(origin.events(RunId::new(1)).unwrap().is_empty());
-        assert_eq!(
-            origin.commit(request(5)),
-            Ok(CommitOutcome::Committed(CommandResult {
-                accepted: true,
-                reject_code: None,
-                committed_sequence: EventSequence::new(1),
-                order_id: None,
-            }))
-        );
-    }
-
-    #[test]
-    fn state_envelope_and_result_round_trip_exactly() {
-        let request = request(9);
-        let envelope = request.candidate.snapshot_envelope().unwrap();
-        let restored =
-            bunting_engine::EngineSnapshotEnvelope::from_json(&envelope.to_json().unwrap())
-                .unwrap();
-        assert_eq!(restored.state, request.candidate);
-        let result_json = serde_json::to_string(&request.result).unwrap();
-        assert_eq!(
-            serde_json::from_str::<CommandResult>(&result_json).unwrap(),
-            request.result
-        );
-    }
-}
+mod tests;

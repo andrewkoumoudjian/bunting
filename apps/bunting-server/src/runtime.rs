@@ -39,9 +39,11 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
                 );
             }
         }
-        match origin.load_run(run.run_id()) {
-            Ok(existing) if existing.scenario_hash() == run.scenario_hash() => {}
-            Ok(_) => {
+        match origin.read_run(run.run_id(), |existing| {
+            existing.scenario_hash() == run.scenario_hash()
+        }) {
+            Ok(true) => {}
+            Ok(false) => {
                 return Err(
                     "configured immutable scenario does not match the restored run hash".to_owned(),
                 );

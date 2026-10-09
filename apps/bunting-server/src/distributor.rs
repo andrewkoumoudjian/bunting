@@ -11,7 +11,7 @@ use crate::storage::NativeOrigin;
 use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
 use bunting_market_types::{CommandId, RunId};
-use bunting_origin_store::{CommandResult, CommitOutcome, CommitRequest, OriginError, OriginStore};
+use bunting_origin_store::{CommandResult, Executed, JournalInput, OriginError, OriginStore};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
@@ -163,8 +163,21 @@ impl PublishingOrigin {
 }
 
 impl OriginStore for PublishingOrigin {
-    fn load_run(&self, run_id: RunId) -> Result<RunState, OriginError> {
-        self.inner.load_run(run_id)
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+        let executed = self.inner.execute(input)?;
+        // A duplicate's events were published when it first committed.
+        if !executed.duplicate {
+            self.distributor.publish(&executed.events);
+        }
+        Ok(executed)
+    }
+
+    fn read_run<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, OriginError> {
+        self.inner.read_run(run_id, read)
     }
 
     fn find_command(
@@ -173,15 +186,6 @@ impl OriginStore for PublishingOrigin {
         command_id: CommandId,
     ) -> Result<Option<(String, CommandResult)>, OriginError> {
         self.inner.find_command(run_id, command_id)
-    }
-
-    fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, OriginError> {
-        let events = request.events.clone();
-        let outcome = self.inner.commit(request)?;
-        if matches!(outcome, CommitOutcome::Committed(_)) {
-            self.distributor.publish(&events);
-        }
-        Ok(outcome)
     }
 }
 

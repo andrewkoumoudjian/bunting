@@ -64,12 +64,12 @@ bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
    ├─ admin HTTP: /health, /admin/runs/<id>
    ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
    ├─ AuthoritativeWriter: sleep to 100 ms boundary, then arrival-ticket FIFO (ADR 0024)
-   └─ bunting-application ─► command-transaction ─► bunting-engine
-                                     │
-                                     ▼
-                        origin store (Memory | File)
-                        File = BUNTWAL1 journal (full candidate RunState per
-                        frame) + checkpoint every 128 commands + flock lease
+   └─ bunting-application ─► command-transaction ─► origin store (Memory | File)
+                                                      owns live RunState per run;
+                                                      bunting-engine applies in place
+                        File = BUNTWAL2 journal (genesis + one command record
+                        per input: input, result, events, hash chain) +
+                        state-only checkpoint every 8,192 commands + flock lease
 
 Cloudflare: nothing built (Worker removed in eed8e00)
 ```
@@ -104,8 +104,8 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
-| `packages/origin-store` | `OriginStore` trait, commit request validation, in-memory store |
-| `packages/command-transaction` | Sans-I/O load → transition → commit orchestration |
+| `packages/origin-store` | `OriginStore` trait; writer-owned `LiveRun` (in-place apply, idempotency index, event-hash chain, rollback); `RunRecovery`; in-memory store |
+| `packages/command-transaction` | Thin command/simulation call shape over `OriginStore::execute` |
 | `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |
 | `packages/bunting-runtime`, `packages/bunting-agents` | Deterministic built-in participant scheduling and policies (always via QUARCC execution) |
 | `packages/quarcc-*` | Participant-side execution engine, Bunting adapter, Wasm binding |
@@ -142,29 +142,29 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
    participant session (slice 12) before they become canonical IDs.
 2. `AuthoritativeWriter::execute_interval` waits for the interval boundary and
    arrival turn.
-3. Application recovers the run (clone), maps the message to a canonical
-   command with `logical_time` from wall-clock epoch milliseconds.
-4. Command transaction checks idempotency and expected sequence, loads the run
-   (clone), calls `transition_owned`, builds a `CommitRequest` with the full
-   candidate `RunState`.
-5. Origin validates and commits (File: append + fsync journal frame, then apply
-   to memory; checkpoint every 128 commands).
+3. Application reads the committed sequence through a borrowing
+   `read_run` closure and maps the message to a canonical command with
+   `logical_time` from wall-clock epoch milliseconds.
+4. The origin's `LiveRun` checks idempotency and expected sequence and applies
+   the command in place (`RunState::apply`). `ApplyError::Unchanged` leaves the
+   run untouched; `ApplyError::Poisoned` rolls it back by re-executing the
+   inputs since the last checkpoint (slice 14).
+5. File origin appends one command record (input, result, events, hash chain)
+   and `fdatasync`s it before acknowledging; a failed append stops the store
+   until restart. Every 8,192 commands the live state becomes the rollback
+   base and is written as a state-only checkpoint.
 6. `PublishingOrigin` publishes the committed events to the bounded
    committed-event distributor; every connected session maps the batch to its
    own participant's execution reports (slice 12), so resting makers receive
    unsolicited fills. Per-participant live-order caps are engine risk
    (`RiskLimits.max_live_orders`).
 
-Measured cost (2026-10-09 note §4): the transition is 6–27 µs; clones and
-full-state journaling cost 0.5–116 ms per command at 1k–100k resting orders.
+Measured cost: see slices 13 (before) and 14 (after) in the implementation
+log. Per-command cost no longer grows with the size of the run.
 
-### Target (Steps 3 and 5 of the 2026-10-09 plan; Step 1 landed in slice 12)
+### Target (Step 5 of the 2026-10-09 plan; Steps 1 and 3 landed in slices 12 and 14)
 
-- The writer owns the live `RunState`; transitions apply in place with a
-  no-mutation-on-error contract; no per-command clones.
-- Journal records hold the input, admission metadata, resulting events and an
-  event-hash chain; full state only in checkpoints. Recovery re-executes
-  journaled inputs and compares events.
+- Journal records gain the ADR 0030 admission metadata.
 - The distributor gains public per-listing market-data streams and resume
   cursors so reports missed while disconnected are replayed (today they are
   not).
@@ -195,12 +195,19 @@ TUI, a GUI app and bindings. Nothing else accepts participant traffic.
 
 ## 9. Persistence, replay and archive
 
-**Current:** `OriginStore` with expected-version commits and idempotency.
-File mode: `BUNTWAL1` frames (8-byte length, SHA-256, full candidate state),
-fail-closed recovery, poison on ambiguous writes, Unix-only `flock` writer
-lease, default bounds `max_commands = 10_000` (store-wide) and
-`max_events_per_run = 100_000`. `CompetitionArchive` replays simulation
-commands only.
+**Current (slice 14):** the origin owns each run's live state. File mode
+journals `BUNTWAL2` frames (8-byte length, SHA-256, one JSON entry): a genesis
+snapshot per run, then one command record per committed input with its
+result, canonical events and an event-hash chain. The journal is never
+compacted. A state-only checkpoint (snapshot + chain per run) is written every
+`checkpoint_interval` commands; restart verifies the journal up to the
+checkpoint by fingerprint and chain, then re-executes the rest and requires
+identical records, so every restart is a determinism check. An incomplete
+tail is cut off; a complete corrupt frame, a checkpoint ahead of the journal
+or a chain mismatch fails closed; pre-format-2 stores are refused. Poison on
+ambiguous writes; Unix-only `flock` writer lease; per-run bounds
+`max_commands_per_run` and `max_events_per_run`. `CompetitionArchive` still
+replays simulation commands only; the journal is its Step 4 input.
 
 **Target (ADR 0025 as expanded by 0028 item 5):** archive = genesis snapshot +
 complete journal of every input (orders, cancels, agent commands, admin,

@@ -36,9 +36,13 @@ struct Host<'a> {
 }
 
 impl RuntimeHost for Host<'_> {
-    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
+    fn read_state<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, RuntimeError> {
         self.origin
-            .load_run(run_id)
+            .read_run(run_id, read)
             .map_err(|error| RuntimeError::Host(format!("origin store error: {error}")))
     }
 

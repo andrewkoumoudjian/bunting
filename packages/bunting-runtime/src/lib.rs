@@ -112,7 +112,12 @@ impl fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub trait RuntimeHost {
-    fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError>;
+    /// Reads the committed run without copying it. `read` must not commit.
+    fn read_state<T>(
+        &self,
+        run_id: RunId,
+        read: impl FnOnce(&RunState) -> T,
+    ) -> Result<T, RuntimeError>;
 
     /// Commits through the application's authenticated transaction boundary and
     /// returns only committed events.
@@ -230,8 +235,8 @@ impl DeterministicRuntime {
                 .get()
                 .max(self.logical_time.get().saturating_add(1)),
         );
-        let state = host.state(self.config.run_id)?;
-        let observation = self.observation(&state)?;
+        let observation =
+            host.read_state(self.config.run_id, |state| self.observation(state))??;
         let due = self
             .agents
             .iter()
@@ -269,7 +274,7 @@ impl DeterministicRuntime {
                 return Err(RuntimeError::ActionBoundExceeded);
             }
             processed = processed.saturating_add(1);
-            let state = host.state(self.config.run_id)?;
+            let expected_sequence = host.read_state(self.config.run_id, RunState::sequence)?;
             self.logical_time = LogicalTimeNs::new(self.logical_time.get().saturating_add(1));
             let participant_id = self.agents[index].participant_id;
             let command = self.agents[index]
@@ -279,7 +284,7 @@ impl DeterministicRuntime {
                     &BuntingCommandContext {
                         run_id: self.config.run_id,
                         actor: participant_id,
-                        expected_sequence: state.sequence(),
+                        expected_sequence,
                         logical_time: self.logical_time,
                         correlation_id: CorrelationId::new(u128::from(self.logical_time.get())),
                     },
@@ -413,9 +418,13 @@ mod tests {
     }
 
     impl RuntimeHost for MemoryHost {
-        fn state(&self, run_id: RunId) -> Result<RunState, RuntimeError> {
+        fn read_state<T>(
+            &self,
+            run_id: RunId,
+            read: impl FnOnce(&RunState) -> T,
+        ) -> Result<T, RuntimeError> {
             (self.state.run_id() == run_id)
-                .then(|| self.state.clone())
+                .then(|| read(&self.state))
                 .ok_or_else(|| RuntimeError::Host("unknown run".to_owned()))
         }
 
@@ -425,12 +434,10 @@ mod tests {
             command: &bunting_market_events::Command,
         ) -> Result<Vec<EventEnvelope>, RuntimeError> {
             self.roles.push(actor.identity().role);
-            let outcome = self
-                .state
-                .transition(command)
-                .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))?;
-            self.state = outcome.candidate;
-            Ok(outcome.events)
+            self.state
+                .apply(command)
+                .map(|applied| applied.events)
+                .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))
         }
     }
 

@@ -52,16 +52,16 @@ fn handle(
         let run_id = run
             .parse::<u128>()
             .map_err(|_| "invalid admin run ID".to_owned())?;
-        return match origin.load_run(RunId::new(run_id)) {
-            Ok(state) => write_http(
-                stream,
-                200,
-                &serde_json::json!({
-                    "runId": state.run_id().to_string(),
-                    "committedSequence": state.sequence().to_string(),
-                    "eventSequence": state.event_sequence().to_string()
-                }),
-            ),
+        // Build the body under the store lock, write the socket after it.
+        let status = origin.read_run(RunId::new(run_id), |state| {
+            serde_json::json!({
+                "runId": state.run_id().to_string(),
+                "committedSequence": state.sequence().to_string(),
+                "eventSequence": state.event_sequence().to_string()
+            })
+        });
+        return match status {
+            Ok(body) => write_http(stream, 200, &body),
             Err(OriginError::UnknownRun) => {
                 write_http(stream, 404, &serde_json::json!({"error":"unknown_run"}))
             }

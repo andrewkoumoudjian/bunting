@@ -1842,11 +1842,21 @@ impl EngineSnapshotEnvelope {
         }
         let envelope: Self =
             serde_json::from_str(json).map_err(|_| SnapshotError::Serialization)?;
-        envelope.state.validate()?;
-        if envelope.state.state_hash()? != envelope.state_hash {
+        envelope.verify()?;
+        Ok(envelope)
+    }
+
+    /// Checks the schema version, state invariants and canonical hash of an
+    /// envelope that was decoded as part of a larger document.
+    pub fn verify(&self) -> Result<(), SnapshotError> {
+        if self.schema_version != ENGINE_SNAPSHOT_VERSION {
+            return Err(SnapshotError::UnsupportedVersion);
+        }
+        self.state.validate()?;
+        if self.state.state_hash()? != self.state_hash {
             return Err(SnapshotError::HashMismatch);
         }
-        Ok(envelope)
+        Ok(())
     }
 }
 
