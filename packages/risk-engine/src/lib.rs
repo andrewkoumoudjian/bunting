@@ -16,6 +16,10 @@ const fn cash_constrained_default() -> bool {
     true
 }
 
+const fn max_live_orders_default() -> u32 {
+    u32::MAX
+}
+
 /// Per-participant admission limits pinned by the scenario.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +33,11 @@ pub struct RiskLimits {
     /// Whether buy orders must be fully funded by available cash.
     #[serde(default = "cash_constrained_default")]
     pub cash_constrained: bool,
+    /// Largest number of simultaneously live (resting or in-flight) orders for
+    /// this participant across all listings. Defaults to no per-participant cap;
+    /// the engine's global `MAX_LIVE_ORDERS` bound still applies.
+    #[serde(default = "max_live_orders_default")]
+    pub max_live_orders: u32,
 }
 
 impl RiskLimits {
@@ -44,7 +53,29 @@ impl RiskLimits {
             max_open_order_quantity,
             max_absolute_position,
             cash_constrained: true,
+            max_live_orders: u32::MAX,
         }
+    }
+
+    /// Returns these limits with a per-participant live-order cap.
+    #[must_use]
+    pub const fn with_max_live_orders(mut self, max_live_orders: u32) -> Self {
+        self.max_live_orders = max_live_orders;
+        self
+    }
+}
+
+/// Rejects a new order when the participant already holds its maximum number
+/// of live orders. `live_orders` is the engine's committed count for that
+/// participant, so the check is O(1) and independent of any transport session.
+pub const fn admit_live_order_count(
+    limits: &RiskLimits,
+    live_orders: u32,
+) -> Result<(), RejectCode> {
+    if live_orders >= limits.max_live_orders {
+        Err(RejectCode::MaxLiveOrders)
+    } else {
+        Ok(())
     }
 }
 
@@ -343,5 +374,22 @@ mod tests {
             ),
             Err(RejectCode::PriceOutOfBounds)
         );
+    }
+
+    #[test]
+    fn live_order_cap_is_exclusive_and_defaults_to_unbounded() {
+        let capped = limits().with_max_live_orders(2);
+        assert_eq!(admit_live_order_count(&capped, 0), Ok(()));
+        assert_eq!(admit_live_order_count(&capped, 1), Ok(()));
+        assert_eq!(
+            admit_live_order_count(&capped, 2),
+            Err(RejectCode::MaxLiveOrders)
+        );
+        assert_eq!(admit_live_order_count(&limits(), u32::MAX - 1), Ok(()));
+        let parsed: RiskLimits = serde_json::from_str(
+            r#"{"max_order_quantity":1,"max_open_order_quantity":1,"max_absolute_position":1}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.max_live_orders, u32::MAX);
     }
 }

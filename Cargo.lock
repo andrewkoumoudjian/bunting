@@ -273,6 +273,7 @@ dependencies = [
  "bunting-market-events",
  "bunting-market-types",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

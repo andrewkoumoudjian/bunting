@@ -30,9 +30,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 /// Version of the central engine behavior established by this foundation slice.
-pub const ENGINE_VERSION: u16 = 4;
+pub const ENGINE_VERSION: u16 = 5;
 /// Version of the complete persisted engine snapshot envelope.
-pub const ENGINE_SNAPSHOT_VERSION: u16 = 4;
+pub const ENGINE_SNAPSHOT_VERSION: u16 = 5;
 /// Version of the Bunting-native scenario schema.
 pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
 /// Maximum economic instruments admitted into one run.
@@ -759,6 +759,9 @@ pub struct RunState {
     retired: VecDeque<OrderId>,
     /// GTD expiries on the logical clock.
     expiries: BTreeSet<(LogicalTimeNs, OrderId)>,
+    /// Live-order count per participant, maintained where orders become live
+    /// and in `retire`. Participants with no live orders have no entry.
+    live_orders: BTreeMap<ParticipantId, u32>,
     kill_switch: bool,
     #[serde(default)]
     simulation: SimulationState,
@@ -835,6 +838,7 @@ impl RunState {
             ownership: BTreeMap::new(),
             retired: VecDeque::new(),
             expiries: BTreeSet::new(),
+            live_orders: BTreeMap::new(),
             kill_switch: false,
             simulation,
         })
@@ -946,6 +950,12 @@ impl RunState {
         &self.ownership
     }
 
+    /// Committed number of live orders for one participant (O(log n)).
+    #[must_use]
+    pub fn live_order_count(&self, participant: ParticipantId) -> u32 {
+        self.live_orders.get(&participant).copied().unwrap_or(0)
+    }
+
     /// Live orders of one participant in identity order.
     pub fn live_orders(
         &self,
@@ -994,6 +1004,15 @@ impl RunState {
             .values()
             .filter(|owned| owned.state == OwnedOrderState::Active)
             .count();
+        let mut live_by_participant: BTreeMap<ParticipantId, u32> = BTreeMap::new();
+        for owned in self.ownership.values() {
+            if owned.state == OwnedOrderState::Active {
+                let count = live_by_participant.entry(owned.participant_id).or_insert(0);
+                *count = count
+                    .checked_add(1)
+                    .ok_or(SnapshotError::UnsupportedVersion)?;
+            }
+        }
         let resting = self
             .listings
             .values()
@@ -1008,6 +1027,7 @@ impl RunState {
             || live > MAX_LIVE_ORDERS
             || self.retired.len() > MAX_RETIRED_ORDERS
             || live != resting
+            || live_by_participant != self.live_orders
             || live + self.retired.len() != self.ownership.len()
             || self.ownership.iter().any(|(order_id, owned)| {
                 *order_id != owned.order_id
@@ -1198,6 +1218,17 @@ impl RunState {
     /// the admission layer, so the retained window only serves late cancels and
     /// duplicate submissions racing a terminal order.
     fn retire(&mut self, order_id: OrderId) {
+        if let Some(owner) = self
+            .ownership
+            .get(&order_id)
+            .map(|owned| owned.participant_id)
+            && let Some(count) = self.live_orders.get_mut(&owner)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.live_orders.remove(&owner);
+            }
+        }
         self.retired.push_back(order_id);
         while self.retired.len() > MAX_RETIRED_ORDERS {
             if let Some(oldest) = self.retired.pop_front() {
@@ -1310,6 +1341,16 @@ impl RunState {
             Ok(admission) => admission,
             Err(code) => return Ok(Err(code)),
         };
+        // IOC, FOK and market orders never rest, so they do not consume a
+        // live-order slot; they are counted and retired within this transition.
+        if !immediate
+            && let Err(code) = bunting_risk_engine::admit_live_order_count(
+                &participant.limits,
+                self.live_order_count(order.participant_id),
+            )
+        {
+            return Ok(Err(code));
+        }
         self.ledger.open_order(
             order.participant_id,
             order.instrument_id,
@@ -1333,6 +1374,10 @@ impl RunState {
                 day: time_in_force == TimeInForcePolicy::Day,
             },
         );
+        let count = self.live_orders.entry(order.participant_id).or_insert(0);
+        *count = count
+            .checked_add(1)
+            .ok_or(EngineError::OwnershipInvariant)?;
         payloads.push(EventPayload::OrderAccepted {
             order_id: order.order_id,
         });
@@ -2095,6 +2140,117 @@ mod tests {
             .unwrap();
         assert_eq!(resting, book_before);
         assert_eq!(resting.1, levels(&[(101, 3)]));
+    }
+
+    #[test]
+    fn live_order_cap_counts_only_live_orders_and_survives_validation() {
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let mut trader = participant(1);
+        trader.limits = trader.limits.with_max_live_orders(2);
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(41),
+            ScenarioVersion::new(1),
+            instruments(),
+            [ListingDefinition::new(key, "ONE".into(), bounds).unwrap()],
+            [trader, participant(2)],
+        )
+        .unwrap();
+        let trader = ParticipantId::new(1);
+        let mut state =
+            RunState::from_scenario(RunId::new(41), IterationId::new(1), &scenario).unwrap();
+        let accept = |state: RunState, command: &Command| {
+            let outcome = apply(state, command);
+            assert!(outcome.accepted, "{:?}", outcome.reject_code);
+            outcome.candidate.validate().unwrap();
+            outcome.candidate
+        };
+
+        state = accept(
+            state.clone(),
+            &submit(&state, 1, 1, 1, 1, Side::Buy, 50, 10),
+        );
+        state = accept(
+            state.clone(),
+            &submit(&state, 2, 1, 2, 1, Side::Buy, 51, 10),
+        );
+        assert_eq!(state.live_order_count(trader), 2);
+
+        // At the cap: rejected without touching the count or the ledger.
+        let reserved = state.ledger().cash(trader, CASH).reserved;
+        let rejected = apply(
+            state.clone(),
+            &submit(&state, 3, 1, 3, 1, Side::Buy, 52, 10),
+        );
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.reject_code.as_deref(), Some("MaxLiveOrders"));
+        assert_eq!(rejected.candidate.live_order_count(trader), 2);
+        assert_eq!(
+            rejected.candidate.ledger().cash(trader, CASH).reserved,
+            reserved
+        );
+        state = rejected.candidate;
+
+        // A fill that completes order 2 releases one slot.
+        state = accept(
+            state.clone(),
+            &submit(&state, 4, 2, 4, 1, Side::Sell, 51, 10),
+        );
+        assert_eq!(state.live_order_count(trader), 1);
+        state = accept(
+            state.clone(),
+            &submit(&state, 5, 1, 5, 1, Side::Buy, 49, 10),
+        );
+        assert_eq!(state.live_order_count(trader), 2);
+
+        // A cancel releases one slot.
+        let cancel = Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(6),
+            correlation_id: CorrelationId::new(6),
+            logical_time: LogicalTimeNs::new(6_000_000),
+            expected_sequence: state.sequence(),
+            actor: trader,
+            payload: CommandPayload::CancelOrder(bunting_market_events::CancelOrder {
+                order_id: OrderId::new(1),
+                participant_id: trader,
+            }),
+        };
+        state = accept(state, &cancel);
+        assert_eq!(state.live_order_count(trader), 1);
+
+        // An IOC that never rests leaves the count unchanged, even at the cap.
+        state = accept(
+            state.clone(),
+            &submit(&state, 7, 1, 7, 1, Side::Buy, 48, 10),
+        );
+        assert_eq!(state.live_order_count(trader), 2);
+        state = accept(
+            state.clone(),
+            &submit(&state, 8, 2, 8, 1, Side::Sell, 60, 5),
+        );
+        let mut ioc = submit(&state, 9, 1, 9, 1, Side::Buy, 60, 5);
+        if let CommandPayload::SubmitOrder(order) = &mut ioc.payload {
+            order.kind = OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(60),
+                time_in_force: TimeInForcePolicy::Ioc,
+                post_only: false,
+                display_quantity: None,
+            };
+        }
+        state = accept(state, &ioc);
+        assert_eq!(state.live_order_count(trader), 2);
+        assert_eq!(state.live_order_count(ParticipantId::new(2)), 0);
+
+        // Snapshots carry the count, and a tampered count fails validation.
+        let envelope = state.snapshot_envelope().unwrap();
+        assert_eq!(
+            EngineSnapshotEnvelope::from_json(&envelope.to_json().unwrap()).unwrap(),
+            envelope
+        );
+        let mut tampered = state.clone();
+        tampered.live_orders.insert(trader, 1);
+        assert!(tampered.validate().is_err());
     }
 
     #[test]

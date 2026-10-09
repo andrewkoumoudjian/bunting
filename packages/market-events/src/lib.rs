@@ -297,6 +297,7 @@ pub enum RejectCode {
     PriceOutOfBounds,
     MaxOrderQuantity,
     MaxOpenOrderQuantity,
+    MaxLiveOrders,
     PositionLimit,
     InsufficientCash,
     InsufficientInventory,

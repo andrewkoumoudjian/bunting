@@ -12,3 +12,6 @@ bunting-market-types = { path = "../market-types" }
 serde.workspace = true
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
