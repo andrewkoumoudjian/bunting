@@ -283,7 +283,8 @@ pub enum ProcedureKind {
 /// Engine-side product procedures implemented by the simulation-domain slice.
 ///
 /// These names extend the canonical product contract without claiming that the
-/// current Worker dispatcher exposes every procedure yet.
+/// server exposes every procedure yet. Under ADR 0031 these move to the
+/// Bunting Native Protocol schema; there is no browser or Worker dispatcher.
 pub const SIMULATION_DOMAIN_PROCEDURES: &[(&str, ProcedureKind)] = &[
     ("scenarios.validate", ProcedureKind::Mutation),
     ("scenarios.publish", ProcedureKind::Mutation),

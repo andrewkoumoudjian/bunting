@@ -22,5 +22,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(target_arch = "wasm32")]
 fn main() {
     // Native-only executable. Keeping a stub lets the workspace Wasm gate prove
-    // that this app cannot pull terminal or socket dependencies into the Worker.
+    // that terminal and socket dependencies stay out of `wasm32` builds.
 }

@@ -37,15 +37,15 @@ Before source enters this directory:
 2. `docs/reference-adoption.md` marks the source as a selective source candidate;
 3. the smallest viable source set is identified;
 4. a normal released dependency has been evaluated first;
-5. Worker-bound code passes a minimal-feature Wasm build;
+5. code used by host-neutral packages passes a minimal-feature `wasm32-unknown-unknown` build;
 6. transitive dependencies, binary-size and memory impact are measured;
 7. equivalence, property and fuzz tests exist;
 8. an ADR records any `unsafe`, native code or nontrivial cryptographic/protocol risk.
 
 ## Current candidates
 
-- Minimal IronFix tag-value codec files, only if published crate dependencies fail the Worker/Wasm and stability evaluation.
+- Minimal IronFix tag-value codec files, only if published crate dependencies fail the `wasm32-unknown-unknown` and stability evaluation.
 - Small pure market-making formulas or tests from `market-maker-rs`, if independent implementation is less auditable than a notice-preserving adaptation.
-- Narrow deterministic helper/test material from `OrderBook-rs`, only when it does not import concurrent structures.
+- Narrow deterministic test material from `OrderBook-rs` for the dev-only oracle, never as production book code (ADR 0029).
 
 No complete reference repository is approved for vendoring.

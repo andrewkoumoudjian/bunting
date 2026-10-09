@@ -11,6 +11,6 @@ async fn main() {
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
-    // Native-only executable. The stub keeps platform dependencies out of the
-    // Worker graph while allowing the workspace Wasm gate to compile every app.
+    // Native-only executable. The stub keeps platform dependencies out of
+    // `wasm32` builds while allowing the workspace Wasm gate to compile every app.
 }

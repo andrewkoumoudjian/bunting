@@ -58,7 +58,7 @@ Participant credentials and mutation authority stay on the native venue. Publish
 
 ## References
 
-- [`0020-native-worker-browser-and-fix-boundaries.md`](0020-native-worker-browser-and-fix-boundaries.md)
+- [`0020-transport-neutral-engine-and-outbound-fix-tcp.md`](0020-transport-neutral-engine-and-outbound-fix-tcp.md)
 - [`../architecture.md`](../architecture.md)
 - [`../deployment.md`](../deployment.md)
 - [Cloudflare TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)

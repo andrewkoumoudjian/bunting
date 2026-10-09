@@ -234,6 +234,12 @@ as one reviewable PR in the style of the existing slices.
 
 ### Step 0 — Quick wins (≤ 1 day total)
 
+> **Status 2026-10-09:** the documentation rows are done by the guidance
+> reconciliation (ADR 0033): `architecture.md` and README rewritten, the
+> browser contract decided (retire, ADR 0031). The ADR 0028 heading is left
+> unchanged on purpose — ADR text is history and its status line governs.
+> The idempotency index and writer-test rows remain open.
+
 | Change | Where | Why |
 |---|---|---|
 | Rewrite `docs/architecture.md` to the code as it is: owned book (ADR 0029), single WASI venue (ADR 0022), WAL origin, no Worker | `docs/architecture.md` | G10: a *binding* document currently instructs agents to use OrderBook-rs |
@@ -383,16 +389,18 @@ the event feed, Cloudflare publisher reading archives (Slice 7).
 
 | # | Question | Owner answer | Consequence |
 |---|---|---|---|
-| 1 | Fairness promise | "Most realistic for one and multiple venues. Maybe a simple algorithm that actually calculates connection distance from server to client." | [Proposed ADR 0030](../adr/0030-proposed-latency-modeled-continuous-admission.md): continuous price-time matching per listing; admission ordered by measured one-way delay removed and scenario path latency added; same model outbound. Replaces ADR 0024 intervals. |
+| 1 | Fairness promise | "Most realistic for one and multiple venues. Maybe a simple algorithm that actually calculates connection distance from server to client." | [ADR 0030](../adr/0030-proposed-latency-modeled-continuous-admission.md): continuous price-time matching per listing; admission ordered by measured one-way delay removed and scenario path latency added; same model outbound. Replaces ADR 0024 intervals. |
 | 2 | Next deadline | Both a live competition and classroom use | Step 1 (fills reach makers) and the calendar/session work both stay high; Step 3 performance is needed by both. |
 | 3 | Wasmer/WASIX primary? | "No, not necessarily if there's better ways to run the binary anywhere" | Treat the host as a distribution question (below); decide with Step 2 data, then an ADR superseding ADR 0027. |
-| 4 | Browser UI host | "An app that connects to hosted server" | [Proposed ADR 0031](../adr/0031-proposed-bunting-native-client-protocol.md): app on a shared `bunting-client` crate; browser contract retired. |
-| 5 | NBC scope | "NBC is only a reference for a market engine, compatibility doesn't mean anything." | [Proposed ADR 0032](../adr/0032-proposed-nbc-reference-only.md): remove the NBC runtime surface; requires the listed `AGENTS.md` edits on acceptance. |
+| 4 | Browser UI host | "An app that connects to hosted server" | [ADR 0031](../adr/0031-proposed-bunting-native-client-protocol.md): app on a shared `bunting-client` crate; browser contract retired. |
+| 5 | NBC scope | "NBC is only a reference for a market engine, compatibility doesn't mean anything." | [ADR 0032](../adr/0032-proposed-nbc-reference-only.md): remove the NBC runtime surface; requires the listed `AGENTS.md` edits on acceptance. |
 | — | Interfaces | "Our own communication between certified server and clients as well as FIX protocol only." | ADR 0031: FIX + Bunting Native Protocol over in-process mutual TLS; nothing else. |
 
-The three ADRs are **proposed**. Until the owner accepts them, ADR 0018,
-0024 and 0027 and the current `AGENTS.md` remain binding, and no code on this
-branch acts on them.
+**Update (same day):** the owner approved these; [ADR 0033](../adr/0033-guidance-reconciliation-2026-10-09.md)
+records the acceptance of ADRs 0030–0032 as **target, not yet implemented**,
+amends the status lines of the ADRs they supersede, and reconciles
+`AGENTS.md`, `docs/architecture.md` and the [documentation status map](../README.md).
+No code on this branch implements them yet.
 
 ### Running the binary anywhere (answer 3)
 

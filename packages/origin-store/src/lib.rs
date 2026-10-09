@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Worker-independent authoritative persistence contract for engine-owned state.
+//! Host-independent authoritative persistence contract for engine-owned state.
 
 pub use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
