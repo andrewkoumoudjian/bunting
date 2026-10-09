@@ -1,6 +1,6 @@
 # ADR 0019: The central Bunting engine package owns the OrderBook-rs integration
 
-- Status: Accepted
+- Status: Superseded in part by ADR 0029 (package ownership of matching retained; OrderBook-rs is a dev-only oracle; see ADR 0033)
 - Date: 2026-07-13
 - Clarifies: ADR 0018 package ownership
 - Supersedes: the production package boundary in ADR 0013 and ADR 0014 that leaves the OrderBook-rs adapter as an independently consumed `packages/orderbook` crate

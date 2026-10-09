@@ -1,6 +1,6 @@
 # ADR 0024: Discrete matching intervals for competition fairness
 
-- Status: Accepted
+- Status: Superseded by ADR 0030 as the target; remains the implemented behavior until the ADR 0030 sequencer lands (see ADR 0033)
 - Date: 2026-07-29
 - Depends on: ADR 0022, ADR 0023
 

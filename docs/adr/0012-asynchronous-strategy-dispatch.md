@@ -1,6 +1,6 @@
 # ADR 0012: Asynchronous Dynamic Worker strategy dispatch
 
-- Status: Accepted
+- Status: Superseded by ADR 0022 and ADR 0033 (depends on a Cloudflare run object and Queues that no longer exist)
 - Date: 2026-07-11
 
 ## Context

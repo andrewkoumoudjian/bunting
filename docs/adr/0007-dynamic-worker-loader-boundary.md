@@ -1,6 +1,6 @@
 # ADR 0007: Minimal TypeScript Dynamic Worker loader boundary
 
-- Status: Accepted
+- Status: Superseded by ADR 0022 and ADR 0033 (no Cloudflare command path exists; a hosted-strategy sandbox would need a new ADR)
 - Date: 2026-07-11
 - Superseded in part by: ADR 0012 for asynchronous dispatch, state and replay
 

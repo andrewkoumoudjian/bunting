@@ -1,6 +1,6 @@
 # ADR 0018: One OrderBook-rs-backed Bunting market engine
 
-- Status: Accepted
+- Status: Accepted for single-engine authority; matcher clause superseded by ADR 0029; NBC-compatibility clauses superseded by ADR 0032 (see ADR 0033)
 - Date: 2026-07-13
 - Evidence baseline: `docs/research/rit-binary-audit/`, `docs/reference-functionality-audit.md`, and the existing NBC/RITC/QUARCC port records
 - Supersedes: ADR 0014's selectable `orderbook-v1`/`nbc-v1` market-engine registry and separate production-kernel decision

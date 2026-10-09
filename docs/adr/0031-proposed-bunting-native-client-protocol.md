@@ -1,7 +1,7 @@
 # ADR 0031: Two client interfaces — FIX and a certified Bunting native protocol
 
-- Status: **Proposed** (2026-10-09). Drafted from the owner's direction on
-  2026-10-09; not binding until accepted.
+- Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
+  **Target — not yet implemented**; the implementation log records each slice.
 - Would supersede: the browser procedure contract's role in ADR 0016/0020
   (`bunting-api-contract` browser procedures, `browser-wire`,
   `schemas/browser`), which has had no server since the Worker removal

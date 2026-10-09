@@ -1,6 +1,6 @@
 # ADR 0027: Wasmer-hosted WASI competition server
 
-- Status: Accepted
+- Status: Accepted as the current server packaging only; not a binding long-term host (ADR 0033)
 - Date: 2026-07-29
 - Depends on: ADR 0022 and ADR 0023
 - Supersedes: ADR 0023's asynchronous acceptor mechanism only

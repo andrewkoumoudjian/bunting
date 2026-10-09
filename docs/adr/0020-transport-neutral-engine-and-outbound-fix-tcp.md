@@ -1,6 +1,6 @@
 # ADR 0020: Transport-neutral engine and outbound FIX/TCP
 
-- Status: Accepted
+- Status: Accepted for the transport-neutral engine boundary; Worker browser transport and outbound FIX superseded by ADR 0022, ADR 0023 and ADR 0031 (see ADR 0033)
 - Date: 2026-07-13
 - Supersedes: ADR 0016 only where it makes tRPC the permanent sole public
   application boundary; ADR 0019 statements that require FIX or RIT adapters to

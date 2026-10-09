@@ -1,6 +1,6 @@
 # ADR 0016: Native Rust tRPC Worker with conditional Rust stream coordination
 
-- Status: Accepted
+- Status: Superseded by ADR 0020, ADR 0022 and ADR 0031 (Worker deleted in `eed8e00`; see ADR 0033)
 - Date: 2026-07-12
 - Supersedes: ADR 0015 and every public REST route decision
 - Amends: ADR 0013 only to permit a user-approved Rust Durable Object for stream coordination after the gate below

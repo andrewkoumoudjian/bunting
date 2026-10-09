@@ -1,7 +1,7 @@
 # ADR 0032: NBC is reference evidence only, not a compatibility target
 
-- Status: **Proposed** (2026-10-09). Drafted from the owner's direction on
-  2026-10-09; not binding until accepted.
+- Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
+  **Target — not yet implemented**; the implementation log records each slice.
 - Would supersede: the NBC-compatibility clauses of ADR 0018 (NBC as a
   complete compatibility input/profile of the unified engine) and the NBC
   paragraphs of `AGENTS.md` "Engine roles" listed below.

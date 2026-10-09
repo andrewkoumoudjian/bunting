@@ -1,6 +1,6 @@
 # ADR 0022: Native competition venue and Cloudflare publication wrapper
 
-- Status: Accepted
+- Status: Accepted; transitional Worker removal completed in `eed8e00` — no Worker is currently built (see ADR 0033)
 - Date: 2026-07-28
 - Supersedes: ADR 0013's and ADR 0018's selection of one Cloudflare Worker as the primary deployment target
 - Clarifies: ADR 0020's inbound TCP boundary
