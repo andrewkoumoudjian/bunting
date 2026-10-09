@@ -1,287 +1,239 @@
 # Bunting architecture
 
+Binding document. Reconciled 2026-10-09 against `main@1d857d1` and ADRs
+0022, 0028–0033. Sections are labeled **Current** (true in the code today) or
+**Target** (accepted, not yet implemented). Never describe a Target item as
+done; the implementation log records when one lands.
+
+The previous version of this file described the Cloudflare Worker /
+OrderBook-rs architecture; it is preserved in Git history (`1d857d1`).
+
 ## 1. Purpose
 
-Bunting is a stock-market simulation and exchange-testing platform implemented
-primarily in Rust. Its primary deployment is a Wasmer-hosted WASI competition
-venue; Cloudflare is a read-only publication wrapper. It supports human and
-automated participants, configurable scenarios, standard protocol adapters,
-streaming market data, deterministic recovery, and isolated user strategies.
+Bunting is a Rust market-simulation and exchange-testing platform for
+education, research and trading competitions. It is not a real-money
+exchange.
 
-The system is an education, research, and integration environment. It is not a colocated real-money exchange.
+One headless, deterministic engine owns market truth. Two products are built
+on it: a RIT-class instructor/student simulator and a QUARCC competition
+venue. Every transport, UI and host is an adapter.
 
 ## 2. Binding principles
 
-1. **Use OrderBook-rs:** matching and book capabilities come from the released upstream crate rather than a parallel implementation.
-2. **WASI venue authority:** the Wasmer-hosted server accepts bounded inbound FIX/TCP sessions through WASIX and owns the one in-process command path into `bunting-engine`.
-3. **Publication edge:** Cloudflare may cache immutable checksum-addressed public snapshots, archives, and leaderboards, but it does not own competition authority.
-4. **Origin versioning:** accepted commands and canonical events use an origin store with optimistic expected-version checks.
-5. **Warm memory is optional:** an isolate may retain reconstructed books, but recovery cannot depend on isolate affinity.
-6. **Bunting owns the exchange boundary:** authentication, participants, canonical events, ledger, scenarios, protocols, persistence orchestration, and streaming recovery remain Bunting concerns.
-7. **Fixed-point boundaries:** external prices, quantities, money, limits, and sequences are checked integer values.
-8. **Commit before publish:** no acknowledgement, fill, or stream update is public before origin persistence succeeds.
-9. **Least privilege:** user Dynamic Workers receive bounded inputs and no direct market-state mutation capability.
-10. **Upstream-first maintenance:** prefer dependency upgrades and upstream fixes to internal forks.
-11. **One central production engine package:** `bunting-engine` directly owns its private OrderBook-rs integration and composes matching with scenario, NBC compatibility, RIT-derived behavior, ledger, risk, recovery and publication; profiles configure that engine rather than selecting alternate venue kernels.
+1. **One authority.** `bunting-engine` owns run state, logical time, listings,
+   the order book, order ownership, risk admission, the single economic
+   ledger, scoring, canonical events and market-data projections (ADR 0018,
+   0028). No other crate, app, client or agent mutates market state.
+2. **One book.** The engine's private price-time book (`src/book.rs`) is the
+   only matcher (ADR 0029). OrderBook-rs is a dev-dependency differential
+   oracle only.
+3. **One ledger.** Every economic fact — fills, fees, tenders, OTC, fines,
+   cashflows, scoring marks — posts through `bunting-ledger`'s single ledger
+   (ADR 0028 item 3, Slice 9).
+4. **Listing identity.** Venue-sensitive commands, books, trades and depth
+   use `ListingKey (VenueId, InstrumentId)`; holdings aggregate by
+   `InstrumentId` (ADR 0028 item 2).
+5. **Determinism.** No wall clock, ambient randomness or host I/O inside
+   transitions. Fixed-point checked arithmetic at every boundary (ADR 0009,
+   0010). Same inputs ⇒ same events, state hash and scores.
+6. **Commit before publish.** No acknowledgement, report or market-data
+   update leaves the server before the origin commit is durable.
+7. **Bounded everything.** Queues, buffers, sessions, journals, histories and
+   per-participant resources have explicit limits with named rejections.
+8. **Participants are outside.** Strategies, QUARCC execution engines,
+   built-in agents and client apps submit ordinary commands and consume
+   committed reports (ADR 0014 as carried by 0018).
+9. **Two interfaces only.** FIX and the Bunting Native Protocol (ADR 0031,
+   Target). Cloudflare only publishes immutable exports (ADR 0022).
+10. **NBC is reference evidence**, not a compatibility target (ADR 0032).
+11. **Host-neutral core.** Engine and protocol packages compile for
+    `wasm32-unknown-unknown`; the server stays buildable natively; no
+    WASIX-only dependencies (ADR 0033).
 
 ## 3. Topology
 
+### Current
+
 ```text
-FIX clients -- bounded authenticated inbound TCP -->
-       Wasmer-hosted Rust WASI competition venue
-       - concurrent participant sessions
-       - direct in-process Rust application calls
-       - auth, schemas and protocol bounds
-       - one authoritative writer
-       - unified bunting-engine
-         - private OrderBook-rs matching adapter
-       - scenario and NBC-compatibility profiles
-       - Bunting risk/ledger/events
-       - run archive and replay
-          |
-          +--> Native origin event/version store
-               accepted commands, canonical events,
-               idempotency, run metadata, recovery tail
+FIX client (contestant engine, bunting TUI)
+   │  TCP; TLS only via a trusted terminating proxy
+   ▼
+bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
+   ├─ FIX acceptor: one thread per session (simfix-wire/session/mapping)
+   ├─ admin HTTP: /health, /admin/runs/<id>
+   ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
+   ├─ AuthoritativeWriter: sleep to 100 ms boundary, then arrival-ticket FIFO (ADR 0024)
+   └─ bunting-application ─► command-transaction ─► bunting-engine
+                                     │
+                                     ▼
+                        origin store (Memory | File)
+                        File = BUNTWAL1 journal (full candidate RunState per
+                        frame) + checkpoint every 128 commands + flock lease
 
-Committed public artifacts --> Cloudflare publication Worker
-                            --> immutable edge cache
+Cloudflare: nothing built (Worker removed in eed8e00)
+```
 
-User strategy source
-       -> TypeScript Worker Loader boundary
-       -> isolated Python Dynamic Worker
-       -> validated action proposal
-       -> ordinary Edge Worker command path
+### Target
+
+```text
+FIX client ──┐                         ┌── certified app / TUI / bindings (bunting-client)
+             ▼                         ▼   mutual TLS 1.3 in-process (ADR 0031)
+        gateway: sessions, RTT probes, identity from certificate
+             │
+             ▼
+   admission sequencer (ADR 0030): release = t_rx − d̂ + D_max + L(p,v)
+             │  one recorded order of inputs (humans, agents, admin, schedule)
+             ▼
+   single writer owning live RunState ── bunting-engine transition in place
+             │
+             ├─► command journal (inputs + events + hash chain) + periodic checkpoints
+             └─► committed-event distributor ──► per-participant private streams
+                                               └─► per-listing public streams
+                                                   (outbound hold per ADR 0030)
+   archive = genesis snapshot + journal ──► independent replayer / judge
+   immutable exports ──► Cloudflare publication (read-only)
 ```
 
 ## 4. Repository ownership
 
-### Reusable packages and composition
+| Path | Responsibility |
+|---|---|
+| `packages/market-types` | Identifiers and checked fixed-point values |
+| `packages/market-events` | Canonical commands, events, envelopes, reject codes |
+| `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes. Contains `compatibility::nbc` until ADR 0032 removal |
+| `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
+| `packages/risk-engine` | Pure admission over ledger counters |
+| `packages/origin-store` | `OriginStore` trait, commit request validation, in-memory store |
+| `packages/command-transaction` | Sans-I/O load → transition → commit orchestration |
+| `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |
+| `packages/bunting-runtime`, `packages/bunting-agents` | Deterministic built-in participant scheduling and policies (always via QUARCC execution) |
+| `packages/quarcc-*` | Participant-side execution engine, Bunting adapter, Wasm binding |
+| `packages/simfix-*` | FIX framing, session state machine, application mapping |
+| `packages/bunting-api-contract` | Shared identity/role types and the browser procedure schema (browser part retired under ADR 0031) |
+| `packages/browser-wire` | Unserved browser JSON transport — **retire** under ADR 0031 |
+| `bunting-rs` | Curated composition crate and competition archive replay |
+| `apps/bunting-server` | Venue host: acceptor, admin, writer, storage, scenario runtime |
+| `apps/bunting-tui`, `apps/bunting-cli` | Native participant/operator terminal and CLI |
+| `bindings/*` | C ABI, Python, C++ over `bunting-rs` |
+| `tests/oracles/nbc-matcher` | Dev-only translated NBC matcher (fate decided under ADR 0032) |
 
-- `market-types`: Bunting identifiers and checked fixed-point values.
-- `market-events`: commands, event envelopes, rejection codes, correlation, and causation.
-- `bunting-engine`: the implemented central production venue package. It owns bounded multi-listing run state, the authoritative submit-limit/cancel transition, deterministic scenario and engine versions, complete snapshot envelopes and the private version-pinned OrderBook-rs adapter.
-- `ledger`: participant cash, inventory, reservation, position, fee, and P&L projections.
-- `risk-engine`: participant/account and cross-instrument controls not supplied by the upstream per-book layer.
-- `origin-store`: Worker-independent persistence models and the atomic expected-version contract.
-- `command-transaction`: sans-I/O recovery, risk, matching, event, ledger, and commit preparation.
-- Persistence and transport remain outside `bunting-engine`.
-- `bunting-api-contract` and `browser-wire`: the Rust-owned procedure schema and bounded browser JSON transport.
-- `bunting-engine::compatibility::nbc`: NBC configuration, scheduler, synchronization, and provenance; the old matcher remains only under `tests/oracles`.
-- `quarcc-execution-engine`, `quarcc-bunting-adapter`, and `quarcc-execution-wasm`: participant execution and browser bindings.
-- `bunting-agents`: policies composed with mandatory QUARCC execution.
-- `bunting-runtime`: deterministic sans-I/O wake scheduling, authenticated
-  built-in participant identities, bounded action cascades, and portable
-  scheduler snapshots. Hosts remain responsible for the single authoritative
-  application writer and persistence.
-- `simfix-wire`, `simfix-session`, and `simfix-mapping`: transport-neutral FIX protocol layers.
-- Cloudflare cache adapters live under `apps/bunting-worker`; reusable packages remain host-neutral.
-- later engine modules: scenario clock, agents, products, news, tenders, assets, scoring and complete recovery. Extract a focused package only when a second real consumer proves a reusable non-authoritative boundary; FIX and native report/export tooling remain outside the engine.
-- `bunting-rs`: thin portable composition boundary with curated stable re-exports and product metadata.
+Dependency direction: `packages/*` → `bunting-rs` → `apps/*`, `bindings/*`.
+Packages never depend on apps.
 
-### Worker
+## 5. Order book (Current)
 
-- `apps/bunting-worker`: the native Rust Worker with browser dispatch and outbound FIX session objects.
-- `apps/bunting-tui`: a native-only, Longbridge-derived Ratatui operator workstation that initiates FIX/TCP sessions. Its optional loopback acceptor invokes `bunting-engine` in-process for local testing and does not change the Worker's outbound-only TCP boundary.
-- planned generated TypeScript SDK: declarations and official-client wrapper derived from the Rust contract, never a second hand-written contract.
-- `FixSessionObject`: owns outbound FIX/TCP socket and recovery state, never market authority.
+Per listing, a `BTreeMap` of price levels, each a FIFO keyed by monotonically
+increasing priority; orders keyed by canonical 128-bit `OrderId`. No clocks,
+randomness or shared ownership; `Clone`; serialized canonically and covered
+by the state hash. Semantics: execution at resting price; GTC, IOC, FOK
+(feasibility against displayed + hidden), GTD on the logical clock, DAY
+(rests until session close exists — Target, Slice 4); post-only; iceberg with
+refresh at the back of the level; market orders sweep and cancel the
+remainder; self-match permitted (prevention is policy above the book).
+`OrderKind` is `Limit | Market | LimitWithPolicy`. New order types need
+Bunting semantics, book tests and oracle coverage before entering the schema.
 
-There is no authoritative `market-run-do` runtime. ADR 0016 permits an optional Rust `RunStreamCoordinator` Durable Object only after its stream-coordination gate; it never owns commands, matching or origin truth.
+## 6. Command path
 
-## 5. OrderBook-rs boundary
+### Current
 
-The production dependency, owned directly by `packages/bunting-engine` after the ADR 0019 migration, is exactly:
+1. Session parses and bounds the FIX message; identity comes from configured
+   credentials.
+2. `AuthoritativeWriter::execute_interval` waits for the interval boundary and
+   arrival turn.
+3. Application recovers the run (clone), maps the message to a canonical
+   command with `logical_time` from wall-clock epoch milliseconds.
+4. Command transaction checks idempotency and expected sequence, loads the run
+   (clone), calls `transition_owned`, builds a `CommitRequest` with the full
+   candidate `RunState`.
+5. Origin validates and commits (File: append + fsync journal frame, then apply
+   to memory; checkpoint every 128 commands).
+6. Only the requesting session receives execution reports.
 
-```toml
-orderbook-rs = { version = "=0.10.3", default-features = false }
-pricelevel = "=0.8.4"
-```
+Measured cost (2026-10-09 note §4): the transition is 6–27 µs; clones and
+full-state journaling cost 0.5–116 ms per command at 1k–100k resting orders.
 
-The adopted upstream source revision is `575de34260b0fce346372074b6b938df058693a8`.
+### Target (Steps 1, 3, 5 of the 2026-10-09 plan)
 
-### Upstream owns
+- The writer owns the live `RunState`; transitions apply in place with a
+  no-mutation-on-error contract; no per-command clones.
+- Journal records hold the input, admission metadata, resulting events and an
+  event-hash chain; full state only in checkpoints. Recovery re-executes
+  journaled inputs and compares events.
+- A committed-event distributor delivers private reports to every affected
+  participant (makers included) and public data per listing, bounded, with
+  resume cursors.
+- Per-participant live-order limits are enforced by engine risk admission, not
+  session state.
 
-- limit, market, IOC, FOK, post-only, iceberg, reserve, pegged, trailing-stop, and market-to-limit semantics;
-- price-time matching and partial-fill priority;
-- price levels and direct order lookup;
-- trade and price-level change results;
-- mass cancel and cancellation ordering;
-- self-trade prevention and fee schedules;
-- book-level risk configuration and typed reject reasons;
-- operational kill switch and halt-and-drain behavior;
-- host-driven GTD/DAY expiry sweeps;
-- order lifecycle tracking;
-- engine sequence;
-- checksum-protected snapshot package and restore;
-- in-memory journal/replay helpers;
-- L1/L2 depth, iterators, metrics, market impact, and enriched snapshots.
+## 7. Admission and fairness
 
-### Bunting owns
+**Current:** ADR 0024 interval writer (sleep to a 100 ms boundary, then FIFO by
+arrival ticket). Built-in agents commit under the writer lock outside that
+queue.
 
-- run, instrument, participant, command, event, and correlation identities;
-- authentication, authorization, tenancy, and protocol limits;
-- idempotency and origin expected-version checks;
-- cross-book and participant-level cash/inventory/position risk;
-- canonical events and participant ledger projections;
-- scenario scheduling, random streams, scoring, and administration;
-- the browser-compatible fetch/stream entrypoint, Cache API policy, committed stream content, and recovery behavior;
-- Dynamic Worker strategy isolation;
-- NBC translation/integration, RIT-derived venue behavior and the Rust browser contract; FIX, RITC, QUARCC and Nautilus mappings stay outside the market engine.
+**Target (ADR 0030):** continuous price-time matching per listing. A
+deterministic sequencer orders all inputs — FIX, BNP, agents, schedule — by
+`release = (t_rx − d̂(c)) + D_max + L(p, v)`, where `d̂` is half the windowed
+minimum RTT and `L` is scenario path latency plus seeded jitter. Outbound data
+is held to the same model. Modes `physical | equalized | geographic`. All
+admission inputs are journaled; replay never re-measures the network.
 
-## 6. Public API boundary
+## 8. Interfaces
 
-ADR 0020 supersedes the universal RPC boundary. One native Rust Worker parses a bounded browser JSON contract and invokes the in-process Rust command transaction; internal Worker composition never crosses a protocol hop.
+**Current:** FIX (FIXT.1.1 / FIX 5.0 SP2 competition profile, ADR 0021/0023),
+tag 207 required for venue. Admin HTTP on loopback. The browser contract has
+no host.
 
-The Rust contract generates client schemas. tRPC is no longer an architecture, runtime, or differential-oracle dependency. Public streams retain the committed-sequence, reset, coalescing and backpressure rules in ADR 0011.
+**Target (ADR 0031):** FIX plus the Bunting Native Protocol over in-process
+mutual TLS 1.3; certificate subject = actor identity; streams with resume
+cursors; Ping/Pong for ADR 0030. One `bunting-client` crate shared by the
+TUI, a GUI app and bindings. Nothing else accepts participant traffic.
 
-FIX compatibility is implemented by the native venue's bounded inbound acceptor using FIXT.1.1 session semantics with the FIX 5.0 SP2 application profile. FIX sequences never replace Bunting event sequences. The existing Worker-initiated FIX path is transitional until ADR 0022's publication cutover is complete.
+## 9. Persistence, replay and archive
 
-## 7. Command transaction
+**Current:** `OriginStore` with expected-version commits and idempotency.
+File mode: `BUNTWAL1` frames (8-byte length, SHA-256, full candidate state),
+fail-closed recovery, poison on ambiguous writes, Unix-only `flock` writer
+lease, default bounds `max_commands = 10_000` (store-wide) and
+`max_events_per_run = 100_000`. `CompetitionArchive` replays simulation
+commands only.
 
-For one mutating command:
+**Target (ADR 0025 as expanded by 0028 item 5):** archive = genesis snapshot +
+complete journal of every input (orders, cancels, agent commands, admin,
+schedule, admission metadata); the replayer verifies events, final hash and
+scores from genesis and from checkpoints. Built-in agent runtime snapshots are
+persisted with checkpoints so restarts resume identical RNG and wake state.
 
-1. authenticate the actor;
-2. parse exact integer units and validate protocol limits;
-3. verify idempotency and expected run version;
-4. load the newest compatible upstream snapshot from Workers Cache;
-5. on miss or validation failure, load an origin snapshot and event tail;
-6. restore `OrderBook-rs` and Bunting projections;
-7. run Bunting participant/account risk;
-8. invoke one upstream operation;
-9. translate upstream orders, rejects, trades, and level changes into canonical Bunting events;
-10. project ledger and reservation changes against a candidate state;
-11. atomically commit the event batch and next origin version;
-12. create a new `OrderBookSnapshotPackage`;
-13. asynchronously or inline write the immutable snapshot to Workers Cache;
-14. acknowledge and publish only the committed result.
+## 10. Time and calendar
 
-A cache write failure does not roll back an origin commit. The next request rebuilds and repopulates the cache.
+**Current:** logical clock in `SimulationState`; GTD expiry index; FIX
+admissions stamped from epoch milliseconds; no venue calendar.
 
-### Native file-origin durability (current implementation)
+**Target (Slice 4):** per-venue calendar and session phases in logical time
+(open/close auctions, halts, DAY expiry, end-of-day marks, overnight carry);
+admissions stamped from the run clock by the sequencer.
 
-The native `FileOriginStore` holds an exclusive process-level `flock` lease on the companion `.lock` file (Unix only). One successful commit synchronizes one `BUNTWAL1` length-delimited SHA-256-checked frame containing the complete resulting run, command identity, canonical events and result, **before** exposing its in-memory result. The complete history is not copied and overwritten for every command. The origin periodically writes a full atomic checkpoint and compacts the journal after durability is established. Startup validates the checkpoint plus the committed journal prefix and rejects complete corrupted records; only an incomplete terminal frame may be trimmed.
+## 11. Hosting
 
-This is a native persistence architecture **distinct from** Worker D1's expected-version SQL batch. Journal records still serialize a complete `RunState`, the engine still restores matcher books and clones candidates per ordinary command, and this design does not promise distributed multiwriter operation or measured throughput. The checkpoint plus its journal is one recovery unit. The authoritative engine is still transport-independent.
+**Current:** release ships the server as a WASIX module run by Wasmer
+(ADR 0027) and native CLI/TUI/bindings for four targets. Durable file mode is
+Unix-only.
 
-## 8. Concurrency without a Durable Object
+**Direction (ADR 0033):** host not fixed. Keep the server native-buildable,
+add no WASIX-only dependencies, prefer native static binaries and an OCI image;
+a later ADR selects the host from measured native-versus-WASIX data.
 
-A plain Worker does not provide request affinity. The origin store therefore enforces optimistic concurrency:
+## 12. Publication
 
-```text
-commit(command, expected_version, event_batch, snapshot_metadata)
-```
+Cloudflare may publish immutable, checksum-addressed archives, leaderboards
+and public snapshots exported after commit. It never accepts commands, owns
+sequences or holds origin truth (ADR 0022). No publisher is built today.
 
-The commit succeeds only when the current run version equals `expected_version`. A loser reloads the new state and returns or retries according to a bounded policy.
+## 13. Validation gates
 
-Workers Cache does not provide this compare-and-swap function and cannot be used as a lock.
-
-The D1 adapter stores `u128` identifiers and `u64` sequences as decimal `TEXT`, avoiding JavaScript's 53-bit integer boundary. One D1 `batch()` inserts a command guard only when the run version matches, conditionally appends every event, result, and snapshot row, then conditionally updates the complete recovery projection. A zero-row final update is a sequence conflict; any statement error rolls back the batch.
-
-The initial slice writes an authoritative upstream package and complete private projection after every command. Its event tail is empty without making Workers Cache authoritative; canonical events are still appended for audit and later bounded-tail replay.
-
-## 9. Snapshot and Cache API
-
-The cache key is:
-
-```text
-https://cache.bunting.invalid/v2/orderbooks/
-  {run_id}/{venue_id}/{instrument_id}/{event_sequence}/{snapshot_checksum}
-```
-
-Properties:
-
-- immutable key;
-- the venue identity is mandatory, so cross-listed instruments cannot share cache entries;
-- JSON `OrderBookSnapshotPackage` body;
-- upstream package validation on every restore;
-- checksum as ETag;
-- represented event sequence in a response header;
-- explicit `s-maxage` and `immutable` Cache-Control;
-- no private participant data in public book cache entries;
-- bounded depth and payload size;
-- ordinary recovery on miss, eviction, or POP-local absence.
-
-Private ledgers, credentials, idempotency results, and accepted-command records are never cached as public responses.
-
-## 10. Streaming
-
-The public Worker exposes versioned browser-compatible streams. Binary transport may later use IronSBE after Wasm and compatibility review, but it remains behind the same client contract rather than becoming a second public authority path.
-
-Book streams are generated from committed upstream snapshots and absolute resulting level quantities. Each message includes:
-
-- protocol version;
-- run and instrument IDs;
-- committed Bunting event sequence;
-- upstream engine sequence where relevant;
-- channel and message type;
-- payload and optional visible-projection checksum.
-
-A reconnect presents its last committed sequence. The Worker either supplies an available event tail or emits `stream.reset` with a current snapshot. No resume contract depends on one isolate's memory.
-
-Public book state may coalesce. Trades and private execution/account records cannot be silently discarded. Slow consumers are disconnected with a recovery cursor.
-
-## 11. Numerics and identity
-
-Bunting protocol and ledger types include:
-
-```text
-PriceTicks(i64)
-QuantityLots(i64)
-MoneyMinor(i128)
-LogicalTimeNs(u64)
-EventSequence(u64)
-RunId(u128)
-InstrumentId(u128)
-ParticipantId(u128)
-OrderId(u128)
-```
-
-The OrderBook-rs adapter performs checked conversion to the upstream `u128` price, `u64` quantity, and `Id` types. The first adapter supports sequential IDs representable as `u64`; broader ID mapping must be explicit and collision tested.
-
-Floating analytics from upstream metrics are derived only. They never determine canonical money, quantity, priority, or ledger equality.
-
-## 12. Risk and ledger
-
-OrderBook-rs book-level risk is enabled where it matches the requirement: open-order counts, notional, price bands, kill switch, STP, fees, and validation.
-
-Bunting retains separate participant-level controls for:
-
-- enabled/disabled actor state;
-- available cash and inventory;
-- cross-instrument position and exposure;
-- run-wide and role-specific limits;
-- reservation policy;
-- administrative halts and competition rules.
-
-The ledger projects canonical trades and cancellations. It never infers fills from snapshots.
-
-## 13. Strategies and scenarios
-
-Dynamic Worker strategy execution remains asynchronous and capability-limited. A strategy proposes commands; it never receives a direct reference to the upstream book or cache.
-
-Built-in agents use explicit scenario time and named seeded random streams. Host-driven upstream clock/expiry APIs receive recorded logical or scheduled cutoffs.
-
-## 14. Reference policy
-
-- `OrderBook-rs` and `PriceLevel` are production dependencies.
-- `workers-rs` is the Worker/Cache production dependency.
-- Liquibook and exchange-core remain independent differential oracles.
-- Option-Chain-OrderBook is a future options-layer candidate.
-- market-maker-rs is a pure-formula/test donor, not a wholesale dependency.
-- IronSBE is a later binary-protocol candidate.
-- fauxchange currently has no implementation to copy.
-
-Any copied MIT source retains its notice, exact path, commit, and divergence record. Prefer upstream APIs and normal dependencies over copied source.
-
-## 15. Validation gates
-
-Every change to the kernel boundary runs:
-
-- native formatting, Clippy, and unit tests;
-- `wasm32-unknown-unknown` compilation;
-- dependency-tree assertion for the pinned upstream version;
-- snapshot package checksum and restore tests;
-- limit, market, cancel, partial-fill, risk, kill-switch, and expiry tests;
-- cache hit/miss/corruption tests;
-- expected-version conflict tests;
-- no-second-matcher policy checks;
-- size and cold-start measurement before deployment.
+Every change runs the checks in root `AGENTS.md`. Engine changes also keep:
+book unit tests and the OrderBook-rs differential oracle; ledger conservation
+tests; snapshot/replay hash tests; replay-blessed goldens only (never
+hand-edited). Performance claims require a recorded measurement (workload,
+hardware, build, commit).
