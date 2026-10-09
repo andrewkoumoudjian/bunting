@@ -78,3 +78,53 @@ that ran (either per the implementation log or in this session, section 4).
 | Slice 7 — products/deployment | **Paused by design** | TUI, server and bindings exist; browser contract has no host since Worker removal |
 | ADR 0028 #5 — full archive replay | **Not started** | `CompetitionArchive` replays `SimulationCommandRequest` only (G2) |
 | ADR 0028 #8 — native vs WASIX parity | **Not started** | No hash-parity or benchmark run recorded |
+
+## 4. What was executed in this session
+
+Environment: Linux x86_64 container, 4 vCPU Intel Xeon @ 2.80 GHz, pinned
+toolchain `1.88.0` (`rust-toolchain.toml`).
+
+| Check | Result |
+|---|---|
+| `cargo test --locked --workspace` at `1d857d1` | **observed: 174 passed, 0 failed** across 37 test targets — matches the Slice 10 log |
+| `cargo clippy -p bunting-engine --all-targets -D warnings` with the probe | observed: clean |
+| Remaining `AGENTS.md` gates with the probe added: `cargo metadata --locked`, `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -D warnings`, no `orderbook-rs` in `bunting-engine` normal deps, `cargo check --locked --workspace --target wasm32-unknown-unknown`, `git diff --check` | observed: all pass |
+| WASIX build, Wasmer smoke, QuickFIX-Go interop | not run (no WASIX toolchain or Go in this container) |
+
+### Per-command state cost probe
+
+`cargo run --release -p bunting-engine --example state_cost_probe` rests *N*
+one-lot bids from one participant across 1,000 price levels, then measures
+each cost **once** at that book size. Single sample, wall clock, no warmup
+control: treat the numbers as order-of-magnitude evidence, not a benchmark.
+
+| Resting orders | `RunState::clone` | `transition_owned` (1 order) | `serde_json` state bytes | `serde_json::to_vec` | `state_hash` |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 0.5 ms | 6 µs | 0.32 MB | 0.7 ms | 2.3 ms |
+| 10,000 | 3.5 ms | 14 µs | 3.2 MB | 9.3 ms | 23 ms |
+| 50,000 | 18 ms | 24 µs | 16.2 MB | 51 ms | 130 ms |
+| 100,000 | 51 ms | 27 µs | 32.5 MB | 116 ms | 275 ms |
+
+What this shows (**observed** numbers, **inferred** consequences):
+
+1. ADR 0029 worked: the matching transition is microseconds and grows
+   slowly with book size.
+2. Everything *around* the transition scales linearly with state. One native
+   FIX order currently pays at least three full clones —
+   `session_host.rs:198` (`service.recover`), `command-transaction/src/lib.rs:97`
+   (`load_run`) and `:105` (`committed_state = candidate.clone()`) — plus one
+   full-state JSON serialization into the `BUNTWAL1` frame, because
+   `CommitRequest.candidate` is the complete `RunState`
+   (`origin-store/src/lib.rs:36-37`, `commit_journal.rs:60`).
+3. Inferred per-order overhead at 10k resting orders: ≈ 3 × 3.5 ms + 9.3 ms ≈
+   **20 ms and a 3.2 MB fsynced write**, versus 14 µs of matching. At 100k
+   resting orders: ≈ 270 ms and 32 MB per order. Because the writer
+   serializes commands, that is an inferred ceiling of roughly 50 orders/s at
+   10k resting orders and 4 orders/s at 100k, before fsync, the 128-command
+   full checkpoint and FIX I/O — far below the engine's own
+   `MAX_LIVE_ORDERS = 250_000` bound. *Unresolved* until Step 2 measures it end
+   to end.
+4. The overhead is a **persistence/ownership design** cost, not a matching
+   cost. That makes Slice 2 (command-sourced durability, live state owned by
+   the writer) the highest-leverage engine work remaining.
+
