@@ -128,3 +128,97 @@ What this shows (**observed** numbers, **inferred** consequences):
    cost. That makes Slice 2 (command-sourced durability, live state owned by
    the writer) the highest-leverage engine work remaining.
 
+## 5. Verified gaps at `1d857d1`
+
+Each item cites source at the audited head. Items marked *(new)* are not
+listed as open in the implementation log's Slice 10 follow-ups.
+
+### Venue and session host (`apps/bunting-server`)
+
+- **G1 — Resting makers never receive their fills.** *Observed.* The session
+  loop executes a command and maps only the requester's events back onto the
+  requesting socket (`session_host.rs:226-246`,
+  `bunting-application/src/lib.rs:558-576`). A participant whose order rests
+  and is later hit by another connection — or by a built-in agent committing
+  through `scenario.rs:47-55` — gets no unsolicited `ExecutionReport`. This is
+  ADR 0028 item 6 / roadmap Slice 3, and it makes the competition venue
+  unusable for passive strategies.
+- **G2 — The open-order limit leaks.** *(new) Observed by source reading.*
+  `open_orders` is a per-connection `BTreeSet` (`session_host.rs:133`), inserted
+  for every *accepted* submit and removed only on an explicit accepted cancel
+  (`:229-237`). Fully filled orders, IOC/FOK remainders, GTD expiries, kill
+  switch and mass cancel never release it. *Inferred:* an active participant
+  is falsely rejected with `max_open_orders limit 256` after 256 accepted
+  orders on one connection regardless of how many are live, and can reset the
+  count by reconnecting. The fix belongs in the engine: a per-participant
+  live-order counter in risk admission, not adapter state.
+- **G3 — Agent runtime state is outside recovery and admission.** *(new)
+  Observed.* `scenario::run` constructs `DeterministicRuntime::new` on every
+  process start (`scenario.rs:62`) even though `bunting-runtime` already has
+  `RuntimeSnapshot` / `restore` (`bunting-runtime/src/lib.rs:158`). Agents
+  commit under `writer.lock()` directly (`scenario.rs:69`), bypassing the
+  interval arrival queue that FIX commands use. *Inferred:* after a restart the
+  agent RNG and wake schedule diverge from the uninterrupted run (violates
+  roadmap invariant 4 and ADR 0028 item 8), and agent/human interleaving is
+  decided by OS scheduling rather than a recorded admission order.
+- **G4 — Interval admission is sleep-then-FIFO, not a sealed batch.**
+  *Observed.* `AuthoritativeWriter::execute_interval` sleeps to the next wall
+  boundary and then admits by atomic arrival ticket (`writer.rs:39-75`). Known
+  in ADR 0028 item 7; the test `concurrent_arrivals_commit_in_sequence` is
+  timing-dependent (passed in this session; flaky per Slice 9 log).
+
+### Persistence and replay
+
+- **G5 — Journal records and checkpoints are full state.** *Observed + measured
+  (section 4).* Each WAL frame carries the complete candidate `RunState`; every
+  128 commands `persist` rewrites the full `FileState` including **all
+  committed commands and events** (`storage.rs:301-302`), so checkpoint cost
+  grows with run length. Recovery restores state, it does not re-execute
+  commands, so the journal is not a replay log.
+- **G6 — Idempotency lookup is a linear scan.** *(new) Observed.*
+  `check_record` does `state.commands.iter().find(..)` per commit
+  (`storage.rs:312-321`): O(n) per command, O(n²) per run. Small next to G5 but
+  free to fix with a `BTreeMap<(RunId, CommandId), _>` index.
+- **G7 — Default store capacity ends a competition early.** *(new) Observed
+  config, inferred impact.* `max_commands: 10_000` (store-wide, all runs, agents
+  included) and `max_events_per_run: 100_000` (`config.rs:137-138`); reaching
+  either returns `OriginError::Unavailable` for every later commit
+  (`storage.rs` `check_record`). *Inferred:* 20 teams sending one order per
+  second exhaust 10,000 commands in under nine minutes. Incompatible with the
+  roadmap's five-day acceptance scenario until history is paged/compacted.
+- **G8 — Archive replay excludes trading.** *Observed.* `CompetitionArchive`
+  stores `accepted_commands: Vec<SimulationCommandRequest>` and replays them
+  through `transition_simulation` (`bunting-rs/src/archive.rs:28,111-125`).
+  Ordinary orders, cancels, agent actions and admission order are absent, so a
+  judge cannot recompute fills or scores from the archive. ADR 0028 item 5.
+
+### Engine lifecycle
+
+- **G9 — No calendar or session phases.** *Observed.* No exchange calendar,
+  session state, open/close auction or day boundary exists in
+  `bunting-engine`; DAY orders rest until cancelled (Slice 10 log). The FIX
+  adapter stamps `logical_time` from wall-clock epoch milliseconds
+  (`session_host.rs:207`). That is replay-safe because the stamp is part of the
+  recorded command, but it means "logical" time is wall time for FIX traffic
+  and simulated time for agents — two clocks feeding one GTD index.
+
+### Documentation and contracts
+
+- **G10 — Binding architecture document contradicts accepted ADRs.**
+  *Observed.* `docs/architecture.md` still states principle 1 "Use
+  OrderBook-rs", lists OrderBook-rs/`pricelevel` as production dependencies
+  (§5, §14), and describes Worker/D1/Workers Cache command flow (§3, §7–§9).
+  `AGENTS.md` declares this file binding, so it now gives wrong instructions to
+  every agent that follows the precedence rules. README "Engine model",
+  "Current architecture", "Current workspace" and its `cargo tree … grep -F
+  'orderbook-rs v0.10.3'` check have the same drift. ADR 0028's *Decision*
+  heading still reads "proposed, conditional on acceptance" under an Accepted
+  status line. Outside ADRs, research and plans, 27 Markdown files still
+  mention OrderBook-rs and 17 mention the Worker/D1; some are correct (the
+  oracle role in `AGENTS.md`), so each needs review rather than a blind edit.
+- **G11 — Orphaned browser contract.** *Observed (Slice 10 log).*
+  `bunting-api-contract` browser procedures, `browser-wire` and
+  `schemas/browser` have no server since the Worker was removed. Either host
+  them in `bunting-server` or retire them; keeping an unserved contract
+  invites drift.
+
