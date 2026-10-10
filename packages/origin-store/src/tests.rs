@@ -286,3 +286,80 @@ fn reads_borrow_the_live_state_and_checkpoints_move_the_base() {
     origin.insert_run(live).unwrap();
     assert_eq!(origin.insert_run(run()), Err(OriginError::InvalidCommit));
 }
+
+#[test]
+fn admission_metadata_is_journaled_verified_and_not_fingerprinted() {
+    let admission = |release_us| AdmissionRecord {
+        mode: bunting_admission_sequencer::AdmissionMode::Equalized,
+        received_us: 10,
+        one_way_delay_us: 4,
+        max_one_way_delay_us: 25,
+        path_latency_us: 0,
+        jitter_position: None,
+        release_us,
+        arrival_sequence: 3,
+    };
+    let inputs = workload(4);
+    let mut live = LiveRun::genesis(run(), RunLimits::default()).unwrap();
+    let mut records = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let admitted = admission(31 + u64::try_from(index).unwrap());
+        match live.execute_admitted(input, Some(&admitted)).unwrap() {
+            Execution::Committed(record) => records.push(*record),
+            Execution::Duplicate(_) => unreachable!("fresh command"),
+        }
+    }
+    assert_eq!(records[2].admission, Some(admission(33)));
+    // A retry with different admission metadata is still the same command.
+    assert!(matches!(
+        live.execute_admitted(&inputs[0], Some(&admission(99))),
+        Ok(Execution::Duplicate(_))
+    ));
+    let json = serde_json::to_string(&records[1]).unwrap();
+    assert_eq!(
+        serde_json::from_str::<CommandRecord>(&json).unwrap(),
+        records[1]
+    );
+
+    let mut recovery = RunRecovery::new(run(), None, RunLimits::default()).unwrap();
+    for record in &records {
+        recovery.replay(record).unwrap();
+    }
+    assert_eq!(
+        recovery.finish().unwrap().state().unwrap(),
+        live.state().unwrap()
+    );
+    let mut altered = records.clone();
+    altered[3].admission = Some(admission(1));
+    let mut recovery = RunRecovery::new(run(), None, RunLimits::default()).unwrap();
+    let outcome = altered
+        .iter()
+        .try_for_each(|record| recovery.replay(record));
+    assert_eq!(outcome, Err(OriginError::InvalidCommit));
+}
+
+#[test]
+fn the_chain_authenticates_inputs_the_checkpoint_covers() {
+    let inputs = workload(4);
+    let mut live = LiveRun::genesis(run(), RunLimits::default()).unwrap();
+    let records = inputs
+        .iter()
+        .map(|input| committed(&mut live, input))
+        .collect::<Vec<_>>();
+    let (checkpoint, chain) = (live.state().unwrap().clone(), live.chain());
+    // Rewrite a covered input and recompute its fingerprint: the stored
+    // events no longer re-execute, so only the chain can notice.
+    let mut forged = records.clone();
+    if let JournalInput::Command(command) = &mut forged[1].input {
+        command.correlation_id = CorrelationId::new(777);
+    }
+    forged[1].fingerprint = forged[1].input.fingerprint().unwrap();
+    let mut recovery = RunRecovery::new(
+        run(),
+        Some((checkpoint, chain.as_str())),
+        RunLimits::default(),
+    )
+    .unwrap();
+    let outcome = forged.iter().try_for_each(|record| recovery.replay(record));
+    assert_eq!(outcome, Err(OriginError::InvalidCommit));
+}

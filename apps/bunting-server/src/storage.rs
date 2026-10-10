@@ -4,8 +4,8 @@ use bunting_engine::{EngineSnapshotEnvelope, RunState};
 use bunting_market_events::EventEnvelope;
 use bunting_market_types::{CommandId, RunId};
 use bunting_origin_store::{
-    CommandResult, Executed, Execution, InMemoryOrigin, JournalInput, LiveRun, OriginError,
-    OriginStore, RunLimits, RunRecovery,
+    AdmissionRecord, CommandResult, Executed, Execution, InMemoryOrigin, JournalInput, LiveRun,
+    OriginError, OriginStore, RunLimits, RunRecovery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-const CHECKPOINT_VERSION: u16 = 2;
+const CHECKPOINT_VERSION: u16 = 3;
 
 /// State-only restart accelerator. The journal stays authoritative: every
 /// checkpointed run must reappear, with the same chain value, in a replay of
@@ -184,7 +184,11 @@ impl FileOriginStore {
 }
 
 impl OriginStore for FileOriginStore {
-    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+    fn execute_admitted(
+        &self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Executed, OriginError> {
         let mut guard = self.inner.lock().map_err(|_| OriginError::Unavailable)?;
         if self.poisoned.load(Ordering::Acquire) {
             return Err(OriginError::Unavailable);
@@ -193,7 +197,7 @@ impl OriginStore for FileOriginStore {
         let live = runs
             .get_mut(&input.run_id())
             .ok_or(OriginError::UnknownRun)?;
-        let record = match live.execute(input)? {
+        let record = match live.execute_admitted(input, admission)? {
             Execution::Duplicate(result) => {
                 return Ok(Executed {
                     result,
@@ -271,7 +275,7 @@ fn recover(
     let mut checkpointed = BTreeMap::new();
     if checkpoint_path.exists() {
         let bytes = fs::read(checkpoint_path).map_err(|_| OriginError::Unavailable)?;
-        // Stores from before journal format 2 are rejected, not migrated.
+        // Stores from before journal format 3 are rejected, not migrated.
         let checkpoint: Checkpoint =
             serde_json::from_slice(&bytes).map_err(|_| OriginError::InvalidCommit)?;
         if checkpoint.version != CHECKPOINT_VERSION {
@@ -401,10 +405,14 @@ impl NativeOrigin {
 }
 
 impl OriginStore for NativeOrigin {
-    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+    fn execute_admitted(
+        &self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Executed, OriginError> {
         match self {
-            Self::Memory(store) => store.execute(input),
-            Self::File(store) => store.execute(input),
+            Self::Memory(store) => store.execute_admitted(input, admission),
+            Self::File(store) => store.execute_admitted(input, admission),
         }
     }
 

@@ -21,7 +21,7 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   ADR 0030 latency-modeled sequencer; do not build new behavior on the
   sleep-to-boundary writer, and route built-in agents through the same
   admission path as FIX.
-- The origin owns the live runs; `storage.rs` appends one journal-format-2
+- The origin owns the live runs; `storage.rs` appends one journal-format-3
   record per committed input (`commit_journal.rs`) before acknowledging and
   writes state-only checkpoints every `storage.checkpoint_interval` commands.
   Restart re-executes the journal after the checkpoint and must reproduce it

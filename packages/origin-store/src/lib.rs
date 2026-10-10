@@ -9,6 +9,7 @@
 //! restart re-executes the journaled inputs after the last checkpoint and
 //! requires identical results, events and chain values.
 
+pub use bunting_admission_sequencer::AdmissionRecord;
 pub use bunting_engine::RunState;
 use bunting_engine::{ApplyError, EngineError};
 use bunting_market_events::{Command, EventEnvelope, SimulationCommandRequest};
@@ -20,7 +21,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-const GENESIS_DOMAIN: &[u8] = b"bunting.journal.v2.genesis\0";
+const GENESIS_DOMAIN: &[u8] = b"bunting.journal.v3.genesis\0";
 
 /// Stable persisted command response.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,8 +100,15 @@ pub struct CommandRecord {
     pub result: CommandResult,
     pub events: Vec<EventEnvelope>,
     /// Hex SHA-256 of the previous chain value followed by the canonical JSON
-    /// of `events`. The first value derives from the genesis state hash.
+    /// of every other field of this record, so the chain authenticates
+    /// inputs, results, events and admission metadata alike. The first value
+    /// derives from the genesis state hash.
     pub chain: String,
+    /// How the input was ordered (ADR 0030), when it went through the
+    /// admission sequencer. Recorded so replay never re-measures latency;
+    /// it is not part of the idempotency fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<AdmissionRecord>,
 }
 
 /// Committed facts returned to the caller of [`OriginStore::execute`].
@@ -161,7 +169,17 @@ pub trait OriginStore {
     /// Applies one input to the live run, records it durably and returns the
     /// committed facts. A replay of a committed command ID with the same
     /// fingerprint returns the original result as a duplicate.
-    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError>;
+    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+        self.execute_admitted(input, None)
+    }
+
+    /// [`Self::execute`] for an input ordered by the admission sequencer;
+    /// `admission` is journaled with the record.
+    fn execute_admitted(
+        &self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Executed, OriginError>;
 
     /// Reads the committed live run without copying it. `read` must not call
     /// back into the store.
@@ -265,6 +283,15 @@ impl LiveRun {
 
     /// Applies one input in place and returns the record to persist.
     pub fn execute(&mut self, input: &JournalInput) -> Result<Execution, OriginError> {
+        self.execute_admitted(input, None)
+    }
+
+    /// [`Self::execute`] carrying the admission decision into the record.
+    pub fn execute_admitted(
+        &mut self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Execution, OriginError> {
         if self.poisoned {
             return Err(OriginError::Unavailable);
         }
@@ -303,13 +330,23 @@ impl LiveRun {
             self.rebuild()?;
             return Err(OriginError::CapacityExceeded);
         }
-        let chain = next_chain(&self.chain, &applied.events)?;
         let result = CommandResult {
             accepted: applied.accepted,
             reject_code: applied.reject_code,
             committed_sequence: self.state.sequence(),
             order_id: applied.order_id,
         };
+        let fingerprint_hex = hex(&fingerprint);
+        let chain = next_chain(
+            &self.chain,
+            &Chained {
+                input,
+                fingerprint: &fingerprint_hex,
+                result: &result,
+                events: &applied.events,
+                admission,
+            },
+        )?;
         self.index.insert(
             input.command_id(),
             IndexedCommand {
@@ -321,10 +358,11 @@ impl LiveRun {
         self.chain = chain;
         Ok(Execution::Committed(Box::new(CommandRecord {
             input: input.clone(),
-            fingerprint: hex(&fingerprint),
+            fingerprint: fingerprint_hex,
             result,
             events: applied.events,
             chain: hex(&chain),
+            admission: admission.copied(),
         })))
     }
 
@@ -429,7 +467,7 @@ impl RunRecovery {
         }
         if sequence <= self.checkpoint_sequence {
             let fingerprint = record.input.fingerprint_bytes()?;
-            let chain = next_chain(&self.live.chain, &record.events)?;
+            let chain = next_chain(&self.live.chain, &Chained::of(record))?;
             if hex(&fingerprint) != record.fingerprint
                 || hex(&chain) != record.chain
                 || self.live.index.contains_key(&record.input.command_id())
@@ -447,7 +485,10 @@ impl RunRecovery {
             self.replayed_through = sequence;
             return self.check_checkpoint_reached();
         }
-        match self.live.execute(&record.input) {
+        match self
+            .live
+            .execute_admitted(&record.input, record.admission.as_ref())
+        {
             Ok(Execution::Committed(produced)) if produced.as_ref() == record => {
                 self.replayed_through = sequence;
                 Ok(())
@@ -516,12 +557,16 @@ impl InMemoryOrigin {
 }
 
 impl OriginStore for InMemoryOrigin {
-    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
+    fn execute_admitted(
+        &self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Executed, OriginError> {
         let mut runs = self.runs.lock().map_err(|_| OriginError::Unavailable)?;
         let live = runs
             .get_mut(&input.run_id())
             .ok_or(OriginError::UnknownRun)?;
-        match live.execute(input)? {
+        match live.execute_admitted(input, admission)? {
             Execution::Duplicate(result) => Ok(Executed {
                 result,
                 events: Vec::new(),
@@ -577,8 +622,30 @@ fn genesis_chain(state: &RunState) -> Result<[u8; 32], OriginError> {
     Ok(hasher.finalize().into())
 }
 
-fn next_chain(previous: &[u8; 32], events: &[EventEnvelope]) -> Result<[u8; 32], OriginError> {
-    let bytes = serde_json::to_vec(events).map_err(|_| OriginError::InvalidCommit)?;
+/// The fields of a [`CommandRecord`] that its chain value covers.
+#[derive(Serialize)]
+struct Chained<'a> {
+    input: &'a JournalInput,
+    fingerprint: &'a str,
+    result: &'a CommandResult,
+    events: &'a [EventEnvelope],
+    admission: Option<&'a AdmissionRecord>,
+}
+
+impl<'a> Chained<'a> {
+    fn of(record: &'a CommandRecord) -> Self {
+        Self {
+            input: &record.input,
+            fingerprint: &record.fingerprint,
+            result: &record.result,
+            events: &record.events,
+            admission: record.admission.as_ref(),
+        }
+    }
+}
+
+fn next_chain(previous: &[u8; 32], record: &Chained<'_>) -> Result<[u8; 32], OriginError> {
+    let bytes = serde_json::to_vec(record).map_err(|_| OriginError::InvalidCommit)?;
     let mut hasher = Sha256::new();
     hasher.update(previous);
     hasher.update(bytes);

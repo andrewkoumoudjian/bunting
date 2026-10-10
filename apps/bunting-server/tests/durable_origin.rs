@@ -1,4 +1,4 @@
-//! Durability of the writer-owned file origin (journal format 2): restart
+//! Durability of the writer-owned file origin (journal format 3): restart
 //! re-executes the journal, checkpoints only accelerate it, and every crash
 //! point recovers a committed prefix with identical state hashes.
 #![allow(clippy::unwrap_used)]
@@ -184,7 +184,7 @@ fn checkpoints_accelerate_restart_but_the_journal_must_confirm_them() -> TestRes
 
     let original = std::fs::read(&path)?;
     let checkpoint: serde_json::Value = serde_json::from_slice(&original)?;
-    assert_eq!(checkpoint["version"], serde_json::json!(2));
+    assert_eq!(checkpoint["version"], serde_json::json!(3));
     assert_eq!(
         checkpoint["runs"][0]["snapshot"]["state"]["sequence"],
         serde_json::json!(8)
@@ -201,7 +201,7 @@ fn checkpoints_accelerate_restart_but_the_journal_must_confirm_them() -> TestRes
     std::fs::write(&path, serde_json::to_vec(&forged_state)?)?;
     assert_eq!(recovered_hash(&path, 4), Err(OriginError::InvalidCommit));
 
-    // Stores written before journal format 2 are rejected, not migrated.
+    // Stores written before journal format 3 are rejected, not migrated.
     std::fs::write(&path, br#"{"runs":[],"commands":[],"events":[]}"#)?;
     assert_eq!(recovered_hash(&path, 4), Err(OriginError::InvalidCommit));
 

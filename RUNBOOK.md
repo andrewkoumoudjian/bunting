@@ -49,7 +49,7 @@ Plan events around these until the fixes listed in
   command of every run (it is the run's history); plan disk for its growth.
   `<path>` is a state-only checkpoint that only speeds up restarts; deleting
   it forces a full re-execution from genesis, never data loss. Stores written
-  before journal format 2 (slice 14) are refused at startup; archive them and
-  start a new run.
+  before journal format 3 (slice 15b; format 2 shipped in slice 14) are
+  refused at startup; archive them and start a new run.
 - **Built-in agent state restarts from scratch** when the server restarts, so a
   restarted round is not identical to an uninterrupted one.

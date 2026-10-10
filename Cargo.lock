@@ -255,6 +255,7 @@ dependencies = [
 name = "bunting-origin-store"
 version = "0.1.0"
 dependencies = [
+ "bunting-admission-sequencer",
  "bunting-engine",
  "bunting-market-events",
  "bunting-market-types",

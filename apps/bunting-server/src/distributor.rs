@@ -11,7 +11,9 @@ use crate::storage::NativeOrigin;
 use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
 use bunting_market_types::{CommandId, RunId};
-use bunting_origin_store::{CommandResult, Executed, JournalInput, OriginError, OriginStore};
+use bunting_origin_store::{
+    AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
+};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
@@ -163,8 +165,12 @@ impl PublishingOrigin {
 }
 
 impl OriginStore for PublishingOrigin {
-    fn execute(&self, input: &JournalInput) -> Result<Executed, OriginError> {
-        let executed = self.inner.execute(input)?;
+    fn execute_admitted(
+        &self,
+        input: &JournalInput,
+        admission: Option<&AdmissionRecord>,
+    ) -> Result<Executed, OriginError> {
+        let executed = self.inner.execute_admitted(input, admission)?;
         // A duplicate's events were published when it first committed.
         if !executed.duplicate {
             self.distributor.publish(&executed.events);

@@ -1,4 +1,4 @@
-//! Bounded, checksummed, append-only native journal (format 2).
+//! Bounded, checksummed, append-only native journal (format 3).
 //!
 //! The journal is the run's complete authoritative history: a genesis
 //! snapshot per run followed by one command-sourced record per committed
@@ -12,7 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: [u8; 8] = *b"BUNTWAL2";
+const MAGIC: [u8; 8] = *b"BUNTWAL3";
 const HEADER_SIZE: u64 = 48;
 const MAX_RECORD_BYTES: u64 = 256 * 1024 * 1024;
 

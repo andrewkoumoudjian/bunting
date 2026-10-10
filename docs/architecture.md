@@ -67,8 +67,8 @@ bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
    └─ bunting-application ─► command-transaction ─► origin store (Memory | File)
                                                       owns live RunState per run;
                                                       bunting-engine applies in place
-                        File = BUNTWAL2 journal (genesis + one command record
-                        per input: input, result, events, hash chain) +
+                        File = BUNTWAL3 journal (genesis + one command record
+                        per input: input, result, events, admission, chain) +
                         state-only checkpoint every 8,192 commands + flock lease
 
 Cloudflare: nothing built (Worker removed in eed8e00)
@@ -197,15 +197,16 @@ TUI, a GUI app and bindings. Nothing else accepts participant traffic.
 ## 9. Persistence, replay and archive
 
 **Current (slice 14):** the origin owns each run's live state. File mode
-journals `BUNTWAL2` frames (8-byte length, SHA-256, one JSON entry): a genesis
+journals `BUNTWAL3` frames (8-byte length, SHA-256, one JSON entry): a genesis
 snapshot per run, then one command record per committed input with its
-result, canonical events and an event-hash chain. The journal is never
+result, canonical events, optional ADR 0030 admission record and a hash chain
+over the whole record. The journal is never
 compacted. A state-only checkpoint (snapshot + chain per run) is written every
 `checkpoint_interval` commands; restart verifies the journal up to the
 checkpoint by fingerprint and chain, then re-executes the rest and requires
 identical records, so every restart is a determinism check. An incomplete
 tail is cut off; a complete corrupt frame, a checkpoint ahead of the journal
-or a chain mismatch fails closed; pre-format-2 stores are refused. Poison on
+or a chain mismatch fails closed; pre-format-3 stores are refused. Poison on
 ambiguous writes; Unix-only `flock` writer lease; per-run bounds
 `max_commands_per_run` and `max_events_per_run`. `CompetitionArchive` still
 replays simulation commands only; the journal is its Step 4 input.
