@@ -104,6 +104,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
+| `packages/admission-sequencer` | ADR 0030 latency model: windowed-min RTT estimator, `physical`/`equalized`/`geographic` release, seeded path jitter, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
 | `packages/origin-store` | `OriginStore` trait; writer-owned `LiveRun` (in-place apply, idempotency index, event-hash chain, rollback); `RunRecovery`; in-memory store |
 | `packages/command-transaction` | Thin command/simulation call shape over `OriginStore::execute` |
 | `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |

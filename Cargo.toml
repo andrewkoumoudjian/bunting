@@ -6,6 +6,7 @@ members = [
   "packages/bunting-engine",
   "packages/ledger",
   "packages/risk-engine",
+  "packages/admission-sequencer",
   "packages/origin-store",
   "packages/command-transaction",
   "packages/bunting-application",
@@ -34,6 +35,7 @@ default-members = [
   "packages/bunting-engine",
   "packages/ledger",
   "packages/risk-engine",
+  "packages/admission-sequencer",
   "packages/origin-store",
   "packages/command-transaction",
   "packages/bunting-application",
@@ -66,6 +68,7 @@ bunting-market-types = { path = "packages/market-types" }
 bunting-api-contract = { path = "packages/bunting-api-contract" }
 bunting-application = { path = "packages/bunting-application" }
 bunting-engine = { path = "packages/bunting-engine" }
+bunting-admission-sequencer = { path = "packages/admission-sequencer" }
 bunting-runtime = { path = "packages/bunting-runtime" }
 quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
 simfix-wire = { path = "packages/simfix-wire" }
