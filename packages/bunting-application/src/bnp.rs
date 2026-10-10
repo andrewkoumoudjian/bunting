@@ -504,6 +504,8 @@ pub const fn reject_reason(code: RejectCode) -> RejectReason {
         RejectCode::InsufficientLiquidity => RejectReason::InsufficientLiquidity,
         RejectCode::PostOnlyWouldCross => RejectReason::PostOnlyWouldCross,
         RejectCode::InvalidTimeInForce => RejectReason::InvalidTimeInForce,
+        RejectCode::MarketClosed => RejectReason::MarketClosed,
+        RejectCode::CallPhaseOrderType => RejectReason::CallPhaseOrderType,
         RejectCode::LogicalTimeRegression => RejectReason::LogicalTimeRegression,
         RejectCode::SequenceConflict => RejectReason::SequenceConflict,
         RejectCode::ArithmeticOverflow => RejectReason::ArithmeticOverflow,

@@ -242,6 +242,8 @@ wire_enum!(
         SequenceConflict = 22,
         ArithmeticOverflow = 23,
         UnknownListing = 24,
+        MarketClosed = 25,
+        CallPhaseOrderType = 26,
     }
 );
 

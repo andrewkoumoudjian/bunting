@@ -4,7 +4,7 @@
 use bunting_market_types::{
     CommandId, CorrelationId, CurrencyId, EventId, EventSequence, FacilityId, InstrumentId,
     ListingKey, LogicalTimeNs, MoneyMinor, NegotiationId, NewsId, OrderId, ParticipantId,
-    PriceTicks, QuantityLots, RunId, TenderId,
+    PriceTicks, QuantityLots, RunId, TenderId, VenueId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -312,6 +312,10 @@ pub enum RejectCode {
     InsufficientLiquidity,
     PostOnlyWouldCross,
     InvalidTimeInForce,
+    /// The venue's session is closed (ADR 0037 §2).
+    MarketClosed,
+    /// Market, IOC and FOK orders cannot rest for a call auction.
+    CallPhaseOrderType,
     LogicalTimeRegression,
     SequenceConflict,
     ArithmeticOverflow,
@@ -408,6 +412,34 @@ pub enum SimulationEvent {
     IterationScored {
         participant_count: u32,
     },
+    /// A venue entered a trading-session phase of trading day `day`
+    /// (ADR 0037 §2).
+    SessionPhaseChanged {
+        venue_id: VenueId,
+        day: u32,
+        phase: SessionPhase,
+    },
+    /// A call auction uncrossed one listing's book at one price
+    /// (ADR 0037 §3). Its trades precede this event.
+    AuctionUncrossed {
+        listing_key: ListingKey,
+        price: PriceTicks,
+        quantity: QuantityLots,
+    },
+}
+
+/// A venue's trading-session phase (ADR 0037 §2). A scenario without a
+/// calendar trades continuously.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPhase {
+    /// New orders are refused; cancels are accepted.
+    Closed,
+    /// Orders collect without matching until the opening auction.
+    PreOpen,
+    Continuous,
+    /// Orders collect without matching until the closing auction.
+    ClosingCall,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

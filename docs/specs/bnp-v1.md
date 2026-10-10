@@ -46,7 +46,9 @@ length  = 1 + len(body)            (bytes after the length field)
 - `group<T>` is `u16` count (at most 4,096) then the entries.
 - `listing` is `venue_id:u128 instrument_id:u128` (32 bytes).
 - `stamp` is `sequence:u64 logical_time_ns:u64`. `sequence` is the committed
-  event sequence of the run, the private stream's cursor.
+  event sequence of the run, the private stream's cursor. Logical time is
+  run time (ADR 0037): nanoseconds since the run began, as is a GTD
+  order's `expires_at_ns`.
 - Prices are `i64` ticks, quantities `i64` lots, cash `i128` minor units,
   exactly as the engine stores them.
 - Trailing bytes after a known body, an unknown type, or a message sent in the
@@ -109,8 +111,10 @@ Enumerations: `role` 1 participant (2 team, 3 instructor, 4 administrator,
 5 built-in agent are reserved). `resume` 0 live, 1 replaying, 2 gap.
 `liquidity` 1 maker, 2 taker. Entry `kind` 0 trade, 1 bid, 2 ask (a level's
 absolute visible quantity after the change, 0 when it is gone). Reject
-`reason` codes 1–24 mirror the engine's `RejectCode` in order
-(`packages/bnp-wire/src/lib.rs`, `RejectReason`); 24 is an unknown listing.
+`reason` codes 1–23 mirror the engine's `RejectCode` in order
+(`packages/bnp-wire/src/lib.rs`, `RejectReason`); 24 is an unknown listing,
+25 a closed session and 26 a market, IOC or FOK order in a call phase
+(ADR 0037).
 Cancel `reason` 1 requested, 2 kill switch, 3 market remainder, 4 mass cancel,
 5 expired, 6 halt. The engine currently emits no `PositionChanged` or
 `BalanceChanged`; clients read positions and cash with `AccountRequest`.

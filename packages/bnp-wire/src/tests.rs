@@ -461,7 +461,7 @@ fn wire_enums_cover_their_values_exactly() {
         assert_eq!(RejectReason::from_wire(reason.to_wire()), Ok(reason));
     }
     assert!(RejectReason::from_wire(0).is_err());
-    assert_eq!(RejectReason::ALL.len(), 24);
+    assert_eq!(RejectReason::ALL.len(), 26);
     assert_eq!(CancelReason::ALL.len(), 6);
     assert!(FeedFlags::ALL.contains(FeedFlags::OFFERS));
     assert!(!FeedFlags::BIDS.contains(FeedFlags::OFFERS));

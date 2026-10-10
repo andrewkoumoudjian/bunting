@@ -297,11 +297,20 @@ engine refuses an input behind the clock and first applies everything due
 by its time (scheduled actions, GTD expiries). A venue timer submits a
 journaled `ClockTick` through the sequencer at `RunState::next_due`, so
 due items apply on time with no other input. The local and competition
-scenario runs a real-time paced clock. No venue calendar yet.
+scenario runs a real-time paced clock.
 
-**Target (ADR 0037 stages 2–4):** per-venue calendar and session phases in
-run time (open/close auctions, listing halts, DAY expiry, end-of-day marks,
-overnight carry).
+**Current (slice 28, ADR 0037 stages 2–3):** an optional scenario calendar
+gives each venue a daily session (pre-open, open, closing call, close).
+Closed venues refuse new orders; call phases collect limit orders without
+matching (market, IOC and FOK refused); the open and the close uncross each
+book in a call auction at one price (most volume, least imbalance, nearest
+the mark, lowest); DAY orders expire after the closing auction; GTC orders
+carry overnight. Phase changes and auctions are engine events applied as
+the run clock passes each boundary.
+
+**Target (ADR 0037):** listing halts that reopen by auction, indicative
+auction data and phase messages on the feeds, end-of-day marks and
+multi-day runs.
 
 ## 11. Hosting
 

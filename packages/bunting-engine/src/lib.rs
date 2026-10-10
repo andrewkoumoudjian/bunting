@@ -3,6 +3,7 @@
 //! Authoritative sans-I/O Bunting market-simulation engine.
 
 mod book;
+pub mod calendar;
 pub mod simulation;
 
 pub use book::BookOrder;
@@ -11,12 +12,13 @@ use bunting_ledger::{Fill, FillParty, LedgerError};
 pub use bunting_ledger::{FxRate, InstrumentTerms, Ledger, Reservation};
 use bunting_market_events::{
     CancelReason, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope, EventPayload,
-    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest, TimeInForcePolicy,
+    OrderKind, RejectCode, SessionPhase, Side, SimulationCommand, SimulationCommandRequest,
+    TimeInForcePolicy,
 };
 use bunting_market_types::{
     CurrencyId, EventId, EventSequence, InstrumentId, IterationId, ListingKey, LogicalTimeNs,
     MoneyMinor, OrderId, ParticipantId, PriceBounds, PriceTicks, QuantityLots, RunId, ScenarioId,
-    ScenarioVersion,
+    ScenarioVersion, VenueId,
 };
 use bunting_risk_engine::RiskLimits;
 use serde::{Deserialize, Serialize};
@@ -365,6 +367,10 @@ pub struct ScenarioDefinition {
     participants: BTreeMap<ParticipantId, ParticipantDefinition>,
     #[serde(default)]
     simulation: SimulationScenario,
+    /// Trading sessions (ADR 0037 §2); without one, every venue trades
+    /// continuously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calendar: Option<calendar::Calendar>,
 }
 
 impl ScenarioDefinition {
@@ -418,6 +424,7 @@ impl ScenarioDefinition {
             listings: listing_map,
             participants: participant_map,
             simulation: SimulationScenario::default(),
+            calendar: None,
         };
         definition.validate()?;
         Ok(definition)
@@ -547,6 +554,18 @@ impl ScenarioDefinition {
         {
             return Err(ScenarioError::InvalidSimulation);
         }
+        let venues = self
+            .listings
+            .keys()
+            .map(|listing| listing.venue_id)
+            .collect::<BTreeSet<_>>();
+        if self
+            .calendar
+            .as_ref()
+            .is_some_and(|calendar| !calendar.is_valid(&venues))
+        {
+            return Err(ScenarioError::InvalidCalendar);
+        }
         Ok(())
     }
 
@@ -597,6 +616,22 @@ impl ScenarioDefinition {
     pub const fn simulation(&self) -> &SimulationScenario {
         &self.simulation
     }
+
+    /// Attaches a validated trading calendar (ADR 0037 §2).
+    ///
+    /// # Errors
+    /// Returns [`ScenarioError::InvalidCalendar`] unless the calendar gives
+    /// every listed venue one well-ordered session.
+    pub fn with_calendar(mut self, calendar: calendar::Calendar) -> Result<Self, ScenarioError> {
+        self.calendar = Some(calendar);
+        self.validate()?;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub const fn calendar(&self) -> Option<&calendar::Calendar> {
+        self.calendar.as_ref()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -612,6 +647,7 @@ pub enum ScenarioError {
     InvalidParticipant,
     InvalidScenarioIdentity,
     InvalidSimulation,
+    InvalidCalendar,
 }
 
 /// Immutable published scenario record addressed by identity, version and hash.
@@ -799,6 +835,11 @@ pub struct RunState {
     kill_switch: bool,
     #[serde(default)]
     simulation: SimulationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calendar: Option<calendar::Calendar>,
+    /// Session boundaries each venue has passed (ADR 0037 §2).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    session_steps: BTreeMap<VenueId, u64>,
 }
 
 impl RunState {
@@ -854,6 +895,23 @@ impl RunState {
         }
         let simulation = SimulationState::from_scenario(&scenario.simulation)
             .map_err(|_| EngineError::InvalidScenario)?;
+        // Boundaries at run time zero apply silently: the books are empty.
+        let session_steps = scenario
+            .calendar
+            .iter()
+            .flat_map(|calendar| {
+                calendar.sessions.iter().map(|session| {
+                    let mut step = 0;
+                    while calendar
+                        .boundary(session.venue_id, step)
+                        .is_some_and(|boundary| boundary.at.get() == 0)
+                    {
+                        step += 1;
+                    }
+                    (session.venue_id, step)
+                })
+            })
+            .collect();
         Ok(Self {
             run_id,
             sequence: EventSequence::new(0),
@@ -875,6 +933,8 @@ impl RunState {
             live_orders: BTreeMap::new(),
             kill_switch: false,
             simulation,
+            calendar: scenario.calendar.clone(),
+            session_steps,
         })
     }
 
@@ -1350,7 +1410,144 @@ impl RunState {
             .catch_up(&mut context, to, sweep)
             .map_err(EngineError::Simulation)?;
         payloads.extend(events.into_iter().map(EventPayload::Simulation));
+        // Session boundaries in time order, each after the GTD expiries due
+        // before it.
+        while let Some((venue, step, boundary)) = self
+            .next_boundary()
+            .filter(|(_, _, boundary)| boundary.at <= to)
+        {
+            self.expire_due(boundary.at, payloads, changed_listings)?;
+            self.cross_boundary(venue, step, boundary, payloads, changed_listings)?;
+        }
         self.expire_due(to, payloads, changed_listings)
+    }
+
+    /// A venue's trading-session phase (ADR 0037 §2). Without a calendar
+    /// every venue trades continuously.
+    #[must_use]
+    pub fn session_phase(&self, venue: VenueId) -> SessionPhase {
+        if self.calendar.is_none() {
+            return SessionPhase::Continuous;
+        }
+        calendar::Calendar::phase_after(self.session_steps.get(&venue).copied().unwrap_or(0))
+    }
+
+    /// The earliest session boundary any venue has yet to pass.
+    fn next_boundary(&self) -> Option<(VenueId, u64, calendar::Boundary)> {
+        let calendar = self.calendar.as_ref()?;
+        self.session_steps
+            .iter()
+            .filter_map(|(venue, step)| {
+                calendar
+                    .boundary(*venue, *step)
+                    .map(|boundary| (*venue, *step, boundary))
+            })
+            .min_by_key(|(venue, _, boundary)| (boundary.at, *venue))
+    }
+
+    /// Moves `venue` into the phase `boundary` starts. The open and the close
+    /// uncross each of its books in a call auction; at the close, DAY orders
+    /// then expire.
+    fn cross_boundary(
+        &mut self,
+        venue: VenueId,
+        step: u64,
+        boundary: calendar::Boundary,
+        payloads: &mut Vec<EventPayload>,
+        changed_listings: &mut BTreeSet<ListingKey>,
+    ) -> Result<(), EngineError> {
+        self.session_steps.insert(
+            venue,
+            step.checked_add(1).ok_or(EngineError::SequenceOverflow)?,
+        );
+        if matches!(
+            boundary.phase,
+            SessionPhase::Continuous | SessionPhase::Closed
+        ) {
+            let listings = self
+                .listings
+                .keys()
+                .filter(|listing| listing.venue_id == venue)
+                .copied()
+                .collect::<Vec<_>>();
+            for listing in listings {
+                changed_listings.insert(listing);
+                self.auction(listing, payloads)?;
+            }
+        }
+        if boundary.phase == SessionPhase::Closed {
+            let day_orders = self
+                .ownership
+                .values()
+                .filter(|owned| {
+                    owned.day
+                        && owned.state == OwnedOrderState::Active
+                        && owned.listing_key.venue_id == venue
+                })
+                .map(|owned| owned.order_id)
+                .collect::<Vec<_>>();
+            for order_id in day_orders {
+                self.cancel(order_id, CancelReason::Expired, payloads)?;
+            }
+        }
+        payloads.push(EventPayload::Simulation(
+            bunting_market_events::SimulationEvent::SessionPhaseChanged {
+                venue_id: venue,
+                day: boundary.day,
+                phase: boundary.phase,
+            },
+        ));
+        Ok(())
+    }
+
+    /// Uncrosses one listing's book at its call-auction price (ADR 0037 §3).
+    /// The reference for the price is the instrument's mark: its last trade,
+    /// else its opening mark.
+    fn auction(
+        &mut self,
+        listing_key: ListingKey,
+        payloads: &mut Vec<EventPayload>,
+    ) -> Result<(), EngineError> {
+        let reference = self
+            .ledger
+            .mark(listing_key.instrument_id)
+            .unwrap_or(PriceTicks::new(1));
+        let book = &mut self
+            .listings
+            .get_mut(&listing_key)
+            .ok_or(EngineError::UnknownListing)?
+            .book;
+        let Some((price, quantity)) = book.auction_price(reference) else {
+            return Ok(());
+        };
+        let crosses = book
+            .uncross(price)
+            .map_err(|_| EngineError::OwnershipInvariant)?;
+        for cross in crosses {
+            // The order that rested first is the maker.
+            let (maker, taker) = if cross.buy_priority < cross.sell_priority {
+                (cross.buy, cross.sell)
+            } else {
+                (cross.sell, cross.buy)
+            };
+            self.settle_fill(
+                listing_key,
+                maker,
+                taker,
+                price,
+                cross.quantity,
+                true,
+                payloads,
+            )?;
+        }
+        payloads.push(EventPayload::Simulation(
+            bunting_market_events::SimulationEvent::AuctionUncrossed {
+                listing_key,
+                price,
+                quantity,
+            },
+        ));
+        Ok(())
     }
 
     /// The earliest run time at which something is due: a scheduled action,
@@ -1359,7 +1556,8 @@ impl RunState {
     #[must_use]
     pub fn next_due(&self) -> Option<LogicalTimeNs> {
         let gtd = self.expiries.first().map(|&(at, _)| at);
-        [self.simulation.next_due(), gtd]
+        let session = self.next_boundary().map(|(_, _, boundary)| boundary.at);
+        [self.simulation.next_due(), gtd, session]
             .into_iter()
             .flatten()
             .min()
@@ -1442,11 +1640,22 @@ impl RunState {
         {
             return Ok(Err(RejectCode::InvalidTimeInForce));
         }
+        // Session phase (ADR 0037 §2): a closed venue takes no orders, and
+        // a call phase only collects orders that can rest for its auction.
+        let call = match self.session_phase(listing_key.venue_id) {
+            SessionPhase::Closed => return Ok(Err(RejectCode::MarketClosed)),
+            SessionPhase::PreOpen | SessionPhase::ClosingCall => true,
+            SessionPhase::Continuous => false,
+        };
+        if call && (limit.is_none() || immediate) {
+            return Ok(Err(RejectCode::CallPhaseOrderType));
+        }
         if limit.is_none() && listing.book.best(order.side.opposite()).is_none() {
             return Ok(Err(RejectCode::InsufficientLiquidity));
         }
         if let Some(price) = limit
             && post_only
+            && !call
             && listing.book.would_cross(order.side, price)
         {
             return Ok(Err(RejectCode::PostOnlyWouldCross));
@@ -1510,11 +1719,13 @@ impl RunState {
         payloads.push(EventPayload::OrderAccepted {
             order_id: order.order_id,
         });
-        let fillable = time_in_force != TimeInForcePolicy::Fok
-            || self.listings[&listing_key]
-                .book
-                .executable(order.side, limit)
-                >= order.quantity;
+        // Nothing matches in a call phase: the order rests for the auction.
+        let fillable = !call
+            && (time_in_force != TimeInForcePolicy::Fok
+                || self.listings[&listing_key]
+                    .book
+                    .executable(order.side, limit)
+                    >= order.quantity);
         let remaining = if fillable {
             let (matches, remaining) = self
                 .listings
@@ -1589,6 +1800,39 @@ impl RunState {
         matches: &[Match],
         payloads: &mut Vec<EventPayload>,
     ) -> Result<(), EngineError> {
+        for fill in matches {
+            self.settle_fill(
+                listing_key,
+                fill.maker,
+                taker_id,
+                fill.price,
+                fill.quantity,
+                false,
+                payloads,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Settles one execution through the ledger. In continuous trading the
+    /// taker is the arriving order, whose own completion its submission
+    /// reports. In a call auction both orders rested (the earlier is the
+    /// maker), both report here, and both pay the taker fee: neither
+    /// provided liquidity to the other.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one execution's facts stay visible at both call sites"
+    )]
+    fn settle_fill(
+        &mut self,
+        listing_key: ListingKey,
+        maker_id: OrderId,
+        taker_id: OrderId,
+        price: PriceTicks,
+        quantity: QuantityLots,
+        auction: bool,
+        payloads: &mut Vec<EventPayload>,
+    ) -> Result<(), EngineError> {
         let fees = self.listings[&listing_key].definition.fees;
         let funded = |participants: &BTreeMap<ParticipantId, ParticipantDefinition>,
                       participant: ParticipantId| {
@@ -1596,66 +1840,78 @@ impl RunState {
                 .get(&participant)
                 .is_some_and(|definition| definition.limits.cash_constrained)
         };
-        for fill in matches {
-            let maker = self
-                .ownership
-                .get(&fill.maker)
-                .cloned()
-                .ok_or(EngineError::OwnershipInvariant)?;
-            let taker = self
-                .ownership
-                .get(&taker_id)
-                .cloned()
-                .ok_or(EngineError::OwnershipInvariant)?;
-            if maker.listing_key != listing_key || maker.state != OwnedOrderState::Active {
-                return Err(EngineError::OwnershipInvariant);
-            }
-            let maker_fee = per_lot_fee(fees.maker_per_lot, fill.quantity)?;
-            let taker_fee = per_lot_fee(fees.taker_per_lot, fill.quantity)?;
-            let party = |owned: &OwnedOrder, fee: MoneyMinor| FillParty {
-                participant: owned.participant_id,
-                fee,
-                order: Some(owned.reservation),
-                enforce_funding: funded(&self.participants, owned.participant_id),
-            };
-            let (buyer, seller) = if taker.side == Side::Buy {
-                (party(&taker, taker_fee), party(&maker, maker_fee))
-            } else {
-                (party(&maker, maker_fee), party(&taker, taker_fee))
-            };
-            self.ledger.settle(Fill {
-                instrument: listing_key.instrument_id,
-                price: fill.price,
-                quantity: fill.quantity,
-                buyer: Some(buyer),
-                seller: Some(seller),
-                set_mark: true,
-            })?;
-            reduce_order(fill.maker, fill.quantity, &mut self.ownership, payloads)?;
-            if fill.maker_remaining.get() == 0
-                && let Some(at) = maker.expires_at
-            {
-                self.expiries.remove(&(at, fill.maker));
-            }
-            reduce_order(
-                taker_id,
-                fill.quantity,
-                &mut self.ownership,
-                &mut Vec::new(),
-            )?;
-            payloads.push(EventPayload::TradeExecuted {
-                instrument_id: listing_key.instrument_id,
-                listing_key: Some(listing_key),
-                maker_order_id: fill.maker,
-                taker_order_id: taker_id,
-                buyer_id: buyer.participant,
-                seller_id: seller.participant,
-                price: fill.price,
-                quantity: fill.quantity,
-                buyer_fee: buyer.fee,
-                seller_fee: seller.fee,
-            });
+        let maker = self
+            .ownership
+            .get(&maker_id)
+            .cloned()
+            .ok_or(EngineError::OwnershipInvariant)?;
+        let taker = self
+            .ownership
+            .get(&taker_id)
+            .cloned()
+            .ok_or(EngineError::OwnershipInvariant)?;
+        if maker.listing_key != listing_key
+            || maker.state != OwnedOrderState::Active
+            || taker.listing_key != listing_key
+        {
+            return Err(EngineError::OwnershipInvariant);
         }
+        let maker_rate = if auction {
+            fees.taker_per_lot
+        } else {
+            fees.maker_per_lot
+        };
+        let maker_fee = per_lot_fee(maker_rate, quantity)?;
+        let taker_fee = per_lot_fee(fees.taker_per_lot, quantity)?;
+        let party = |owned: &OwnedOrder, fee: MoneyMinor| FillParty {
+            participant: owned.participant_id,
+            fee,
+            order: Some(owned.reservation),
+            enforce_funding: funded(&self.participants, owned.participant_id),
+        };
+        let (buyer, seller) = if taker.side == Side::Buy {
+            (party(&taker, taker_fee), party(&maker, maker_fee))
+        } else {
+            (party(&maker, maker_fee), party(&taker, taker_fee))
+        };
+        self.ledger.settle(Fill {
+            instrument: listing_key.instrument_id,
+            price,
+            quantity,
+            buyer: Some(buyer),
+            seller: Some(seller),
+            set_mark: true,
+        })?;
+        reduce_order(maker_id, quantity, &mut self.ownership, payloads)?;
+        let mut settled = vec![(maker_id, maker.expires_at)];
+        if auction {
+            reduce_order(taker_id, quantity, &mut self.ownership, payloads)?;
+            settled.push((taker_id, taker.expires_at));
+        } else {
+            reduce_order(taker_id, quantity, &mut self.ownership, &mut Vec::new())?;
+        }
+        for (order_id, expires_at) in settled {
+            if let Some(at) = expires_at
+                && self
+                    .ownership
+                    .get(&order_id)
+                    .is_some_and(|owned| owned.remaining_quantity.get() == 0)
+            {
+                self.expiries.remove(&(at, order_id));
+            }
+        }
+        payloads.push(EventPayload::TradeExecuted {
+            instrument_id: listing_key.instrument_id,
+            listing_key: Some(listing_key),
+            maker_order_id: maker_id,
+            taker_order_id: taker_id,
+            buyer_id: buyer.participant,
+            seller_id: seller.participant,
+            price,
+            quantity,
+            buyer_fee: buyer.fee,
+            seller_fee: seller.fee,
+        });
         Ok(())
     }
 
@@ -2109,7 +2365,7 @@ mod tests {
     use super::*;
     use bunting_market_events::SubmitOrder;
     use bunting_market_events::TimeInForcePolicy;
-    use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs, VenueId};
+    use bunting_market_types::{CommandId, CorrelationId, LogicalTimeNs};
 
     const CASH: CurrencyId = CurrencyId::new(1);
 
@@ -3342,6 +3598,206 @@ mod tests {
             )))
         );
         assert_eq!(state, before);
+    }
+
+    fn with_policy(mut command: Command, time_in_force: TimeInForcePolicy) -> Command {
+        if let CommandPayload::SubmitOrder(order) = &mut command.payload
+            && let OrderKind::Limit { price } = order.kind
+        {
+            order.kind = OrderKind::LimitWithPolicy {
+                price,
+                time_in_force,
+                post_only: false,
+                display_quantity: None,
+            };
+        }
+        command
+    }
+
+    fn rejection(applied: &Applied) -> Option<RejectCode> {
+        applied.events.iter().find_map(|event| match event.payload {
+            EventPayload::OrderRejected { code, .. } => Some(code),
+            _ => None,
+        })
+    }
+
+    /// Venue 1 trades one session a day: pre-open at 10 ms, open at 20 ms,
+    /// closing call at 80 ms and close at 90 ms of each 100 ms day.
+    fn calendar_run() -> RunState {
+        let calendar = calendar::Calendar {
+            day_ns: 100_000_000,
+            days: 2,
+            holidays: BTreeSet::new(),
+            sessions: vec![calendar::VenueSession {
+                venue_id: VenueId::new(1),
+                pre_open_ns: 10_000_000,
+                open_ns: 20_000_000,
+                closing_call_ns: 80_000_000,
+                close_ns: 90_000_000,
+            }],
+        };
+        let scenario = scenario().with_calendar(calendar).unwrap();
+        RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario).unwrap()
+    }
+
+    #[test]
+    fn sessions_refuse_closed_orders_collect_calls_and_open_by_auction() {
+        let mut state = calendar_run();
+        let venue = VenueId::new(1);
+        assert_eq!(state.session_phase(venue), SessionPhase::Closed);
+        assert_eq!(state.next_due(), Some(LogicalTimeNs::new(10_000_000)));
+        // Before the pre-open the venue is closed.
+        let applied = state
+            .apply(&submit(&state, 5, 1, 1, 1, Side::Buy, 101, 10))
+            .unwrap();
+        assert_eq!(rejection(&applied), Some(RejectCode::MarketClosed));
+        // The pre-open collects crossing orders without matching.
+        state
+            .apply(&submit(&state, 11, 1, 2, 1, Side::Buy, 101, 10))
+            .unwrap();
+        assert_eq!(state.session_phase(venue), SessionPhase::PreOpen);
+        state
+            .apply(&submit(&state, 12, 2, 3, 1, Side::Sell, 99, 6))
+            .unwrap();
+        let applied = state
+            .apply(&submit(&state, 13, 2, 4, 1, Side::Sell, 100, 4))
+            .unwrap();
+        assert!(applied.accepted);
+        assert!(
+            !applied
+                .events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::TradeExecuted { .. }))
+        );
+        // Orders that cannot rest for the auction are refused.
+        let applied = state
+            .apply(&submit_market(&state, 14, 1, 5, 1, Side::Buy, 1))
+            .unwrap();
+        assert_eq!(rejection(&applied), Some(RejectCode::CallPhaseOrderType));
+        let ioc = with_policy(
+            submit(&state, 15, 1, 6, 1, Side::Buy, 101, 1),
+            TimeInForcePolicy::Ioc,
+        );
+        let applied = state.apply(&ioc).unwrap();
+        assert_eq!(rejection(&applied), Some(RejectCode::CallPhaseOrderType));
+        // A DAY order rests until the close.
+        let day = with_policy(
+            submit(&state, 16, 1, 7, 1, Side::Buy, 90, 1),
+            TimeInForcePolicy::Day,
+        );
+        assert!(state.apply(&day).unwrap().accepted);
+
+        // The open uncrosses at one price: 10 lots trade at 100 and at 101,
+        // both balanced, so the price nearest the reference mark (100) wins.
+        assert_eq!(state.next_due(), Some(LogicalTimeNs::new(20_000_000)));
+        let applied = state
+            .apply_simulation(&clock_tick(&state, 20, 20_000_000))
+            .unwrap();
+        let trades = applied
+            .events
+            .iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::TradeExecuted {
+                    price, quantity, ..
+                } => Some((price.get(), quantity.get())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(trades, vec![(100, 6), (100, 4)]);
+        assert!(applied.events.iter().any(|event| {
+            event.payload
+                == EventPayload::Simulation(
+                    bunting_market_events::SimulationEvent::AuctionUncrossed {
+                        listing_key: ListingKey::new(venue, InstrumentId::new(1)),
+                        price: PriceTicks::new(100),
+                        quantity: QuantityLots::new(10),
+                    },
+                )
+        }));
+        assert_eq!(state.session_phase(venue), SessionPhase::Continuous);
+        assert_eq!(
+            state.ownership()[&OrderId::new(2)].state,
+            OwnedOrderState::Filled
+        );
+        // Continuous trading matches on arrival.
+        let applied = state
+            .apply(&submit(&state, 30, 2, 8, 1, Side::Sell, 90, 1))
+            .unwrap();
+        assert!(
+            applied
+                .events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::TradeExecuted { .. }))
+        );
+    }
+
+    #[test]
+    fn the_close_auctions_then_expires_day_orders_and_the_next_day_reopens() {
+        let mut state = calendar_run();
+        let day = with_policy(
+            submit(&state, 21, 1, 1, 1, Side::Buy, 90, 1),
+            TimeInForcePolicy::Day,
+        );
+        // The first input after 20 ms applies the pre-open and the open first.
+        assert!(state.apply(&day).unwrap().accepted);
+        assert!(
+            state
+                .apply(&submit(&state, 22, 1, 2, 1, Side::Buy, 91, 1))
+                .unwrap()
+                .accepted
+        );
+        // One tick at the close passes the closing call and the close.
+        let applied = state
+            .apply_simulation(&clock_tick(&state, 95, 95_000_000))
+            .unwrap();
+        let phases = applied
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Simulation(
+                    bunting_market_events::SimulationEvent::SessionPhaseChanged { phase, .. },
+                ) => Some(*phase),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(phases, [SessionPhase::ClosingCall, SessionPhase::Closed]);
+        assert_eq!(
+            state.ownership()[&OrderId::new(1)].state,
+            OwnedOrderState::Canceled
+        );
+        // GTC carries overnight.
+        assert_eq!(
+            state.ownership()[&OrderId::new(2)].state,
+            OwnedOrderState::Active
+        );
+        assert_eq!(state.session_phase(VenueId::new(1)), SessionPhase::Closed);
+        assert_eq!(state.next_due(), Some(LogicalTimeNs::new(110_000_000)));
+        // After the last day the venue stays closed.
+        state
+            .apply_simulation(&clock_tick(&state, 250, 250_000_000))
+            .unwrap();
+        assert_eq!(state.next_due(), None);
+        assert_eq!(state.session_phase(VenueId::new(1)), SessionPhase::Closed);
+    }
+
+    #[test]
+    fn a_calendar_must_give_every_venue_one_ordered_session() {
+        let calendar = calendar::Calendar {
+            day_ns: 100,
+            days: 1,
+            holidays: BTreeSet::new(),
+            sessions: vec![calendar::VenueSession {
+                venue_id: VenueId::new(2),
+                pre_open_ns: 10,
+                open_ns: 20,
+                closing_call_ns: 80,
+                close_ns: 90,
+            }],
+        };
+        assert_eq!(
+            scenario().with_calendar(calendar).unwrap_err(),
+            ScenarioError::InvalidCalendar
+        );
     }
 
     #[test]

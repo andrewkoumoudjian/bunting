@@ -90,6 +90,34 @@ each order to the right venue.
   which venues publish them; the consolidated tape never does
   (ADR 0036).
 
+## Trading sessions and auctions (ADR 0037)
+
+The venue keeps one run clock: every order, cancel and request is stamped
+with run time when the venue applies it, and anything due (an expiry, a
+scheduled event, a session change) is applied at its time even if nobody
+sends anything. The admin and organizer views show run time.
+
+A scenario may give each venue a trading calendar. Without one, the venue
+trades continuously, as before. With one, each trading day runs:
+
+- **Closed** until the pre-open: new orders are rejected (`MarketClosed`);
+  cancels are accepted. Good-till-cancel orders stay in the book overnight.
+- **Pre-open**: limit orders collect in the book without trading, even if
+  they cross. Market, IOC and FOK orders are rejected
+  (`CallPhaseOrderType`); send a limit at the worst price you accept.
+- **Opening auction** at the open: the venue trades the crossed book at one
+  price, the one that trades the most, then leaves the least unmatched,
+  then is nearest the last trade (or the opening mark), then is lowest.
+  Orders fill in price-time priority, hidden iceberg quantity included.
+  Both sides of an auction trade pay the taker fee.
+- **Continuous** trading, as on a venue without a calendar.
+- **Closing call**: orders collect again without trading.
+- **Closing auction** at the close, by the same rule; then DAY orders
+  expire and the venue is closed until the next trading day's pre-open.
+
+Your order reaches the venue over your path as always, so an order sent
+just before the open or the close can arrive too late for the auction.
+
 ## Published limits
 
 The event profile publishes the latency map, `max_connections`,

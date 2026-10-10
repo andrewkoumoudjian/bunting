@@ -4,8 +4,10 @@
   note §8, roadmap Slice 4). Implementation is staged; each stage is
   **Target** until `docs/implementation-log/` records it:
   1. one run clock and a venue timer (**implemented**, slice 26);
-  2. the calendar and session phases, with DAY expiry at the close;
-  3. opening and closing call auctions;
+  2. the calendar and session phases, with DAY expiry at the close
+     (**implemented**, slice 28, except listing halts);
+  3. opening and closing call auctions (**implemented**, slice 28,
+     except indicative data and phase messages on the feeds);
   4. end-of-day marks and multi-day runs.
 - Date: 2026-10-10
 - Depends on: ADR 0029 (engine-owned book), ADR 0030 §3 (the sequencer is
@@ -82,7 +84,10 @@ Bunting has none of this (gap G9). A 2026-10-10 survey of the code found:
   offsets from the day's start: `pre_open`, `open`, `closing_call`,
   `close`. It also gives the day length, the number of days, and the day
   indices that are holidays. Every listing of a venue follows its venue's
-  session, as on real exchanges.
+  session, as on real exchanges. The engine counts the boundaries each
+  venue has passed, so a clock jump over several boundaries still applies
+  each transition, in time order, with the GTD expiries due before each.
+  Boundaries at run time zero apply silently when the run is created.
 - Phases: `closed` → `pre_open` (orders and cancels accepted, no matching)
   → opening auction at `open` → `continuous` → `closing_call` (orders
   collect, no matching) → closing auction at `close` → `closed` (new
@@ -103,8 +108,16 @@ Bunting has none of this (gap G9). A 2026-10-10 survey of the code found:
   3. then the one nearest the reference price (the last trade, else the
      previous close, else the opening mark);
   4. then the lower price.
-- Market orders take part at any price and have priority. Every match
-  prints at the auction price, in price-time priority on both sides.
+- Only limit orders that can rest take part: market, IOC and FOK orders are
+  refused during call phases (`CallPhaseOrderType`), so a participant who
+  wants an at-the-open or at-the-close order sends a limit at the worst
+  price it accepts. (Market-on-open orders would need a price collar and a
+  remainder policy; not decided.) Only resting prices are candidates, and
+  the reference is the instrument's mark: its last trade, else its opening
+  mark. Every match prints at the auction price, in price-time priority on
+  both sides, hidden quantity included. The order that rested first is the
+  maker of each print; both sides pay the taker fee, since neither provided
+  liquidity to the other. An `AuctionUncrossed` event follows the prints.
 - During call phases, every public direct feed publishes the indicative
   auction price, matched volume and imbalance side and size, each time
   they change. Like every other feed message, these leave the venue after

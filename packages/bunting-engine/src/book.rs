@@ -50,6 +50,20 @@ pub struct Match {
     pub maker_remaining: QuantityLots,
 }
 
+/// One call-auction execution between two resting orders, at the
+/// auction price.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cross {
+    pub buy: OrderId,
+    pub sell: OrderId,
+    pub quantity: QuantityLots,
+    pub buy_remaining: QuantityLots,
+    pub sell_remaining: QuantityLots,
+    /// Time priorities before the cross: the earlier order is the maker.
+    pub buy_priority: u64,
+    pub sell_priority: u64,
+}
+
 /// Book invariant or input failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BookError {
@@ -306,6 +320,123 @@ impl Book {
             .filter_map(|order_id| self.orders.get(order_id))
     }
 
+    /// The call-auction price (ADR 0037 §3), with the volume it executes:
+    /// among the book's resting prices, the one that executes the most,
+    /// then leaves the smallest imbalance, then is nearest `reference`, then
+    /// is lowest. Hidden quantity counts. `None` when the book is not
+    /// crossed.
+    #[must_use]
+    pub fn auction_price(&self, reference: PriceTicks) -> Option<(PriceTicks, QuantityLots)> {
+        let prices = self
+            .bids
+            .keys()
+            .chain(self.asks.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut best: Option<(PriceTicks, i128, i128)> = None;
+        for price in prices {
+            let demand = self
+                .bids
+                .range(price..)
+                .map(|(_, level)| i128::from(level.total.get()))
+                .sum::<i128>();
+            let supply = self
+                .asks
+                .range(..=price)
+                .map(|(_, level)| i128::from(level.total.get()))
+                .sum::<i128>();
+            let volume = demand.min(supply);
+            if volume <= 0 {
+                continue;
+            }
+            let imbalance = (demand - supply).abs();
+            let better = best.is_none_or(|(chosen, chosen_volume, chosen_imbalance)| {
+                let distance = |value: PriceTicks| {
+                    (i128::from(value.get()) - i128::from(reference.get())).abs()
+                };
+                (volume, -imbalance, -distance(price))
+                    > (chosen_volume, -chosen_imbalance, -distance(chosen))
+            });
+            if better {
+                best = Some((price, volume, imbalance));
+            }
+        }
+        best.and_then(|(price, volume, _)| {
+            i64::try_from(volume)
+                .ok()
+                .map(|volume| (price, QuantityLots::new(volume)))
+        })
+    }
+
+    /// Uncrosses the book at `price`: the best bid and the best offer trade
+    /// in price-time priority while both can trade at `price`, displayed and
+    /// hidden quantity alike. A partly filled iceberg whose displayed slice
+    /// is used up refreshes at the back of its level, as in continuous
+    /// trading.
+    pub fn uncross(&mut self, price: PriceTicks) -> Result<Vec<Cross>, BookError> {
+        let mut crosses = Vec::new();
+        loop {
+            let (Some(bid), Some(ask)) = (self.best(Side::Buy), self.best(Side::Sell)) else {
+                break;
+            };
+            if bid < price || ask > price {
+                break;
+            }
+            let head = |book: &Self, side: Side, level: PriceTicks| {
+                book.side(side)
+                    .get(&level)
+                    .and_then(|level| level.queue.values().next())
+                    .and_then(|order_id| book.orders.get(order_id))
+                    .copied()
+                    .ok_or(BookError::InvalidOrder)
+            };
+            let bid_head = head(self, Side::Buy, bid)?;
+            let ask_head = head(self, Side::Sell, ask)?;
+            let quantity =
+                QuantityLots::new(bid_head.remaining.get().min(ask_head.remaining.get()));
+            let buy_remaining = self.fill_resting(bid_head, quantity)?;
+            let sell_remaining = self.fill_resting(ask_head, quantity)?;
+            crosses.push(Cross {
+                buy: bid_head.order_id,
+                sell: ask_head.order_id,
+                quantity,
+                buy_remaining,
+                sell_remaining,
+                buy_priority: bid_head.priority,
+                sell_priority: ask_head.priority,
+            });
+        }
+        Ok(crosses)
+    }
+
+    /// Takes `quantity` from a resting order and returns what remains.
+    fn fill_resting(
+        &mut self,
+        mut order: BookOrder,
+        quantity: QuantityLots,
+    ) -> Result<QuantityLots, BookError> {
+        self.remove(order.order_id)?;
+        order.remaining = order
+            .remaining
+            .checked_sub(quantity)
+            .filter(|remaining| remaining.get() >= 0)
+            .ok_or(BookError::Overflow)?;
+        if order.remaining.get() > 0 {
+            if quantity >= order.visible {
+                let peak = order.display.unwrap_or(order.remaining);
+                order.visible = QuantityLots::new(peak.get().min(order.remaining.get()));
+                order.priority = self.take_priority()?;
+            } else {
+                order.visible = order
+                    .visible
+                    .checked_sub(quantity)
+                    .ok_or(BookError::Overflow)?;
+            }
+            self.insert(order)?;
+        }
+        Ok(order.remaining)
+    }
+
     fn take_priority(&mut self) -> Result<u64, BookError> {
         let priority = self.next_priority;
         self.next_priority = priority.checked_add(1).ok_or(BookError::Overflow)?;
@@ -443,6 +574,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(order, vec![id(2), id(1)]);
         assert_eq!(book.depth(Side::Sell), vec![(px(100), qty(4))]);
+    }
+
+    #[test]
+    fn auction_price_maximises_volume_then_balance_then_reference_then_lower() {
+        let mut book = Book::new();
+        assert_eq!(book.auction_price(px(100)), None);
+        book.rest(id(1), Side::Buy, px(102), qty(5), None).unwrap();
+        book.rest(id(2), Side::Sell, px(98), qty(5), None).unwrap();
+        // 98 and 102 both execute 5 with no imbalance: the one nearest the
+        // reference wins, and an equal distance takes the lower price.
+        assert_eq!(book.auction_price(px(101)), Some((px(102), qty(5))));
+        assert_eq!(book.auction_price(px(100)), Some((px(98), qty(5))));
+        // At 98 and 99, demand 8 meets supply 5 (imbalance 3); at 102 both
+        // are 5, so 102 wins on balance.
+        book.rest(id(3), Side::Buy, px(99), qty(3), None).unwrap();
+        assert_eq!(book.auction_price(px(99)), Some((px(102), qty(5))));
+        book.rest(id(4), Side::Sell, px(99), qty(3), None).unwrap();
+        // Now 99 executes 8: the most volume wins regardless of reference.
+        assert_eq!(book.auction_price(px(102)), Some((px(99), qty(8))));
+    }
+
+    #[test]
+    fn uncross_trades_hidden_quantity_in_price_time_priority_at_one_price() {
+        let mut book = Book::new();
+        book.rest(id(1), Side::Buy, px(101), qty(10), Some(qty(2)))
+            .unwrap();
+        book.rest(id(2), Side::Buy, px(101), qty(4), None).unwrap();
+        book.rest(id(3), Side::Sell, px(99), qty(12), None).unwrap();
+        let (price, volume) = book.auction_price(px(100)).unwrap();
+        // 99 and 101 both execute 12 leaving 2 bid: equally near the
+        // reference, so the lower price.
+        assert_eq!((price, volume), (px(99), qty(12)));
+        let crosses = book.uncross(price).unwrap();
+        let fills = crosses
+            .iter()
+            .map(|cross| (cross.buy.get(), cross.sell.get(), cross.quantity.get()))
+            .collect::<Vec<_>>();
+        // The iceberg's hidden quantity trades in its time priority.
+        assert_eq!(fills, vec![(1, 3, 10), (2, 3, 2)]);
+        assert_eq!(book.depth(Side::Buy), vec![(px(101), qty(2))]);
+        assert!(book.depth(Side::Sell).is_empty());
     }
 
     #[test]

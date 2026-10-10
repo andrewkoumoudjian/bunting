@@ -28,7 +28,6 @@ fn free_port() -> Result<u16, String> {
 /// plus one scheduled expiry at `expiry_ns`, and returns the FIX and admin
 /// ports.
 fn start_server(expiry_ns: u64) -> Result<(u16, u16), String> {
-    let (port, admin_port) = (free_port()?, free_port()?);
     let mut scenario: serde_json::Value =
         serde_json::from_str(include_str!("../config/scenario.json"))
             .map_err(|error| error.to_string())?;
@@ -37,6 +36,11 @@ fn start_server(expiry_ns: u64) -> Result<(u16, u16), String> {
         "effective_at": expiry_ns,
         "kind": { "expire_instrument": { "instrument_id": 1 } }
     }]);
+    start_with(&scenario)
+}
+
+fn start_with(scenario: &serde_json::Value) -> Result<(u16, u16), String> {
+    let (port, admin_port) = (free_port()?, free_port()?);
     let path = std::env::temp_dir().join(format!("bunting-run-clock-{port}.json"));
     std::fs::write(&path, scenario.to_string()).map_err(|error| error.to_string())?;
     let mut config = ServerConfig::local_default();
@@ -149,5 +153,58 @@ fn paced_inputs_are_stamped_with_run_time_that_follows_venue_time() -> Result<()
         second >= first + 200_000_000,
         "run time {first} ns then {second} ns"
     );
+    Ok(())
+}
+
+/// Run time of the opening auction in the session test.
+const OPEN_NS: u64 = 1_500_000_000;
+
+#[test]
+fn a_pre_open_collects_crossing_orders_and_the_open_fills_them_at_one_price() -> Result<(), String>
+{
+    let mut scenario: serde_json::Value =
+        serde_json::from_str(include_str!("../config/scenario.json"))
+            .map_err(|error| error.to_string())?;
+    scenario["participants"]["2"]["initial_positions"] = serde_json::json!({ "1": 1_000 });
+    // The run starts in venue 1's pre-open; the open is at 1.5 s.
+    scenario["calendar"] = serde_json::json!({
+        "day_ns": 60_000_000_000_u64,
+        "days": 1,
+        "sessions": [{
+            "venue_id": 1,
+            "pre_open_ns": 0,
+            "open_ns": OPEN_NS,
+            "closing_call_ns": 50_000_000_000_u64,
+            "close_ns": 55_000_000_000_u64
+        }]
+    });
+    let (port, admin_port) = start_with(&scenario)?;
+    let mut buyer = Client::logon(port, "HUMAN", "participant", "bunting-local-dev")?;
+    let mut seller = Client::logon(port, "TEAM2", "team2", "bunting-team2-dev")?;
+    buyer.send(order("1", "buy", 5, Some(101)))?;
+    buyer.wait_report("1", "0")?;
+    seller.send(order("2", "sell", 5, Some(99)))?;
+    seller.wait_report("2", "0")?;
+    // Crossed, but nothing trades before the open.
+    let (_, before) = run_view(admin_port)?;
+    assert!(
+        before < OPEN_NS,
+        "orders arrived after the open ({before} ns)"
+    );
+    assert!(!buyer.has_report("1", "F"));
+    // The venue timer opens the market at one price for both sides: 99 and
+    // 101 each match 5 and are equally near the opening mark (100), so the
+    // lower one.
+    buyer.wait_report("1", "F")?;
+    seller.wait_report("2", "F")?;
+    for (client, id) in [(&buyer, "1"), (&seller, "2")] {
+        let fill = client
+            .reports_for(id)
+            .into_iter()
+            .find(|message| message.value(150) == Some("F"))
+            .ok_or("fill missing")?;
+        assert_eq!(fill.value(31), Some("99"));
+        assert_eq!(fill.value(32), Some("5"));
+    }
     Ok(())
 }
