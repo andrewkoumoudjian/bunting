@@ -2,6 +2,7 @@
 #![allow(clippy::missing_errors_doc)]
 //! Transport-neutral application service around the authoritative Bunting engine.
 
+pub mod bnp;
 pub mod competition;
 
 use bunting_api_contract::{ActorIdentity, ActorRole};

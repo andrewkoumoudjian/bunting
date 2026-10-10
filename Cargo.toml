@@ -18,12 +18,15 @@ members = [
   "packages/simfix-wire",
   "packages/simfix-session",
   "packages/simfix-mapping",
+  "packages/bnp-wire",
+  "packages/bunting-client",
   "packages/bunting-api-contract",
   "packages/browser-wire",
   "bunting-rs",
   "apps/bunting-server",
   "apps/bunting-tui",
   "apps/bunting-cli",
+  "apps/bunting-trader",
   "bindings/bunting-ffi",
   "bindings/bunting-py",
   "bindings/bunting-cpp",
@@ -47,12 +50,15 @@ default-members = [
   "packages/simfix-wire",
   "packages/simfix-session",
   "packages/simfix-mapping",
+  "packages/bnp-wire",
+  "packages/bunting-client",
   "packages/bunting-api-contract",
   "packages/browser-wire",
   "bunting-rs",
   "apps/bunting-server",
   "apps/bunting-tui",
   "apps/bunting-cli",
+  "apps/bunting-trader",
 ]
 exclude = ["ref", "vendor", "out"]
 
@@ -74,6 +80,8 @@ quarcc-execution-engine = { path = "packages/quarcc-execution-engine" }
 simfix-wire = { path = "packages/simfix-wire" }
 simfix-session = { path = "packages/simfix-session" }
 simfix-mapping = { path = "packages/simfix-mapping" }
+bnp-wire = { path = "packages/bnp-wire" }
+bunting-client = { path = "packages/bunting-client" }
 quarcc-bunting-adapter = { path = "packages/quarcc-bunting-adapter" }
 orderbook-rs = { version = "=0.10.3", default-features = false }
 pricelevel = "=0.8.4"

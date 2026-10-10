@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Transport-neutral Bunting application and transaction service"
 
 [dependencies]
+bnp-wire.workspace = true
 bunting-api-contract.workspace = true
 bunting-command-transaction = { path = "../command-transaction" }
 bunting-engine.workspace = true

@@ -69,17 +69,18 @@ pub(crate) struct JobContext<'a> {
     pub(crate) logical_time: LogicalTimeNs,
 }
 
-pub(crate) type JobWork =
-    Box<dyn FnOnce(&JobContext<'_>) -> Result<Vec<FixMessage>, String> + Send>;
+/// A session's work, producing messages in its protocol (`M`: FIX or BNP).
+pub(crate) type JobWork<M = FixMessage> =
+    Box<dyn FnOnce(&JobContext<'_>) -> Result<Vec<M>, String> + Send>;
 
 /// Released work: runs on the sequencer thread and delivers its own result
 /// without blocking.
 pub(crate) type Task = Box<dyn FnOnce(&JobContext<'_>) + Send>;
 
-/// A FIX session's work: its reply goes back on `reply`, from `source`.
-pub(crate) fn reply_task(
-    work: JobWork,
-    reply: SyncSender<Reply>,
+/// A session's work: its reply goes back on `reply`, from `source`.
+pub(crate) fn reply_task<M: Send + 'static>(
+    work: JobWork<M>,
+    reply: SyncSender<Reply<M>>,
     waker: Waker,
     source: Endpoint,
     feed: Option<String>,
@@ -112,8 +113,8 @@ pub(crate) struct Inbound<'a> {
 }
 
 /// The outcome of one released job, returned to its session.
-pub(crate) struct Reply {
-    pub(crate) result: Result<Vec<FixMessage>, String>,
+pub(crate) struct Reply<M = FixMessage> {
+    pub(crate) result: Result<Vec<M>, String>,
     /// Venue time at which the job finished (the commit time of any command).
     pub(crate) completed_us: u64,
     /// Where the work ran (a venue, or the hub): its response travels back
@@ -152,22 +153,39 @@ pub(crate) struct AdmissionService {
     wake: Condvar,
     connections: Mutex<BTreeMap<u64, ConnectionHealth>>,
     next_connection: AtomicU64,
-    /// Participants with a live FIX session; see [`Self::claim_participant`].
-    sessions: Mutex<BTreeSet<ParticipantId>>,
+    /// Participants with a live session, per interface; see
+    /// [`Self::claim_participant`].
+    sessions: Mutex<BTreeSet<(Interface, ParticipantId)>>,
     session_ended: Condvar,
 }
 
-/// Exclusive ownership of one participant's FIX session state, released
-/// when the session (and its final persisted snapshot) is done.
+/// A participant interface. Each allows one live session per participant.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Interface {
+    Fix,
+    Bnp,
+}
+
+impl Interface {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Fix => "FIX",
+            Self::Bnp => "BNP",
+        }
+    }
+}
+
+/// Exclusive ownership of one participant's session on one interface,
+/// released when the session (and its final persisted snapshot) is done.
 pub(crate) struct ParticipantClaim<'a> {
     admission: &'a AdmissionService,
-    participant: ParticipantId,
+    key: (Interface, ParticipantId),
 }
 
 impl Drop for ParticipantClaim<'_> {
     fn drop(&mut self) {
         if let Ok(mut sessions) = self.admission.sessions.lock() {
-            sessions.remove(&self.participant);
+            sessions.remove(&self.key);
         }
         self.admission.session_ended.notify_all();
     }
@@ -282,25 +300,28 @@ impl AdmissionService {
         }
     }
 
-    /// One live session per participant, as on a real FIX venue: a new
-    /// logon waits up to `wait` for the previous session to finish closing
-    /// (so its last persisted sequence numbers are the ones restored), and
-    /// is refused while that session is still connected.
+    /// One live session per participant and interface, as on a real
+    /// venue: a new logon waits up to `wait` for the previous session to
+    /// finish closing (so its last persisted sequence numbers are the ones
+    /// restored), and is refused while that session is still connected.
     pub(crate) fn claim_participant(
         &self,
+        interface: Interface,
         participant: ParticipantId,
         wait: Duration,
     ) -> Result<ParticipantClaim<'_>, String> {
+        let key = (interface, participant);
         let deadline = Instant::now() + wait;
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| "session registry lock poisoned".to_owned())?;
-        while sessions.contains(&participant) {
+        while sessions.contains(&key) {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(format!(
-                    "participant {participant} already has an active FIX session"
+                    "participant {participant} already has an active {} session",
+                    interface.name()
                 ));
             }
             sessions = self
@@ -309,10 +330,10 @@ impl AdmissionService {
                 .map_err(|_| "session registry lock poisoned".to_owned())?
                 .0;
         }
-        sessions.insert(participant);
+        sessions.insert(key);
         Ok(ParticipantClaim {
             admission: self,
-            participant,
+            key,
         })
     }
 

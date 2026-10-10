@@ -157,6 +157,52 @@ const fn participant_role() -> ActorRole {
     ActorRole::Participant
 }
 
+/// The Bunting Native Protocol listener (ADR 0040). TLS 1.3 is always
+/// terminated in this process with mutual authentication: the operator CA
+/// in `client_ca` must have issued the client certificate, and the
+/// certificate's SHA-256 fingerprint must be registered in `roster`, which
+/// gives the session its identity. Latency follows `fix.admission` (the
+/// run's one latency map), or everyone colocated when FIX is not
+/// configured.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BnpConfig {
+    pub bind: String,
+    pub run_id: u128,
+    /// PEM certificate chain the server presents, leaf first.
+    pub certificate_chain: String,
+    /// PEM private key of the server certificate.
+    pub private_key: String,
+    /// PEM certificates of the operator CA that issues client certificates.
+    pub client_ca: String,
+    /// PEM certificate revocation lists from that CA.
+    #[serde(default)]
+    pub revocation_lists: Vec<String>,
+    pub roster: Vec<BnpRosterEntry>,
+    /// Silence after which the server sends a heartbeat; a client silent
+    /// for three times as long is disconnected.
+    pub heartbeat_ms: u32,
+    pub max_connections: usize,
+    pub max_frame_bytes: usize,
+    /// Window for `max_messages_per_interval`, a per-participant rate limit.
+    /// It has no effect on ordering.
+    pub rate_limit_window_ms: u64,
+    pub max_messages_per_interval: usize,
+    /// Time allowed for the TLS handshake and `Hello` together.
+    pub handshake_timeout_ms: u64,
+}
+
+/// One registered client certificate.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BnpRosterEntry {
+    /// Lowercase hex SHA-256 of the client certificate's DER encoding.
+    pub certificate_sha256: String,
+    pub participant_id: u128,
+    #[serde(default = "participant_role")]
+    pub role: ActorRole,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdminConfig {
@@ -187,6 +233,9 @@ pub struct ServerConfig {
     pub profile: DeploymentProfile,
     pub storage: StorageConfig,
     pub fix: Option<FixConfig>,
+    /// Bunting Native Protocol listener (ADR 0040).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bnp: Option<BnpConfig>,
     pub admin: Option<AdminConfig>,
     pub scenario: Option<ScenarioConfig>,
     #[serde(default)]
@@ -253,6 +302,7 @@ impl ServerConfig {
                 matching_interval_ms: None,
                 max_interval_queue: None,
             }),
+            bnp: None,
             admin: Some(AdminConfig {
                 bind: "127.0.0.1:8080".to_owned(),
                 bearer_token: "bunting-local-admin-token".to_owned(),
@@ -303,6 +353,18 @@ impl ServerConfig {
         if let Some(scenario) = self.scenario.as_mut() {
             resolve_relative(&mut scenario.path, base);
         }
+        if let Some(bnp) = self.bnp.as_mut() {
+            for path in [
+                &mut bnp.certificate_chain,
+                &mut bnp.private_key,
+                &mut bnp.client_ca,
+            ]
+            .into_iter()
+            .chain(bnp.revocation_lists.iter_mut())
+            {
+                resolve_relative(path, base);
+            }
+        }
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -351,6 +413,18 @@ impl ServerConfig {
         if let Some(fix) = &self.fix {
             validate_fix(fix, self.profile)?;
         }
+        if let Some(bnp) = &self.bnp {
+            validate_bnp(bnp)?;
+            if self
+                .fix
+                .as_ref()
+                .is_some_and(|fix| fix.run_id != bnp.run_id)
+            {
+                return Err(ConfigError(
+                    "fix.run_id and bnp.run_id must match".to_owned(),
+                ));
+            }
+        }
         if let Some(admin) = &self.admin {
             let bind = parse_socket("admin.bind", &admin.bind)?;
             if self.profile == DeploymentProfile::HostedNative && !bind.ip().is_loopback() {
@@ -372,6 +446,13 @@ impl ServerConfig {
         }
         if let Some(runtime) = &self.runtime {
             validate_runtime(runtime, self.scenario.as_ref(), self.fix.as_ref())?;
+            if self
+                .bnp
+                .as_ref()
+                .is_some_and(|bnp| bnp.run_id != runtime.scheduler.run_id.get())
+            {
+                return Err(ConfigError("runtime and BNP run IDs must match".to_owned()));
+            }
         }
         Ok(())
     }
@@ -499,6 +580,64 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
     }
     if profile == DeploymentProfile::HostedNative {
         validate_tls(bind, &fix.tls, "fix")?;
+    }
+    Ok(())
+}
+
+fn validate_bnp(bnp: &BnpConfig) -> Result<(), ConfigError> {
+    parse_socket("bnp.bind", &bnp.bind)?;
+    if bnp.run_id == 0 {
+        return Err(ConfigError("bnp.run_id must be non-zero".to_owned()));
+    }
+    if [&bnp.certificate_chain, &bnp.private_key, &bnp.client_ca]
+        .into_iter()
+        .chain(&bnp.revocation_lists)
+        .any(String::is_empty)
+    {
+        return Err(ConfigError(
+            "bnp certificate, key, client CA and revocation list paths must be non-empty"
+                .to_owned(),
+        ));
+    }
+    if bnp.roster.is_empty() {
+        return Err(ConfigError("bnp.roster must be non-empty".to_owned()));
+    }
+    let mut participants = std::collections::BTreeSet::new();
+    let mut fingerprints = std::collections::BTreeSet::new();
+    for entry in &bnp.roster {
+        let fingerprint = entry.certificate_sha256.as_str();
+        if fingerprint.len() != 64
+            || !fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !fingerprints.insert(fingerprint)
+            || entry.participant_id == 0
+            || !participants.insert(entry.participant_id)
+        {
+            return Err(ConfigError(
+                "bnp.roster requires unique lowercase hex SHA-256 certificate fingerprints (64 digits) and unique non-zero participant IDs"
+                    .to_owned(),
+            ));
+        }
+        if entry.role != ActorRole::Participant {
+            return Err(ConfigError(
+                "bnp.roster supports the participant role only; instructor and administrator control over BNP is not built yet"
+                    .to_owned(),
+            ));
+        }
+    }
+    if bnp.max_connections == 0
+        || bnp.max_connections > bnp.roster.len()
+        || !(100..=60_000).contains(&bnp.heartbeat_ms)
+        || !(1_024..=bnp_wire::MAX_FRAME_BYTES).contains(&bnp.max_frame_bytes)
+        || !(1..=60_000).contains(&bnp.rate_limit_window_ms)
+        || bnp.max_messages_per_interval == 0
+        || !(100..=60_000).contains(&bnp.handshake_timeout_ms)
+    {
+        return Err(ConfigError(format!(
+            "BNP bounds are invalid; max_connections must fit the roster, heartbeat_ms and handshake_timeout_ms must be 100..=60000, max_frame_bytes 1024..={}, rate_limit_window_ms 1..=60000 and max_messages_per_interval positive",
+            bnp_wire::MAX_FRAME_BYTES
+        )));
     }
     Ok(())
 }

@@ -1,0 +1,19 @@
+[package]
+name = "bunting-trader"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Participant app for a hosted Bunting venue over the Bunting Native Protocol"
+
+[[bin]]
+name = "bunting-trader"
+path = "src/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bunting-client.workspace = true
+clap = { version = "4.6.1", features = ["derive", "env"] }
+
+[lints]
+workspace = true

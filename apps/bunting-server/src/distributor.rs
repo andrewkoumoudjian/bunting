@@ -22,13 +22,17 @@ use bunting_market_types::{CommandId, ListingKey, RunId};
 use bunting_origin_store::{
     AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
 
 /// Committed batches a session may fall behind before it is disconnected.
 pub(crate) const MAX_PENDING_BATCHES: usize = 4_096;
+
+/// Latest committed batches kept for sessions resuming a private stream
+/// (BNP, ADR 0040). A cursor older than this window resumes with a gap.
+pub(crate) const RETAINED_BATCHES: usize = 16_384;
 
 /// One committed command's canonical events, its venue commit time and
 /// where it was applied, shared by every subscriber.
@@ -168,13 +172,34 @@ impl<T> Fanout<T> {
 pub(crate) struct EventDistributor {
     fanout: Fanout<Committed>,
     published: AtomicU64,
+    /// The latest batches, oldest first. Publishing holds this lock while it
+    /// sends, so a resuming subscription sees each batch exactly once,
+    /// either here or on its queue.
+    retained: Mutex<VecDeque<CommittedBatch>>,
+    retain: usize,
+}
+
+/// Where a resumed private stream starts.
+pub(crate) enum Resume {
+    /// Every retained batch with events after the cursor, oldest first;
+    /// later batches arrive on the subscription.
+    Replay(Vec<CommittedBatch>),
+    /// The cursor is older than the retention window (or not a position
+    /// of this run): the stream starts live.
+    Gap,
 }
 
 impl EventDistributor {
     pub(crate) fn new(capacity: usize) -> Self {
+        Self::with_retention(capacity, RETAINED_BATCHES)
+    }
+
+    pub(crate) fn with_retention(capacity: usize, retain: usize) -> Self {
         Self {
             fanout: Fanout::new(capacity),
             published: AtomicU64::new(0),
+            retained: Mutex::new(VecDeque::new()),
+            retain,
         }
     }
 
@@ -186,6 +211,53 @@ impl EventDistributor {
     /// Registers a session; batches committed from now on are queued for it.
     pub(crate) fn subscribe(&self, waker: Option<Waker>) -> Result<Subscription<'_>, String> {
         self.fanout.subscribe(waker)
+    }
+
+    /// [`Self::subscribe`] for a session resuming after event sequence
+    /// `after`. Atomically with the registration it returns the retained
+    /// batches the session missed, or [`Resume::Gap`] when the window no
+    /// longer covers the cursor. `current` reads the run's committed event
+    /// sequence; it decides coverage when nothing is retained yet (for
+    /// example right after a restart).
+    pub(crate) fn subscribe_resuming(
+        &self,
+        waker: Option<Waker>,
+        after: u64,
+        current: impl FnOnce() -> Option<u64>,
+    ) -> Result<(Subscription<'_>, Resume), String> {
+        let retained = self
+            .retained
+            .lock()
+            .map_err(|_| "event distributor is unavailable".to_owned())?;
+        let subscription = self.fanout.subscribe(waker)?;
+        let first = |batch: &CommittedBatch| batch.events.first().map(|event| event.sequence.get());
+        let last = retained
+            .back()
+            .and_then(|batch| batch.events.last())
+            .map(|event| event.sequence.get());
+        let covered = match retained.front().and_then(first) {
+            // Every event after the cursor is retained, and the cursor is
+            // a position this venue has published.
+            Some(oldest) => after.saturating_add(1) >= oldest && Some(after) <= last,
+            None => current() == Some(after),
+        };
+        let resume = if covered {
+            Resume::Replay(
+                retained
+                    .iter()
+                    .filter(|batch| {
+                        batch
+                            .events
+                            .last()
+                            .is_some_and(|event| event.sequence.get() > after)
+                    })
+                    .cloned()
+                    .collect(),
+            )
+        } else {
+            Resume::Gap
+        };
+        Ok((subscription, resume))
     }
 
     /// Queues one committed batch for every subscriber without blocking the
@@ -200,13 +272,23 @@ impl EventDistributor {
         if events.is_empty() {
             return;
         }
-        self.fanout.send(&Arc::new(Committed {
+        let batch: CommittedBatch = Arc::new(Committed {
             durable_us: committed_us,
             source,
             events: events.to_vec(),
             ordinal: self.published.fetch_add(1, Ordering::AcqRel),
             public,
-        }));
+        });
+        let Ok(mut retained) = self.retained.lock() else {
+            return;
+        };
+        self.fanout.send(&batch);
+        if self.retain > 0 {
+            if retained.len() >= self.retain {
+                retained.pop_front();
+            }
+            retained.push_back(batch);
+        }
     }
 
     #[cfg(test)]
@@ -608,5 +690,42 @@ mod tests {
             Endpoint::Venue(VenueId::new(2))
         );
         assert_eq!(batch_source(None, &[event(3)]), Endpoint::Hub);
+    }
+
+    #[test]
+    fn a_resuming_subscriber_gets_each_missed_batch_once() -> Result<(), String> {
+        let distributor = EventDistributor::with_retention(8, 3);
+        let sequences = |batches: &[CommittedBatch]| -> Vec<u64> {
+            batches
+                .iter()
+                .flat_map(|batch| batch.events.iter().map(|event| event.sequence.get()))
+                .collect()
+        };
+        // Nothing retained yet: only the run's current position is covered.
+        let (_, resume) = distributor.subscribe_resuming(None, 0, || Some(0))?;
+        assert!(matches!(resume, Resume::Replay(batches) if batches.is_empty()));
+        let (_, resume) = distributor.subscribe_resuming(None, 0, || Some(5))?;
+        assert!(matches!(resume, Resume::Gap));
+        for sequence in 1..=4 {
+            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub, Vec::new());
+        }
+        // Batches 2..=4 are retained; a cursor at 1 replays them all.
+        let (live, resume) = distributor.subscribe_resuming(None, 1, || None)?;
+        let Resume::Replay(batches) = resume else {
+            return Err("cursor 1 is inside the window".to_owned());
+        };
+        assert_eq!(sequences(&batches), vec![2, 3, 4]);
+        distributor.publish(&[event(5)], 5, Endpoint::Hub, Vec::new());
+        assert_eq!(sequences(&live.drain()?), vec![5]);
+        // Older than the window, or never published: a gap.
+        assert!(matches!(
+            distributor.subscribe_resuming(None, 0, || None)?.1,
+            Resume::Gap
+        ));
+        assert!(matches!(
+            distributor.subscribe_resuming(None, 9, || None)?.1,
+            Resume::Gap
+        ));
+        Ok(())
     }
 }

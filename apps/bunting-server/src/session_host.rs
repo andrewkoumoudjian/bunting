@@ -1,6 +1,9 @@
-use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Reply, reply_task};
+use crate::admission::{
+    AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, Reply, reply_task,
+};
 use crate::config::{FixConfig, RosterEntry};
 use crate::distributor::PublishingOrigin;
+use crate::outbound::OutboundHold;
 use crate::public_feed::{FeedMessage, PublicFeeds};
 use crate::wake::{SessionEvent, Waker};
 use bunting_admission_sequencer::{DelayEstimator, Endpoint};
@@ -67,6 +70,7 @@ pub(crate) fn handle_fix_connection(
     let credential = authenticate_logon(&logon, config)?;
     // Held until this function returns, after the last snapshot persist.
     let _claim = admission.claim_participant(
+        Interface::Fix,
         ParticipantId::new(credential.participant_id),
         SESSION_HANDOVER,
     )?;
@@ -314,7 +318,7 @@ pub(crate) fn handle_fix_connection(
 /// its source (a venue, or the hub for the consolidated tape) to this team,
 /// never ahead of the feed's previous message.
 fn hold_feed(
-    outbound: &mut OutboundHold,
+    outbound: &mut OutboundHold<FixMessage>,
     feeds: &mut PublicFeeds,
     latency: &ConnectionLatency<'_>,
     increment: FeedMessage,
@@ -692,50 +696,6 @@ const fn spread(connection: u64, probe: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
-}
-
-/// Outbound messages waiting for their equalized send time (ADR 0034 §3).
-struct OutboundHold {
-    capacity: usize,
-    next: u64,
-    queue: BTreeMap<(u64, u64), FixMessage>,
-}
-
-impl OutboundHold {
-    const fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            next: 0,
-            queue: BTreeMap::new(),
-        }
-    }
-
-    fn hold(&mut self, message: FixMessage, send_at_us: u64) -> Result<(), String> {
-        if self.queue.len() >= self.capacity {
-            return Err(format!(
-                "max_outbound_hold limit {}: reconnect to recover",
-                self.capacity
-            ));
-        }
-        self.queue.insert((send_at_us, self.next), message);
-        self.next = self.next.wrapping_add(1);
-        Ok(())
-    }
-
-    fn next_due_us(&self) -> Option<u64> {
-        self.queue.keys().next().map(|(due, _)| *due)
-    }
-
-    fn take_due(&mut self, now_us: u64) -> Vec<FixMessage> {
-        let mut due = Vec::new();
-        while let Some(entry) = self.queue.first_entry() {
-            if entry.key().0 > now_us {
-                break;
-            }
-            due.push(entry.remove());
-        }
-        due
-    }
 }
 
 /// A value unique to each newly created FIX application state in this

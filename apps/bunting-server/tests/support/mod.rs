@@ -1,6 +1,8 @@
 //! Shared real-socket FIX test client for the venue's end-to-end tests.
 #![allow(dead_code)]
 
+pub mod pki;
+
 use bunting_api_contract::FIX_COMPETITION_PROFILE_VERSION;
 use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
 use simfix_wire::{Field, FixMessage, WireLimits};

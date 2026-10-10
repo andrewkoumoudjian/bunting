@@ -67,7 +67,7 @@ pub(crate) fn run(
 }
 
 /// How long an accepted connection waits for a free session slot.
-const SLOT_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const SLOT_WAIT: Duration = Duration::from_secs(5);
 
 fn reject(stream: &mut TcpStream, limit: usize) {
     let rejection = format!("FIX connection rejected: max_connections limit {limit}\n");
@@ -76,7 +76,7 @@ fn reject(stream: &mut TcpStream, limit: usize) {
 
 /// At most `max` live sessions, plus at most `max` accepted connections
 /// waiting for one of them to close.
-struct ConnectionSlots {
+pub(crate) struct ConnectionSlots {
     max: usize,
     /// `(active, waiting)`.
     state: Mutex<(usize, usize)>,
@@ -84,7 +84,7 @@ struct ConnectionSlots {
 }
 
 impl ConnectionSlots {
-    const fn new(max: usize) -> Self {
+    pub(crate) const fn new(max: usize) -> Self {
         Self {
             max,
             state: Mutex::new((0, 0)),
@@ -93,7 +93,7 @@ impl ConnectionSlots {
     }
 
     /// Admits a connection to the waiting area, or refuses at the hard cap.
-    fn try_queue(&self) -> bool {
+    pub(crate) fn try_queue(&self) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -105,7 +105,7 @@ impl ConnectionSlots {
     }
 
     /// Moves a queued connection into a session slot within `wait`.
-    fn acquire(&self, wait: Duration) -> Option<SlotGuard<'_>> {
+    pub(crate) fn acquire(&self, wait: Duration) -> Option<SlotGuard<'_>> {
         let deadline = Instant::now() + wait;
         let mut state = self.state.lock().ok()?;
         while state.0 >= self.max {
@@ -122,7 +122,7 @@ impl ConnectionSlots {
     }
 }
 
-struct SlotGuard<'a>(&'a ConnectionSlots);
+pub(crate) struct SlotGuard<'a>(&'a ConnectionSlots);
 
 impl Drop for SlotGuard<'_> {
     fn drop(&mut self) {

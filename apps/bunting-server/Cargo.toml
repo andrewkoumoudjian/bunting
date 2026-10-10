@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Native Bunting FIX competition server"
 
 [dependencies]
+bnp-wire.workspace = true
 bunting-api-contract.workspace = true
 bunting-agents = { path = "../../packages/bunting-agents" }
 bunting-application.workspace = true
@@ -27,14 +28,23 @@ simfix-session.workspace = true
 simfix-wire.workspace = true
 time = { version = "0.3.47", features = ["formatting", "macros"] }
 
+# In-process mutual TLS for the Bunting Native Protocol (ADR 0040); the
+# BNP listener is built for native targets only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2.0"
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.4", features = ["fs", "net"] }
 
 [dev-dependencies]
+bunting-client.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 bunting-rs = { path = "../../bunting-rs" }
 bunting-tui = { path = "../bunting-tui" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Test-only certificate authority for the BNP mutual-TLS tests (ADR 0040).
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 
 [lints]
 workspace = true

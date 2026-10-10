@@ -20,6 +20,9 @@
 //! instrument instead (ADR 0036): every venue's best bid and offer and every
 //! venue's trades, sent from the processor at the hub. Its snapshot states
 //! the tape's last report sequence (83); the feed continues with the next.
+//!
+//! The feed logic is protocol-neutral; each session supplies how one
+//! increment is encoded (FIX `X`, or a BNP market update).
 
 use crate::consolidated::{ConsolidatedTape, TapeRecord};
 use crate::distributor::{CommittedBatch, Subscription};
@@ -37,13 +40,17 @@ pub(crate) const MAX_FEEDS_PER_SESSION: usize = 32;
 /// Batches buffered per feed while its snapshot is in flight.
 pub(crate) const MAX_BUFFERED_BATCHES: usize = crate::distributor::MAX_PENDING_BATCHES;
 
+/// Encodes one increment: request ID, the report sequence of its first
+/// entry, and its entries with their listings.
+pub(crate) type IncrementEncoder<M> = fn(&str, u64, &[(ListingKey, MarketDataIncrement)]) -> M;
+
 /// One message ready to leave its source (a venue, or the tape's processor
 /// at the hub) and the venue time it became available there.
-pub(crate) struct FeedMessage {
+pub(crate) struct FeedMessage<M = FixMessage> {
     pub(crate) source: Endpoint,
     pub(crate) available_us: u64,
     pub(crate) request_id: String,
-    pub(crate) message: FixMessage,
+    pub(crate) message: M,
 }
 
 /// What a direct feed shows of the book.
@@ -79,15 +86,48 @@ struct TapeFeed {
     last_send_us: u64,
 }
 
-#[derive(Default)]
-pub(crate) struct PublicFeeds<'a> {
+pub(crate) struct PublicFeeds<'a, M = FixMessage> {
     feeds: Vec<Feed>,
     tape_feeds: Vec<TapeFeed>,
     /// Held while any consolidated feed exists.
     tape: Option<Subscription<'a, TapeRecord>>,
+    encode: IncrementEncoder<M>,
 }
 
-impl<'a> PublicFeeds<'a> {
+impl Default for PublicFeeds<'_, FixMessage> {
+    fn default() -> Self {
+        Self::new(market_incremental)
+    }
+}
+
+impl PublicFeeds<'_, FixMessage> {
+    /// [`PublicFeeds::activate_after`] for a FIX snapshot: a consolidated
+    /// feed continues after the snapshot's last report sequence (83).
+    pub(crate) fn activate(
+        &mut self,
+        request_id: &str,
+        published_before: u64,
+        snapshot: &[FixMessage],
+    ) -> Vec<FeedMessage> {
+        let last = snapshot
+            .first()
+            .and_then(|message| message.value(83))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        self.activate_after(request_id, published_before, last)
+    }
+}
+
+impl<'a, M> PublicFeeds<'a, M> {
+    pub(crate) const fn new(encode: IncrementEncoder<M>) -> Self {
+        Self {
+            feeds: Vec::new(),
+            tape_feeds: Vec::new(),
+            tape: None,
+            encode,
+        }
+    }
+
     /// Why a new subscription with this ID cannot start, if it cannot.
     fn refuse(&self, request_id: &str) -> Option<String> {
         if self.feeds.iter().any(|feed| feed.request_id == request_id)
@@ -142,7 +182,7 @@ impl<'a> PublicFeeds<'a> {
     /// # Errors
     /// Returns an error when the tape disconnected this session or a pending
     /// feed's buffer is full.
-    pub(crate) fn drain_tape(&mut self) -> Result<Vec<FeedMessage>, String> {
+    pub(crate) fn drain_tape(&mut self) -> Result<Vec<FeedMessage<M>>, String> {
         let Some(tape) = &self.tape else {
             return Ok(Vec::new());
         };
@@ -162,7 +202,7 @@ impl<'a> PublicFeeds<'a> {
                         }
                         buffer.push(record.clone());
                     }
-                    None => messages.push(feed.message(&record)),
+                    None => messages.push(feed.message(&record, self.encode)),
                 }
             }
         }
@@ -219,29 +259,25 @@ impl<'a> PublicFeeds<'a> {
 
     /// The snapshot reply arrived: a venue feed continues with the first
     /// batch published after it, a consolidated feed with the first record
-    /// after the snapshot's last report sequence (83). Returns the buffered
-    /// increments that follow.
-    pub(crate) fn activate(
+    /// after the snapshot's last report sequence `last`. Returns the
+    /// buffered increments that follow.
+    pub(crate) fn activate_after(
         &mut self,
         request_id: &str,
         published_before: u64,
-        snapshot: &[FixMessage],
-    ) -> Vec<FeedMessage> {
+        last: u64,
+    ) -> Vec<FeedMessage<M>> {
+        let encode = self.encode;
         if let Some(feed) = self
             .tape_feeds
             .iter_mut()
             .find(|feed| feed.request_id == request_id)
         {
-            let last = snapshot
-                .first()
-                .and_then(|message| message.value(83))
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
             let buffered = feed.pending.take().unwrap_or_default();
             return buffered
                 .iter()
                 .filter(|record| record.first_report > last)
-                .map(|record| feed.message(record))
+                .map(|record| feed.message(record, encode))
                 .collect();
         }
         let Some(feed) = self
@@ -255,7 +291,7 @@ impl<'a> PublicFeeds<'a> {
         buffered
             .iter()
             .filter(|batch| batch.ordinal >= published_before)
-            .filter_map(|batch| feed.increment(batch))
+            .filter_map(|batch| feed.increment(batch, encode))
             .collect()
     }
 
@@ -265,7 +301,11 @@ impl<'a> PublicFeeds<'a> {
     /// # Errors
     /// Returns an error when a pending feed's buffer is full; the session
     /// must disconnect rather than publish a feed with a hole in it.
-    pub(crate) fn on_batch(&mut self, batch: &CommittedBatch) -> Result<Vec<FeedMessage>, String> {
+    pub(crate) fn on_batch(
+        &mut self,
+        batch: &CommittedBatch,
+    ) -> Result<Vec<FeedMessage<M>>, String> {
+        let encode = self.encode;
         let mut messages = Vec::new();
         for feed in &mut self.feeds {
             if !batch
@@ -285,7 +325,7 @@ impl<'a> PublicFeeds<'a> {
                     }
                     buffer.push(batch.clone());
                 }
-                None => messages.extend(feed.increment(batch)),
+                None => messages.extend(feed.increment(batch, encode)),
             }
         }
         Ok(messages)
@@ -315,18 +355,22 @@ impl<'a> PublicFeeds<'a> {
 impl TapeFeed {
     /// Every entry of a record: a consolidated feed always carries quotes
     /// and trades, so its report sequence is the tape's, with no gaps.
-    fn message(&self, record: &TapeRecord) -> FeedMessage {
+    fn message<M>(&self, record: &TapeRecord, encode: IncrementEncoder<M>) -> FeedMessage<M> {
         FeedMessage {
             source: Endpoint::Hub,
             available_us: record.hub_us,
             request_id: self.request_id.clone(),
-            message: market_incremental(&self.request_id, record.first_report, &record.entries),
+            message: encode(&self.request_id, record.first_report, &record.entries),
         }
     }
 }
 
 impl Feed {
-    fn increment(&mut self, batch: &CommittedBatch) -> Option<FeedMessage> {
+    fn increment<M>(
+        &mut self,
+        batch: &CommittedBatch,
+        encode: IncrementEncoder<M>,
+    ) -> Option<FeedMessage<M>> {
         let update = batch
             .public
             .iter()
@@ -339,7 +383,7 @@ impl Feed {
             .into_iter()
             .map(|entry| (self.listing_key, entry))
             .collect();
-        let message = market_incremental(&self.request_id, self.next_report, &entries);
+        let message = encode(&self.request_id, self.next_report, &entries);
         self.next_report = self
             .next_report
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));

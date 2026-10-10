@@ -81,6 +81,9 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         })?;
         task_count = task_count.saturating_add(1);
     }
+    if let Some(bnp) = config.bnp.clone() {
+        task_count = task_count.saturating_add(spawn_bnp(bnp, &origin, &admission, &completed)?);
+    }
     if let Some(fix) = config.fix.clone() {
         let origin = origin.clone();
         let storage_kind = config.storage.kind;
@@ -99,11 +102,40 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     }
     drop(completed);
     if task_count == 0 {
-        return Err("native profile requires at least one FIX or admin listener".to_owned());
+        return Err("native profile requires at least one FIX, BNP or admin listener".to_owned());
     }
     listener
         .recv()
         .map_err(|_| "server listener task panicked".to_owned())?
+}
+
+/// Starts the Bunting Native Protocol listener (ADR 0040); returns the
+/// number of listener tasks started.
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_bnp(
+    bnp: crate::config::BnpConfig,
+    origin: &Arc<PublishingOrigin>,
+    admission: &Arc<AdmissionService>,
+    completed: &mpsc::Sender<Result<(), String>>,
+) -> Result<usize, String> {
+    let origin = origin.clone();
+    let admission = admission.clone();
+    spawn_host("bunting-bnp-acceptor", completed.clone(), move || {
+        crate::bnp_host::run(&bnp, &origin, &admission)
+    })?;
+    Ok(1)
+}
+
+/// The BNP listener needs in-process TLS, which is built for native
+/// targets only.
+#[cfg(target_arch = "wasm32")]
+fn spawn_bnp(
+    _bnp: crate::config::BnpConfig,
+    _origin: &Arc<PublishingOrigin>,
+    _admission: &Arc<AdmissionService>,
+    _completed: &mpsc::Sender<Result<(), String>>,
+) -> Result<usize, String> {
+    Err("the BNP listener requires a native build of bunting-server".to_owned())
 }
 
 fn spawn_host(
