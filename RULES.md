@@ -110,6 +110,14 @@ and application state; it does not cancel or reprioritize book state. Operators
 may halt the whole round for safety, and the settled result always comes from a
 successful archive replay rather than the live display.
 
+You may connect over FIX or over the Bunting Native Protocol (BNP) with the
+certificate the organizers issue you ([wire contract](docs/specs/bnp-v1.md),
+reference client `bunting-trader`). Both reach the same venues through the
+same latency map; neither is faster through the venue, and your own client's
+speed counts in both. One BNP session per team is live at a time,
+independently of FIX. A BNP session identifies you only by your certificate;
+keep its key private.
+
 Credentials bind one connection to one roster participant. Sharing credentials,
 attempting another participant's CompID, flooding, malformed framing, or
 accessing private reports for another identity is prohibited and rejected.

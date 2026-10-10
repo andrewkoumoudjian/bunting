@@ -17,7 +17,7 @@ the committed result. Adapters cannot receive mutable engine state or invent
 facts, sequence numbers, fills, balances or scores.
 
 The service boundary is the public Rust contract consumed in process by native
-servers, FIX mapping, the Bunting Native Protocol (ADR 0031, target) and
+servers, FIX mapping, the Bunting Native Protocol (ADR 0031, v1 per ADR 0040) and
 built-in agents. Transport sessions and origin persistence remain outside
 `bunting-engine`.
 FIX sequence numbers remain distinct from committed Bunting event sequences.
@@ -27,8 +27,8 @@ FIX sequence numbers remain distinct from committed Bunting event sequences.
 ### Native local or server deployment
 
 A native host may accept inbound standard FIXT.1.1 with FIX 5.0 SP2 application
-semantics over TCP or TLS, and (target, ADR 0031) the Bunting Native Protocol
-over mutual TLS. No other participant interface exists. The acceptor
+semantics over TCP or TLS, and the Bunting Native Protocol over mutual TLS
+(ADR 0031, v1 per ADR 0040, native builds only). No other participant interface exists. The acceptor
 owns sockets, TLS, FIX sessions, bounded journals and reconnect policy, then
 calls the application service in process. It is not a second exchange service.
 

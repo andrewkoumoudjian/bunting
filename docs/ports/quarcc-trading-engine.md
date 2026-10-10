@@ -320,7 +320,7 @@ It may not:
 1. Route through the public Bunting client package.
 2. Consume committed market/private reports.
 3. Handle stream reset, idempotency and expected-version conflicts.
-4. Test against the unified engine through its external interfaces (FIX and, once implemented, the Bunting Native Protocol). NBC compatibility profiles are no longer a target (ADR 0032).
+4. Test against the unified engine through its external interfaces (FIX and the Bunting Native Protocol, ADR 0040). NBC compatibility profiles are no longer a target (ADR 0032).
 
 ### Phase 5: optional native compatibility
 

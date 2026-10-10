@@ -43,8 +43,8 @@ venue. Every transport, UI and host is an adapter.
 8. **Participants are outside.** Strategies, QUARCC execution engines,
    built-in agents and client apps submit ordinary commands and consume
    committed reports (ADR 0014 as carried by 0018).
-9. **Two interfaces only.** FIX and the Bunting Native Protocol (ADR 0031,
-   Target). Cloudflare only publishes immutable exports (ADR 0022).
+9. **Two interfaces only.** FIX and the Bunting Native Protocol (ADR 0031;
+   BNP v1 built per ADR 0040). Cloudflare only publishes immutable exports (ADR 0022).
 10. **NBC is reference evidence**, not a compatibility target (ADR 0032).
 11. **Host-neutral core.** Engine and protocol packages compile for
     `wasm32-unknown-unknown`; the server stays buildable natively; no
@@ -230,13 +230,21 @@ All admission inputs are journaled; replay never re-measures the network.
 ## 8. Interfaces
 
 **Current:** FIX (FIXT.1.1 / FIX 5.0 SP2 competition profile, ADR 0021/0023),
-tag 207 required for venue. Admin HTTP on loopback. The browser contract has
-no host.
+tag 207 required for venue. Bunting Native Protocol v1 (slice 25, ADR 0040,
+[`specs/bnp-v1.md`](specs/bnp-v1.md)): fixed-layout binary frames over
+in-process TLS 1.3 with mutual authentication; identity is the client
+certificate's fingerprint in the run roster; orders, cancels, kill switch,
+private reports keyed by committed event sequence with resume from a
+retained window, direct L2 feeds, listings, open orders and account
+snapshots, probes and Ping/Pong. Same sequencer and latency path as FIX.
+Native builds only. Reference client: `packages/bunting-client` and
+`apps/bunting-trader`. Admin HTTP on loopback. The browser contract has no
+host.
 
-**Target (ADR 0031):** FIX plus the Bunting Native Protocol over in-process
-mutual TLS 1.3; certificate subject = actor identity; streams with resume
-cursors; Ping/Pong for ADR 0030. One `bunting-client` crate shared by the
-TUI, a GUI app and bindings. Nothing else accepts participant traffic.
+**Target (ADR 0031):** instructor/admin control and run/news streams over
+BNP; L3 and consolidated feeds over BNP; the TUI, a GUI app and bindings on
+`bunting-client`; a FIX/BNP parity test. Nothing else accepts participant
+traffic.
 
 ## 9. Persistence, replay and archive
 

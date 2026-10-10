@@ -2,8 +2,8 @@
 
 Bunting is a Rust market-simulation and exchange-testing platform: one
 deterministic engine that owns matching, orders, the economic ledger, logical
-time and replay, served by one venue process to participants over FIX (and,
-as the accepted target, a certified Bunting Native Protocol). It underpins a
+time and replay, served by one venue process to participants over FIX and the
+certified Bunting Native Protocol (BNP, with the `bunting-trader` client). It underpins a
 RIT-class classroom simulator and a QUARCC competition venue. Cloudflare is an
 optional read-only publisher of results.
 
@@ -112,13 +112,14 @@ archive that replays every journaled input (slice 20); and per-venue public
 feeds of anonymous trades, depth changes and order-by-order changes, plus
 a consolidated tape from a processor at the hub, with broker identifiers
 on venues that publish them (slices 21–24,
-[ADR 0036](docs/adr/0036-public-market-data-feeds.md)).
+[ADR 0036](docs/adr/0036-public-market-data-feeds.md)); and the Bunting
+Native Protocol over mutual TLS with a reference client library and CLI
+(slice 25, [ADR 0040](docs/adr/0040-bunting-native-protocol-v1.md)).
 
 Current priorities and their order are in the
 [October 9 exploration note §8](docs/research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan):
-the
-multi-day calendar with auctions, and the certified native protocol and
-app ([ADR 0031](docs/adr/0031-proposed-bunting-native-client-protocol.md)).
+the multi-day calendar with auctions, and moving the app onto the native
+protocol ([ADR 0031](docs/adr/0031-proposed-bunting-native-client-protocol.md)).
 Accepted Target decisions are not implemented until the implementation log
 says so.
 

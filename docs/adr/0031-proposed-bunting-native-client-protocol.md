@@ -1,7 +1,13 @@
 # ADR 0031: Two client interfaces — FIX and a certified Bunting native protocol
 
 - Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
-  **Target — not yet implemented**; the implementation log records each slice.
+  **Partly implemented** (slice 25): BNP v1 participant order entry, private
+  stream with resume, direct L2 feeds and the reference client are built per
+  [ADR 0040](0040-bunting-native-protocol-v1.md), which replaces this ADR's
+  codec candidate (fixed binary layout, not `postcard`) and identity mapping
+  (registered certificate fingerprint, not subject). Instructor/admin
+  control, run/news streams, CRL reload, the TUI migration, bindings and the
+  FIX/BNP parity test remain Target.
 - Would supersede: the browser procedure contract's role in ADR 0016/0020
   (`bunting-api-contract` browser procedures, `browser-wire`,
   `schemas/browser`), which has had no server since the Worker removal

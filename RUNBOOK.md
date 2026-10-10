@@ -36,12 +36,95 @@ still sets it fails at startup with an explanation. Set
 checked-in local scenario uses 256 for each human participant). Omitting it
 leaves that participant without a per-participant cap.
 
+## Bunting Native Protocol (slice 25)
+
+Teams may trade over BNP ([ADR 0040](docs/adr/0040-bunting-native-protocol-v1.md),
+[wire contract](docs/specs/bnp-v1.md)) with the `bunting-trader` client or
+their own `bunting-client` program. BNP goes through the same sequencer and
+latency map as FIX. It needs a native server build; the WASIX package has no
+BNP listener.
+
+1. Create an event CA and issue a server certificate (with the host name
+   teams connect to) and one client certificate per team. With OpenSSL:
+
+   ```bash
+   cat > ca.cnf <<'CNF'
+   [req]
+   distinguished_name = dn
+   prompt = no
+   [dn]
+   CN = Bunting event CA
+   [ca]
+   basicConstraints = critical, CA:true
+   keyUsage = critical, keyCertSign, cRLSign
+   [server]
+   basicConstraints = CA:false
+   keyUsage = critical, digitalSignature
+   extendedKeyUsage = serverAuth
+   subjectAltName = DNS:venue.example.org
+   [client]
+   basicConstraints = CA:false
+   keyUsage = critical, digitalSignature
+   extendedKeyUsage = clientAuth
+   CNF
+   openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+   openssl req -x509 -new -key ca.key -days 30 -config ca.cnf -extensions ca -out ca.pem
+   openssl ecparam -name prime256v1 -genkey -noout -out server.key
+   openssl req -new -key server.key -subj /CN=venue -out server.csr
+   openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+     -days 30 -extfile ca.cnf -extensions server -out server.pem
+   # per team:
+   openssl ecparam -name prime256v1 -genkey -noout -out team1.key
+   openssl req -new -key team1.key -subj /CN=team1 -out team1.csr
+   openssl x509 -req -in team1.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+     -days 30 -extfile ca.cnf -extensions client -out team1.pem
+   ```
+
+   Keep `ca.key` offline. Teams may instead send a CSR and keep their key.
+2. Register each team certificate's fingerprint
+   (`bunting-trader fingerprint team1.pem`) in the server config. The
+   certificate's subject grants nothing; only the roster does. Paths are
+   relative to the config file:
+
+   ```json
+   "bnp": {
+     "bind": "0.0.0.0:9881",
+     "run_id": 1,
+     "certificate_chain": "server.pem",
+     "private_key": "server.key",
+     "client_ca": "ca.pem",
+     "revocation_lists": [],
+     "roster": [{ "certificate_sha256": "<64 hex digits>", "participant_id": 1 }],
+     "heartbeat_ms": 1000,
+     "max_connections": 1,
+     "max_frame_bytes": 65536,
+     "rate_limit_window_ms": 1000,
+     "max_messages_per_interval": 100,
+     "handshake_timeout_ms": 5000
+   }
+   ```
+
+   `run_id` must match `fix.run_id` and the runtime run. v1 accepts the
+   `participant` role only; instructors and administrators use FIX.
+3. Give each team `ca.pem`, its certificate and key, and the host and port.
+   They check the connection with
+   `bunting-trader --server venue.example.org:9881 --ca ca.pem --cert team1.pem --key team1.key account`
+   (or set `BUNTING_SERVER`, `BUNTING_CA`, `BUNTING_CERT`, `BUNTING_KEY`).
+4. To revoke a certificate, add a CRL from the CA to `revocation_lists` (or
+   remove its roster entry) and restart; CRLs are read at start-up only.
+
+A BNP client that reconnects with its cursor (`--resume-after`) receives the
+reports it missed while the venue still retains them (the latest 16,384
+committed batches); otherwise it is told there is a gap and rebuilds from
+open orders and account.
+
 ## Known limitations (verified 2026-10-09; updated after slice 12)
 
 Plan events around these until the fixes listed in
 `docs/research/2026-10-09-exploration-and-next-steps.md` §8 land:
 
-- **Reports missed while disconnected are not replayed.** Fills are delivered
+- **Reports missed while disconnected are not replayed over FIX.** (BNP
+  sessions resume from their cursor; see above.) Fills are delivered
   to every connected participant, but a team that is offline when its order
   fills (or that falls more than 4,096 committed batches behind and is
   disconnected) must request account/discovery after reconnecting to

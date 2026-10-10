@@ -9,8 +9,16 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   dependencies or code paths (ADR 0033). It currently ships as a WASIX module
   (ADR 0027).
 - Participant interfaces are FIX and the Bunting Native Protocol only
-  (ADR 0031, target). Do not add other command surfaces. TLS is moving
-  in-process with mutual authentication; certificates map to actor identity.
+  (ADR 0031). Do not add other command surfaces. `bnp_host.rs` (ADR 0040,
+  native only) terminates TLS 1.3 in-process with mutual authentication;
+  identity is the client certificate's SHA-256 fingerprint in `bnp.roster`,
+  never the subject or a message field. Its reader thread stamps ciphertext,
+  so the team's TLS cost counts; it admits through the same `admit` path as
+  FIX and holds reports for `L(s, p)` with the shared `outbound.rs`.
+  `public_feed.rs` and `OutboundHold` are generic over the message type;
+  keep feed logic protocol-neutral. Resume replays the distributor's
+  retained batches (`subscribe_resuming`), atomically with the live
+  subscription; a cursor outside the window is a gap, never a guess.
 - Do not keep authority in session state. Per-participant limits are engine
   risk admission; reports reach every affected participant through
   `distributor.rs`, which publishes after each durable commit. Every mutating
@@ -24,7 +32,7 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   `AdmissionRecord`; committed batches carry where they were applied
   (`Committed.source`, the admitted destination) and leave `L(s, p)` after
   commit (never heartbeats or probes). Never derive a batch's source from
-  the acting team: its path to the destination was already crossed. One live session per participant;
+  the acting team: its path to the destination was already crossed. One live session per participant per interface (`Interface::{Fix, Bnp}`);
   connections wait briefly for a slot when a reconnect races the old
   session's close. `tcp_rtt.rs` reads kernel RTT through netlink
   `sock_diag` without `unsafe`; it is published, never used for ordering.
