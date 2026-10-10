@@ -1,6 +1,6 @@
 # Admission-sequencer instructions
 
-Implements ADR 0035's real-life latency model as a sans-I/O, clock-free
+Implements ADR 0035 latency as a sans-I/O, clock-free
 library: the measured access-latency estimator (published, never used for
 ordering), the virtual team-to-venue latency table with seeded per-path,
 per-direction jitter (`release = t_rx + L(p, v)`, outbound `L(v, p)`), and

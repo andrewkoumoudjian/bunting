@@ -3,9 +3,9 @@
 All teams trade on one shared market. Each instrument may be listed on
 several venues; every venue runs its own continuous price-time book.
 
-## Latency is real (ADR 0035)
+## Latency (ADR 0035)
 
-The venue simulates real-life latency. Nothing is equalized:
+Latency works as on a real network; there is no equalization and no alternative setting:
 
 - **Your real connection counts.** When your order reaches the server
   depends on where you are, your network and connection method (wired or

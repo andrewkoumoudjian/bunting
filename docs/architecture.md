@@ -106,7 +106,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
-| `packages/admission-sequencer` | ADR 0035 real-life latency: virtual team-to-venue table with seeded jitter (`t_rx + L(p, v)`, outbound `L(v, p)`), published access-latency estimator, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
+| `packages/admission-sequencer` | ADR 0035 latency: virtual team-to-venue table with seeded jitter (`t_rx + L(p, v)`, outbound `L(v, p)`), published access-latency estimator, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
 | `packages/origin-store` | `OriginStore` trait; writer-owned `LiveRun` (in-place apply, idempotency index, event-hash chain, rollback); `RunRecovery`; in-memory store |
 | `packages/command-transaction` | Thin command/simulation call shape over `OriginStore::execute` |
 | `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |
@@ -181,7 +181,7 @@ log. Per-command cost no longer grows with the size of the run.
 
 ## 7. Admission and fairness
 
-**Current (slice 16, ADR 0035):** one real-life model for FIX sessions:
+**Current (slice 16, ADR 0035):** latency for FIX sessions works as on a real network:
 real connectivity counts as it is; the published virtual team-to-venue
 latency table is added in both directions; teams choose the venue for each
 order, with no router and no trade-through protection; measured access

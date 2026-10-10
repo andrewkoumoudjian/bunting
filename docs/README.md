@@ -50,7 +50,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0032 | NBC is reference evidence only; engine surface removed (slice 11) |
 | 0033 | Guidance reconciliation and status amendments |
 | 0034 | **Historical** — equalized admission; superseded by 0035 |
-| 0035 | Real-life latency: real connectivity counts, virtual team-to-venue distance added both ways, one model (slice 16) |
+| 0035 | Latency: real connectivity counts, virtual distance added both ways, no modes (slice 16) |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,

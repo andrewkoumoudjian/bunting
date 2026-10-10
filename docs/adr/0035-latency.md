@@ -1,4 +1,4 @@
-# ADR 0035: Real-life latency — real connectivity counts, venues are distant
+# ADR 0035: Latency — real connectivity counts, every venue and team is somewhere
 
 - Status: **Accepted** (2026-10-10) by owner direction; implemented in
   slice 16 (see `docs/implementation-log/`).
@@ -32,7 +32,8 @@ from the desk to each venue adds to it in both directions.
 
 ## Decision
 
-One latency model, no modes and no equalization.
+Latency simply works as on a real network. There are no modes, no named
+model to switch to or from, and no equalization.
 
 ### 1. What reaches a venue, when
 
@@ -97,7 +98,9 @@ FIX dictionaries load once per process.
 
 - **Equalization (ADR 0034)**: hides the connectivity differences the owner
   wants to count, and invites latency inflation.
-- **Selectable modes**: the owner asked for one real-life model.
+- **Selectable modes, or a named "real-life mode"**: the owner asked for
+  no modes at all — latency simply works this way ("there shouldn't be a
+  real-life mode, it should just be it", 2026-10-10).
 - **Adding measured delay to `L` explicitly**: real delay is already inside
   `t_rx` and the wire; adding it again would double-count.
 

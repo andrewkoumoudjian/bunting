@@ -45,7 +45,7 @@ fn start_server(storage: StorageKind) -> Result<u16, String> {
     let fix = config.fix.as_mut().ok_or("local profile has FIX")?;
     fix.bind = format!("127.0.0.1:{port}");
     fix.rate_limit_window_ms = 1;
-    // Real-life admission with a 1 ms virtual distance to the venue: the
+    // A 1 ms virtual distance to the venue: the
     // full ADR 0035 path, kept short so the end-to-end tests stay fast.
     fix.admission = AdmissionConfig::with_policy(LatencyPolicy {
         default_path: PathLatency {

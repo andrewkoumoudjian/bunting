@@ -1,4 +1,4 @@
-//! Real-life latency admission for the venue (ADR 0035).
+//! Latency-ordered admission for the venue (ADR 0035).
 //!
 //! Each connection's reader stamps inbound bytes the moment they arrive (so
 //! the team's real network delay is inside the stamp), the session maps and

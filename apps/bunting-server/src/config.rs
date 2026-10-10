@@ -94,7 +94,7 @@ pub struct FixConfig {
     pub max_interval_queue: Option<usize>,
 }
 
-/// The real-life latency model (ADR 0035): each team's real network delay
+/// Latency (ADR 0035): each team's real network delay
 /// counts as it is, and the scenario's virtual distance from each team to
 /// each venue is added in both directions.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Real-life latency model for venue admission (ADR 0035), sans-I/O and
-//! clock-free.
+//! Latency for venue admission (ADR 0035), sans-I/O and clock-free.
 //!
 //! Nothing is equalized. A team's real network delay to the server (its
 //! connection method, TCP stack, uplink and distance) counts in full, as it

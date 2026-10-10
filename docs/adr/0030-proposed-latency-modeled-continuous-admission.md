@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
   **Target — not yet implemented**; the implementation log records each slice.
-- **Partially superseded by [ADR 0035](0035-real-life-latency.md)
+- **Partially superseded by [ADR 0035](0035-latency.md)
   (2026-10-10):** admission modes, `D_max`, delay compensation and outbound
   equalization are removed; real network delay counts and the virtual
   team-to-venue latency `L(p, v)` is added in both directions. §3 (sequencer)

@@ -1,6 +1,6 @@
 # ADR 0034: Fair remote admission — distance neutral, implementation rewarded
 
-- Status: **Superseded** by [ADR 0035](0035-real-life-latency.md) (2026-10-10): the owner chose a single real-life model in which real network delay counts and is never equalized. Kept as decision history.
+- Status: **Superseded** by [ADR 0035](0035-latency.md) (2026-10-10): the owner chose latency as on a real network, with no modes: real network delay counts and is never equalized. Kept as decision history.
   session that followed slice 15b. **Target — implemented in slices recorded
   in `docs/implementation-log/`.**
 - Date: 2026-10-10
