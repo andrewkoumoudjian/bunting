@@ -389,6 +389,7 @@ fn read_new_order(r: &mut Reader<'_>) -> Result<NewOrder, WireError> {
         }
     };
     let post_only = r.bool()?;
+    let anonymous = r.bool()?;
     let display_quantity = r.option(Reader::i64)?;
     Ok(NewOrder {
         client_order_id,
@@ -398,6 +399,7 @@ fn read_new_order(r: &mut Reader<'_>) -> Result<NewOrder, WireError> {
         order_type,
         time_in_force,
         post_only,
+        anonymous,
         display_quantity,
     })
 }
@@ -443,6 +445,7 @@ fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireE
             w.u8(tif);
             w.u64(expires);
             w.bool(order.post_only);
+            w.bool(order.anonymous);
             w.option(order.display_quantity, Writer::i64);
         }
         ClientMessage::CancelOrder { client_order_id } => w.u64(*client_order_id),

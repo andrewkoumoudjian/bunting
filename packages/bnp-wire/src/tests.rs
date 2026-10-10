@@ -40,6 +40,7 @@ fn clients() -> Vec<ClientMessage> {
             order_type: OrderType::Limit { price: -5 },
             time_in_force: TimeInForce::Gtd { expires_at_ns: 123 },
             post_only: true,
+            anonymous: false,
             display_quantity: Some(2),
         }),
         ClientMessage::NewOrder(NewOrder {
@@ -50,6 +51,7 @@ fn clients() -> Vec<ClientMessage> {
             order_type: OrderType::Market,
             time_in_force: TimeInForce::Ioc,
             post_only: false,
+            anonymous: false,
             display_quantity: None,
         }),
         ClientMessage::CancelOrder { client_order_id: 3 },
@@ -387,6 +389,7 @@ fn malformed_frames_are_errors_never_skipped() -> Result<(), WireError> {
             order_type: OrderType::Market,
             time_in_force: TimeInForce::Ioc,
             post_only: false,
+            anonymous: false,
             display_quantity: None,
         }),
         &mut order,

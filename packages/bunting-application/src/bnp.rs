@@ -127,6 +127,7 @@ impl BnpIdentity {
                     side: side(order.side),
                     quantity: QuantityLots::new(order.quantity),
                     kind,
+                    anonymous: order.anonymous,
                 },
             },
         ))

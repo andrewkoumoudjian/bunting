@@ -215,6 +215,7 @@ fn limit(client_order_id: u64, side: Side, quantity: i64, price: i64) -> ClientM
         order_type: OrderType::Limit { price },
         time_in_force: TimeInForce::Gtc,
         post_only: false,
+        anonymous: false,
         display_quantity: None,
     })
 }

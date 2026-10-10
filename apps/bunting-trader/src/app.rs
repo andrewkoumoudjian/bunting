@@ -95,6 +95,9 @@ struct OrderArgs {
     /// Reject instead of trading on arrival.
     #[arg(long)]
     post_only: bool,
+    /// Hide your broker identifier on venues that publish them.
+    #[arg(long)]
+    anonymous: bool,
     /// Iceberg display size.
     #[arg(long)]
     display: Option<i64>,
@@ -289,6 +292,7 @@ fn new_order(side: Side, order: &OrderArgs, client_order_id: u64) -> ClientMessa
             }
         },
         post_only: order.post_only,
+        anonymous: order.anonymous,
         display_quantity: order.display,
     })
 }
@@ -461,6 +465,7 @@ fn shell(client: &Client, ids: &mut impl FnMut() -> u64) -> Result<(), String> {
                     market: *price == "market",
                     tif: Tif::Gtc,
                     post_only: false,
+                    anonymous: false,
                     display: None,
                     id: None,
                 };

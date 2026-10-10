@@ -73,6 +73,7 @@ fn limit(client_order_id: u64, side: WireSide, quantity: i64, price: i64) -> New
         order_type: OrderType::Limit { price },
         time_in_force: TimeInForce::Gtc,
         post_only: false,
+        anonymous: false,
         display_quantity: None,
     }
 }
@@ -94,6 +95,20 @@ fn identities_are_namespaced_idempotent_and_reversible() {
     let first = buyer.new_order(&order, CorrelationId::new(1)).unwrap();
     let again = buyer.new_order(&order, CorrelationId::new(2)).unwrap();
     assert_eq!(first.command_id, again.command_id);
+    // The broker-ID opt-out travels with the order (ADR 0036).
+    let hidden = buyer
+        .new_order(
+            &NewOrder {
+                anonymous: true,
+                ..order.clone()
+            },
+            CorrelationId::new(3),
+        )
+        .unwrap();
+    assert!(matches!(
+        hidden.payload,
+        CommandPayload::SubmitOrderAtListing { ref order, .. } if order.anonymous
+    ));
     assert_ne!(
         first.command_id,
         seller

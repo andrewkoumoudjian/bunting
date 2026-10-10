@@ -329,8 +329,8 @@ pub enum OrderType {
 }
 
 /// A new order. `client_order_id` must be unique for the participant for
-/// the whole run (across connections): resending the same order with the
-/// same ID is idempotent, as on an OUCH session.
+/// the whole run (across connections), as on an OUCH session: a resend with
+/// a used ID commits nothing new.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewOrder {
     pub client_order_id: u64,
@@ -341,6 +341,9 @@ pub struct NewOrder {
     pub time_in_force: TimeInForce,
     /// Reject instead of trading on arrival.
     pub post_only: bool,
+    /// Hides the participant's broker identifier on venues that publish
+    /// them (ADR 0036; FIX `BuntingAnonymous` 10021).
+    pub anonymous: bool,
     /// Iceberg display size; `None` displays the whole quantity.
     pub display_quantity: Option<i64>,
 }

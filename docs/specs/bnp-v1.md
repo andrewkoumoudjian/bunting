@@ -61,7 +61,7 @@ length  = 1 + len(body)            (bytes after the length field)
 | 0x03 | ProbeReply | `probe_id:u64` |
 | 0x04 | Ping | `nonce:u64` |
 | 0x05 | Logout | `reason:string` |
-| 0x10 | NewOrder | `client_order_id:u64 listing side:u8 quantity:i64 order_type:u8 price:i64 tif:u8 expires_at_ns:u64 post_only:bool display_quantity:option<i64>` |
+| 0x10 | NewOrder | `client_order_id:u64 listing side:u8 quantity:i64 order_type:u8 price:i64 tif:u8 expires_at_ns:u64 post_only:bool anonymous:bool display_quantity:option<i64>` |
 | 0x11 | CancelOrder | `client_order_id:u64` |
 | 0x12 | KillSwitch | `request_id:u64` |
 | 0x20 | Subscribe | `request_id:u32 listing flags:u8` |
@@ -73,7 +73,8 @@ length  = 1 + len(body)            (bytes after the length field)
 
 Enumerations: `side` 1 buy, 2 sell. `order_type` 1 limit (uses `price`),
 2 market (`price` must be 0). `tif` 0 GTC, 1 IOC, 2 FOK, 3 DAY, 4 GTD (uses
-`expires_at_ns`, otherwise 0). Feed `flags` bit 0 bids, bit 1 offers, bit 2
+`expires_at_ns`, otherwise 0). `anonymous` hides the participant's broker
+identifier on venues that publish them (ADR 0036, as FIX tag 10021). Feed `flags` bit 0 bids, bit 1 offers, bit 2
 trades.
 
 ## Server messages
