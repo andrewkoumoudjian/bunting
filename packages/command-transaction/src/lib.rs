@@ -107,6 +107,19 @@ where
         self.execute_input(&JournalInput::Simulation(request.clone()))
     }
 
+    /// [`Self::execute_simulation_detailed`] for a request ordered by the
+    /// admission sequencer, such as the venue timer's clock tick.
+    pub fn execute_simulation_admitted(
+        &self,
+        request: &SimulationCommandRequest,
+        admission: &AdmissionRecord,
+    ) -> Result<ExecutedTransaction, TransactionError> {
+        self.origin
+            .execute_admitted(&JournalInput::Simulation(request.clone()), Some(admission))
+            .map(ExecutedTransaction::from)
+            .map_err(TransactionError::from)
+    }
+
     fn execute_input(&self, input: &JournalInput) -> Result<ExecutedTransaction, TransactionError> {
         self.origin
             .execute(input)

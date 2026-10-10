@@ -13,6 +13,7 @@ mod consolidated;
 mod distributor;
 mod outbound;
 mod public_feed;
+mod run_clock;
 pub mod runtime;
 mod scenario;
 mod session_host;

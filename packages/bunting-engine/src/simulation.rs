@@ -605,6 +605,8 @@ impl SimulationState {
                 }])
             }
             SimulationCommand::Advance { steps } => self.advance(context, *steps),
+            // The engine has already caught the clock up to the tick.
+            SimulationCommand::ClockTick => Ok(Vec::new()),
             SimulationCommand::SetPacing { mode, reason } => {
                 validate_reason(reason)?;
                 self.clock.mode = *mode;
@@ -1098,31 +1100,90 @@ impl SimulationState {
                 .checked_add(delta)
                 .ok_or(SimulationError::ArithmeticOverflow)?,
         );
-        self.clock.now = to;
         let mut events = vec![SimulationEvent::ClockAdvanced { from, to }];
-        let pending = self.scheduled_actions.split_off(
-            self.scheduled_actions
-                .partition_point(|action| action.effective_at <= to),
-        );
-        let due = std::mem::replace(&mut self.scheduled_actions, pending);
-        for action in due {
-            self.apply_scheduled(context, &action)?;
-            self.applied_actions.insert(action.action_id);
-            events.push(SimulationEvent::ScheduledActionApplied {
-                action_id: action.action_id,
-            });
+        events.extend(self.catch_up(context, to, true)?);
+        Ok(events)
+    }
+
+    /// Moves the run clock forward to `to` and applies every scheduled
+    /// action due by then, in `(effective_at, action_id)` order (ADR 0037).
+    /// With `sweep`, open tenders and OTC negotiations past their expiry are
+    /// also marked expired; decisions check expiry themselves, so order
+    /// commands skip that scan and the venue timer's tick performs it.
+    ///
+    /// # Errors
+    /// Returns [`SimulationError::LogicalTimeRegression`] before any change
+    /// when `to` is behind the clock, or a scheduled action's failure.
+    pub fn catch_up(
+        &mut self,
+        context: &mut SimulationContext<'_>,
+        to: LogicalTimeNs,
+        sweep: bool,
+    ) -> Result<Vec<SimulationEvent>, SimulationError> {
+        if to < self.clock.now {
+            return Err(SimulationError::LogicalTimeRegression);
         }
-        for tender in self.tenders.values_mut() {
-            if tender.status == "open" && tender.expires_at <= to {
-                tender.status = "expired".into();
+        self.clock.now = to;
+        let mut events = Vec::new();
+        if self.has_due_actions(to) {
+            let pending = self.scheduled_actions.split_off(
+                self.scheduled_actions
+                    .partition_point(|action| action.effective_at <= to),
+            );
+            let due = std::mem::replace(&mut self.scheduled_actions, pending);
+            for action in due {
+                self.apply_scheduled(context, &action)?;
+                self.applied_actions.insert(action.action_id);
+                events.push(SimulationEvent::ScheduledActionApplied {
+                    action_id: action.action_id,
+                });
             }
         }
-        for otc in self.otc.values_mut() {
-            if matches!(otc.status.as_str(), "proposed" | "countered") && otc.expires_at <= to {
-                otc.status = "expired".into();
+        if sweep {
+            for tender in self.tenders.values_mut() {
+                if tender.status == "open" && tender.expires_at <= to {
+                    tender.status = "expired".into();
+                }
+            }
+            for otc in self.otc.values_mut() {
+                if matches!(otc.status.as_str(), "proposed" | "countered") && otc.expires_at <= to {
+                    otc.status = "expired".into();
+                }
             }
         }
         Ok(events)
+    }
+
+    /// Whether a scheduled action is due at or before `at`.
+    #[must_use]
+    pub fn has_due_actions(&self, at: LogicalTimeNs) -> bool {
+        self.scheduled_actions
+            .first()
+            .is_some_and(|action| action.effective_at <= at)
+    }
+
+    /// The earliest instant at which the simulation domain has something
+    /// due: a scheduled action, or an open tender or OTC negotiation
+    /// expiring.
+    #[must_use]
+    pub fn next_due(&self) -> Option<LogicalTimeNs> {
+        let action = self
+            .scheduled_actions
+            .first()
+            .map(|action| action.effective_at);
+        let tender = self
+            .tenders
+            .values()
+            .filter(|tender| tender.status == "open")
+            .map(|tender| tender.expires_at)
+            .min();
+        let otc = self
+            .otc
+            .values()
+            .filter(|otc| matches!(otc.status.as_str(), "proposed" | "countered"))
+            .map(|otc| otc.expires_at)
+            .min();
+        [action, tender, otc].into_iter().flatten().min()
     }
 
     fn apply_scheduled(

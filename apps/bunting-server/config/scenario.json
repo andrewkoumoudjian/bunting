@@ -68,5 +68,15 @@
         "1": 100000
       }
     }
+  },
+  "simulation": {
+    "clock": {
+      "now": 0,
+      "step_ns": 1000000,
+      "mode": {
+        "mode": "paced",
+        "step_interval_ns": 1000000
+      }
+    }
   }
 }

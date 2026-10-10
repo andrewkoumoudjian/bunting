@@ -221,15 +221,17 @@ impl RuntimeHost for Host<'_> {
         let command_id = command.command_id;
         let task: Task = Box::new(move |context| {
             let service = ApplicationService::new(context.origin);
-            let outcome = service
-                .read(command.run_id, RunState::sequence)
-                .and_then(|sequence| {
-                    command.expected_sequence = sequence;
-                    command.logical_time = context.logical_time;
-                    service.execute_admitted(&actor, &command, context.admission)
-                })
-                .map(|executed| executed.events)
-                .map_err(|error| format!("runtime command failed: {error}"));
+            let outcome = context.run_time(command.run_id).and_then(|logical_time| {
+                command.logical_time = logical_time;
+                service
+                    .read(command.run_id, RunState::sequence)
+                    .and_then(|sequence| {
+                        command.expected_sequence = sequence;
+                        service.execute_admitted(&actor, &command, context.admission)
+                    })
+                    .map(|executed| executed.events)
+                    .map_err(|error| format!("runtime command failed: {error}"))
+            });
             let _ = reply.try_send(outcome);
         });
         // In-process agents have no access network: only the virtual path.

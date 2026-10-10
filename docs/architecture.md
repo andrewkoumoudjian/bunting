@@ -288,12 +288,20 @@ archive automatically once they are journaled commands (Step 6).
 
 ## 10. Time and calendar
 
-**Current:** logical clock in `SimulationState`; GTD expiry index; FIX
-admissions stamped from epoch milliseconds; no venue calendar.
+**Current (slice 26, ADR 0037 stage 1):** one run clock. The sequencer
+stamps every released input (FIX orders, built-in agents, competition
+commands) with run time: under `Paced`, run time follows venue time at
+`step_ns` per `step_interval_ns` and freezes while the run is not active;
+under `Lockstep` and `Accelerated` it moves only by operator `Advance`. The
+engine refuses an input behind the clock and first applies everything due
+by its time (scheduled actions, GTD expiries). A venue timer submits a
+journaled `ClockTick` through the sequencer at `RunState::next_due`, so
+due items apply on time with no other input. The local and competition
+scenario runs a real-time paced clock. No venue calendar yet.
 
-**Target (Slice 4):** per-venue calendar and session phases in logical time
-(open/close auctions, halts, DAY expiry, end-of-day marks, overnight carry);
-admissions stamped from the run clock by the sequencer.
+**Target (ADR 0037 stages 2–4):** per-venue calendar and session phases in
+run time (open/close auctions, listing halts, DAY expiry, end-of-day marks,
+overnight carry).
 
 ## 11. Hosting
 

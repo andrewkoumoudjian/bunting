@@ -67,10 +67,14 @@ fn handle(
             .map_err(|_| "invalid admin run ID".to_owned())?;
         // Build the body under the store lock, write the socket after it.
         let status = origin.read_run(RunId::new(run_id), |state| {
+            // The run clock (ADR 0037): the run time the last committed
+            // input applied at, and whether the run is trading.
             serde_json::json!({
                 "runId": state.run_id().to_string(),
                 "committedSequence": state.sequence().to_string(),
-                "eventSequence": state.event_sequence().to_string()
+                "eventSequence": state.event_sequence().to_string(),
+                "runTimeNs": state.simulation().clock.now.get().to_string(),
+                "lifecycle": format!("{:?}", state.simulation().lifecycle).to_lowercase()
             })
         });
         return match status {

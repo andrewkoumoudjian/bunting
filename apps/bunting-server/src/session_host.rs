@@ -484,7 +484,7 @@ fn job_for(
             command.expected_sequence = service
                 .read(run_id, RunState::sequence)
                 .map_err(|error| format!("run read failed: {error}"))?;
-            command.logical_time = context.logical_time;
+            command.logical_time = context.run_time(run_id)?;
             service
                 .execute_admitted(&actor, &command, context.admission)
                 .map_err(|error| format!("application command failed: {error}"))?;
@@ -564,6 +564,7 @@ fn job_for(
                 &ApplicationService::new(context.origin),
                 &actor,
                 run_id,
+                context.run_time(run_id)?,
                 &request,
                 request_id,
             )
@@ -723,6 +724,7 @@ fn competition_messages<O: OriginStore>(
     service: &ApplicationService<'_, O>,
     actor: &VerifiedActor,
     run_id: RunId,
+    now: LogicalTimeNs,
     request: &CompetitionRequest,
     request_id: u128,
 ) -> Result<Vec<FixMessage>, String> {
@@ -757,10 +759,8 @@ fn competition_messages<O: OriginStore>(
         _ => None,
     };
     if let Some((payload, context)) = mutation {
-        let (now, expected_sequence) = service
-            .read(run_id, |state| {
-                (state.simulation().clock.now, state.sequence())
-            })
+        let expected_sequence = service
+            .read(run_id, RunState::sequence)
             .map_err(|error| error.to_string())?;
         let participant = match request {
             CompetitionRequest::Tender { .. } => actor

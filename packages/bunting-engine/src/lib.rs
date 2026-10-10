@@ -1133,6 +1133,23 @@ impl RunState {
             ),
             CommandPayload::CancelOrder(_) | CommandPayload::ActivateKillSwitch => None,
         };
+        // One run clock (ADR 0037): an input stamped behind it is refused.
+        if command.logical_time < self.simulation.clock.now {
+            return Err(ApplyError::Unchanged(EngineError::Simulation(
+                SimulationError::LogicalTimeRegression,
+            )));
+        }
+        // A due scheduled action can be refused by its own domain rules, so
+        // a command that applies one is staged on a copy. This is rare: the
+        // venue timer applies scheduled actions when they fall due.
+        if self.simulation.has_due_actions(command.logical_time) {
+            let mut candidate = self.clone();
+            let applied = candidate
+                .apply_validated(command, next_sequence, listing_key)
+                .map_err(ApplyError::Unchanged)?;
+            *self = candidate;
+            return Ok(applied);
+        }
         self.apply_validated(command, next_sequence, listing_key)
             .map_err(ApplyError::Poisoned)
     }
@@ -1162,7 +1179,12 @@ impl RunState {
         let candidate = self;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
-        candidate.expire_due(command.logical_time, &mut payloads, &mut changed_listings)?;
+        candidate.catch_up(
+            command.logical_time,
+            false,
+            &mut payloads,
+            &mut changed_listings,
+        )?;
         let (accepted, reject_code, order_id) = match &command.payload {
             CommandPayload::SubmitOrder(order)
             | CommandPayload::SubmitOrderAtListing { order, .. } => {
@@ -1305,6 +1327,42 @@ impl RunState {
                 self.ownership.remove(&oldest);
             }
         }
+    }
+
+    /// Moves the run clock to `to` and applies everything due by then
+    /// (ADR 0037): scheduled actions (with `sweep`, tender and OTC expiries
+    /// too), then GTD expiries.
+    fn catch_up(
+        &mut self,
+        to: LogicalTimeNs,
+        sweep: bool,
+        payloads: &mut Vec<EventPayload>,
+        changed_listings: &mut BTreeSet<ListingKey>,
+    ) -> Result<(), EngineError> {
+        let mut context = SimulationContext {
+            ledger: &mut self.ledger,
+            participants: &self.participants,
+            reporting_currency: self.reporting_currency,
+            fx_rates: &self.fx_rates,
+        };
+        let events = self
+            .simulation
+            .catch_up(&mut context, to, sweep)
+            .map_err(EngineError::Simulation)?;
+        payloads.extend(events.into_iter().map(EventPayload::Simulation));
+        self.expire_due(to, payloads, changed_listings)
+    }
+
+    /// The earliest run time at which something is due: a scheduled action,
+    /// a tender or OTC expiry, or a GTD order's expiry. The venue timer
+    /// submits a clock tick then (ADR 0037).
+    #[must_use]
+    pub fn next_due(&self) -> Option<LogicalTimeNs> {
+        let gtd = self.expiries.first().map(|&(at, _)| at);
+        [self.simulation.next_due(), gtd]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Cancels every GTD order whose expiry is at or before `now`.
@@ -1683,7 +1741,22 @@ impl RunState {
         let next_sequence = self
             .preflight(request.run_id, request.expected_sequence)
             .map_err(ApplyError::Unchanged)?;
-        if matches!(request.payload, SimulationCommand::MassCancel { .. }) {
+        if request.logical_time < self.simulation.clock.now {
+            return Err(ApplyError::Unchanged(EngineError::Simulation(
+                SimulationError::LogicalTimeRegression,
+            )));
+        }
+        let tick = matches!(request.payload, SimulationCommand::ClockTick);
+        if tick && self.simulation.lifecycle != simulation::RunLifecycle::Active {
+            return Err(ApplyError::Unchanged(EngineError::Simulation(
+                SimulationError::InvalidLifecycle,
+            )));
+        }
+        // Mass cancel and clock ticks run in place unless a due scheduled
+        // action (which its domain rules can refuse) must be applied first.
+        if (tick || matches!(request.payload, SimulationCommand::MassCancel { .. }))
+            && !self.simulation.has_due_actions(request.logical_time)
+        {
             return self
                 .apply_simulation_validated(request, next_sequence)
                 .map_err(ApplyError::Poisoned);
@@ -1713,7 +1786,22 @@ impl RunState {
         let candidate = self;
         let mut payloads = Vec::new();
         let mut changed_listings = BTreeSet::new();
-        candidate.expire_due(request.logical_time, &mut payloads, &mut changed_listings)?;
+        let tick = matches!(request.payload, SimulationCommand::ClockTick);
+        let from = candidate.simulation.clock.now;
+        if tick && request.logical_time > from {
+            payloads.push(EventPayload::Simulation(
+                bunting_market_events::SimulationEvent::ClockAdvanced {
+                    from,
+                    to: request.logical_time,
+                },
+            ));
+        }
+        candidate.catch_up(
+            request.logical_time,
+            tick,
+            &mut payloads,
+            &mut changed_listings,
+        )?;
         if let SimulationCommand::MassCancel {
             participant_id,
             instrument_id,
@@ -2052,8 +2140,12 @@ mod tests {
     }
 
     fn run() -> RunState {
+        RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario()).unwrap()
+    }
+
+    fn scenario() -> ScenarioDefinition {
         let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
-        let scenario = ScenarioDefinition::new(
+        ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
             instruments(),
@@ -2073,8 +2165,19 @@ mod tests {
             ],
             [participant(1), participant(2)],
         )
-        .unwrap();
-        RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario).unwrap()
+        .unwrap()
+    }
+
+    fn clock_tick(state: &RunState, command_id: u128, at_ns: u64) -> SimulationCommandRequest {
+        SimulationCommandRequest {
+            run_id: state.run_id(),
+            command_id: CommandId::new(command_id),
+            correlation_id: CorrelationId::new(command_id),
+            logical_time: LogicalTimeNs::new(at_ns),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(0),
+            payload: SimulationCommand::ClockTick,
+        }
     }
 
     #[expect(
@@ -3134,6 +3237,111 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn one_run_clock_refuses_regressions_and_applies_due_actions_first() {
+        let simulation = simulation::SimulationScenario {
+            scheduled_actions: vec![simulation::ScheduledAction {
+                action_id: 1,
+                effective_at: LogicalTimeNs::new(5_000_000),
+                kind: simulation::ScheduledActionKind::ExpireInstrument {
+                    instrument_id: InstrumentId::new(2),
+                },
+            }],
+            ..simulation::SimulationScenario::default()
+        };
+        let scenario = scenario().with_simulation(simulation).unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario).unwrap();
+        // Every input moves the run clock to its time.
+        state
+            .apply(&submit(&state, 3, 1, 1, 1, Side::Buy, 100, 1))
+            .unwrap();
+        assert_eq!(state.simulation().clock.now, LogicalTimeNs::new(3_000_000));
+        assert_eq!(state.next_due(), Some(LogicalTimeNs::new(5_000_000)));
+        // An input stamped behind the clock is refused before any change.
+        let before = state.clone();
+        assert_eq!(
+            state.apply(&submit(&state, 2, 1, 2, 1, Side::Buy, 100, 1)),
+            Err(ApplyError::Unchanged(EngineError::Simulation(
+                SimulationError::LogicalTimeRegression
+            )))
+        );
+        assert_eq!(state, before);
+        // An order after the expiry's time applies the expiry first, so the
+        // instrument is already halted when the order arrives.
+        let applied = state
+            .apply(&submit(&state, 6, 1, 3, 2, Side::Buy, 100, 1))
+            .unwrap();
+        assert!(!applied.accepted);
+        let applied_at = applied.events.iter().position(|event| {
+            event.payload
+                == EventPayload::Simulation(
+                    bunting_market_events::SimulationEvent::ScheduledActionApplied { action_id: 1 },
+                )
+        });
+        let rejected_at = applied.events.iter().position(|event| {
+            matches!(
+                event.payload,
+                EventPayload::OrderRejected {
+                    code: RejectCode::ListingHalted,
+                    ..
+                }
+            )
+        });
+        assert!(applied_at.unwrap() < rejected_at.unwrap());
+        assert_eq!(state.next_due(), None);
+    }
+
+    #[test]
+    fn a_clock_tick_expires_gtd_orders_on_time_and_only_while_active() {
+        let mut state = run();
+        let mut gtd = submit(&state, 1, 1, 1, 1, Side::Buy, 100, 1);
+        if let CommandPayload::SubmitOrder(order) = &mut gtd.payload {
+            order.kind = OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(100),
+                time_in_force: TimeInForcePolicy::Gtd {
+                    expires_at: LogicalTimeNs::new(5_000_000),
+                },
+                post_only: false,
+                display_quantity: None,
+            };
+        }
+        state.apply(&gtd).unwrap();
+        assert_eq!(state.next_due(), Some(LogicalTimeNs::new(5_000_000)));
+        let applied = state
+            .apply_simulation(&clock_tick(&state, 2, 5_000_000))
+            .unwrap();
+        assert_eq!(
+            applied.events[0].payload,
+            EventPayload::Simulation(bunting_market_events::SimulationEvent::ClockAdvanced {
+                from: LogicalTimeNs::new(1_000_000),
+                to: LogicalTimeNs::new(5_000_000),
+            })
+        );
+        assert!(applied.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::OrderCanceled {
+                reason: CancelReason::Expired,
+                ..
+            }
+        )));
+        assert_eq!(state.next_due(), None);
+        // A paused run's clock does not tick.
+        let pause = SimulationCommandRequest {
+            payload: SimulationCommand::PauseRun,
+            ..clock_tick(&state, 3, 6_000_000)
+        };
+        state.apply_simulation(&pause).unwrap();
+        let before = state.clone();
+        assert_eq!(
+            state.apply_simulation(&clock_tick(&state, 4, 7_000_000)),
+            Err(ApplyError::Unchanged(EngineError::Simulation(
+                SimulationError::InvalidLifecycle
+            )))
+        );
+        assert_eq!(state, before);
     }
 
     #[test]

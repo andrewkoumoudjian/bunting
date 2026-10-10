@@ -19,7 +19,7 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
-    bootstrap_run(config, &origin)?;
+    let run = bootstrap_run(config, &origin)?;
     let clock = VenueClock::start();
     // Every command, from FIX sessions and built-in agents alike, is
     // admitted by one sequencer: the only thread that commits.
@@ -69,6 +69,16 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let completed = completed.clone();
         spawn_host("bunting-tape", completed, move || {
             origin.tape().run(|| clock.now_us())
+        })?;
+    }
+    if let Some(run_id) = run {
+        // The venue timer ticks the run clock when something falls due
+        // (ADR 0037); it commits only through the sequencer.
+        let admission = admission.clone();
+        let origin = origin.clone();
+        let completed = completed.clone();
+        spawn_host("bunting-timer", completed, move || {
+            crate::run_clock::run_timer(&admission, &origin, run_id)
         })?;
     }
     if let Some(runtime) = config.runtime.clone() {
@@ -157,8 +167,8 @@ fn origin_error(error: &OriginError) -> String {
 }
 
 /// Installs the configured immutable scenario's run, or checks that the
-/// restored run was built from the same scenario.
-fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), String> {
+/// restored run was built from the same scenario, and returns its identity.
+fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<Option<RunId>, String> {
     if let Some((run_id, iteration_id, definition)) = crate::scenario::bootstrap(config)? {
         definition
             .validate()
@@ -189,7 +199,8 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), Str
                 );
             }
         }
-        match origin.read_run(run.run_id(), |existing| {
+        let run_id = run.run_id();
+        match origin.read_run(run_id, |existing| {
             existing.scenario_hash() == run.scenario_hash()
         }) {
             Ok(true) => {}
@@ -205,8 +216,9 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), Str
             }
             Err(error) => return Err(origin_error(&error)),
         }
+        return Ok(Some(run_id));
     }
-    Ok(())
+    Ok(None)
 }
 
 /// The latency map (ADR 0035) may only place participants and venues the

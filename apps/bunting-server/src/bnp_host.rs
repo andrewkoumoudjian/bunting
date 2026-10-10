@@ -1057,7 +1057,7 @@ fn command_job(
         command.expected_sequence = service
             .read(run_id, RunState::sequence)
             .map_err(|error| format!("run read failed: {error}"))?;
-        command.logical_time = context.logical_time;
+        command.logical_time = context.run_time(run_id)?;
         Ok(
             match service.execute_admitted(&actor, &command, context.admission) {
                 Ok(_) => Vec::new(),

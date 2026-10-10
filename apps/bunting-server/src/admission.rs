@@ -12,50 +12,37 @@
 
 use crate::config::AdmissionConfig;
 use crate::distributor::PublishingOrigin;
+use crate::run_clock::RunClock;
 use crate::wake::Waker;
 use bunting_admission_sequencer::{
     AdmissionError, AdmissionRecord, DelayEstimator, Endpoint, LatencyModel, RttSource, Sequencer,
 };
-use bunting_market_types::{LogicalTimeNs, ParticipantId};
+use bunting_market_types::ParticipantId;
 use serde::Serialize;
 use simfix_wire::FixMessage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-/// Monotonic venue clock: microseconds since server start, mapped to epoch
-/// nanoseconds for logical time.
+/// Monotonic venue clock: microseconds since server start. It times the
+/// network (arrivals, releases, deliveries); the run's own logical clock is
+/// [`RunClock`]'s mapping of it (ADR 0037).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VenueClock {
     origin: Instant,
-    epoch_ns_at_origin: u64,
 }
 
 impl VenueClock {
     pub(crate) fn start() -> Self {
-        let epoch_ns_at_origin = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-            });
         Self {
             origin: Instant::now(),
-            epoch_ns_at_origin,
         }
     }
 
     pub(crate) fn now_us(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX)
-    }
-
-    /// Logical time of a venue instant: epoch nanoseconds, monotonic.
-    pub(crate) fn logical_time(&self, venue_us: u64) -> LogicalTimeNs {
-        LogicalTimeNs::new(
-            self.epoch_ns_at_origin
-                .saturating_add(venue_us.saturating_mul(1_000)),
-        )
     }
 }
 
@@ -65,8 +52,8 @@ pub(crate) struct JobContext<'a> {
     pub(crate) origin: &'a PublishingOrigin,
     pub(crate) clock: &'a VenueClock,
     pub(crate) admission: &'a AdmissionRecord,
-    /// Logical time of the release: the command's venue time.
-    pub(crate) logical_time: LogicalTimeNs,
+    /// Stamps the job with its run time; see [`JobContext::run_time`].
+    pub(crate) run_clock: &'a RunClock,
 }
 
 /// A session's work, producing messages in its protocol (`M`: FIX or BNP).
@@ -148,6 +135,7 @@ struct Inner {
 
 pub(crate) struct AdmissionService {
     clock: VenueClock,
+    run_clock: RunClock,
     config: AdmissionConfig,
     inner: Mutex<Inner>,
     wake: Condvar,
@@ -198,6 +186,7 @@ impl AdmissionService {
         let queue = Sequencer::new(config.max_admission_queue);
         Ok(Self {
             clock,
+            run_clock: RunClock::default(),
             config,
             inner: Mutex::new(Inner { model, queue }),
             wake: Condvar::new(),
@@ -210,6 +199,10 @@ impl AdmissionService {
 
     pub(crate) const fn clock(&self) -> &VenueClock {
         &self.clock
+    }
+
+    pub(crate) const fn run_clock(&self) -> &RunClock {
+        &self.run_clock
     }
 
     pub(crate) const fn config(&self) -> &AdmissionConfig {
@@ -238,6 +231,36 @@ impl AdmissionService {
             inbound.destination,
         )?;
         record.release_us = record.release_us.max(inbound.floor_us);
+        let record = inner.queue.admit(self.clock.now_us(), record, task)?;
+        drop(inner);
+        self.wake.notify_all();
+        Ok(record)
+    }
+
+    /// Queues the venue's own work (the timer's clock tick) for release at
+    /// venue instant `at_us`. It travels no path: the timer is at the venue.
+    ///
+    /// # Errors
+    /// Returns the queue limit when admission is refused.
+    pub(crate) fn schedule(
+        &self,
+        at_us: u64,
+        task: Task,
+    ) -> Result<AdmissionRecord, AdmissionError> {
+        let record = AdmissionRecord {
+            received_us: at_us,
+            measured_one_way_us: None,
+            rtt_source: RttSource::None,
+            destination: Endpoint::Hub,
+            path_latency_us: 0,
+            jitter_position: None,
+            release_us: at_us,
+            arrival_sequence: 0,
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| AdmissionError::InvalidPolicy("admission lock poisoned"))?;
         let record = inner.queue.admit(self.clock.now_us(), record, task)?;
         drop(inner);
         self.wake.notify_all();
@@ -295,7 +318,7 @@ impl AdmissionService {
                 origin,
                 clock: &self.clock,
                 admission: &record,
-                logical_time: self.clock.logical_time(record.release_us),
+                run_clock: &self.run_clock,
             });
         }
     }

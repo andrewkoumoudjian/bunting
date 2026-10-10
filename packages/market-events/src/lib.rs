@@ -167,6 +167,10 @@ pub enum SimulationCommand {
     Advance {
         steps: u32,
     },
+    /// The venue timer's input (ADR 0037): moves the run clock to the
+    /// command's logical time and applies everything due by then. Only the
+    /// venue itself submits it, through the admission sequencer.
+    ClockTick,
     SetPacing {
         mode: ClockMode,
         reason: String,

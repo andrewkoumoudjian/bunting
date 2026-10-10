@@ -8,6 +8,7 @@ pub mod competition;
 use bunting_api_contract::{ActorIdentity, ActorRole};
 use bunting_command_transaction::{CommandTransaction, ExecutedTransaction, TransactionError};
 use bunting_engine::RunState;
+use bunting_engine::simulation::RunLifecycle;
 use bunting_market_events::{
     Command, CommandPayload, EventEnvelope, EventPayload, Side, SimulationCommand,
     SimulationCommandRequest,
@@ -150,6 +151,11 @@ pub fn authorize_simulation_command(
     actor: &VerifiedActor,
     request: &SimulationCommandRequest,
 ) -> Result<(), ApplicationError> {
+    // Only the venue's own timer ticks the clock (ADR 0037); see
+    // [`ApplicationService::execute_clock_tick`].
+    if matches!(request.payload, SimulationCommand::ClockTick) {
+        return Err(ApplicationError::Unauthorized);
+    }
     let participant_action = matches!(
         request.payload,
         SimulationCommand::DecideTender { .. }
@@ -223,6 +229,44 @@ where
         authorize_simulation_command(actor, request)?;
         CommandTransaction::new(self.origin)
             .execute_simulation_detailed(request)
+            .map_err(ApplicationError::from)
+    }
+
+    /// Commits the venue timer's clock tick (ADR 0037) at `logical_time`
+    /// if anything is due by then, and returns `None` without committing
+    /// otherwise (the run is not active, or a command already applied what
+    /// was due). Only the venue calls this; no actor may submit a tick.
+    pub fn execute_clock_tick(
+        &self,
+        run_id: RunId,
+        logical_time: LogicalTimeNs,
+        admission: &bunting_origin_store::AdmissionRecord,
+    ) -> Result<Option<ExecutedTransaction>, ApplicationError> {
+        let (due, active, sequence) = self.read(run_id, |state| {
+            (
+                state.next_due(),
+                state.simulation().lifecycle == RunLifecycle::Active,
+                state.sequence(),
+            )
+        })?;
+        if !active || due.is_none_or(|due| due > logical_time) {
+            return Ok(None);
+        }
+        let id = clock_tick_id(sequence);
+        CommandTransaction::new(self.origin)
+            .execute_simulation_admitted(
+                &SimulationCommandRequest {
+                    run_id,
+                    command_id: bunting_market_types::CommandId::new(id),
+                    correlation_id: CorrelationId::new(id),
+                    logical_time,
+                    expected_sequence: sequence,
+                    actor: ParticipantId::new(0),
+                    payload: SimulationCommand::ClockTick,
+                },
+                admission,
+            )
+            .map(Some)
             .map_err(ApplicationError::from)
     }
 
@@ -895,6 +939,12 @@ fn session_namespace(run_id: RunId, actor: ParticipantId, identity_epoch: u128) 
     u64::from_be_bytes(bytes).max(1)
 }
 
+/// Clock ticks take the command ID namespace `"bnt.tick"`, keyed by the
+/// run sequence they apply at, so each is unique and replays identically.
+fn clock_tick_id(sequence: EventSequence) -> u128 {
+    (u128::from(u64::from_be_bytes(*b"bnt.tick")) << 64) | u128::from(sequence.get())
+}
+
 /// Places a session-local ID in its session's namespace. Local IDs are
 /// bounded counters; anything wider is rejected rather than truncated.
 fn canonical_id(namespace: u64, local: u128) -> Result<u128, ApplicationError> {
@@ -1262,6 +1312,32 @@ mod tests {
             service.read(RunId::new(1), RunState::clone).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn only_the_venue_ticks_the_run_clock() {
+        let administrator = VerifiedActor::try_from_identity(ActorIdentity {
+            actor_id: UnsignedDecimalString::new(1),
+            role: ActorRole::Administrator,
+            participant_id: None,
+            team_id: None,
+        })
+        .unwrap();
+        let tick = SimulationCommandRequest {
+            run_id: RunId::new(1),
+            command_id: CommandId::new(1),
+            correlation_id: CorrelationId::new(1),
+            logical_time: LogicalTimeNs::new(1),
+            expected_sequence: EventSequence::new(0),
+            actor: ParticipantId::new(1),
+            payload: SimulationCommand::ClockTick,
+        };
+        for actor in [administrator, actor(1)] {
+            assert_eq!(
+                authorize_simulation_command(&actor, &tick),
+                Err(ApplicationError::Unauthorized)
+            );
+        }
     }
 
     #[test]
