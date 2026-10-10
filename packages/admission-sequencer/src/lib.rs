@@ -2,22 +2,23 @@
 #![allow(clippy::missing_errors_doc)]
 //! Latency for venue admission (ADR 0035), sans-I/O and clock-free.
 //!
-//! Nothing is equalized. A team's real network delay to the server (its
-//! connection method, TCP stack, uplink and distance) counts in full, as it
-//! does for a trading desk, and the scenario adds each team's virtual
-//! distance to each venue on top, in both directions:
+//! Latency works as on a real network; there is nothing to switch on or
+//! off. A team's real delay to the server (connection method, TCP stack,
+//! uplink, distance) is inside every receive time and on the wire, and the
+//! run's virtual geography ([`LatencyMap`]) adds the distance between
+//! wherever the sender and the receiver sit:
 //!
 //! ```text
-//! inbound:   release  = t_rx + L(p, v)      # t_rx already includes real delay
-//! outbound:  send_at  = commit + L(v, p)    # real delay then applies on the wire
+//! team -> venue:   release = t_rx + L(team, venue)
+//! venue -> team:   send_at = t_venue + L(venue, team)
+//! team -> team:    send_at = t_commit + L(sender, receiver)   # OTC, sharing
 //! ```
 //!
-//! `L(p, v)` is a configured path latency plus a seeded jitter draw. Real
-//! delay is still measured ([`DelayEstimator`]) and published as each team's
-//! access latency; it never changes ordering, so inflating it can only hurt.
-//! The [`Sequencer`] releases work in `(release, arrival_sequence)` order
-//! and never before its release time. All times are microseconds on the
-//! host's monotonic clock.
+//! Real delay is still measured ([`DelayEstimator`]) and published as each
+//! team's access latency; it never changes ordering, so inflating it can
+//! only hurt. The [`Sequencer`] releases work in `(release,
+//! arrival_sequence)` order and never before its release time. All times
+//! are microseconds on the host's monotonic clock.
 
 use bunting_market_types::{ParticipantId, VenueId};
 use serde::{Deserialize, Serialize};
@@ -151,7 +152,7 @@ impl DelayEstimator {
     }
 }
 
-/// Simulated latency of one path: a fixed part plus uniform jitter in
+/// Simulated latency of one link: a fixed part plus uniform jitter in
 /// `[0, jitter_us]`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -161,69 +162,207 @@ pub struct PathLatency {
     pub jitter_us: u64,
 }
 
-/// One row of the scenario's latency table: the virtual distance between a
-/// team's location and a venue, used in both directions. `venue_id: None`
-/// is the team's default for every venue and for requests without a venue.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PathEntry {
-    pub participant_id: ParticipantId,
-    #[serde(default)]
-    pub venue_id: Option<VenueId>,
-    #[serde(flatten)]
-    pub path: PathLatency,
+/// Anything that sends or receives market messages.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Endpoint {
+    /// A team.
+    Participant(ParticipantId),
+    /// A venue's matching engine.
+    Venue(VenueId),
+    /// The organizer's back office: tenders, news, account and score reports.
+    Hub,
 }
 
-/// Published per run before it starts; must not change mid-round.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// Places one team at a location.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct LatencyPolicy {
+pub struct ParticipantPlacement {
+    pub participant_id: ParticipantId,
+    pub location: String,
+}
+
+/// Places one venue at a location.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VenuePlacement {
+    pub venue_id: VenueId,
+    pub location: String,
+}
+
+/// A two-way link between two distinct locations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Link {
+    pub between: [String; 2],
+    #[serde(flatten)]
+    pub latency: PathLatency,
+}
+
+/// The run's virtual geography, published before it starts and never
+/// changed during it: where every team, every venue and the organizer's hub
+/// sit, and the latency between locations. Team-to-venue, venue-to-team and
+/// team-to-team delays all come from it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LatencyMap {
     /// Seeds every jitter stream; recorded with the run.
     #[serde(default)]
     pub jitter_seed: u64,
+    /// Where the hub, and every team or venue not placed below, sit.
+    #[serde(default = "default_location")]
+    pub default_location: String,
     #[serde(default)]
-    pub default_path: PathLatency,
+    pub participants: Vec<ParticipantPlacement>,
     #[serde(default)]
-    pub paths: Vec<PathEntry>,
+    pub venues: Vec<VenuePlacement>,
+    /// Latency between two endpoints at the same location (a cross-connect).
+    #[serde(default)]
+    pub local: PathLatency,
+    /// Links between distinct locations; every pair of locations in use
+    /// needs one.
+    #[serde(default)]
+    pub links: Vec<Link>,
 }
 
-impl LatencyPolicy {
+fn default_location() -> String {
+    "hub".to_owned()
+}
+
+impl Default for LatencyMap {
+    fn default() -> Self {
+        Self {
+            jitter_seed: 0,
+            default_location: default_location(),
+            participants: Vec::new(),
+            venues: Vec::new(),
+            local: PathLatency::default(),
+            links: Vec::new(),
+        }
+    }
+}
+
+impl LatencyMap {
+    /// Checks bounds, duplicates and that every pair of locations in use is
+    /// linked.
     pub fn validate(&self) -> Result<(), AdmissionError> {
         let bounded = |path: &PathLatency| {
             path.latency_us <= MAX_CONFIGURED_DELAY_US && path.jitter_us <= MAX_CONFIGURED_DELAY_US
         };
-        if !bounded(&self.default_path) || !self.paths.iter().all(|entry| bounded(&entry.path)) {
-            return Err(AdmissionError::InvalidPolicy("path latency exceeds 10 s"));
+        if !bounded(&self.local) || !self.links.iter().all(|link| bounded(&link.latency)) {
+            return Err(AdmissionError::InvalidPolicy("link latency exceeds 10 s"));
         }
-        if self.paths.len() > MAX_JITTER_STREAMS {
-            return Err(AdmissionError::InvalidPolicy("too many latency paths"));
+        if self.participants.len() + self.venues.len() + self.links.len() > MAX_JITTER_STREAMS {
+            return Err(AdmissionError::InvalidPolicy("latency map too large"));
         }
-        let mut keys = self
-            .paths
+        if self.default_location.is_empty()
+            || self
+                .participants
+                .iter()
+                .map(|placement| &placement.location)
+                .chain(self.venues.iter().map(|placement| &placement.location))
+                .chain(self.links.iter().flat_map(|link| link.between.iter()))
+                .any(String::is_empty)
+        {
+            return Err(AdmissionError::InvalidPolicy("empty location name"));
+        }
+        let mut teams = self
+            .participants
             .iter()
-            .map(|entry| (entry.participant_id, entry.venue_id))
+            .map(|placement| placement.participant_id)
             .collect::<Vec<_>>();
-        keys.sort_unstable();
-        if keys.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(AdmissionError::InvalidPolicy("duplicate latency path"));
+        let mut venues = self
+            .venues
+            .iter()
+            .map(|placement| placement.venue_id)
+            .collect::<Vec<_>>();
+        let mut links = self.links.iter().map(link_key).collect::<Vec<_>>();
+        teams.sort_unstable();
+        venues.sort_unstable();
+        links.sort_unstable();
+        if teams.windows(2).any(|pair| pair[0] == pair[1])
+            || venues.windows(2).any(|pair| pair[0] == pair[1])
+            || links.windows(2).any(|pair| pair[0] == pair[1])
+        {
+            return Err(AdmissionError::InvalidPolicy("duplicate placement or link"));
+        }
+        if self
+            .links
+            .iter()
+            .any(|link| link.between[0] == link.between[1])
+        {
+            return Err(AdmissionError::InvalidPolicy(
+                "a link joins a location to itself; use `local`",
+            ));
+        }
+        let mut used = std::collections::BTreeSet::new();
+        used.insert(self.default_location.as_str());
+        for placement in &self.participants {
+            used.insert(placement.location.as_str());
+        }
+        for placement in &self.venues {
+            used.insert(placement.location.as_str());
+        }
+        for (index, first) in used.iter().enumerate() {
+            for second in used.iter().skip(index + 1) {
+                if self.link(first, second).is_none() {
+                    return Err(AdmissionError::InvalidPolicy(
+                        "two locations in use have no link between them",
+                    ));
+                }
+            }
         }
         Ok(())
     }
 
-    /// The configured path for a team and venue.
+    /// The location of an endpoint.
     #[must_use]
-    pub fn path(&self, participant: ParticipantId, venue: Option<VenueId>) -> PathLatency {
-        let find = |venue: Option<VenueId>| {
-            self.paths
+    pub fn location(&self, endpoint: Endpoint) -> &str {
+        let placed = match endpoint {
+            Endpoint::Participant(participant) => self
+                .participants
                 .iter()
-                .find(|entry| entry.participant_id == participant && entry.venue_id == venue)
-                .map(|entry| entry.path)
+                .find(|placement| placement.participant_id == participant)
+                .map(|placement| placement.location.as_str()),
+            Endpoint::Venue(venue) => self
+                .venues
+                .iter()
+                .find(|placement| placement.venue_id == venue)
+                .map(|placement| placement.location.as_str()),
+            Endpoint::Hub => None,
         };
-        venue
-            .and_then(|venue| find(Some(venue)))
-            .or_else(|| find(None))
-            .unwrap_or(self.default_path)
+        placed.unwrap_or(&self.default_location)
     }
+
+    /// The configured latency between two endpoints (before jitter).
+    #[must_use]
+    pub fn path(&self, from: Endpoint, to: Endpoint) -> PathLatency {
+        let (from, to) = (self.location(from), self.location(to));
+        if from == to {
+            return self.local;
+        }
+        self.link(from, to).unwrap_or_default()
+    }
+
+    fn link(&self, first: &str, second: &str) -> Option<PathLatency> {
+        let key = ordered(first, second);
+        self.links
+            .iter()
+            .find(|link| link_key(link) == key)
+            .map(|link| link.latency)
+    }
+}
+
+fn ordered<'a>(first: &'a str, second: &'a str) -> (&'a str, &'a str) {
+    if first <= second {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+fn link_key(link: &Link) -> (&str, &str) {
+    ordered(&link.between[0], &link.between[1])
 }
 
 /// Every input and output of one admission decision; journaled with the
@@ -238,62 +377,60 @@ pub struct AdmissionRecord {
     pub measured_one_way_us: Option<u64>,
     /// Measurements behind `measured_one_way_us`.
     pub rtt_source: RttSource,
-    /// `L(p, v)` applied, jitter included.
+    /// Where the command was going: a venue, or the hub.
+    pub destination: Endpoint,
+    /// `L(team, destination)` applied, jitter included.
     pub path_latency_us: u64,
-    /// Position in the `(participant, venue)` inbound jitter stream, when a
-    /// jitter draw was made.
+    /// Position in the `(team, destination)` jitter stream, when a jitter
+    /// draw was made.
     pub jitter_position: Option<u64>,
-    /// When the command reaches the venue's book.
+    /// When the command reaches its destination.
     pub release_us: u64,
     /// Tie-breaker among equal releases: global admission order.
     pub arrival_sequence: u64,
 }
 
-/// Separates inbound and outbound jitter streams, so the number of outbound
-/// messages never shifts the inbound draws recorded in the journal.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum Direction {
-    Inbound = 0,
-    Outbound = 1,
-}
-
-/// Computes virtual path delays from the policy and per-path jitter streams.
+/// Computes virtual delays from the map and per-path jitter streams.
 #[derive(Clone, Debug)]
 pub struct LatencyModel {
-    policy: LatencyPolicy,
-    streams: BTreeMap<(Direction, ParticipantId, Option<VenueId>), u64>,
+    map: LatencyMap,
+    /// One jitter stream per directed endpoint pair, so traffic one way
+    /// never shifts the draws recorded for the other.
+    streams: BTreeMap<(Endpoint, Endpoint), u64>,
 }
 
 impl LatencyModel {
-    pub fn new(policy: LatencyPolicy) -> Result<Self, AdmissionError> {
-        policy.validate()?;
+    pub fn new(map: LatencyMap) -> Result<Self, AdmissionError> {
+        map.validate()?;
         Ok(Self {
-            policy,
+            map,
             streams: BTreeMap::new(),
         })
     }
 
     #[must_use]
-    pub const fn policy(&self) -> &LatencyPolicy {
-        &self.policy
+    pub const fn map(&self) -> &LatencyMap {
+        &self.map
     }
 
     /// Admission decision for a command received at `received_us` from a
-    /// team, addressed to `venue` (if any): it reaches the book after the
-    /// team's virtual path to that venue. The arrival sequence and any clamp
-    /// to the sequencer floor are filled in by [`Sequencer::admit`].
+    /// team and going to `destination` (a venue, or the hub): it arrives
+    /// after the team's virtual path there. The arrival sequence and any
+    /// clamp to the sequencer floor are filled in by [`Sequencer::admit`].
     pub fn decide(
         &mut self,
         received_us: u64,
         measured: &DelayEstimator,
         participant: ParticipantId,
-        venue: Option<VenueId>,
+        destination: Endpoint,
     ) -> Result<AdmissionRecord, AdmissionError> {
-        let (path, jitter_position) = self.path_delay(Direction::Inbound, participant, venue)?;
+        let (path, jitter_position) =
+            self.delay_with_position(Endpoint::Participant(participant), destination)?;
         Ok(AdmissionRecord {
             received_us,
             measured_one_way_us: measured.one_way_us(),
             rtt_source: measured.source(),
+            destination,
             path_latency_us: path,
             jitter_position,
             release_us: received_us.saturating_add(path),
@@ -301,40 +438,24 @@ impl LatencyModel {
         })
     }
 
-    /// How long a venue's message to `participant` travels the virtual path
-    /// back: `L(v, p)`. The team's real delay then applies on the wire.
-    /// Session-level messages (heartbeats, probes) are never delayed.
-    pub fn outbound_delay_us(
-        &mut self,
-        participant: ParticipantId,
-        venue: Option<VenueId>,
-    ) -> Result<u64, AdmissionError> {
-        self.path_delay(Direction::Outbound, participant, venue)
-            .map(|(delay, _)| delay)
+    /// Virtual delay of one message from `from` to `to`: venue to team,
+    /// team to team (OTC and any other team-to-team channel), hub to team.
+    /// The recipient's real delay then applies on the wire. Session-level
+    /// messages (heartbeats, probes) are never delayed.
+    pub fn delay_us(&mut self, from: Endpoint, to: Endpoint) -> Result<u64, AdmissionError> {
+        self.delay_with_position(from, to).map(|(delay, _)| delay)
     }
 
-    fn path_delay(
+    fn delay_with_position(
         &mut self,
-        direction: Direction,
-        participant: ParticipantId,
-        venue: Option<VenueId>,
+        from: Endpoint,
+        to: Endpoint,
     ) -> Result<(u64, Option<u64>), AdmissionError> {
-        let path = self.policy.path(participant, venue);
+        let path = self.map.path(from, to);
         if path.jitter_us == 0 {
             return Ok((path.latency_us, None));
         }
-        let (jitter, position) = self.draw_jitter(direction, participant, venue, path.jitter_us)?;
-        Ok((path.latency_us + jitter, Some(position)))
-    }
-
-    fn draw_jitter(
-        &mut self,
-        direction: Direction,
-        participant: ParticipantId,
-        venue: Option<VenueId>,
-        jitter_us: u64,
-    ) -> Result<(u64, u64), AdmissionError> {
-        let key = (direction, participant, venue);
+        let key = (from, to);
         if !self.streams.contains_key(&key) && self.streams.len() >= MAX_JITTER_STREAMS {
             return Err(AdmissionError::TooManyStreams {
                 limit: MAX_JITTER_STREAMS,
@@ -343,21 +464,25 @@ impl LatencyModel {
         let position = self.streams.entry(key).or_insert(0);
         let current = *position;
         *position = position.wrapping_add(1);
-        let stream =
-            stream_seed(self.policy.jitter_seed, participant, venue) ^ splitmix64(direction as u64);
+        let stream = splitmix64(
+            self.map.jitter_seed ^ splitmix64(endpoint_seed(from) ^ splitmix64(endpoint_seed(to))),
+        );
         let draw = splitmix64(stream ^ splitmix64(current));
-        Ok((draw % (jitter_us + 1), current))
+        Ok((path.latency_us + draw % (path.jitter_us + 1), Some(current)))
     }
 }
 
-fn stream_seed(seed: u64, participant: ParticipantId, venue: Option<VenueId>) -> u64 {
-    let fold = |value: u128| {
+fn endpoint_seed(endpoint: Endpoint) -> u64 {
+    let fold = |tag: u64, value: u128| {
         let low = u64::try_from(value & u128::from(u64::MAX)).unwrap_or(0);
         let high = u64::try_from(value >> 64).unwrap_or(0);
-        splitmix64(low ^ splitmix64(high))
+        splitmix64(tag ^ splitmix64(low ^ splitmix64(high)))
     };
-    let venue = venue.map_or(u64::MAX, |venue| fold(venue.get()));
-    splitmix64(seed ^ splitmix64(fold(participant.get()) ^ splitmix64(venue)))
+    match endpoint {
+        Endpoint::Participant(participant) => fold(1, participant.get()),
+        Endpoint::Venue(venue) => fold(2, venue.get()),
+        Endpoint::Hub => fold(3, 0),
+    }
 }
 
 /// `SplitMix64` (Steele, Lea and Flood, 2014): a public-domain, fully

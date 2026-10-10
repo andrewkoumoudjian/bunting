@@ -5,9 +5,9 @@
 
 mod support;
 
-use bunting_admission_sequencer::{LatencyPolicy, PathEntry, PathLatency};
+use bunting_admission_sequencer::{LatencyMap, Link, ParticipantPlacement, PathLatency};
 use bunting_api_contract::ActorRole;
-use bunting_market_types::{ParticipantId, VenueId};
+use bunting_market_types::ParticipantId;
 use bunting_server::config::{AdmissionConfig, RosterEntry, ScenarioConfig, ServerConfig};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,7 +19,7 @@ const FAR_ONE_WAY: Duration = Duration::from_millis(30);
 /// How much earlier the far team sends, in true time.
 const HEAD_START: Duration = Duration::from_millis(5);
 
-fn start_server(policy: LatencyPolicy) -> Result<u16, String> {
+fn start_server(map: LatencyMap) -> Result<u16, String> {
     let port = TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
         .map_err(|error| error.to_string())?
@@ -45,7 +45,7 @@ fn start_server(policy: LatencyPolicy) -> Result<u16, String> {
         participant_id: 10,
     });
     fix.max_connections = 3;
-    fix.admission = AdmissionConfig::with_policy(policy);
+    fix.admission = AdmissionConfig::with_map(map);
     fix.admission.probe_interval_ms = 50;
     std::thread::spawn(move || bunting_server::runtime::run(&config));
     let deadline = Instant::now() + TIMEOUT;
@@ -122,8 +122,8 @@ fn has_any_report(client: &Client, id: &str) -> bool {
 
 /// Returns `(near filled, far filled)` for one race over the venue's last
 /// lot; the far team sends `HEAD_START` earlier.
-fn race(policy: LatencyPolicy) -> Result<(bool, bool), String> {
-    let port = start_server(policy)?;
+fn race(map: LatencyMap) -> Result<(bool, bool), String> {
+    let port = start_server(map)?;
     let mut maker = Client::logon(port, "MAKER", "maker", "bunting-maker-dev")?;
     maker.send(order("901", "sell", 1, Some(100)))?;
     maker.wait_report("901", "0")?;
@@ -160,20 +160,29 @@ fn race(policy: LatencyPolicy) -> Result<(bool, bool), String> {
     Ok((near.has_report("201", "F"), far.has_report("301", "F")))
 }
 
-fn virtual_path(team: u128, latency_us: u64) -> PathEntry {
-    PathEntry {
-        participant_id: ParticipantId::new(team),
-        venue_id: Some(VenueId::new(1)),
-        path: PathLatency {
-            latency_us,
-            jitter_us: 0,
-        },
+/// Team 1 placed `latency_us` away from everything else (the venue, the
+/// hub and the other teams).
+fn team_one_away(latency_us: u64) -> LatencyMap {
+    LatencyMap {
+        default_location: "venue".to_owned(),
+        participants: vec![ParticipantPlacement {
+            participant_id: ParticipantId::new(1),
+            location: "remote".to_owned(),
+        }],
+        links: vec![Link {
+            between: ["remote".to_owned(), "venue".to_owned()],
+            latency: PathLatency {
+                latency_us,
+                jitter_us: 0,
+            },
+        }],
+        ..LatencyMap::default()
     }
 }
 
 #[test]
 fn a_slower_real_connection_loses_even_when_it_sends_first() -> Result<(), String> {
-    let (near_filled, far_filled) = race(LatencyPolicy::default())?;
+    let (near_filled, far_filled) = race(LatencyMap::default())?;
     assert!(
         near_filled && !far_filled,
         "the far team's order arrives 25 ms after the near team's and must lose (near {near_filled}, far {far_filled})"
@@ -186,10 +195,7 @@ fn real_and_virtual_delays_add_up() -> Result<(), String> {
     // The near connection's team sits 50 ms from the venue virtually; the
     // far connection's team is colocated with it. 30 ms real beats 50 ms
     // virtual.
-    let (near_filled, far_filled) = race(LatencyPolicy {
-        paths: vec![virtual_path(1, 50_000), virtual_path(2, 0)],
-        ..LatencyPolicy::default()
-    })?;
+    let (near_filled, far_filled) = race(team_one_away(50_000))?;
     assert!(
         far_filled && !near_filled,
         "30 ms real + 0 virtual must beat ~0 real + 50 ms virtual (near {near_filled}, far {far_filled})"

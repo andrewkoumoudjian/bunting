@@ -148,9 +148,9 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), Str
     Ok(())
 }
 
-/// The virtual latency table (ADR 0035) may only name participants and
-/// venues the scenario lists. An empty table is valid: every venue in one
-/// data centre with every team, so only real network delay separates them.
+/// The latency map (ADR 0035) may only place participants and venues the
+/// scenario lists. An empty map is valid: everyone at one location, so only
+/// real network delay separates teams.
 fn validate_latency_table(
     definition: &ScenarioDefinition,
     admission: &AdmissionConfig,
@@ -160,17 +160,26 @@ fn validate_latency_table(
         .keys()
         .map(|listing| listing.venue_id)
         .collect::<BTreeSet<_>>();
-    for entry in &admission.policy.paths {
-        if !definition
+    if let Some(placement) = admission.map.participants.iter().find(|placement| {
+        !definition
             .participants()
-            .contains_key(&entry.participant_id)
-            || entry.venue_id.is_some_and(|venue| !venues.contains(&venue))
-        {
-            return Err(format!(
-                "fix.admission.policy.paths names participant {} or venue {:?} that the scenario does not list",
-                entry.participant_id, entry.venue_id
-            ));
-        }
+            .contains_key(&placement.participant_id)
+    }) {
+        return Err(format!(
+            "fix.admission.map places participant {} that the scenario does not list",
+            placement.participant_id
+        ));
+    }
+    if let Some(placement) = admission
+        .map
+        .venues
+        .iter()
+        .find(|placement| !venues.contains(&placement.venue_id))
+    {
+        return Err(format!(
+            "fix.admission.map places venue {} that the scenario does not list",
+            placement.venue_id
+        ));
     }
     Ok(())
 }

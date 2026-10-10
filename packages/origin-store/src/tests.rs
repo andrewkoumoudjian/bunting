@@ -293,6 +293,7 @@ fn admission_metadata_is_journaled_verified_and_not_fingerprinted() {
         received_us: 10,
         measured_one_way_us: Some(4),
         rtt_source: bunting_admission_sequencer::RttSource::Both,
+        destination: bunting_admission_sequencer::Endpoint::Venue(VenueId::new(1)),
         path_latency_us: 21,
         jitter_position: None,
         release_us,

@@ -13,9 +13,9 @@ use crate::distributor::PublishingOrigin;
 use crate::wake::Waker;
 use crate::writer::AuthoritativeWriter;
 use bunting_admission_sequencer::{
-    AdmissionError, AdmissionRecord, DelayEstimator, LatencyModel, RttSource, Sequencer,
+    AdmissionError, AdmissionRecord, DelayEstimator, Endpoint, LatencyModel, RttSource, Sequencer,
 };
-use bunting_market_types::{LogicalTimeNs, ParticipantId, VenueId};
+use bunting_market_types::{LogicalTimeNs, ParticipantId};
 use serde::Serialize;
 use simfix_wire::FixMessage;
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,8 +75,9 @@ pub(crate) struct Inbound<'a> {
     pub(crate) received_us: u64,
     pub(crate) estimator: &'a DelayEstimator,
     pub(crate) participant: ParticipantId,
-    pub(crate) venue: Option<VenueId>,
-    /// The connection's previous release to the same venue: one path
+    /// A venue, or the hub for organizer requests.
+    pub(crate) destination: Endpoint,
+    /// The connection's previous release to the same destination: one path
     /// delivers in order, different venues' paths do not.
     pub(crate) floor_us: u64,
 }
@@ -86,16 +87,16 @@ pub(crate) struct Reply {
     pub(crate) result: Result<Vec<FixMessage>, String>,
     /// Venue time at which the job finished (the commit time of any command).
     pub(crate) completed_us: u64,
-    /// The venue the work addressed: its response travels back over that
-    /// venue's simulated path (ADR 0030 §4).
-    pub(crate) venue: Option<VenueId>,
+    /// Where the work ran (a venue, or the hub): its response travels back
+    /// over the virtual path from there.
+    pub(crate) source: Endpoint,
 }
 
 struct Job {
     work: JobWork,
     reply: SyncSender<Reply>,
     waker: Waker,
-    venue: Option<VenueId>,
+    destination: Endpoint,
 }
 
 /// One connection's published access latency (ADR 0035 §2). Teams add
@@ -146,8 +147,8 @@ impl Drop for ParticipantClaim<'_> {
 
 impl AdmissionService {
     pub(crate) fn new(clock: VenueClock, config: AdmissionConfig) -> Result<Self, String> {
-        let model = LatencyModel::new(config.policy.clone())
-            .map_err(|error| format!("invalid admission policy: {error}"))?;
+        let model = LatencyModel::new(config.map.clone())
+            .map_err(|error| format!("invalid latency map: {error}"))?;
         let queue = Sequencer::new(config.max_admission_queue);
         Ok(Self {
             clock,
@@ -190,7 +191,7 @@ impl AdmissionService {
             inbound.received_us,
             inbound.estimator,
             inbound.participant,
-            inbound.venue,
+            inbound.destination,
         )?;
         record.release_us = record.release_us.max(inbound.floor_us);
         let record = inner.queue.admit(
@@ -200,7 +201,7 @@ impl AdmissionService {
                 work,
                 reply,
                 waker,
-                venue: inbound.venue,
+                destination: inbound.destination,
             },
         )?;
         drop(inner);
@@ -208,18 +209,19 @@ impl AdmissionService {
         Ok(record)
     }
 
-    /// `L(v, p)`: how long a venue's message to `participant` travels the
-    /// virtual path before it is written to the team's real connection.
-    pub(crate) fn outbound_delay_us(
+    /// `L(source, participant)`: how long a message from a venue, the hub or
+    /// another team travels the virtual path before it is written to
+    /// `participant`'s real connection.
+    pub(crate) fn delay_to_us(
         &self,
+        source: Endpoint,
         participant: ParticipantId,
-        venue: Option<VenueId>,
     ) -> Result<u64, String> {
         self.inner
             .lock()
             .map_err(|_| "admission lock poisoned".to_owned())?
             .model
-            .outbound_delay_us(participant, venue)
+            .delay_us(source, Endpoint::Participant(participant))
             .map_err(|error| error.to_string())
     }
 
@@ -265,7 +267,7 @@ impl AdmissionService {
             let _ = job.reply.try_send(Reply {
                 result,
                 completed_us: self.clock.now_us(),
-                venue: job.venue,
+                source: job.destination,
             });
             job.waker.wake();
         }
@@ -330,7 +332,7 @@ impl AdmissionService {
             .unwrap_or_default();
         let queued = self.inner.lock().map_or(0, |inner| inner.queue.len());
         serde_json::json!({
-            "virtualLatency": self.config.policy,
+            "latencyMap": self.config.map,
             "queued": queued,
             "connections": connections,
         })

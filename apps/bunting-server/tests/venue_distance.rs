@@ -6,7 +6,9 @@
 
 mod support;
 
-use bunting_admission_sequencer::{LatencyPolicy, PathEntry, PathLatency};
+use bunting_admission_sequencer::{
+    LatencyMap, Link, ParticipantPlacement, PathLatency, VenuePlacement,
+};
 use bunting_api_contract::ActorRole;
 use bunting_market_types::{ParticipantId, VenueId};
 use bunting_server::config::{AdmissionConfig, RosterEntry, ScenarioConfig, ServerConfig};
@@ -18,14 +20,45 @@ use support::{Client, TIMEOUT};
 const NEAR_US: u64 = 1_000;
 const FAR_US: u64 = 40_000;
 
-fn path(participant: u128, venue: u128, latency_us: u64) -> PathEntry {
-    PathEntry {
-        participant_id: ParticipantId::new(participant),
-        venue_id: Some(VenueId::new(venue)),
-        path: PathLatency {
-            latency_us,
-            jitter_us: 0,
-        },
+fn latency(latency_us: u64) -> PathLatency {
+    PathLatency {
+        latency_us,
+        jitter_us: 0,
+    }
+}
+
+/// Venue 1 and team 1 at `one`, venue 2 and team 2 at `two`; the maker and
+/// the hub default to `one`.
+fn two_cities() -> LatencyMap {
+    let at = |location: &str| location.to_owned();
+    LatencyMap {
+        default_location: at("one"),
+        participants: vec![
+            ParticipantPlacement {
+                participant_id: ParticipantId::new(1),
+                location: at("one"),
+            },
+            ParticipantPlacement {
+                participant_id: ParticipantId::new(2),
+                location: at("two"),
+            },
+        ],
+        venues: vec![
+            VenuePlacement {
+                venue_id: VenueId::new(1),
+                location: at("one"),
+            },
+            VenuePlacement {
+                venue_id: VenueId::new(2),
+                location: at("two"),
+            },
+        ],
+        local: latency(NEAR_US),
+        links: vec![Link {
+            between: [at("one"), at("two")],
+            latency: latency(FAR_US),
+        }],
+        ..LatencyMap::default()
     }
 }
 
@@ -62,15 +95,7 @@ fn start_server() -> Result<u16, String> {
         participant_id: 10,
     });
     fix.max_connections = 3;
-    fix.admission = AdmissionConfig::with_policy(LatencyPolicy {
-        paths: vec![
-            path(1, 1, NEAR_US),
-            path(1, 2, FAR_US),
-            path(2, 1, FAR_US),
-            path(2, 2, NEAR_US),
-        ],
-        ..LatencyPolicy::default()
-    });
+    fix.admission = AdmissionConfig::with_map(two_cities());
     std::thread::spawn(move || bunting_server::runtime::run(&config));
     let deadline = Instant::now() + TIMEOUT;
     while TcpStream::connect(("127.0.0.1", port)).is_err() {

@@ -2,7 +2,7 @@ use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Rep
 use crate::config::{FixConfig, RosterEntry};
 use crate::distributor::PublishingOrigin;
 use crate::wake::{SessionEvent, Waker};
-use bunting_admission_sequencer::DelayEstimator;
+use bunting_admission_sequencer::{DelayEstimator, Endpoint};
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
 };
@@ -16,7 +16,7 @@ use bunting_engine::RunState;
 use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
 use bunting_market_types::{
     CommandId, CorrelationId, EventSequence, LogicalTimeNs, ParticipantId, PriceTicks,
-    QuantityLots, RunId, TenderId, VenueId,
+    QuantityLots, RunId, TenderId,
 };
 use bunting_origin_store::OriginStore;
 use quarcc_execution_engine::ExecutionConfig;
@@ -156,7 +156,7 @@ pub(crate) fn handle_fix_connection(
     let mut rate_messages = 0_usize;
     // Last release per destination: one path delivers in order (TCP), but
     // an order to a near venue may overtake an earlier one to a far venue.
-    let mut release_floors = BTreeMap::<Option<VenueId>, u64>::new();
+    let mut release_floors = BTreeMap::<Endpoint, u64>::new();
     loop {
         // Sleep until the next held message or probe is due, or until the
         // reader, the sequencer or the distributor wakes this session.
@@ -224,7 +224,7 @@ pub(crate) fn handle_fix_connection(
                         if let Some(reason) = rejection {
                             outbound.hold(
                                 business_reject(&message.msg_type, &reason),
-                                received_us.saturating_add(latency.hold_us(None)?),
+                                received_us.saturating_add(latency.delay_from(Endpoint::Hub)?),
                             )?;
                         }
                     }
@@ -252,7 +252,7 @@ pub(crate) fn handle_fix_connection(
             let messages = reply.result?;
             let send_at = reply
                 .completed_us
-                .saturating_add(latency.hold_us(reply.venue)?);
+                .saturating_add(latency.delay_from(reply.source)?);
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
@@ -269,7 +269,7 @@ pub(crate) fn handle_fix_connection(
             }
             let send_at = batch
                 .committed_us
-                .saturating_add(latency.hold_us(batch_venue(&batch.events))?);
+                .saturating_add(latency.delay_from(batch_source(&batch.events))?);
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
@@ -311,7 +311,7 @@ fn admit_message(
     context: &AdmitContext<'_>,
     application: &mut FixApplicationState,
     latency: &ConnectionLatency<'_>,
-    release_floors: &mut BTreeMap<Option<VenueId>, u64>,
+    release_floors: &mut BTreeMap<Endpoint, u64>,
     reply_to: &ReplyTo<'_>,
 ) -> Result<Option<String>, String> {
     // Sequence and logical time are stamped at release (venue time); the
@@ -330,14 +330,16 @@ fn admit_message(
         Ok(request) => request,
         Err(error) => return Ok(Some(error.to_string())),
     };
-    let venue = match &request {
+    let destination = match &request {
         FixApplicationRequest::Command(command) => context
             .origin
             .read_run(context.run_id, |state| listing_for_command(state, command))
             .map_err(|error| format!("run read failed: {error}"))?
-            .map(|listing| listing.venue_id),
-        FixApplicationRequest::MarketData { listing_key, .. } => Some(listing_key.venue_id),
-        FixApplicationRequest::Competition(_) => None,
+            .map_or(Endpoint::Hub, |listing| Endpoint::Venue(listing.venue_id)),
+        FixApplicationRequest::MarketData { listing_key, .. } => {
+            Endpoint::Venue(listing_key.venue_id)
+        }
+        FixApplicationRequest::Competition(_) => Endpoint::Hub,
     };
     let work = job_for(
         request,
@@ -349,8 +351,8 @@ fn admit_message(
         received_us: context.received_us,
         estimator: latency.estimator(),
         participant: context.participant,
-        venue,
-        floor_us: release_floors.get(&venue).copied().unwrap_or(0),
+        destination,
+        floor_us: release_floors.get(&destination).copied().unwrap_or(0),
     };
     match context.admission.admit(
         &inbound,
@@ -359,7 +361,7 @@ fn admit_message(
         reply_to.waker.clone(),
     ) {
         Ok(record) => {
-            release_floors.insert(venue, record.release_us);
+            release_floors.insert(destination, record.release_us);
             Ok(None)
         }
         Err(error) => Ok(Some(error.to_string())),
@@ -419,18 +421,30 @@ fn job_for(
     }
 }
 
-/// The venue of the first event in a batch that names a listing.
-fn batch_venue(events: &[bunting_market_events::EventEnvelope]) -> Option<VenueId> {
+/// Where a committed batch originated: the venue of its first event that
+/// names a listing (order flow), otherwise the acting team (bilateral
+/// messages such as OTC negotiation, so they travel team-to-team) or the
+/// hub for organizer actions (a placement the map does not list resolves to
+/// the hub's location).
+fn batch_source(events: &[bunting_market_events::EventEnvelope]) -> Endpoint {
     use bunting_market_events::EventPayload;
-    events.iter().find_map(|event| match &event.payload {
-        EventPayload::OrderReceived { listing_key, .. }
-        | EventPayload::OrderRested { listing_key, .. }
-        | EventPayload::OrderCanceled { listing_key, .. }
-        | EventPayload::TradeExecuted { listing_key, .. } => {
-            listing_key.map(|listing| listing.venue_id)
-        }
-        _ => None,
-    })
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::OrderReceived { listing_key, .. }
+            | EventPayload::OrderRested { listing_key, .. }
+            | EventPayload::OrderCanceled { listing_key, .. }
+            | EventPayload::TradeExecuted { listing_key, .. } => {
+                listing_key.map(|listing| Endpoint::Venue(listing.venue_id))
+            }
+            _ => None,
+        })
+        .or_else(|| {
+            events
+                .first()
+                .map(|event| Endpoint::Participant(event.actor))
+        })
+        .unwrap_or(Endpoint::Hub)
 }
 
 /// One connection's delay estimate and probes (ADR 0034 §2).
@@ -465,8 +479,9 @@ impl<'a> ConnectionLatency<'a> {
         self.next_probe_us
     }
 
-    fn hold_us(&self, venue: Option<VenueId>) -> Result<u64, String> {
-        self.admission.outbound_delay_us(self.participant, venue)
+    /// Virtual delay of a message from `source` to this team.
+    fn delay_from(&self, source: Endpoint) -> Result<u64, String> {
+        self.admission.delay_to_us(source, self.participant)
     }
 
     fn refresh_kernel(&mut self, stream: &TcpStream) {

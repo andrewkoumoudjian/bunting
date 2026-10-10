@@ -100,9 +100,10 @@ pub struct FixConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdmissionConfig {
-    /// Virtual team-to-venue latency table; published before the round and
+    /// The run's virtual geography (where teams, venues and the hub sit and
+    /// the links between them); published before the round and
     /// never changed during it.
-    pub policy: bunting_admission_sequencer::LatencyPolicy,
+    pub map: bunting_admission_sequencer::LatencyMap,
     /// Interval between access-latency probes after the logon burst.
     pub probe_interval_ms: u64,
     /// Commands waiting for release, across all sessions.
@@ -113,17 +114,17 @@ pub struct AdmissionConfig {
 }
 
 impl AdmissionConfig {
-    /// Every team colocated with every venue (zero virtual distance), so
+    /// Everyone at one location (zero virtual distance), so
     /// only real network delay separates teams.
     #[must_use]
     pub fn colocated() -> Self {
-        Self::with_policy(bunting_admission_sequencer::LatencyPolicy::default())
+        Self::with_map(bunting_admission_sequencer::LatencyMap::default())
     }
 
     #[must_use]
-    pub const fn with_policy(policy: bunting_admission_sequencer::LatencyPolicy) -> Self {
+    pub const fn with_map(map: bunting_admission_sequencer::LatencyMap) -> Self {
         Self {
-            policy,
+            map,
             probe_interval_ms: 1_000,
             max_admission_queue: 4_096,
             max_outbound_hold: 4_096,
@@ -494,9 +495,9 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
 
 fn validate_admission(admission: &AdmissionConfig) -> Result<(), ConfigError> {
     admission
-        .policy
+        .map
         .validate()
-        .map_err(|error| ConfigError(format!("fix.admission.policy: {error}")))?;
+        .map_err(|error| ConfigError(format!("fix.admission.map: {error}")))?;
     if !(50..=60_000).contains(&admission.probe_interval_ms)
         || admission.max_admission_queue == 0
         || admission.max_outbound_hold == 0
