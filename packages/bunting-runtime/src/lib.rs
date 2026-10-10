@@ -138,7 +138,10 @@ pub trait RuntimeHost {
     /// returns this command's committed events. A command whose ID is
     /// already committed (a runtime resumed from a checkpoint re-submitting
     /// its pending actions) must not commit again: the host returns the
-    /// recorded events, so each action takes effect exactly once.
+    /// recorded events, so each action takes effect exactly once. A host
+    /// shared with other participants stamps the command's logical time
+    /// from the run clock (ADR 0037): the runtime's own counter only
+    /// orders its decisions.
     fn commit(
         &mut self,
         actor: &VerifiedActor,

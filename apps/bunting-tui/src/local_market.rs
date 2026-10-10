@@ -814,7 +814,12 @@ impl RuntimeHost for Market {
         if actor.participant_id() != Some(command.actor) {
             return Err(RuntimeError::Host("runtime actor mismatch".to_owned()));
         }
-        self.apply_command(command)
+        // The venue stamps run time (ADR 0037), as the server does: the
+        // runtime's own counter trails the trader's commands, and the
+        // engine refuses an input behind the run clock.
+        let mut command = command.clone();
+        command.logical_time = self.next_logical_time(command.logical_time);
+        self.apply_command(&command)
             .map(|outcome| outcome.events)
             .map_err(|error| RuntimeError::Host(error.to_string()))
     }
@@ -873,6 +878,24 @@ mod tests {
             runner.snapshot().agents[0].managed.execution.orders.len(),
             2
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agents_acting_after_the_trader_are_stamped_on_the_run_clock() -> io::Result<()> {
+        // The trader's commands move the run clock ahead of the agent
+        // runtime's own counter; the agents' next commands must still
+        // commit (ADR 0037: the venue, not the runtime, stamps time).
+        let mut market = Market::new(&[PolicyKind::StaticLiquidityProvider])?;
+        for id in 1..=5 {
+            let responses = market.handle(&new_order(id, "buy", 1, Some(90)));
+            assert!(
+                responses
+                    .iter()
+                    .all(|message| message.value(150) != Some("8"))
+            );
+        }
+        assert!(market.advance_agents()?);
         Ok(())
     }
 
