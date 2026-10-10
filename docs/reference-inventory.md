@@ -10,10 +10,11 @@ References are commit-pinned research and provenance. Production manifests use r
 | `ref/pricelevel` | `a5b61671391295783d0e35ba68fdf4a9702dee60` | MIT | production transitive crate `0.8.4` |
 | `ref/workers-rs` | `5f2d6c9192377451d43910098738624474196364` | Apache-2.0 | not a current dependency (Worker removed, ADR 0022) |
 
-The production server runtime is not mirrored under `ref/`. ADR 0027 pins
-Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`,
-cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`,
-and WASIX Rust toolchain `v2026-07-07.3+rust-1.96`.
+The server is a native executable (ADR 0044); no server runtime is mirrored
+under `ref/`. The retired WASIX measurement toolchain was Wasmer `7.2.1` at
+`c14032594b893b40e9b71456d504cf55c141c8f6`, cargo-wasix `0.1.28` at
+`b2d0e1c874fc6ac5dbaf71715b12c6809104767f`, and WASIX Rust toolchain
+`v2026-07-07.3+rust-1.96` (`tools/host_parity.sh` only).
 
 ## Joaquín ecosystem references
 

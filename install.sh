@@ -11,6 +11,7 @@ case "$(uname -s):$(uname -m)" in
   Darwin:arm64) target="aarch64-apple-darwin" ;;
   Darwin:x86_64) target="x86_64-apple-darwin" ;;
   Linux:x86_64) target="x86_64-unknown-linux-gnu" ;;
+  Linux:aarch64 | Linux:arm64) target="aarch64-unknown-linux-gnu" ;;
   *)
     echo "Unsupported platform $(uname -s) $(uname -m). Download a release archive manually." >&2
     exit 1
@@ -29,15 +30,13 @@ case "$version" in
 esac
 
 archive="bunting-${version}-${target}.tar.gz"
-wasi_archive="bunting-${version}-wasi.tar.gz"
 base_url="${BUNTING_DOWNLOAD_BASE:-https://github.com/$repository/releases/download/$version}"
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
 curl -fsSL "$base_url/$archive" -o "$temporary/$archive"
-curl -fsSL "$base_url/$wasi_archive" -o "$temporary/$wasi_archive"
 curl -fsSL "$base_url/SHA256SUMS" -o "$temporary/SHA256SUMS"
-for checked_archive in "$archive" "$wasi_archive"; do
+for checked_archive in "$archive"; do
   expected=$(awk -v name="$checked_archive" '$2 == name {print $1}' "$temporary/SHA256SUMS")
   if [ -z "$expected" ]; then
     echo "Release checksum for $checked_archive is missing." >&2
@@ -55,15 +54,16 @@ for checked_archive in "$archive" "$wasi_archive"; do
 done
 
 tar -xzf "$temporary/$archive" -C "$temporary"
-tar -xzf "$temporary/$wasi_archive" -C "$temporary"
 mkdir -p "$install_dir"
 cp "$temporary/bunting-${version}-${target}/bin/bunting" "$install_dir/bunting"
 chmod 755 "$install_dir/bunting"
+cp "$temporary/bunting-${version}-${target}/bin/bunting-trader" "$install_dir/bunting-trader"
+chmod 755 "$install_dir/bunting-trader"
 ln -sf bunting "$install_dir/bunting-tui"
-cp "$temporary/bunting-${version}-wasi/bin/bunting-server" "$install_dir/bunting-server"
-chmod 755 "$install_dir/bunting-server"
-mkdir -p "$share_dir"
-cp "$temporary/bunting-${version}-wasi/bin/bunting-server.wasm" "$share_dir/bunting-server.wasm"
+# Replaces the Wasmer launcher earlier releases installed (ADR 0044).
+rm -f "$install_dir/bunting-server"
+ln -s bunting "$install_dir/bunting-server"
+rm -f "$share_dir/bunting-server.wasm"
 
 mkdir -p "$config_dir"
 for config in "$temporary/bunting-${version}-${target}/config/"*.json; do
@@ -73,8 +73,7 @@ for config in "$temporary/bunting-${version}-${target}/config/"*.json; do
   fi
 done
 
-echo "Installed bunting $version, the Wasmer server launcher, and the TUI alias to $install_dir"
-echo "Installed the portable WASI server module to $share_dir"
+echo "Installed bunting $version (with bunting-server and bunting-tui aliases) and bunting-trader to $install_dir"
 echo "Installed server configuration templates to $config_dir"
 case ":$PATH:" in
   *":$install_dir:"*) ;;

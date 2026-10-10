@@ -5,9 +5,11 @@ filesystem persistence, admission and delivery. Market authority, matching,
 ledger, canonical events, identity authorization and commit preparation stay
 in packages. Bound every connection, request, queue, journal and recovery file.
 
-- Keep the server buildable and testable natively; add no WASIX-only
-  dependencies or code paths (ADR 0033). It currently ships as a WASIX module
-  (ADR 0027).
+- The server ships as the native `bunting` executable (`bunting server`) on
+  Linux, macOS and Windows and as the container image built by `Dockerfile`
+  (ADR 0044). Durable mode must work on each: the writer lease is `flock` on
+  Unix and an exclusive lock-file open on Windows (`acquire_writer_lease` in
+  `storage.rs`). Do not reintroduce WASIX packaging.
 - Participant interfaces are FIX and the Bunting Native Protocol only
   (ADR 0031). Do not add other command surfaces. `bnp_host.rs` (ADR 0040,
   native only) terminates TLS 1.3 in-process with mutual authentication;

@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Explain how to start the Wasmer-hosted WASI server.
+    /// Run the competition venue server in this process (ADR 0044).
     Server {
         /// Versioned server configuration JSON.
         config: Option<PathBuf>,
@@ -301,14 +301,12 @@ fn compatibility_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec
 }
 
 fn run_server(path: Option<&Path>) -> Result<(), String> {
-    let config = path.map_or_else(
+    let path = path.map_or_else(
         || default_config_dir().join("local.json"),
         Path::to_path_buf,
     );
-    Err(format!(
-        "the competition server runs under Wasmer; use `bunting-server {}`",
-        config.display()
-    ))
+    let config = ServerConfig::from_file(&path).map_err(|error| error.to_string())?;
+    bunting_server::runtime::run(&config)
 }
 
 fn init(config_dir: Option<&Path>) -> Result<(), String> {

@@ -26,7 +26,8 @@ No architecture or port plan may classify a reference without consulting this au
 
 ### Pin, license, and selected surface
 
-The production server toolchain uses Wasmer `7.2.1`, source commit
+Retired as the server runtime by ADR 0044 (slice 27); kept here as the
+record of what was used. The server toolchain used Wasmer `7.2.1`, source commit
 `c14032594b893b40e9b71456d504cf55c141c8f6`, under the MIT license, plus
 cargo-wasix `0.1.28`, source commit
 `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`, under Apache-2.0 with the LLVM
@@ -45,11 +46,12 @@ emits both `rlib` and `cdylib` artifacts.
 
 ### Bunting disposition
 
-These are production build/runtime tools for `apps/bunting-server`; they own no
-market, FIX, persistence, or scoring semantics. Bunting releases the portable
-server `.wasm`, while ignored `.wasmu` output is a host-specific compilation
-cache. Wasmer networking and only the configuration-derived directories are
-granted at launch.
+Measurement-only (ADR 0044). `tools/host_parity.sh` builds the server and
+`bunting-rs/examples/replay_archive.rs` for `wasm32-wasmer-wasi-dl` to compare
+replay hashes and loopback latency with native builds. Observed in slice 27:
+identical replay output, 2.6–3.3× slower order acknowledgements, and no durable
+origin because `cfg(unix)` is false under WASIX. No release, CI job or
+production path uses these tools.
 
 ## Inventory and pin discipline
 

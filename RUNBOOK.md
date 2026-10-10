@@ -12,7 +12,7 @@
    matters, and say so in the rules. `GET /admin/admission` (bearer token)
    lists each connection's measured access latency for publication. Never
    change the map during a round.
-3. Start `bunting-server <config>` through Wasmer, verify `/health`, export
+3. Start `bunting server <config>` (or the container image), verify `/health`, export
    credentials through a protected channel, and let every team complete Logon
    plus discovery.
 4. Arm and start the round through an administrator FIX session. Pause/resume,

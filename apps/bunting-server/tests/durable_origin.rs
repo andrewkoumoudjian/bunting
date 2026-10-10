@@ -146,6 +146,22 @@ fn recovered_hash(path: &Path, interval: usize) -> Result<String, OriginError> {
         .read_run(RunId::new(1), |state| state.state_hash().unwrap())
 }
 
+/// ADR 0044: durable mode holds an OS writer lease on every release platform
+/// (flock on Unix, an exclusive open on Windows), released with the store.
+#[test]
+fn a_second_writer_is_refused_until_the_first_closes() -> TestResult {
+    let folder = Folder::new("origin-lease");
+    let path = folder.origin();
+    let store = FileOriginStore::open(&path, &config(&path, 1_000))?;
+    assert!(matches!(
+        FileOriginStore::open(&path, &config(&path, 1_000)),
+        Err(OriginError::Unavailable)
+    ));
+    drop(store);
+    FileOriginStore::open(&path, &config(&path, 1_000))?;
+    Ok(())
+}
+
 #[test]
 fn restart_re_executes_the_journal_and_keeps_idempotency() -> TestResult {
     let folder = Folder::new("origin-restart");

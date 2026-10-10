@@ -5,6 +5,9 @@
   [the exploration note §8](../research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan),
   followed by approval of proposed ADRs 0030–0032 and a request that repository
   guidance stop agents from following superseded paths).
+- Amended by: [ADR 0044](0044-native-server-binary-host.md) (2026-10-10)
+  makes the host decision that decision 3 deferred; decision 3 and the ADR
+  0027 row below are superseded by it.
 - Date: 2026-10-09
 - Accepts: ADR 0030, ADR 0031, ADR 0032.
 - Amends status of: ADR 0007, 0012, 0016, 0018, 0019, 0020, 0022, 0024, 0027.

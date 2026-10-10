@@ -47,8 +47,8 @@ venue. Every transport, UI and host is an adapter.
    BNP v1 built per ADR 0040). Cloudflare only publishes immutable exports (ADR 0022).
 10. **NBC is reference evidence**, not a compatibility target (ADR 0032).
 11. **Host-neutral core.** Engine and protocol packages compile for
-    `wasm32-unknown-unknown`; the server stays buildable natively; no
-    WASIX-only dependencies (ADR 0033).
+    `wasm32-unknown-unknown`; the server is a native executable on Linux,
+    macOS and Windows (ADR 0044).
 
 ## 3. Topology
 
@@ -58,7 +58,7 @@ venue. Every transport, UI and host is an adapter.
 FIX client (contestant engine, bunting TUI)
    │  TCP; TLS only via a trusted terminating proxy
    ▼
-bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
+bunting-server  (std threads, blocking sockets; runs as `bunting server`, ADR 0044)
    ├─ FIX acceptor: one thread per session (simfix-wire/session/mapping),
    │   each subscribed to the committed-event distributor (woken on publish)
    ├─ admin HTTP: /health, /admin/runs/<id>
@@ -305,13 +305,16 @@ overnight carry).
 
 ## 11. Hosting
 
-**Current:** release ships the server as a WASIX module run by Wasmer
-(ADR 0027) and native CLI/TUI/bindings for four targets. Durable file mode is
-Unix-only.
-
-**Direction (ADR 0033):** host not fixed. Keep the server native-buildable,
-add no WASIX-only dependencies, prefer native static binaries and an OCI image;
-a later ADR selects the host from measured native-versus-WASIX data.
+**Current (ADR 0044, slice 27):** one native `bunting` executable runs the
+venue (`bunting server`), the terminal and the offline tools. Releases cover
+Linux x86_64/aarch64 (glibc 2.35+), macOS arm64/x86_64 and Windows x86_64,
+plus a `linux/amd64` container image on a distroless glibc base. The durable
+file origin works on all of them (`flock` on Unix, an exclusive lock-file
+open on Windows). CI smoke-tests the durable venue, including a restart, on
+Linux, macOS, Windows and the image. WASIX is retired: the WASIX build could
+not open the durable origin, measured 2.6–3.3× slower order acknowledgements and
+replayed journals to identical hashes (so nothing was lost by dropping it);
+`tools/host_parity.sh` re-runs that measurement.
 
 ## 12. Publication
 

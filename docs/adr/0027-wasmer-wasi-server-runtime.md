@@ -1,6 +1,6 @@
 # ADR 0027: Wasmer-hosted WASI competition server
 
-- Status: Accepted as the current server packaging only; not a binding long-term host (ADR 0033)
+- Status: **Superseded** by [ADR 0044](0044-native-server-binary-host.md) (2026-10-10): the venue ships as a native binary and container image; the WASIX build could not open the durable origin and measured 2.6–3.3× slower. Kept as decision history; WASIX packaging removed in slice 27.
 - Date: 2026-07-29
 - Depends on: ADR 0022 and ADR 0023
 - Supersedes: ADR 0023's asynchronous acceptor mechanism only

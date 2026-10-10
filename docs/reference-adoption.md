@@ -26,7 +26,7 @@ For every reference or vendored component, record:
 - Copy or adapt source only after file-level license review and when a normal dependency cannot satisfy the requirement.
 - A close adaptation records repository, commit, path, SPDX license, retained behavior, and local divergence.
 - A whole-repository copy requires a dedicated ADR; ADR 0017 authorizes only the selected NBC JAR-derived port under its provenance rules.
-- Dependencies of host-neutral packages (`bunting-engine`, protocol packages) must pass a minimal-feature `wasm32-unknown-unknown` build and size review. Server dependencies must build natively and must not be WASIX-only (ADR 0033).
+- Dependencies of host-neutral packages (`bunting-engine`, protocol packages) must pass a minimal-feature `wasm32-unknown-unknown` build and size review. Server dependencies must build for every release platform: Linux, macOS and Windows (ADR 0044).
 - ADR 0017 authorizes NBC JAR translation and redistribution; ADR 0032 limits NBC to reference evidence, so new NBC translation into production code needs a new ADR. Other NBC material and QUARCC remain restricted without documented authority.
 - Reference behavior, Bunting-added behavior, and unresolved behavior remain explicitly separated.
 
@@ -39,9 +39,15 @@ For every reference or vendored component, record:
 | `rustls` / `rustls-pemfile` (BNP) | `0.23.42` (`default-features = false`, features `ring`, `std`) / `2.2.0`; Apache-2.0 OR ISC OR MIT / Apache-2.0 OR MIT | Native targets only (`cfg(not(target_arch = "wasm32"))`). In `bunting-server`: TLS 1.3 termination, client CA chain and CRL verification for the BNP listener (ADR 0040). In `bunting-client`: the client side of the same handshake. Identity mapping, framing and every protocol decision stay first-party; no market semantics |
 | `clap` (`env` feature) | `4.6.1`, MIT OR Apache-2.0, features `derive`, `env` | Command-line parsing for `bunting-trader` (and `derive` only in `bunting-cli`, `bunting-tui`); no market semantics |
 | `rustyfix-dictionary` | exact crates.io release `0.7.4`, Apache-2.0, upstream source commit `2f0ef7830553d482765c14e3c4b32be3432d57b0`; features `fix50sp2`, `fixt11` only | Production standard message/field/datatype lookup in `simfix-wire`; no engine, session, transport or copied dictionary resources, and FIX Latest Orchestra remains normative |
-| Wasmer / cargo-wasix / WASIX Rust | Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`; cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`; toolchain `v2026-07-07.3+rust-1.96` | Current packaging and runtime for the server under ADR 0027; not a binding long-term host (ADR 0033); no market semantics, and filesystem/network capabilities remain explicit |
+| Container bases `rust:1.88.0-bookworm` / `gcr.io/distroless/cc-debian12:nonroot` | Official Rust image (build stage only) and Google distroless glibc runtime base for `apps/bunting-server/Dockerfile` (ADR 0044) | Build and runtime image layers only; no market semantics. The runtime base supplies glibc and CA files; the image adds only the `bunting` executable and configuration templates |
 
 The engine's order book (`packages/bunting-engine/src/book.rs`, ADR 0029) is first-party code, not an upstream source copy. The former OrderBook-rs adapter, the `packages/orderbook` crate and the workers-rs Worker are removed.
+
+## Retired toolchains
+
+| Toolchain | Last pin | Disposition |
+|---|---|---|
+| Wasmer / cargo-wasix / WASIX Rust | Wasmer `7.2.1` at `c14032594b893b40e9b71456d504cf55c141c8f6`; cargo-wasix `0.1.28` at `b2d0e1c874fc6ac5dbaf71715b12c6809104767f`; toolchain `v2026-07-07.3+rust-1.96` | Retired as the server runtime by ADR 0044 (slice 27). Used only by `tools/host_parity.sh` to re-measure native-versus-WASIX parity; never a release, CI or production dependency |
 
 ## Approved development-only conformance oracles
 

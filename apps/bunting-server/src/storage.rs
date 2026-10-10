@@ -52,7 +52,6 @@ pub struct FileOriginStore {
     /// process restart re-verifies the journal.
     poisoned: Arc<AtomicBool>,
     /// OS-backed single-writer lease, held until the last store clone drops.
-    #[cfg(unix)]
     _writer_lock: Arc<File>,
     max_runs: usize,
     limits: RunLimits,
@@ -61,35 +60,7 @@ pub struct FileOriginStore {
 impl FileOriginStore {
     pub fn open(path: impl Into<PathBuf>, config: &StorageConfig) -> Result<Self, OriginError> {
         let path = path.into();
-        // Native durable mode must never admit two independent processes
-        // reading the same expected version and both appending accepted writes.
-        // Unix flock follows the lifetime of the open file descriptor, rather
-        // than leaving stale PID files behind after an unclean process exit.
-        #[cfg(unix)]
-        let writer_lock = {
-            use rustix::fs::{FlockOperation, flock};
-            let lock_path = path.with_extension("lock");
-            if let Some(parent) = lock_path
-                .parent()
-                .filter(|item| !item.as_os_str().is_empty())
-            {
-                fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
-            }
-            let file = fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(lock_path)
-                .map_err(|_| OriginError::Unavailable)?;
-            flock(&file, FlockOperation::NonBlockingLockExclusive)
-                .map_err(|_| OriginError::Unavailable)?;
-            Arc::new(file)
-        };
-        // A known atomic locking primitive is required for durable mode.
-        #[cfg(not(unix))]
-        return Err(OriginError::Unavailable);
-
+        let writer_lock = Arc::new(acquire_writer_lease(&path)?);
         let limits = config.limits();
         let journal_path = commit_journal::path_for(&path);
         if path.exists() && !journal_path.exists() {
@@ -104,7 +75,6 @@ impl FileOriginStore {
                 journal: JournalWriter::open(&journal_path)?,
             })),
             poisoned: Arc::new(AtomicBool::new(false)),
-            #[cfg(unix)]
             _writer_lock: writer_lock,
             max_runs: config.max_runs,
             limits,
@@ -412,6 +382,43 @@ pub(crate) fn persist_json<T: Serialize>(path: &Path, value: &T) -> Result<(), O
             .map_err(|_| OriginError::Unavailable)?;
     }
     Ok(())
+}
+
+/// Opens `<path>.lock` and takes the OS-backed single-writer lease on it.
+///
+/// Durable mode must never admit two independent processes reading the same
+/// expected version and both appending accepted writes. Both leases follow
+/// the lifetime of the open handle, so an unclean exit leaves no stale lock.
+fn acquire_writer_lease(path: &Path) -> Result<File, OriginError> {
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path
+        .parent()
+        .filter(|item| !item.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    // Windows: a handle opened with no sharing is exclusive until it closes,
+    // so a second writer's open fails with a sharing violation.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0);
+    let file = options
+        .open(lock_path)
+        .map_err(|_| OriginError::Unavailable)?;
+    // Unix: flock is released when the descriptor closes.
+    #[cfg(unix)]
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| OriginError::Unavailable)?;
+    // Other hosts (WASIX among them) have no lease primitive this crate
+    // trusts, so durable mode is refused there (ADR 0044).
+    #[cfg(not(any(unix, windows)))]
+    {
+        drop(file);
+        return Err(OriginError::Unavailable);
+    }
+    #[cfg(any(unix, windows))]
+    Ok(file)
 }
 
 #[derive(Clone, Debug)]

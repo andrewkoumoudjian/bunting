@@ -44,7 +44,7 @@ jobs:
         run: cargo clippy --locked -p bunting-ledger -p bunting-engine -p bunting-api-contract -p simfix-mapping -p bunting-application --all-targets -- -D warnings
 
   rust-kernel:
-    name: Rust kernel and WASI venue
+    name: Rust kernel and native venue
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -58,29 +58,6 @@ jobs:
         run: |
           rustup show
           rustup target add wasm32-unknown-unknown
-
-      # cargo-wasix v0.1.28 installs with Cargo on PATH; its locked
-      # transitive dependencies require a newer bootstrap compiler than
-      # the repository's intentionally pinned 1.88 source toolchain.
-      - name: Install cargo-wasix bootstrap Rust
-        run: rustup toolchain install 1.96.0 --profile minimal
-
-      - name: Install pinned WASIX toolchain
-        uses: wasix-org/cargo-wasix@v0.1.28
-        env:
-          RUSTUP_TOOLCHAIN: "1.96.0"
-        with:
-          version: "0.1.28"
-          toolchain-version: "v2026-07-07.3+rust-1.96"
-          locked: "true"
-
-      - name: Install pinned Wasmer runtime
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
-            sh -s "v7.2.1"
-          test -x "$HOME/.wasmer/bin/wasmer"
-          "$HOME/.wasmer/bin/wasmer" --version
-          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
 
       - name: Enforce architecture dependency policy
         run: |
@@ -102,15 +79,8 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked --workspace
 
-      # WASIX's compiler links host-side build scripts through GCC with
-      # -fuse-ld=lld. Ensure both the linker driver and binutils are present;
-      # ordinary host cargo test does not exercise this cross-build path.
-      - name: Install native linkers for WASIX host build scripts
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binutils lld
-          command -v ld
-          command -v ld.lld
+      - name: Build native release server
+        run: cargo build --locked --release -p bunting-server -p bunting-cli
 
       - name: Install Go for external FIX interoperability
         uses: actions/setup-go@v5
@@ -120,32 +90,14 @@ jobs:
 
       - name: Run QuickFIX-Go FIXT.1.1 and FIX 5.0 SP2 interop
         env:
-          BUNTING_SERVER_ARTIFACT: ${{ github.workspace }}/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu
-          WASMER_BIN: /home/runner/.wasmer/bin/wasmer
+          BUNTING_SERVER_BIN: ${{ github.workspace }}/target/release/bunting-server
         run: |
-          tools/build_wasi_server.sh
           cd tests/interop/quickfixgo
           go test -count=1 .
 
-      - name: Smoke Wasmer-hosted WASI server
-        run: |
-          set -euo pipefail
-          BUNTING_SERVER_ARTIFACT="$GITHUB_WORKSPACE/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasmu" \
-            tools/run_wasi_server.py apps/bunting-server/config/local.json \
-            > /tmp/bunting-server.log 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 40); do
-            if curl --fail --silent http://127.0.0.1:8080/health > /tmp/bunting-health.json; then
-              break
-            fi
-            sleep 0.25
-          done
-          grep -Fq '"status":"ok"' /tmp/bunting-health.json
-          curl --fail --silent \
-            -H 'Authorization: Bearer replace-admin-token' \
-            http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
-          grep -Fq '"runId":"1"' /tmp/bunting-run.json
+      # ADR 0044: durable origin, built-in agents, FIX order flow, restart.
+      - name: Smoke native venue
+        run: python3 tools/smoke_server.py --state-dir "$RUNNER_TEMP/smoke" -- target/release/bunting server
 
       - name: Enforce replay and onboarding budget
         run: |
@@ -158,3 +110,56 @@ jobs:
 
       - name: Verify the matcher oracle is test-only
         run: "! cargo tree --locked -p bunting-engine -e normal | grep -q 'orderbook-rs'"
+
+  # ADR 0044: the release platforms run a durable venue, not just compile.
+  portable:
+    name: Native venue on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup show
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build native release server
+        shell: bash
+        run: cargo build --locked --release -p bunting-server -p bunting-cli
+      - name: Clippy server and CLI
+        shell: bash
+        run: cargo clippy --locked -p bunting-server -p bunting-cli -- -D warnings
+      - name: Smoke native venue
+        shell: bash
+        run: python tools/smoke_server.py --state-dir "$RUNNER_TEMP/smoke" -- target/release/bunting server
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Build image
+        run: docker build -f apps/bunting-server/Dockerfile -t bunting:ci .
+      - name: Smoke image
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/container-smoke"
+          mkdir -p "$state"
+          python3 tools/smoke_server.py --state-dir "$state" \
+            --config-path /etc/bunting/server.json \
+            --storage-path /var/lib/bunting/origin.json -- \
+            docker run --rm --init --network host \
+              -v "$state:/etc/bunting:ro" -v bunting-ci-state:/var/lib/bunting \
+              bunting:ci server

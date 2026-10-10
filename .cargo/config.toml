@@ -4,6 +4,8 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", 'getrandom_backend="unsupported"']
 
+# WASIX is retired as a server host (ADR 0044); these entries remain only so
+# tools/host_parity.sh can re-measure native-versus-WASIX parity.
 # The WASIX target currently identifies itself as WASI without a preview
 # environment. Its ABI includes WASI preview 1 random_get, so identify that
 # preview explicitly until the upstream target reports target_env = "p1".

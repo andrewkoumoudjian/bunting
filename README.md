@@ -13,10 +13,13 @@ optional read-only publisher of results.
 
 ## Install
 
-Release archives contain one portable WASI server plus native TUI and binding
-artifacts for macOS Apple Silicon, macOS Intel, Linux x86_64, and Windows
-x86_64. Install [Wasmer 7.2.1](https://docs.wasmer.io/install/) first. macOS
-and Linux users can then install the latest release into `~/.local/bin`:
+Release archives contain one native `bunting` executable (venue server,
+terminal and offline tools, with `bunting-server` and `bunting-tui` aliases),
+the `bunting-trader` participant app (Bunting Native Protocol) and the C/C++
+bindings, for Linux x86_64 and aarch64 (glibc 2.35 or newer),
+macOS Apple Silicon and Intel, and Windows x86_64. Nothing else needs to be
+installed ([ADR 0044](docs/adr/0044-native-server-binary-host.md)). macOS and
+Linux users can install the latest release into `~/.local/bin`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | sh
@@ -44,32 +47,23 @@ Start a self-contained terminal fixture:
 bunting tui --fixture
 ```
 
-To run the Wasmer-hosted FIX server, review the installed credentials and
-network settings, then start it with:
+To run the FIX venue server, review the installed credentials and network
+settings, then start it:
 
 ```bash
-bunting-server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
+bunting server "${BUNTING_CONFIG_DIR:-$HOME/.config/bunting/server}/local.json"
 ```
 
-`bunting-server` grants Wasmer networking and only the directories referenced
-by the selected configuration. `bunting` and `bunting-tui` remain native
-because terminal and language-binding APIs are platform-specific. No
-Cloudflare publication Worker is currently built (removed in `eed8e00`; see
-ADR 0022).
+A container image is published for each release
+(`ghcr.io/andrewkoumoudjian/bunting:<tag>`); see
+[`docs/deployment.md`](docs/deployment.md). No Cloudflare publication Worker is
+currently built (removed in `eed8e00`; see ADR 0022).
 
-The server currently ships as a WASIX module (ADR 0027). WASIX is not a
-binding long-term host (ADR 0033); native server packaging is under evaluation.
-
-From a checkout, build the portable module and a host-specific Wasmer artifact,
-then run it:
+From a checkout:
 
 ```bash
-tools/build_wasi_server.sh
-tools/run_wasi_server.py apps/bunting-server/config/local.json
+cargo run --locked --release -p bunting-cli -- server apps/bunting-server/config/local.json
 ```
-
-The pinned build uses cargo-wasix `0.1.28`, WASIX toolchain
-`v2026-07-07.3+rust-1.96`, target `wasm32-wasmer-wasi-dl`, and Wasmer `7.2.1`.
 
 ## Engine model
 

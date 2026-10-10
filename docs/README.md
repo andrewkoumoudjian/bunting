@@ -43,7 +43,6 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0022 | Single native venue; Cloudflare read-only publication; no Worker built |
 | 0025 + 0028 item 5 | Run archive: version 2 replays every journaled input from genesis or a checkpoint (slice 20) |
 | 0026 | Language bindings and FFI lints |
-| 0027 | WASIX — **current packaging only**, host still open |
 | 0028 | Headless run authority, single ledger, live state, full replay |
 | 0029 | Engine-owned deterministic order book |
 | 0030 | Continuous admission with a `(release, arrival)` sequencer (replaced 0024 intervals; FIX slice 15, agents slice 18); modes and equalization superseded by 0035 |
@@ -55,10 +54,12 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0036 | Public market data: per-venue direct feeds of trades and L2 (slice 21) a consolidated tape from a processor at the hub (slice 22) and order-by-order feeds (slice 23) over the latency map, with per-venue broker identifiers (slice 24); owner decisions 2026-10-10 (data and colocation free) |
 | 0037 | One run clock and venue timer (slice 26); **Target:** calendar and session phases, opening and closing auctions, end-of-day marks and multi-day runs |
 | 0040 | Bunting Native Protocol v1: fixed binary frames, TLS 1.3 mTLS with a certificate-fingerprint roster, stateless identities, resume by committed sequence, same latency path as FIX (slice 25) |
+| 0044 | Host: native `bunting` binary (Linux, macOS, Windows) and container image; WASIX retired (slice 27) |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
-0016, 0019 (in part), 0020 (in part), 0024 (replaced in slice 15).
+0016, 0019 (in part), 0020 (in part), 0024 (replaced in slice 15), 0027
+(WASIX packaging, superseded by 0044 in slice 27).
 
 ## Documents
 
@@ -66,7 +67,7 @@ transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
 |---|---|---|
 | `AGENTS.md` (this dir) | Binding | Documentation rules |
 | `architecture.md` | Binding | Current state and target, labeled separately |
-| `deployment.md` | Current | Describes the WASIX packaging that ships today |
+| `deployment.md` | Current | Native binary and container deployment (ADR 0044) |
 | `reference-functionality-audit.md` | Binding for `ref/`/`vendor/` claims | Read before describing any reference |
 | `reference-adoption.md` | Binding for dependencies | Read before adding dependencies or copied code |
 | `reference-inventory.md` | Current | Submodule pins |

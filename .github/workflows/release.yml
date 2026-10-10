@@ -7,53 +7,22 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  wasi-server:
-    name: Wasmer WASI server
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: false
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: wasix-org/cargo-wasix@v0.1.28
-        with:
-          version: "0.1.28"
-          toolchain-version: "v2026-07-07.3+rust-1.96"
-          locked: "true"
-      - name: Install pinned Wasmer runtime
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io |
-            sh -s "v 7.2.1"
-          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
-      - name: Build and package portable WASI server
-        run: |
-          set -euo pipefail
-          tools/build_wasi_server.sh
-          tag="$GITHUB_REF_NAME"
-          package="bunting-${tag}-wasi"
-          mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
-          cp target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm "stage/${package}/bin/"
-          cp tools/run_wasi_server.py "stage/${package}/bin/bunting-server"
-          cp apps/bunting-server/config/*.json "stage/${package}/config/"
-          cp README.md PROTOCOL.md RULES.md SCORING.md RUNBOOK.md "stage/${package}/"
-          tar -C stage -czf "dist/${package}.tar.gz" "${package}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wasi-server
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
   native:
     name: Native ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          # Ubuntu 22.04 sets the glibc 2.35 floor (ADR 0044); older hosts use
+          # the container image.
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            executable_suffix: ""
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
             executable_suffix: ""
           - runner: macos-15
             target: aarch64-apple-darwin
@@ -77,6 +46,7 @@ jobs:
         shell: bash
         run: |
           cargo build --locked --release --target "${{ matrix.target }}" -p bunting-cli --features tui
+          cargo build --locked --release --target "${{ matrix.target }}" -p bunting-trader
           cargo build --locked --release --target "${{ matrix.target }}" -p bunting-ffi -p bunting-cpp
       - name: Build stable-ABI Python wheel
         shell: bash
@@ -91,11 +61,16 @@ jobs:
           package="bunting-${tag}-${{ matrix.target }}"
           mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
           cp "target/${{ matrix.target }}/release/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/"
-          if [ -n "${{ matrix.executable_suffix }}" ]; then
-            cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/bunting-tui${{ matrix.executable_suffix }}"
-          else
-            ln -s bunting "stage/${package}/bin/bunting-tui"
-          fi
+          # Participant app over the Bunting Native Protocol (ADR 0040).
+          cp "target/${{ matrix.target }}/release/bunting-trader${{ matrix.executable_suffix }}" "stage/${package}/bin/"
+          # One executable; `bunting-server` and `bunting-tui` route by name.
+          for alias in bunting-server bunting-tui; do
+            if [ -n "${{ matrix.executable_suffix }}" ]; then
+              cp "stage/${package}/bin/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/${alias}${{ matrix.executable_suffix }}"
+            else
+              ln -s bunting "stage/${package}/bin/${alias}"
+            fi
+          done
           cp apps/bunting-server/config/*.json "stage/${package}/config/"
           cp README.md PROTOCOL.md RULES.md SCORING.md RUNBOOK.md "stage/${package}/"
           mkdir -p "stage/${package}/include" "stage/${package}/lib"
@@ -112,9 +87,30 @@ jobs:
             target/wheels/*.whl
           if-no-files-found: error
 
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Build and push image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f apps/bunting-server/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+            -t "${image}:${GITHUB_REF_NAME}" .
+          docker push "${image}:${GITHUB_REF_NAME}"
+
   publish:
     name: Publish GitHub release
-    needs: [native, wasi-server]
+    needs: [native, container]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -131,14 +127,15 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           printf '%s\n' \
-            'Install the Wasmer-hosted WASI server and native terminal on macOS or Linux:' \
+            'Install the native `bunting` executable (venue server, terminal and tools) on Linux or macOS:' \
             '' \
             '```bash' \
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
+            'bunting server ~/.config/bunting/server/local.json' \
             '```' \
             '' \
-            'The installer adds the portable WASI server module and Wasmer launcher, the native `bunting` executable and `bunting-tui` alias, and server configuration templates without overwriting existing configuration. Verify manual downloads with `SHA256SUMS`.' \
+            'Windows: download the `x86_64-pc-windows-msvc` archive. Containers: `docker pull ghcr.io/andrewkoumoudjian/bunting:'"$tag"'` (configuration at `/etc/bunting/server.json`, state on `/var/lib/bunting`). Verify manual downloads with `SHA256SUMS`.' \
             '' \
-            'See the repository README for server configuration and platform details.' \
+            'See the repository README and docs/deployment.md for configuration and platform details.' \
             > release-notes.md
           gh release create "$tag" dist/* --verify-tag --notes-file release-notes.md --title "Bunting $tag"

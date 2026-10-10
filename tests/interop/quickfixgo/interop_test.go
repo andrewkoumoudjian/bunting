@@ -35,8 +35,8 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	contents := fmt.Sprintf(`{
   "version": 1,
   "profile": "local",
-  "storage": {"kind":"memory","path":null,"max_runs":4,"max_commands":1000,"max_events_per_run":10000},
-  "fix": {"bind":%q,"sender_comp_id":"BUNTING","run_id":1,"roster":[{"target_comp_id":"TEAM1","username":"team1","password":"bunting-team1-dev","role":"participant","participant_id":1},{"target_comp_id":"TEAM2","username":"team2","password":"bunting-team2-dev","role":"participant","participant_id":2}],"heartbeat_seconds":30,"max_connections":2,"matching_interval_ms":100,"max_messages_per_interval":64,"max_open_orders":256,"max_interval_queue":256,"max_message_bytes":16384,"max_journal_messages":512,"max_pending_inbound":64,"tls":{"mode":"disabled"}},
+  "storage": {"kind":"memory","path":null,"max_runs":4,"max_commands_per_run":1000,"max_events_per_run":10000,"checkpoint_interval":256},
+  "fix": {"bind":%q,"sender_comp_id":"BUNTING","run_id":1,"roster":[{"target_comp_id":"TEAM1","username":"team1","password":"bunting-team1-dev","role":"participant","participant_id":1},{"target_comp_id":"TEAM2","username":"team2","password":"bunting-team2-dev","role":"participant","participant_id":2}],"heartbeat_seconds":30,"max_connections":2,"rate_limit_window_ms":100,"max_messages_per_interval":64,"max_message_bytes":16384,"max_journal_messages":512,"max_pending_inbound":64,"tls":{"mode":"disabled"},"admission":{"map":{},"probe_interval_ms":1000,"max_admission_queue":256,"max_outbound_hold":256}},
   "admin": null,
   "scenario": null,
   "runtime": null
@@ -81,7 +81,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if _, err := connection.Write(outbound("A", 1).Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	logon := parseInbound(t, readFrame(t, reader))
+	logon := readMessage(t, reader)
 	assertField(t, &logon.Header.FieldMap, 35, "A")
 	assertField(t, &logon.Body.FieldMap, 1137, "9")
 	assertField(t, &logon.Body.FieldMap, 10000, "bunting.fixlatest.competition.v1")
@@ -92,7 +92,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if _, err := connection.Write(discovery.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	report := parseInbound(t, readFrame(t, reader))
+	report := readMessage(t, reader)
 	assertField(t, &report.Header.FieldMap, 35, "y")
 	assertField(t, &report.Body.FieldMap, 10016, "discovery")
 	payload, err := report.Body.GetString(10020)
@@ -113,7 +113,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if _, err := second.Write(outboundFor("A", 1, "TEAM2", "team2", "bunting-team2-dev").Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	assertField(t, &parseInbound(t, readFrame(t, secondReader)).Header.FieldMap, 35, "A")
+	assertField(t, &readMessage(t, secondReader).Header.FieldMap, 35, "A")
 
 	order := outbound("D", 3)
 	order.Body.SetString(11, "1")
@@ -126,7 +126,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if _, err := connection.Write(order.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	assertField(t, &parseInbound(t, readFrame(t, reader)).Header.FieldMap, 35, "8")
+	assertField(t, &readMessage(t, reader).Header.FieldMap, 35, "8")
 
 	book := outboundFor("V", 2, "TEAM2", "team2", "bunting-team2-dev")
 	book.Body.SetString(262, "shared-book")
@@ -143,7 +143,7 @@ func TestQuickFIXGoFIXT11FIX50SP2Interop(t *testing.T) {
 	if _, err := second.Write(book.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := parseInbound(t, readFrame(t, secondReader))
+	snapshot := readMessage(t, secondReader)
 	assertField(t, &snapshot.Header.FieldMap, 35, "W")
 	assertField(t, &snapshot.Body.FieldMap, 207, "1")
 	assertField(t, &snapshot.Body.FieldMap, 270, "99")
@@ -184,6 +184,19 @@ func dialBounded(t *testing.T, endpoint string, serverLog *bytes.Buffer) net.Con
 	}
 	t.Fatalf("server did not bind: %s", serverLog.String())
 	return nil
+}
+
+// readMessage returns the next inbound message other than the venue's
+// round-trip TestRequests (35=1), which it sends after Logon and then
+// periodically; this short test leaves them unanswered.
+func readMessage(t *testing.T, reader *bufio.Reader) *quickfix.Message {
+	t.Helper()
+	for {
+		message := parseInbound(t, readFrame(t, reader))
+		if messageType, err := message.Header.GetString(35); err != nil || messageType != "1" {
+			return message
+		}
+	}
 }
 
 func readFrame(t *testing.T, reader *bufio.Reader) []byte {

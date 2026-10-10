@@ -1,0 +1,7 @@
+# Container builds need only the Cargo workspace sources.
+target/
+out/
+ref/
+.git/
+**/node_modules/
+**/__pycache__/

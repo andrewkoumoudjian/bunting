@@ -40,6 +40,8 @@ pub(crate) fn path_for(checkpoint: &Path) -> PathBuf {
     checkpoint.with_extension("wal")
 }
 
+// Windows has no portable directory sync; NTFS journals the rename itself.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent(path: &Path) -> Result<(), OriginError> {
     #[cfg(unix)]
     {
