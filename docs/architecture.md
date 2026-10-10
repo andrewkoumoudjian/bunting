@@ -193,8 +193,8 @@ log. Per-command cost no longer grows with the size of the run.
 ### Target
 
 - Resume cursors so reports missed while disconnected are replayed (today
-  they are not); order-by-order (L3) feeds with broker identifiers, and
-  feed and colocation fees (ADR 0036).
+  they are not); order-by-order (L3) feeds with per-venue broker
+  identifiers (ADR 0036).
 
 ## 7. Admission and fairness
 

@@ -3,8 +3,8 @@
 - Status: **Accepted** (2026-10-10). Per-venue trade and L2 feeds were
   implemented in slice 21 and the consolidated tape in slice 22 (see
   `docs/implementation-log/`). The owner answered the four open questions
-  on 2026-10-10 (below). Order-by-order (L3) feeds, broker identifiers and
-  data/colocation pricing are **Target**.
+  on 2026-10-10 (below). Order-by-order (L3) feeds and broker identifiers
+  are **Target**.
 - Date: 2026-10-10
 - Depends on: ADR 0011 (committed-sequence streams), ADR 0022 (single
   venue), ADR 0029 (owned book), ADR 0035 (latency), slice 12 (committed-event
@@ -78,8 +78,8 @@ defaults:
 |---|---|---|
 | L2 only, or L3 order-by-order? | **Both**: price-level and order-by-order direct feeds. | L2 implemented (slice 21); L3 Target, with anonymous per-venue order references, never the owner's IDs. |
 | A consolidated (SIP-like) feed, and where? | **Yes**, or per-venue feeds only, whichever is closer to reality. Real markets run both, so Bunting has both: direct feeds per venue and one consolidated tape from a processor at the hub. | Implemented (slice 22). |
-| Data and colocation pricing? | **The most realistic.** Real firms pay for direct feeds and colocation; consolidated data is cheaper. | Target: the fee rule (charged through the single ledger, published with the event profile) will be set in its own ADR before it is built. Until then data and colocation are free and locations come from the organizer's map. |
-| Broker identifiers? | **Yes.** | Target: shown on order-by-order feeds and trades unless an order is marked anonymous (as on Toronto venues); not yet published. |
+| Broker identifiers? | **The most realistic choice.** Practice differs by market: Toronto venues show a broker number on orders and trades unless the order is marked anonymous; US venues are anonymous. So broker identifiers are a **per-venue setting**: on venues that publish them, L3 orders and trades carry the team's broker number unless the order opts out as anonymous; other venues stay anonymous. | Target, with L3; until then every feed is anonymous. |
+| Data and colocation pricing? | **Free, with no colocation purchase** (confirmed). Locations come from the organizer's map. | Implemented (nothing to charge). Priced data or colocation would need a new owner decision. |
 
 ## Consequences
 

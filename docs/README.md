@@ -52,7 +52,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0033 | Guidance reconciliation and status amendments |
 | 0034 | **Historical** — equalized admission; superseded by 0035 |
 | 0035 | Latency: real connectivity counts, virtual distance added both ways, no modes (slice 16) |
-| 0036 | Public market data: per-venue direct feeds of trades and L2 (slice 21) and a consolidated tape from a processor at the hub (slice 22) over the latency map; owner decisions 2026-10-10; L3, broker IDs and feed/colocation fees Target |
+| 0036 | Public market data: per-venue direct feeds of trades and L2 (slice 21) and a consolidated tape from a processor at the hub (slice 22) over the latency map; owner decisions 2026-10-10 (data and colocation free); L3 and per-venue broker IDs Target |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,

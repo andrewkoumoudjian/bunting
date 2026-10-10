@@ -43,6 +43,12 @@ each order to the right venue.
   smart order router and no trade-through protection: each venue matches
   only its own book, and a buy can execute on one venue above an offer
   resting on another. Best execution is your job.
+- **Think of one stock on several exchanges**, the way one stock trades on
+  the TSX, Cboe (formerly BATS) and NYSE at once. Each venue has its own
+  book and sits at its own distance from you. An order sent to a far venue
+  can be overrun on the way: a team nearer the better prices takes them
+  first, and your order executes at whatever its own venue still offers,
+  even if that is worse than another venue's price.
 - **Information is late from far venues.** Your view of a distant venue is
   older than your view of a near one, and other teams may be closer to it
   than you are.
@@ -71,8 +77,8 @@ each order to the right venue.
   path to you, so near a venue the direct feed is faster and the tape can
   be stale. Its report sequence (83) is one per instrument, the same for
   everyone; its snapshot's 83 is the last report included. Feeds and
-  colocation are free for now; order-by-order feeds, broker identifiers
-  and feed and colocation fees are planned (ADR 0036).
+  colocation are free, with no colocation purchase. Order-by-order feeds,
+  and broker numbers on venues that publish them, are planned (ADR 0036).
 
 ## Published limits
 
