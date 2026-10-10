@@ -98,6 +98,7 @@ fn resting_bid(state: &RunState, n: u64) -> Command {
             kind: OrderKind::Limit {
                 price: PriceTicks::new(i64::try_from(n % 1_000).unwrap_or(0) + 1),
             },
+            anonymous: false,
         }),
     }
 }

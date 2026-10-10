@@ -63,6 +63,11 @@ fn two_cities() -> LatencyMap {
 }
 
 fn start_server() -> Result<u16, String> {
+    start_venues(false)
+}
+
+/// Two venues; with `broker_ids`, venue 1 publishes broker identifiers.
+fn start_venues(broker_ids: bool) -> Result<u16, String> {
     let port = TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
         .map_err(|error| error.to_string())?
@@ -74,6 +79,9 @@ fn start_server() -> Result<u16, String> {
     second["key"] = serde_json::json!("2:1");
     second["symbol"] = serde_json::json!("BNT.B");
     scenario["listings"]["2:1"] = second;
+    if broker_ids {
+        scenario["listings"]["1:1"]["broker_ids"] = serde_json::json!(true);
+    }
     let path_file = std::env::temp_dir().join(format!("bunting-feeds-{port}.json"));
     std::fs::write(&path_file, scenario.to_string()).map_err(|error| error.to_string())?;
     let mut config = ServerConfig::local_default();
@@ -692,6 +700,82 @@ fn an_order_by_order_feed_tracks_each_displayed_order_anonymously() -> Result<()
         for tag in [1, 11, 37, 41, 448, 452, 523] {
             assert_eq!(message.value(tag), None, "tag {tag} leaks identity");
         }
+    }
+    Ok(())
+}
+
+/// `(tag, value)` of every field of `message` whose tag is in `tags`.
+fn tagged(message: &FixMessage, tags: &[u32]) -> Vec<(u32, String)> {
+    message
+        .fields
+        .iter()
+        .filter(|field| tags.contains(&field.tag))
+        .map(|field| (field.tag, field.value.clone()))
+        .collect()
+}
+
+fn fields(expected: &[(u32, &str)]) -> Vec<(u32, String)> {
+    expected
+        .iter()
+        .map(|(tag, value)| (*tag, (*value).to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_venue_that_publishes_broker_ids_names_brokers_unless_anonymous() -> Result<(), String> {
+    let port = start_venues(true)?;
+    let mut maker = Client::logon(port, "MAKER", "maker", "bunting-maker-dev")?;
+    let mut team1 = Client::logon(port, "HUMAN", "participant", "bunting-local-dev")?;
+    for client in [&maker, &team1] {
+        fast_reads(client)?;
+    }
+    // The maker (broker 10) offers 2 at 100 anonymously and 3 at 101 openly.
+    let mut hidden = order_at("901", "sell", 2, 100, 1);
+    hidden.push(10021, "Y");
+    maker.send(hidden)?;
+    maker.wait_report("901", "0")?;
+    maker.send(order_at("902", "sell", 3, 101, 1))?;
+    maker.wait_report("902", "0")?;
+    team1.send(order_request("l3", "1", 1))?;
+    team1.send(market_request("l2", "1", 1))?;
+    team1.pump_until(|client| {
+        !received(client, "W", "l3").is_empty() && !received(client, "W", "l2").is_empty()
+    })?;
+    // Each order entry is 269, 278, its broker if published, 270, 271, 290.
+    assert_eq!(
+        tagged(&received(&team1, "W", "l3")[0], &[270, 288, 289]),
+        fields(&[(270, "100"), (289, "10"), (270, "101")])
+    );
+
+    // Team 1 (broker 1) lifts both: the anonymous seller stays unnamed.
+    team1.send(order_at("101", "buy", 3, 101, 1))?;
+    team1.wait_report("101", "F")?;
+    pump_all(&mut [&mut maker, &mut team1], Duration::from_millis(50))?;
+    let expected = fields(&[
+        (288, "1"),
+        (270, "100"),
+        (288, "1"),
+        (289, "10"),
+        (270, "101"),
+    ]);
+    for feed in ["l2", "l3"] {
+        let trades: Vec<_> = received(&team1, "X", feed)
+            .iter()
+            .flat_map(|message| tagged(message, &[269, 270, 288, 289]))
+            .collect();
+        // Keep the trade entries' broker and price fields only.
+        let mut in_trade = false;
+        let trade_fields: Vec<_> = trades
+            .into_iter()
+            .filter(|(tag, value)| {
+                if *tag == 269 {
+                    in_trade = value == "2";
+                    return false;
+                }
+                in_trade
+            })
+            .collect();
+        assert_eq!(trade_fields, expected, "feed {feed}");
     }
     Ok(())
 }

@@ -27,6 +27,7 @@ fn order(sequence: u64, id: u128, participant: u128, side: Side) -> JournalInput
             kind: OrderKind::Limit {
                 price: PriceTicks::new(100),
             },
+            anonymous: false,
         }),
     })
 }

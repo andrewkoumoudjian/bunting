@@ -276,6 +276,12 @@ pub struct PublicTrade {
     /// on order-by-order feeds only (see [`DisplayedOrder`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maker_reference: Option<u64>,
+    /// Broker identifiers of the buyer and seller, on venues that publish
+    /// them, unless that side's order was anonymous (see [`trade_brokers`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buyer_broker: Option<ParticipantId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_broker: Option<ParticipantId>,
 }
 
 /// Projects only facts that are safe to publish without participant, order,
@@ -298,6 +304,8 @@ pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> O
                 price,
                 quantity,
                 maker_reference: None,
+                buyer_broker: None,
+                seller_broker: None,
             })
         }
         _ => None,
@@ -344,6 +352,61 @@ pub struct DisplayedOrder {
     pub side: Side,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
+    /// The owner's broker identifier, on venues that publish them, unless
+    /// the order is anonymous.
+    pub broker: Option<ParticipantId>,
+}
+
+/// The broker identifier a venue publishes for one order: its owner, if
+/// the listing's venue publishes broker identifiers and the order is not
+/// anonymous.
+#[must_use]
+pub fn order_broker(
+    state: &RunState,
+    listing_key: ListingKey,
+    order_id: OrderId,
+) -> Option<ParticipantId> {
+    let publishes = state
+        .listings()
+        .get(&listing_key)
+        .is_some_and(|listing| listing.definition().broker_ids());
+    if !publishes {
+        return None;
+    }
+    state
+        .ownership()
+        .get(&order_id)
+        .filter(|owned| !owned.anonymous)
+        .map(|owned| owned.participant_id)
+}
+
+/// Buyer and seller broker identifiers of one committed trade, read right
+/// after the commit (terminal orders stay in the retained ownership
+/// window).
+#[must_use]
+pub fn trade_brokers(
+    state: &RunState,
+    event: &EventEnvelope,
+) -> (Option<ParticipantId>, Option<ParticipantId>) {
+    let EventPayload::TradeExecuted {
+        listing_key: Some(listing_key),
+        maker_order_id,
+        taker_order_id,
+        ..
+    } = &event.payload
+    else {
+        return (None, None);
+    };
+    let (mut buyer, mut seller) = (None, None);
+    for order_id in [maker_order_id, taker_order_id] {
+        let broker = order_broker(state, *listing_key, *order_id);
+        match state.ownership().get(order_id).map(|owned| owned.side) {
+            Some(Side::Buy) => buyer = broker,
+            Some(Side::Sell) => seller = broker,
+            None => {}
+        }
+    }
+    (buyer, seller)
 }
 
 /// Every displayed order of one listing: bids then asks, each in matching
@@ -369,6 +432,7 @@ pub fn displayed_orders(
             side: order.side,
             price: order.price,
             quantity: order.visible,
+            broker: order_broker(state, listing_key, order.order_id),
         })
         .collect())
 }
@@ -391,6 +455,7 @@ pub struct OrderChange {
     pub reference: u64,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
+    pub broker: Option<ParticipantId>,
 }
 
 /// Order-by-order difference between two committed views of one listing:
@@ -411,6 +476,7 @@ pub fn diff_orders(before: &[DisplayedOrder], after: &[DisplayedOrder]) -> Vec<O
         reference: order.reference,
         price: order.price,
         quantity,
+        broker: order.broker,
     };
     let mut changes: Vec<_> = before
         .iter()
@@ -927,6 +993,7 @@ mod tests {
             side,
             price: PriceTicks::new(price),
             quantity: QuantityLots::new(quantity),
+            broker: None,
         };
         let before = vec![
             order(1, 1, Side::Buy, 99, 5),
@@ -946,6 +1013,7 @@ mod tests {
             reference,
             price: PriceTicks::new(price),
             quantity: QuantityLots::new(quantity),
+            broker: None,
         };
         assert_eq!(
             diff_orders(&before, &after),
@@ -1033,6 +1101,7 @@ mod tests {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(10),
                 },
+                anonymous: false,
             }),
         }
     }
@@ -1109,6 +1178,7 @@ mod tests {
                     kind: OrderKind::Limit {
                         price: PriceTicks::new(price),
                     },
+                    anonymous: false,
                 },
             },
         };

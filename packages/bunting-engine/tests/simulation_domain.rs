@@ -154,6 +154,7 @@ fn limit(
             kind: OrderKind::Limit {
                 price: PriceTicks::new(price),
             },
+            anonymous: false,
         }),
     }
 }
@@ -522,6 +523,7 @@ fn post_only_order_rests_and_replays() {
                 post_only: true,
                 display_quantity: None,
             },
+            anonymous: false,
         }),
     };
     let state = active.transition(&submit).unwrap().candidate;

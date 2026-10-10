@@ -2,9 +2,9 @@
 
 - Status: **Accepted** (2026-10-10). Per-venue trade and L2 feeds were
   implemented in slice 21 and the consolidated tape in slice 22 (see
-  `docs/implementation-log/`), and order-by-order (L3) feeds in slice 23.
-  The owner answered the four open questions on 2026-10-10 (below).
-  Broker identifiers are **Target**.
+  `docs/implementation-log/`), order-by-order (L3) feeds in slice 23 and
+  per-venue broker identifiers in slice 24. The owner answered the four
+  open questions on 2026-10-10 (below).
 - Date: 2026-10-10
 - Depends on: ADR 0011 (committed-sequence streams), ADR 0022 (single
   venue), ADR 0029 (owned book), ADR 0035 (latency), slice 12 (committed-event
@@ -83,6 +83,16 @@ Until slice 21, public data was request/response L2 snapshots only.
    quantity is shown. Order-level views cost O(orders) per touched
    listing per commit, so the venue computes them only once any session
    has asked for an order-by-order feed.
+8. **Broker identifiers (slice 24).** Publishing them is a venue policy:
+   a listing's `broker_ids` flag in the scenario, which every listing of
+   one venue must share. On such a venue, every displayed order (L3) and
+   every trade side (L2 and L3 direct feeds) carries its owner's broker
+   identifier, the participant ID, in `MDEntryBuyer` (288) or
+   `MDEntrySeller` (289), unless the order was sent anonymous
+   (`BuntingAnonymous` 10021=Y on `D`; carried as `SubmitOrder.anonymous`
+   and the engine's `OwnedOrder.anonymous`, so it is journaled and
+   replayed). Other venues publish no broker identifiers. The consolidated
+   tape carries none.
 
 ### Owner decisions (2026-10-10)
 
@@ -93,7 +103,7 @@ defaults:
 |---|---|---|
 | L2 only, or L3 order-by-order? | **Both**: price-level and order-by-order direct feeds. | L2 implemented (slice 21); L3 implemented (slice 23), with anonymous public references, never the owner's IDs. |
 | A consolidated (SIP-like) feed, and where? | **Yes**, or per-venue feeds only, whichever is closer to reality. Real markets run both, so Bunting has both: direct feeds per venue and one consolidated tape from a processor at the hub. | Implemented (slice 22). |
-| Broker identifiers? | **The most realistic choice.** Practice differs by market: Toronto venues show a broker number on orders and trades unless the order is marked anonymous; US venues are anonymous. So broker identifiers are a **per-venue setting**: on venues that publish them, L3 orders and trades carry the team's broker number unless the order opts out as anonymous; other venues stay anonymous. | Target, with L3; until then every feed is anonymous. |
+| Broker identifiers? | **The most realistic choice.** Practice differs by market: Toronto venues show a broker number on orders and trades unless the order is marked anonymous; US venues are anonymous. So broker identifiers are a **per-venue setting**: on venues that publish them, L3 orders and trades carry the team's broker number unless the order opts out as anonymous; other venues stay anonymous. | Implemented (slice 24). |
 | Data and colocation pricing? | **Free, with no colocation purchase** (confirmed). Locations come from the organizer's map. | Implemented (nothing to charge). Priced data or colocation would need a new owner decision. |
 
 ## Consequences
@@ -143,7 +153,12 @@ hub -> team and later than venue 2's direct feed, names each entry's
 venue, has no report gaps, and snapshot plus records equal a fresh tape
 snapshot; an L3 feed's trade names the order it hit, the partly filled
 order keeps its place, snapshot plus updates equal a fresh L3 snapshot
-whose orders sum to the L2 book, and no identity tags appear).
+whose orders sum to the L2 book, and no identity tags appear; on a venue
+that publishes broker identifiers, an anonymous offer shows no broker
+while an open one shows 289, and a trade against each names the buyer
+288 and only the open seller 289, on both L2 and L3 feeds). Engine: a
+venue whose listings disagree on `broker_ids` is rejected, and an order's
+anonymity is kept in its ownership record.
 
 ## Operational impact
 
@@ -153,9 +168,11 @@ the feeds follow it. `fix.admission.consolidated_processing_us` (default
 
 ## Security impact
 
-The public projection is an allowlist (price, quantity, side, listing):
-no participant, order, command or account identity, and hidden quantity
-never appears. A slow subscriber cannot stall the committer or other
+The public projection is an allowlist (price, quantity, side, listing,
+and an order's anonymous public reference): no order, command or account
+identity, and hidden quantity never appears. Participant identity appears
+only as a broker identifier, only on venues whose scenario says they
+publish them, and never for an order sent anonymous. A slow subscriber cannot stall the committer or other
 sessions; it is disconnected at its bounds. The consolidated processor
 never blocks the committer: changes are queued under a bound, and
 exceeding it takes only the tape down.

@@ -31,6 +31,7 @@ mod tests {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(100),
                 },
+                anonymous: false,
             }),
         })
     }

@@ -23,6 +23,7 @@ fn desired(client: u128) -> DesiredOrder {
         kind: OrderKind::Limit {
             price: PriceTicks::new(100),
         },
+        anonymous: false,
     }
 }
 

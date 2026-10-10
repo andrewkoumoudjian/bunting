@@ -194,12 +194,14 @@ log. Per-command cost no longer grows with the size of the run.
    displayed orders (`bunting_application::displayed_orders`, keyed by the
    book's time priority as the public reference) and attaches each
    commit's order changes and trade references to its public update.
+   Broker identifiers (slice 24) come from the listing's `broker_ids`
+   policy and each order's journaled `anonymous` flag
+   (`bunting_application::order_broker`, `trade_brokers`).
 
 ### Target
 
 - Resume cursors so reports missed while disconnected are replayed (today
-  they are not); per-venue broker identifiers on order-by-order feeds
-  (ADR 0036).
+  they are not).
 
 ## 7. Admission and fairness
 

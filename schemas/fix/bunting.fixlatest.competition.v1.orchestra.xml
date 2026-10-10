@@ -25,6 +25,7 @@
     <fixr:field id="10018" name="BuntingAction" type="String"/>
     <fixr:field id="10019" name="BuntingStatus" type="String"/>
     <fixr:field id="10020" name="BuntingPayloadJSON" type="data"/>
+    <fixr:field id="10021" name="BuntingAnonymous" type="String"/>
   </fixr:fields>
   <fixr:messages>
     <fixr:message id="9001" name="BuntingTender" msgType="U6" category="Bunting"/>

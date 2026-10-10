@@ -365,6 +365,8 @@ impl Feed {
                             Detail::Orders => trade.maker_reference,
                             Detail::Levels => None,
                         },
+                        buyer: trade.buyer_broker,
+                        seller: trade.seller_broker,
                     }),
             );
         }
@@ -385,6 +387,7 @@ impl Feed {
                         reference: change.reference,
                         price: change.price,
                         quantity: change.quantity,
+                        broker: change.broker,
                     });
                 }
             }
@@ -518,6 +521,8 @@ mod tests {
             price: PriceTicks::new(100),
             quantity: QuantityLots::new(1),
             maker_reference: Some(7),
+            buyer_broker: None,
+            seller_broker: None,
         });
         update.orders.push(OrderChange {
             action: OrderAction::Changed,
@@ -525,6 +530,7 @@ mod tests {
             reference: 7,
             price: PriceTicks::new(100),
             quantity: QuantityLots::new(4),
+            broker: None,
         });
         let messages = feeds.on_batch(&committed)?;
         let message = |id| {

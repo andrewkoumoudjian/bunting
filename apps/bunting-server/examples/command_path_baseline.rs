@@ -132,6 +132,7 @@ fn limit(order_id: u128, actor: ParticipantId, side: Side, price: i64, quantity:
             kind: OrderKind::Limit {
                 price: PriceTicks::new(price),
             },
+            anonymous: false,
         }),
     }
 }
@@ -199,6 +200,7 @@ fn sweep(levels: usize, rounds: usize) -> Vec<Step> {
                 side: Side::Buy,
                 quantity: QuantityLots::new(i64::try_from(levels).unwrap_or(0)),
                 kind: OrderKind::Market,
+                anonymous: false,
             }),
         });
     }

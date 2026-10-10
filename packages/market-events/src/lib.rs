@@ -89,6 +89,10 @@ pub struct SubmitOrder {
     pub side: Side,
     pub quantity: QuantityLots,
     pub kind: OrderKind,
+    /// Hides the participant's broker identifier on venues that publish
+    /// them (ADR 0036); no effect elsewhere.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

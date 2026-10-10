@@ -83,7 +83,11 @@ each order to the right venue.
   then each order added, changed (displayed quantity; it keeps its place)
   or deleted, and each trade naming the order it hit. A reference is not
   any order ID you or the venue use; an iceberg's refreshed slice gets a
-  new one. Broker numbers on venues that publish them are planned
+  new one. Some venues publish **broker numbers** (your participant ID),
+  as Toronto venues do: on those, each order you show and each side of
+  your trades names you (288 for a buyer, 289 for a seller) unless you
+  send the order with `BuntingAnonymous` (10021) = Y. The scenario says
+  which venues publish them; the consolidated tape never does
   (ADR 0036).
 
 ## Published limits

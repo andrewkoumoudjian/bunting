@@ -181,6 +181,13 @@ pub fn map_inbound(
                     side,
                     quantity,
                     kind,
+                    // BuntingAnonymous (10021): hide this order's broker
+                    // identifier on venues that publish them.
+                    anonymous: match message.value(10021) {
+                        None | Some("N") => false,
+                        Some("Y") => true,
+                        Some(_) => return Err(MappingError::InvalidTag(10021)),
+                    },
                 },
             }))
         }
@@ -400,14 +407,41 @@ pub fn market_snapshot(
     message
 }
 
+/// Broker identifiers (ADR 0036): `MDEntryBuyer` (288) and
+/// `MDEntrySeller` (289), absent where the venue publishes none or the
+/// order is anonymous.
+fn push_brokers(
+    message: &mut FixMessage,
+    buyer: Option<ParticipantId>,
+    seller: Option<ParticipantId>,
+) {
+    if let Some(buyer) = buyer {
+        message.push(288, buyer.get().to_string());
+    }
+    if let Some(seller) = seller {
+        message.push(289, seller.get().to_string());
+    }
+}
+
+/// One displayed order in an order-by-order snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotOrder {
+    pub side: Side,
+    pub reference: u64,
+    pub price: PriceTicks,
+    pub quantity: QuantityLots,
+    pub broker: Option<ParticipantId>,
+}
+
 /// An order-by-order (L3) snapshot of one listing (266=N): every displayed
 /// order by its anonymous public reference (278), bids then asks, each in
-/// matching priority with its queue position (290, from 1 per side).
+/// matching priority with its queue position (290, from 1 per side), and
+/// its broker identifier (288 or 289) where published.
 #[must_use]
 pub fn order_snapshot(
     request_id: &str,
     listing_key: ListingKey,
-    orders: &[(Side, u64, PriceTicks, QuantityLots)],
+    orders: &[SnapshotOrder],
 ) -> FixMessage {
     let mut message = FixMessage::new("W");
     message.push(262, request_id);
@@ -416,13 +450,17 @@ pub fn order_snapshot(
     message.push(266, "N");
     message.push(268, orders.len().to_string());
     let mut position = [0_u64; 2];
-    for (side, reference, price, quantity) in orders {
-        let index = usize::from(*side == Side::Sell);
+    for order in orders {
+        let index = usize::from(order.side == Side::Sell);
         position[index] = position[index].saturating_add(1);
-        message.push(269, if *side == Side::Buy { "0" } else { "1" });
-        message.push(278, reference.to_string());
-        message.push(270, price.get().to_string());
-        message.push(271, quantity.get().to_string());
+        message.push(269, if order.side == Side::Buy { "0" } else { "1" });
+        message.push(278, order.reference.to_string());
+        match order.side {
+            Side::Buy => push_brokers(&mut message, order.broker, None),
+            Side::Sell => push_brokers(&mut message, None, order.broker),
+        }
+        message.push(270, order.price.get().to_string());
+        message.push(271, order.quantity.get().to_string());
         message.push(290, position[index].to_string());
     }
     message
@@ -474,19 +512,25 @@ pub enum MarketDataIncrement {
     },
     /// One displayed order on an order-by-order feed, by its anonymous
     /// public reference (278); the displayed quantity after the change.
+    /// `broker` is the owner's broker identifier where the venue publishes
+    /// them (288 on bids, 289 on offers).
     Order {
         action: MarketDataUpdateAction,
         side: Side,
         reference: u64,
         price: PriceTicks,
         quantity: QuantityLots,
+        broker: Option<ParticipantId>,
     },
-    /// One anonymous trade; on order-by-order feeds `reference` (278) names
-    /// the resting order it executed against.
+    /// One trade; on order-by-order feeds `reference` (278) names the
+    /// resting order it executed against. `buyer` (288) and `seller` (289)
+    /// are broker identifiers where the venue publishes them.
     Trade {
         price: PriceTicks,
         quantity: QuantityLots,
         reference: Option<u64>,
+        buyer: Option<ParticipantId>,
+        seller: Option<ParticipantId>,
     },
 }
 
@@ -522,12 +566,28 @@ pub fn market_incremental(
                 reference,
                 price,
                 quantity,
+                ..
             } => (action, side_type(side), Some(reference), price, quantity),
             MarketDataIncrement::Trade {
                 price,
                 quantity,
                 reference,
+                ..
             } => (MarketDataUpdateAction::New, "2", reference, price, quantity),
+        };
+        let (buyer, seller) = match *entry {
+            MarketDataIncrement::Order {
+                side: Side::Buy,
+                broker,
+                ..
+            } => (broker, None),
+            MarketDataIncrement::Order {
+                side: Side::Sell,
+                broker,
+                ..
+            } => (None, broker),
+            MarketDataIncrement::Trade { buyer, seller, .. } => (buyer, seller),
+            MarketDataIncrement::Level { .. } => (None, None),
         };
         message.push(
             279,
@@ -543,6 +603,7 @@ pub fn market_incremental(
         if let Some(reference) = reference {
             message.push(278, reference.to_string());
         }
+        push_brokers(&mut message, buyer, seller);
         message.push(270, price.get().to_string());
         message.push(271, quantity.get().to_string());
         message.push(83, first_report_sequence.saturating_add(offset).to_string());
@@ -632,6 +693,25 @@ mod tests {
             OrderKind::Limit {
                 price: PriceTicks::new(101)
             }
+        );
+        assert!(!order.anonymous);
+        let context = MappingContext {
+            participant_id: ParticipantId::new(9),
+            next_intent_id: IntentId::new(10),
+        };
+        let mut anonymous = message.clone();
+        anonymous.push(10021, "Y");
+        let InboundApplication::Intent(ExecutionIntent::Submit { order, .. }) =
+            map_inbound(&anonymous, context)?
+        else {
+            return Err(MappingError::UnsupportedMessage);
+        };
+        assert!(order.anonymous);
+        let mut invalid = message.clone();
+        invalid.push(10021, "maybe");
+        assert_eq!(
+            map_inbound(&invalid, context),
+            Err(MappingError::InvalidTag(10021))
         );
         Ok(())
     }
@@ -747,6 +827,8 @@ mod tests {
                         price: PriceTicks::new(101),
                         quantity: QuantityLots::new(1),
                         reference: None,
+                        buyer: None,
+                        seller: None,
                     },
                 ),
             ],
@@ -809,11 +891,20 @@ mod tests {
             "l3",
             listing,
             &[
-                (Side::Buy, 4, PriceTicks::new(99), QuantityLots::new(2)),
-                (Side::Sell, 1, PriceTicks::new(101), QuantityLots::new(3)),
-                (Side::Sell, 3, PriceTicks::new(101), QuantityLots::new(1)),
-            ],
+                (Side::Buy, 4, 99, 2, Some(9)),
+                (Side::Sell, 1, 101, 3, None),
+                (Side::Sell, 3, 101, 1, Some(8)),
+            ]
+            .map(|(side, reference, price, quantity, broker)| SnapshotOrder {
+                side,
+                reference,
+                price: PriceTicks::new(price),
+                quantity: QuantityLots::new(quantity),
+                broker: broker.map(ParticipantId::new),
+            }),
         );
+        assert_eq!(snapshot.value(288), Some("9"));
+        assert_eq!(snapshot.value(289), Some("8"));
         let positions: Vec<_> = snapshot
             .fields
             .iter()
@@ -831,6 +922,8 @@ mod tests {
                         price: PriceTicks::new(101),
                         quantity: QuantityLots::new(1),
                         reference: Some(1),
+                        buyer: Some(ParticipantId::new(9)),
+                        seller: None,
                     },
                 ),
                 (
@@ -841,6 +934,7 @@ mod tests {
                         reference: 1,
                         price: PriceTicks::new(101),
                         quantity: QuantityLots::new(2),
+                        broker: None,
                     },
                 ),
             ],
@@ -852,6 +946,8 @@ mod tests {
             .map(|field| field.value.as_str())
             .collect();
         assert_eq!(references, ["1", "1"]);
+        assert_eq!(update.value(288), Some("9"));
+        assert_eq!(update.value(289), None, "anonymous seller");
         for tag in [37, 448, 1, 11, 41] {
             assert_eq!(update.value(tag), None);
         }

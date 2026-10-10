@@ -80,6 +80,7 @@ fn expected_command() -> Command {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(101),
                 },
+                anonymous: false,
             },
         },
     }

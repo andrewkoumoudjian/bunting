@@ -14,7 +14,7 @@ use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
 use bunting_application::{
     DisplayedOrder, PublicDepth, PublicListingUpdate, diff_levels, diff_orders, displayed_orders,
-    project_public_event,
+    project_public_event, trade_brokers,
 };
 use bunting_engine::RunState;
 use bunting_market_events::{EventEnvelope, EventPayload};
@@ -388,12 +388,18 @@ impl PublishingOrigin {
                     } else {
                         None
                     };
-                    Some((key, depth, orders))
+                    // Broker identifiers of this listing's trades, in order.
+                    let brokers: Vec<_> = events
+                        .iter()
+                        .filter(|event| project_public_event(event, key).is_some())
+                        .map(|event| trade_brokers(state, event))
+                        .collect();
+                    Some((key, depth, orders, brokers))
                 })
                 .collect::<Vec<_>>()
         })?;
         let mut updates = Vec::new();
-        for (key, depth, displayed) in after {
+        for (key, depth, displayed, brokers) in after {
             let levels = known.get(&key).map_or_else(
                 || diff_levels(&(Vec::new(), Vec::new()), &depth),
                 |before| diff_levels(before, &depth),
@@ -402,6 +408,10 @@ impl PublishingOrigin {
                 .iter()
                 .filter_map(|event| project_public_event(event, key))
                 .collect();
+            for (trade, (buyer, seller)) in trades.iter_mut().zip(brokers) {
+                trade.buyer_broker = buyer;
+                trade.seller_broker = seller;
+            }
             known.insert(key, depth);
             let mut orders = Vec::new();
             if let (Some(views), Some(displayed)) = (order_views.as_deref_mut(), displayed) {

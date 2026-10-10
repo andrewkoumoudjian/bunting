@@ -8,7 +8,7 @@ Orchestra repository as the normative standard dictionary. The released
 `rustyfix-dictionary` crate supplies the runtime FIXT.1.1 and FIX 5.0 SP2
 QuickFIX dictionaries; it is a validation implementation, not the normative
 source. Bunting's generated Orchestra overlay defines only project-owned
-Bunting `U*` messages plus tags `10000`-`10020` for simulation concepts. The
+Bunting `U*` messages plus tags `10000`-`10021` for simulation concepts. The
 machine-readable dictionary is
 [`schemas/fix/bunting.fixlatest.competition.v1.json`](../../schemas/fix/bunting.fixlatest.competition.v1.json).
 The existing `simfix-*` packages implement only the subset marked implemented
@@ -79,7 +79,10 @@ changes with one per-instrument 83. With 266=N a direct feed is order by
 order: its `W` lists each displayed order (269, 278 public reference, 270,
 271, 290 queue position) and its `X` entries add (279=0), change (1) or
 delete (2) orders by 278, with trades (269=2) naming the order they
-executed against in 278.
+executed against in 278. On venues that publish broker identifiers,
+order entries carry 288 (bids) or 289 (offers) and trades carry 288 and
+289, each omitted for an order sent with `BuntingAnonymous` (10021) = Y
+on `D`.
 
 Every output carries run, listing/instrument and committed sequence. Public
 state may coalesce. A gap outside retention produces `UC` reset followed by a

@@ -12,6 +12,9 @@ pub struct DesiredOrder {
     pub side: Side,
     pub quantity: QuantityLots,
     pub kind: OrderKind,
+    /// Asks the venue to hide this order's broker identifier.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

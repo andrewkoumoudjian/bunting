@@ -24,8 +24,8 @@ use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{
     ApplyFinePayload, CONSOLIDATED_EXCHANGE, CompetitionRequest, PublishNewsPayload,
-    RunAdvancePayload, RunReasonPayload, TenderAction, business_reject, competition_report,
-    consolidated_snapshot, market_snapshot, order_snapshot,
+    RunAdvancePayload, RunReasonPayload, SnapshotOrder, TenderAction, business_reject,
+    competition_report, consolidated_snapshot, market_snapshot, order_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
@@ -517,7 +517,13 @@ fn job_for(
                 .map_err(|error| format!("market projection failed: {error}"))?;
             let orders: Vec<_> = orders
                 .iter()
-                .map(|order| (order.side, order.reference, order.price, order.quantity))
+                .map(|order| SnapshotOrder {
+                    side: order.side,
+                    reference: order.reference,
+                    price: order.price,
+                    quantity: order.quantity,
+                    broker: order.broker,
+                })
                 .collect();
             Ok(vec![order_snapshot(&request_id, listing_key, &orders)])
         }),

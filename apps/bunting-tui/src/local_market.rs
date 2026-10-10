@@ -369,6 +369,7 @@ impl Market {
                 side: order.side,
                 quantity: order.quantity,
                 kind: order.kind,
+                anonymous: false,
             }),
             MAKER_ID,
         )?;
@@ -544,6 +545,7 @@ impl Market {
                         side: view.side,
                         quantity: view.quantity,
                         kind: view.kind,
+                        anonymous: false,
                     }),
                     HUMAN_ID,
                 ) {
@@ -639,6 +641,7 @@ impl Market {
                 side: previous.side,
                 quantity,
                 kind,
+                anonymous: false,
             }),
             HUMAN_ID,
         );

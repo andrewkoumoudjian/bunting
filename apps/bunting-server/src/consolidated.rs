@@ -235,6 +235,8 @@ impl ConsolidatedTape {
                             price,
                             quantity,
                             reference: None,
+                            buyer: None,
+                            seller: None,
                         },
                     )
                 })
@@ -317,6 +319,8 @@ mod tests {
                     price: PriceTicks::new(100),
                     quantity: QuantityLots::new(1),
                     maker_reference: None,
+                    buyer_broker: None,
+                    seller_broker: None,
                 }]
             } else {
                 Vec::new()

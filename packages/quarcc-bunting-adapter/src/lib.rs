@@ -65,6 +65,7 @@ impl BuntingExecutionAdapter {
                         side: order.side,
                         quantity: order.quantity,
                         kind: order.kind,
+                        anonymous: order.anonymous,
                     }),
                 )
             }
@@ -237,6 +238,7 @@ mod tests {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(8),
                 },
+                anonymous: false,
             },
         };
         let command = BuntingExecutionAdapter::default().command_for_action(
@@ -279,6 +281,7 @@ mod tests {
             kind: OrderKind::Limit {
                 price: PriceTicks::new(99),
             },
+            anonymous: false,
         };
         let events = vec![
             envelope(

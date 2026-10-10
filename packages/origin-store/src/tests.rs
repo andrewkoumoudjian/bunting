@@ -62,6 +62,7 @@ fn order(sequence: u64, id: u128, participant: u128, side: Side, price: i64) -> 
             kind: OrderKind::Limit {
                 price: PriceTicks::new(price),
             },
+            anonymous: false,
         }),
     })
 }

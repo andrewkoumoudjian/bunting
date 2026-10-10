@@ -301,6 +301,7 @@ impl BuiltInPolicy {
                 side,
                 quantity,
                 kind: OrderKind::Limit { price },
+                anonymous: false,
             },
         })
     }
@@ -594,6 +595,7 @@ impl IndividualPolicyCore {
                 side,
                 quantity,
                 kind: OrderKind::Limit { price },
+                anonymous: false,
             },
         })
     }

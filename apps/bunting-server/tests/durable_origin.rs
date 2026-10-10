@@ -98,6 +98,7 @@ fn input(run_id: u128, index: u64, expected_sequence: EventSequence) -> JournalI
             kind: OrderKind::Limit {
                 price: PriceTicks::new(90 + i64::try_from(index % 10).unwrap()),
             },
+            anonymous: false,
         })
     } else {
         CommandPayload::CancelOrder(CancelOrder {

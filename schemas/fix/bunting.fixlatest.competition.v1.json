@@ -83,7 +83,8 @@
     {"tag":10017,"name":"BuntingResourceID","type":"String"},
     {"tag":10018,"name":"BuntingAction","type":"String"},
     {"tag":10019,"name":"BuntingStatus","type":"String"},
-    {"tag":10020,"name":"BuntingPayloadJSON","type":"data","bounded":true}
+    {"tag":10020,"name":"BuntingPayloadJSON","type":"data","bounded":true},
+    {"tag":10021,"name":"BuntingAnonymous","type":"Boolean"}
   ],
   "participantCoverage": [
     "authentication",

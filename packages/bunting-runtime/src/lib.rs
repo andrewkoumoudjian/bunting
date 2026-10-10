@@ -692,6 +692,7 @@ mod tests {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(102),
                 },
+                anonymous: false,
             }),
         };
         let events = host

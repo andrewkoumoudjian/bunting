@@ -106,6 +106,11 @@ pub struct ListingDefinition {
     price_bounds: PriceBounds,
     #[serde(default)]
     fees: FeeSchedule,
+    /// Whether the venue publishes broker identifiers (ADR 0036): each
+    /// order's and trade's participant, unless the order is anonymous, as
+    /// on Toronto venues. Every listing of one venue must agree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    broker_ids: bool,
 }
 
 impl ListingDefinition {
@@ -126,7 +131,20 @@ impl ListingDefinition {
             symbol,
             price_bounds,
             fees: FeeSchedule::default(),
+            broker_ids: false,
         })
+    }
+
+    /// Sets whether the venue publishes broker identifiers on this listing.
+    #[must_use]
+    pub const fn with_broker_ids(mut self, broker_ids: bool) -> Self {
+        self.broker_ids = broker_ids;
+        self
+    }
+
+    #[must_use]
+    pub const fn broker_ids(&self) -> bool {
+        self.broker_ids
     }
 
     /// Replaces the listing fee schedule.
@@ -417,6 +435,33 @@ impl ScenarioDefinition {
         Ok(self)
     }
 
+    /// Every listing names a defined instrument, has valid bounds, and
+    /// shares its venue's broker-identifier policy.
+    fn validate_listings(&self) -> Result<(), ScenarioError> {
+        for (key, listing) in &self.listings {
+            if key.venue_id.get() == 0
+                || key.instrument_id.get() == 0
+                || *key != listing.key
+                || listing.symbol.is_empty()
+                || listing.symbol.len() > 128
+                || !self.instruments.contains_key(&key.instrument_id)
+            {
+                return Err(ScenarioError::InvalidListing);
+            }
+            listing
+                .price_bounds
+                .validate(listing.price_bounds.min)
+                .map_err(|_| ScenarioError::InvalidListing)?;
+            // Broker identifiers are a venue's policy, not a listing's.
+            if self.listings.values().any(|other| {
+                other.key.venue_id == key.venue_id && other.broker_ids != listing.broker_ids
+            }) {
+                return Err(ScenarioError::InvalidListing);
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), ScenarioError> {
         if self.schema_version != SCENARIO_SCHEMA_VERSION {
             return Err(ScenarioError::UnsupportedSchemaVersion);
@@ -467,21 +512,7 @@ impl ScenarioDefinition {
         {
             return Err(ScenarioError::InvalidCurrency);
         }
-        for (key, listing) in &self.listings {
-            if key.venue_id.get() == 0
-                || key.instrument_id.get() == 0
-                || *key != listing.key
-                || listing.symbol.is_empty()
-                || listing.symbol.len() > 128
-                || !self.instruments.contains_key(&key.instrument_id)
-            {
-                return Err(ScenarioError::InvalidListing);
-            }
-            listing
-                .price_bounds
-                .validate(listing.price_bounds.min)
-                .map_err(|_| ScenarioError::InvalidListing)?;
-        }
+        self.validate_listings()?;
         for (participant_id, participant) in &self.participants {
             if *participant_id != participant.participant_id
                 || participant.initial_positions.len() > MAX_INSTRUMENTS
@@ -705,6 +736,9 @@ pub struct OwnedOrder {
     /// Whether the order expires at its listing's session close.
     #[serde(default)]
     pub day: bool,
+    /// Hides the owner's broker identifier where the venue publishes them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
 }
 
 /// Authoritative state for one venue listing, including its live book.
@@ -1408,6 +1442,7 @@ impl RunState {
                 reservation: admission.reservation,
                 expires_at,
                 day: time_in_force == TimeInForcePolicy::Day,
+                anonymous: order.anonymous,
             },
         );
         let count = self.live_orders.entry(order.participant_id).or_insert(0);
@@ -2072,6 +2107,7 @@ mod tests {
                 kind: OrderKind::Limit {
                     price: PriceTicks::new(price),
                 },
+                anonymous: false,
             }),
         }
     }
@@ -2099,6 +2135,7 @@ mod tests {
                 side,
                 quantity: QuantityLots::new(quantity),
                 kind: OrderKind::Market,
+                anonymous: false,
             }),
         }
     }
@@ -2422,6 +2459,41 @@ mod tests {
                 .reserved,
             MoneyMinor::new(500)
         );
+    }
+
+    #[test]
+    fn broker_identifiers_are_a_venue_policy_and_orders_remember_anonymity() {
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let one = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let two = ListingKey::new(VenueId::new(1), InstrumentId::new(2));
+        let build = |second_publishes| {
+            ScenarioDefinition::new(
+                ScenarioId::new(33),
+                ScenarioVersion::new(1),
+                instruments(),
+                [
+                    ListingDefinition::new(one, "ONE".into(), bounds)
+                        .unwrap()
+                        .with_broker_ids(true),
+                    ListingDefinition::new(two, "TWO".into(), bounds)
+                        .unwrap()
+                        .with_broker_ids(second_publishes),
+                ],
+                [participant(1)],
+            )
+        };
+        assert_eq!(build(false).err(), Some(ScenarioError::InvalidListing));
+        let scenario = build(true).unwrap();
+        let state =
+            RunState::from_scenario(RunId::new(33), IterationId::new(1), &scenario).unwrap();
+        assert!(state.listings()[&one].definition().broker_ids());
+        let mut order = at_listing(submit(&state, 1, 1, 1, 1, Side::Buy, 50, 1), one);
+        if let CommandPayload::SubmitOrderAtListing { order, .. } = &mut order.payload {
+            order.anonymous = true;
+        }
+        let outcome = apply(state, &order);
+        assert!(outcome.accepted);
+        assert!(outcome.candidate.ownership()[&OrderId::new(1)].anonymous);
     }
 
     #[test]
