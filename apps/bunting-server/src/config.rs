@@ -70,18 +70,74 @@ pub struct FixConfig {
     pub roster: Vec<RosterEntry>,
     pub heartbeat_seconds: u32,
     pub max_connections: usize,
-    pub matching_interval_ms: u64,
+    /// Window for `max_messages_per_interval`, a per-participant rate limit.
+    /// It has no effect on ordering (ADR 0034).
+    pub rate_limit_window_ms: u64,
     pub max_messages_per_interval: usize,
     /// Removed: the per-participant live-order cap is the scenario's
     /// `max_live_orders` risk limit, enforced by the engine. Present only so a
     /// stale configuration fails with an explanation instead of being ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_open_orders: Option<usize>,
-    pub max_interval_queue: usize,
     pub max_message_bytes: usize,
     pub max_journal_messages: usize,
     pub max_pending_inbound: usize,
     pub tls: TlsConfig,
+    /// Latency-modeled admission (ADR 0030 as amended by ADR 0034).
+    pub admission: AdmissionConfig,
+    /// Removed with the ADR 0024 interval writer; present only so a stale
+    /// configuration fails with an explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matching_interval_ms: Option<u64>,
+    /// Removed with the ADR 0024 interval writer (see `admission`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_interval_queue: Option<usize>,
+}
+
+/// Which round trips feed the one-way delay estimate (ADR 0034 §2).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RttSources {
+    /// Kernel TCP RTT and FIX probes; the smaller wins. Requires that the
+    /// venue terminates the participant's TCP connection itself.
+    KernelAndProbe,
+    /// FIX probes only, for deployments behind a TCP- or TLS-terminating
+    /// proxy, where the kernel would measure the proxy hop.
+    ProbeOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionConfig {
+    /// Published before the round; never changed during it.
+    pub policy: bunting_admission_sequencer::LatencyPolicy,
+    pub rtt_sources: RttSources,
+    /// Interval between latency probes after the logon burst.
+    pub probe_interval_ms: u64,
+    /// Commands waiting for release, across all sessions.
+    pub max_admission_queue: usize,
+    /// Outbound messages one session may have held; overflow disconnects.
+    pub max_outbound_hold: usize,
+}
+
+impl AdmissionConfig {
+    /// Equalized admission with the given `D` in microseconds.
+    #[must_use]
+    pub fn equalized(max_one_way_delay_us: u64) -> Self {
+        Self {
+            policy: bunting_admission_sequencer::LatencyPolicy {
+                mode: bunting_admission_sequencer::AdmissionMode::Equalized,
+                max_one_way_delay_us,
+                jitter_seed: 0,
+                default_path: bunting_admission_sequencer::PathLatency::default(),
+                paths: Vec::new(),
+            },
+            rtt_sources: RttSources::KernelAndProbe,
+            probe_interval_ms: 1_000,
+            max_admission_queue: 4_096,
+            max_outbound_hold: 4_096,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -184,14 +240,18 @@ impl ServerConfig {
                 ],
                 heartbeat_seconds: 30,
                 max_connections: 2,
-                matching_interval_ms: 100,
+                rate_limit_window_ms: 100,
                 max_messages_per_interval: 64,
                 max_open_orders: None,
-                max_interval_queue: 256,
                 max_message_bytes: 16_384,
                 max_journal_messages: 4_096,
                 max_pending_inbound: 64,
                 tls: TlsConfig::Disabled,
+                // Loopback: a small `D` keeps the local loop fast while still
+                // exercising the equalized path.
+                admission: AdmissionConfig::equalized(5_000),
+                matching_interval_ms: None,
+                max_interval_queue: None,
             }),
             admin: Some(AdminConfig {
                 bind: "127.0.0.1:8080".to_owned(),
@@ -416,23 +476,54 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
                 .to_owned(),
         ));
     }
+    if fix.matching_interval_ms.is_some() || fix.max_interval_queue.is_some() {
+        return Err(ConfigError(
+            "fix.matching_interval_ms and fix.max_interval_queue were removed with the ADR 0024 interval writer: set fix.rate_limit_window_ms for the message-rate window and fix.admission for latency-modeled admission (ADR 0034)"
+                .to_owned(),
+        ));
+    }
+    validate_admission(&fix.admission, &fix.tls)?;
     if fix.max_connections == 0
         || fix.max_connections > fix.roster.len()
-        || !(1..=60_000).contains(&fix.matching_interval_ms)
+        || !(1..=60_000).contains(&fix.rate_limit_window_ms)
         || fix.max_messages_per_interval == 0
-        || fix.max_interval_queue == 0
         || !(256..=1_048_576).contains(&fix.max_message_bytes)
         || fix.max_journal_messages == 0
         || fix.max_pending_inbound == 0
         || fix.heartbeat_seconds == 0
     {
         return Err(ConfigError(
-            "FIX bounds are invalid; max_connections must fit the roster, matching_interval_ms must be 1..=60000, and message, interval queue, wire, heartbeat, journal and pending limits must be positive"
+            "FIX bounds are invalid; max_connections must fit the roster, rate_limit_window_ms must be 1..=60000, and message, wire, heartbeat, journal and pending limits must be positive"
                 .to_owned(),
         ));
     }
     if profile == DeploymentProfile::HostedNative {
         validate_tls(bind, &fix.tls, "fix")?;
+    }
+    Ok(())
+}
+
+fn validate_admission(admission: &AdmissionConfig, tls: &TlsConfig) -> Result<(), ConfigError> {
+    admission
+        .policy
+        .validate()
+        .map_err(|error| ConfigError(format!("fix.admission.policy: {error}")))?;
+    if matches!(tls, TlsConfig::Terminated { .. })
+        && admission.rtt_sources == RttSources::KernelAndProbe
+    {
+        return Err(ConfigError(
+            "fix.admission.rtt_sources must be probe_only behind a TLS-terminating proxy: the kernel would measure the proxy hop and withhold compensation from distant participants"
+                .to_owned(),
+        ));
+    }
+    if !(50..=60_000).contains(&admission.probe_interval_ms)
+        || admission.max_admission_queue == 0
+        || admission.max_outbound_hold == 0
+    {
+        return Err(ConfigError(
+            "fix.admission bounds are invalid; probe_interval_ms must be 50..=60000 and queue limits positive"
+                .to_owned(),
+        ));
     }
     Ok(())
 }
@@ -456,19 +547,49 @@ mod tests {
             }],
             heartbeat_seconds: 30,
             max_connections: 1,
-            matching_interval_ms: 100,
+            rate_limit_window_ms: 100,
             max_messages_per_interval: 64,
             max_open_orders: None,
-            max_interval_queue: 256,
             max_message_bytes: 16_384,
             max_journal_messages: 1_024,
             max_pending_inbound: 32,
             tls: TlsConfig::Disabled,
+            admission: AdmissionConfig::equalized(150_000),
+            matching_interval_ms: None,
+            max_interval_queue: None,
         };
         let Err(error) = validate_fix(&fix, DeploymentProfile::HostedNative) else {
             return;
         };
         assert!(error.0.contains("TLS is disabled"));
+    }
+
+    #[test]
+    fn removed_interval_keys_and_proxied_kernel_rtt_fail_with_explanations()
+    -> Result<(), ConfigError> {
+        let mut config = ServerConfig::local_default();
+        let Some(fix) = config.fix.as_mut() else {
+            return Err(ConfigError("local profile has FIX".to_owned()));
+        };
+        fix.matching_interval_ms = Some(100);
+        let error = config.validate().err().map(|error| error.0);
+        assert!(error.is_some_and(|text| text.contains("rate_limit_window_ms")));
+
+        let mut config = ServerConfig::local_default();
+        let Some(fix) = config.fix.as_mut() else {
+            return Err(ConfigError("local profile has FIX".to_owned()));
+        };
+        fix.tls = TlsConfig::Terminated {
+            trusted_proxy: "127.0.0.1".to_owned(),
+            require_mutual_tls: true,
+        };
+        let error = validate_admission(&fix.admission, &fix.tls)
+            .err()
+            .map(|error| error.0);
+        assert!(error.is_some_and(|text| text.contains("probe_only")));
+        fix.admission.rtt_sources = RttSources::ProbeOnly;
+        validate_admission(&fix.admission, &fix.tls)?;
+        Ok(())
     }
 
     #[test]

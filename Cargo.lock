@@ -318,6 +318,7 @@ dependencies = [
 name = "bunting-server"
 version = "0.1.0"
 dependencies = [
+ "bunting-admission-sequencer",
  "bunting-agents",
  "bunting-api-contract",
  "bunting-application",

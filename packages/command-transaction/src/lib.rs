@@ -8,7 +8,9 @@
 
 use bunting_engine::EngineError;
 use bunting_market_events::{Command, EventEnvelope, SimulationCommandRequest};
-use bunting_origin_store::{CommandResult, Executed, JournalInput, OriginError, OriginStore};
+use bunting_origin_store::{
+    AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
+};
 pub use bunting_origin_store::{command_fingerprint, simulation_command_fingerprint};
 use std::fmt;
 
@@ -82,6 +84,19 @@ where
         command: &Command,
     ) -> Result<ExecutedTransaction, TransactionError> {
         self.execute_input(&JournalInput::Command(command.clone()))
+    }
+
+    /// [`Self::execute_detailed`] for a command ordered by the admission
+    /// sequencer; the decision is journaled with the record.
+    pub fn execute_admitted(
+        &self,
+        command: &Command,
+        admission: &AdmissionRecord,
+    ) -> Result<ExecutedTransaction, TransactionError> {
+        self.origin
+            .execute_admitted(&JournalInput::Command(command.clone()), Some(admission))
+            .map(ExecutedTransaction::from)
+            .map_err(TransactionError::from)
     }
 
     /// Executes one simulation-domain command through the same origin path.

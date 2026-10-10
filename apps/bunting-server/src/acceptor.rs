@@ -1,7 +1,7 @@
+use crate::admission::AdmissionService;
 use crate::config::{FixConfig, StorageKind, TlsConfig};
 use crate::distributor::PublishingOrigin;
 use crate::session_host::handle_fix_connection;
-use crate::writer::AuthoritativeWriter;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ pub(crate) fn run(
     storage_kind: StorageKind,
     storage_path: Option<&str>,
     origin: &Arc<PublishingOrigin>,
-    writer: &Arc<AuthoritativeWriter>,
+    admission: &Arc<AdmissionService>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind FIX listener {}: {error}", config.bind))?;
@@ -31,6 +31,11 @@ pub(crate) fn run(
             .accept()
             .map_err(|error| format!("FIX accept failed: {error}"))?;
         verify_terminated_peer(&stream, &config.tls, "FIX")?;
+        // Never let the venue's own Nagle buffering delay a participant's
+        // reports (ADR 0034 §4).
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("cannot disable Nagle on FIX socket: {error}"))?;
         if active_connections.fetch_add(1, Ordering::AcqRel) >= config.max_connections {
             active_connections.fetch_sub(1, Ordering::AcqRel);
             let rejection = format!(
@@ -42,7 +47,7 @@ pub(crate) fn run(
         }
         let config = (*config).clone();
         let origin = origin.clone();
-        let writer = writer.clone();
+        let admission = admission.clone();
         let session_path = session_path.clone();
         let active_connections = active_connections.clone();
         std::thread::Builder::new()
@@ -53,7 +58,7 @@ pub(crate) fn run(
                     stream,
                     &config,
                     &origin,
-                    &writer,
+                    &admission,
                     session_path.as_deref(),
                 ) {
                     eprintln!("bunting-server: FIX connection closed: {error}");

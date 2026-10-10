@@ -17,6 +17,7 @@ bunting-market-events.workspace = true
 bunting-market-types.workspace = true
 bunting-runtime.workspace = true
 bunting-origin-store = { path = "../../packages/origin-store" }
+bunting-admission-sequencer.workspace = true
 quarcc-execution-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,7 +28,7 @@ simfix-wire.workspace = true
 time = { version = "0.3.47", features = ["formatting", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["fs"] }
+rustix = { version = "=1.1.4", features = ["fs", "net"] }
 
 [dev-dependencies]
 bunting-risk-engine = { path = "../../packages/risk-engine" }

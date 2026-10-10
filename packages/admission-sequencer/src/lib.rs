@@ -126,6 +126,16 @@ impl DelayEstimator {
     }
 
     #[must_use]
+    pub const fn kernel_min_rtt_us(&self) -> Option<u64> {
+        self.kernel_min_us
+    }
+
+    #[must_use]
+    pub const fn probe_min_rtt_us(&self) -> Option<u64> {
+        self.probe_min_us
+    }
+
+    #[must_use]
     pub const fn probe_samples(&self) -> u64 {
         self.probe_samples
     }

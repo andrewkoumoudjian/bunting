@@ -4,6 +4,7 @@
 
 mod acceptor;
 mod admin;
+mod admission;
 mod commit_journal;
 pub mod config;
 mod distributor;
@@ -11,6 +12,7 @@ pub mod runtime;
 mod scenario;
 mod session_host;
 pub mod storage;
+mod tcp_rtt;
 mod writer;
 
 pub const SERVICE_NAME: &str = "bunting-server";

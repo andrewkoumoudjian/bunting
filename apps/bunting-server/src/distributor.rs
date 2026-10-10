@@ -7,6 +7,7 @@
 //! them. Commits (and therefore publishes) happen under the authoritative
 //! writer, so every subscriber observes batches in commit order.
 
+use crate::admission::VenueClock;
 use crate::storage::NativeOrigin;
 use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
@@ -22,8 +23,16 @@ use std::sync::{Arc, Mutex};
 /// Committed batches a session may fall behind before it is disconnected.
 pub(crate) const MAX_PENDING_BATCHES: usize = 4_096;
 
-/// One committed command's canonical events, shared by every subscriber.
-pub(crate) type CommittedBatch = Arc<[EventEnvelope]>;
+/// One committed command's canonical events and its venue commit time,
+/// shared by every subscriber.
+pub(crate) struct Committed {
+    /// Venue clock (microseconds) when the commit became durable; outbound
+    /// holds are measured from here (ADR 0034 §3).
+    pub(crate) committed_us: u64,
+    pub(crate) events: Vec<EventEnvelope>,
+}
+
+pub(crate) type CommittedBatch = Arc<Committed>;
 
 struct Subscriber {
     sender: SyncSender<CommittedBatch>,
@@ -72,11 +81,14 @@ impl EventDistributor {
     /// Queues one committed batch for every subscriber without blocking the
     /// writer. A full queue marks that subscriber overflowed and drops it; the
     /// session then disconnects instead of silently skipping reports.
-    fn publish(&self, events: &[EventEnvelope]) {
+    fn publish(&self, events: &[EventEnvelope], committed_us: u64) {
         if events.is_empty() {
             return;
         }
-        let batch: CommittedBatch = Arc::from(events.to_vec());
+        let batch: CommittedBatch = Arc::new(Committed {
+            committed_us,
+            events: events.to_vec(),
+        });
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
         };
@@ -145,13 +157,15 @@ impl Drop for Subscription<'_> {
 pub(crate) struct PublishingOrigin {
     inner: NativeOrigin,
     distributor: EventDistributor,
+    clock: VenueClock,
 }
 
 impl PublishingOrigin {
-    pub(crate) fn new(inner: NativeOrigin, capacity: usize) -> Self {
+    pub(crate) fn new(inner: NativeOrigin, capacity: usize, clock: VenueClock) -> Self {
         Self {
             inner,
             distributor: EventDistributor::new(capacity),
+            clock,
         }
     }
 
@@ -173,7 +187,8 @@ impl OriginStore for PublishingOrigin {
         let executed = self.inner.execute_admitted(input, admission)?;
         // A duplicate's events were published when it first committed.
         if !executed.duplicate {
-            self.distributor.publish(&executed.events);
+            self.distributor
+                .publish(&executed.events, self.clock.now_us());
         }
         Ok(executed)
     }
@@ -222,14 +237,14 @@ mod tests {
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
         let first = distributor.subscribe()?;
-        distributor.publish(&[event(1)]);
+        distributor.publish(&[event(1)], 1);
         let second = distributor.subscribe()?;
-        distributor.publish(&[event(2), event(3)]);
-        distributor.publish(&[]);
+        distributor.publish(&[event(2), event(3)], 2);
+        distributor.publish(&[], 3);
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
-                .flat_map(|batch| batch.iter().map(|event| event.sequence.get()))
+                .flat_map(|batch| batch.events.iter().map(|event| event.sequence.get()))
                 .collect()
         };
         assert_eq!(sequences(first.drain()?), vec![1, 2, 3]);
@@ -246,10 +261,10 @@ mod tests {
         let slow = distributor.subscribe()?;
         let fast = distributor.subscribe()?;
         for sequence in 1..=2 {
-            distributor.publish(&[event(sequence)]);
+            distributor.publish(&[event(sequence)], sequence);
         }
         assert_eq!(fast.drain()?.len(), 2);
-        distributor.publish(&[event(3)]);
+        distributor.publish(&[event(3)], 3);
         assert!(slow.drain().is_err());
         assert_eq!(fast.drain()?.len(), 1);
         assert_eq!(distributor.subscriber_count(), 1);

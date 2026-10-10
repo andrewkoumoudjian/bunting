@@ -1,3 +1,4 @@
+use crate::admission::AdmissionService;
 use crate::config::AdminConfig;
 use crate::session_host::constant_time_eq;
 use crate::storage::NativeOrigin;
@@ -7,12 +8,16 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-pub(crate) fn run(config: &AdminConfig, origin: &NativeOrigin) -> Result<(), String> {
+pub(crate) fn run(
+    config: &AdminConfig,
+    origin: &NativeOrigin,
+    admission: Option<&AdmissionService>,
+) -> Result<(), String> {
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind admin listener {}: {error}", config.bind))?;
     for accepted in listener.incoming() {
         let mut stream = accepted.map_err(|error| format!("admin accept failed: {error}"))?;
-        handle(&mut stream, config, origin)?;
+        handle(&mut stream, config, origin, admission)?;
     }
     Ok(())
 }
@@ -21,6 +26,7 @@ fn handle(
     stream: &mut TcpStream,
     config: &AdminConfig,
     origin: &NativeOrigin,
+    admission: Option<&AdmissionService>,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -38,15 +44,22 @@ fn handle(
             &serde_json::json!({"status":"ok","service":crate::SERVICE_NAME}),
         );
     }
+    if first == "GET /admin/admission HTTP/1.1" {
+        if !authorized(request, config) {
+            return write_http(stream, 401, &serde_json::json!({"error":"unauthorized"}));
+        }
+        // Per-connection d̂, sources and warnings (ADR 0034 operational
+        // impact): organizers publish D from this before a round.
+        return match admission {
+            Some(admission) => write_http(stream, 200, &admission.health()),
+            None => write_http(stream, 404, &serde_json::json!({"error":"no_fix_listener"})),
+        };
+    }
     if let Some(run) = first
         .strip_prefix("GET /admin/runs/")
         .and_then(|value| value.strip_suffix(" HTTP/1.1"))
     {
-        let authorized = request.lines().any(|line| {
-            line.strip_prefix("Authorization: Bearer ")
-                .is_some_and(|value| constant_time_eq(value, &config.bearer_token))
-        });
-        if !authorized {
+        if !authorized(request, config) {
             return write_http(stream, 401, &serde_json::json!({"error":"unauthorized"}));
         }
         let run_id = run
@@ -69,6 +82,13 @@ fn handle(
         };
     }
     write_http(stream, 404, &serde_json::json!({"error":"not_found"}))
+}
+
+fn authorized(request: &str, config: &AdminConfig) -> bool {
+    request.lines().any(|line| {
+        line.strip_prefix("Authorization: Bearer ")
+            .is_some_and(|value| constant_time_eq(value, &config.bearer_token))
+    })
 }
 
 fn write_http(stream: &mut TcpStream, status: u16, body: &serde_json::Value) -> Result<(), String> {

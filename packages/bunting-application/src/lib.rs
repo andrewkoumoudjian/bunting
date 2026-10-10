@@ -199,6 +199,19 @@ where
             .map_err(ApplicationError::from)
     }
 
+    /// [`Self::execute`] for a command ordered by the admission sequencer.
+    pub fn execute_admitted(
+        &self,
+        actor: &VerifiedActor,
+        command: &Command,
+        admission: &bunting_origin_store::AdmissionRecord,
+    ) -> Result<ExecutedTransaction, ApplicationError> {
+        authorize_command(actor, command)?;
+        CommandTransaction::new(self.origin)
+            .execute_admitted(command, admission)
+            .map_err(ApplicationError::from)
+    }
+
     /// Executes one authenticated simulation-domain command and returns committed facts.
     pub fn execute_simulation(
         &self,
