@@ -18,6 +18,11 @@ client stack delay counts as it is (ADR 0035).
   provider). No other TLS version, no plaintext, no proxy termination.
 - Mutual authentication. The client certificate must chain to the operator CA
   configured as `bnp.client_ca` and must not be revoked by any configured CRL.
+  The venue re-reads the CA and CRL files every second (ADR 0041): new
+  handshakes use the current files, and a live session whose certificate no
+  longer verifies receives `Logout` ("certificate no longer trusted") and is
+  closed. An unreadable file, or a listed CRL file with no CRL, keeps the
+  previous trust.
 - **Identity is the leaf certificate's SHA-256 fingerprint** (lowercase hex of
   the DER encoding) looked up in the run's roster (`bnp.roster`). The subject
   and SANs carry no authority. An unregistered fingerprint receives `Logout`
@@ -28,7 +33,7 @@ client stack delay counts as it is (ADR 0035).
 - One live BNP session per participant. A second connection waits briefly for
   the first to close, then is refused with `Logout`. FIX and BNP sessions of
   the same participant are independent.
-- `bunting-trader fingerprint --cert team.pem` prints the value an operator
+- `bunting-trader fingerprint team.pem` prints the value an operator
   registers.
 
 ## Framing

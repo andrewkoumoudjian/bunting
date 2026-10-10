@@ -5,7 +5,8 @@
   codec candidate (`postcard`) is replaced by a fixed binary layout, and
   identity comes from the registered certificate fingerprint rather than the
   certificate subject. ADR 0031's interface decision (FIX plus BNP only)
-  stands.
+  stands. Its operational impact (revocation needs a restart) is amended by
+  [ADR 0041](0041-bnp-live-certificate-revocation.md): CRLs reload live.
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
 ## Context
@@ -116,8 +117,8 @@ resume window.
 
 A `bnp` block in the server config names the bind address, server
 certificate and key, client CA, CRLs, roster and limits; `bunting-trader
-fingerprint` prints the value to register. CRLs are read at start-up; a
-revocation needs a restart in v1.
+fingerprint` prints the value to register. CRLs were read at start-up only
+in slice 25; since slice 29 they reload live (ADR 0041).
 
 ## Security impact
 

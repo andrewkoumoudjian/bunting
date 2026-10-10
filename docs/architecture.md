@@ -243,7 +243,7 @@ host.
 
 **Target (ADR 0031):** instructor/admin control and run/news streams over
 BNP; L3 and consolidated feeds over BNP; the TUI, a GUI app and bindings on
-`bunting-client`; a FIX/BNP parity test. Nothing else accepts participant
+`bunting-client`. Nothing else accepts participant
 traffic.
 
 ## 9. Persistence, replay and archive

@@ -110,8 +110,18 @@ BNP listener.
    They check the connection with
    `bunting-trader --server venue.example.org:9881 --ca ca.pem --cert team1.pem --key team1.key account`
    (or set `BUNTING_SERVER`, `BUNTING_CA`, `BUNTING_CERT`, `BUNTING_KEY`).
-4. To revoke a certificate, add a CRL from the CA to `revocation_lists` (or
-   remove its roster entry) and restart; CRLs are read at start-up only.
+4. To revoke a certificate, issue a new CRL from the CA and replace the file
+   named in `revocation_lists` atomically (write a new file, then rename it
+   over the old one). The venue checks the file every second: the team's live
+   session is logged out and its certificate can no longer connect, with no
+   restart ([ADR 0041](docs/adr/0041-bnp-live-certificate-revocation.md)).
+   A file that does not parse is ignored and the previous list stays in
+   force. A CRL file must be listed at start-up to be watched; roster edits
+   still need a restart. Any tool that writes a PEM CRL signed by the CA
+   works; the OpenSSL commands in step 1 keep no CA index, so CAs that need
+   revocation should be run with `openssl ca` (which does), or another CA
+   tool. List an initial (empty) CRL at start-up so there is a file to
+   replace.
 
 A BNP client that reconnects with its cursor (`--resume-after`) receives the
 reports it missed while the venue still retains them (the latest 16,384

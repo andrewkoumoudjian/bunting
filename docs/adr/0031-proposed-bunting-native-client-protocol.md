@@ -5,9 +5,10 @@
   stream with resume, direct L2 feeds and the reference client are built per
   [ADR 0040](0040-bunting-native-protocol-v1.md), which replaces this ADR's
   codec candidate (fixed binary layout, not `postcard`) and identity mapping
-  (registered certificate fingerprint, not subject). Instructor/admin
-  control, run/news streams, CRL reload, the TUI migration, bindings and the
-  FIX/BNP parity test remain Target.
+  (registered certificate fingerprint, not subject). Since slice 29 the
+  FIX/BNP parity test (validation 4) runs and CRLs reload live
+  ([ADR 0041](0041-bnp-live-certificate-revocation.md)). Instructor/admin
+  control, run/news streams, the TUI migration and bindings remain Target.
 - Would supersede: the browser procedure contract's role in ADR 0016/0020
   (`bunting-api-contract` browser procedures, `browser-wire`,
   `schemas/browser`), which has had no server since the Worker removal
