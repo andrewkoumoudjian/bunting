@@ -1,4 +1,4 @@
-use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Reply};
+use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Reply, reply_task};
 use crate::config::{FixConfig, RosterEntry};
 use crate::distributor::PublishingOrigin;
 use crate::wake::{SessionEvent, Waker};
@@ -354,12 +354,13 @@ fn admit_message(
         destination,
         floor_us: release_floors.get(&destination).copied().unwrap_or(0),
     };
-    match context.admission.admit(
-        &inbound,
+    let task = reply_task(
         work,
         reply_to.replies.clone(),
         reply_to.waker.clone(),
-    ) {
+        destination,
+    );
+    match context.admission.admit(&inbound, task) {
         Ok(record) => {
             release_floors.insert(destination, record.release_us);
             Ok(None)

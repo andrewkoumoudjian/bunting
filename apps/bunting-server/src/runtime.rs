@@ -3,7 +3,6 @@ use crate::config::AdmissionConfig;
 use crate::config::ServerConfig;
 use crate::distributor::{MAX_PENDING_BATCHES, PublishingOrigin};
 use crate::storage::NativeOrigin;
-use crate::writer::AuthoritativeWriter;
 use bunting_engine::RunState;
 use bunting_engine::ScenarioDefinition;
 use bunting_market_types::{IterationId, RunId};
@@ -18,12 +17,15 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
     bootstrap_run(config, &origin)?;
     let clock = VenueClock::start();
     let origin = Arc::new(PublishingOrigin::new(origin, MAX_PENDING_BATCHES, clock));
-    let writer = Arc::new(AuthoritativeWriter::new());
-    let admission = config
-        .fix
-        .as_ref()
-        .map(|fix| AdmissionService::new(clock, fix.admission.clone()).map(Arc::new))
-        .transpose()?;
+    // Every command, from FIX sessions and built-in agents alike, is
+    // admitted by one sequencer: the only thread that commits.
+    let admission = Arc::new(AdmissionService::new(
+        clock,
+        config
+            .fix
+            .as_ref()
+            .map_or_else(AdmissionConfig::colocated, |fix| fix.admission.clone()),
+    )?);
     let (completed, listener) = mpsc::channel();
     let mut task_count = 0_usize;
     if let Some(admin) = config.admin.clone() {
@@ -31,28 +33,28 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let admission = admission.clone();
         let completed = completed.clone();
         spawn_host("bunting-admin", completed, move || {
-            crate::admin::run(&admin, origin.inner(), admission.as_deref())
+            crate::admin::run(&admin, origin.inner(), Some(&admission))
         })?;
         task_count = task_count.saturating_add(1);
     }
-    if let Some(admission) = admission.clone() {
+    {
+        let admission = admission.clone();
         let origin = origin.clone();
-        let writer = writer.clone();
         let completed = completed.clone();
         spawn_host("bunting-sequencer", completed, move || {
-            admission.run_sequencer(&origin, &writer)
+            admission.run_sequencer(&origin)
         })?;
     }
     if let Some(runtime) = config.runtime.clone() {
         let origin = origin.clone();
-        let writer = writer.clone();
+        let admission = admission.clone();
         let completed = completed.clone();
         spawn_host("bunting-scenario", completed, move || {
-            crate::scenario::run(&runtime, &origin, &writer)
+            crate::scenario::run(&runtime, &origin, &admission)
         })?;
         task_count = task_count.saturating_add(1);
     }
-    if let (Some(fix), Some(admission)) = (config.fix.clone(), admission) {
+    if let Some(fix) = config.fix.clone() {
         let origin = origin.clone();
         let storage_kind = config.storage.kind;
         let storage_path = config.storage.path.clone();

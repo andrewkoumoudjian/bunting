@@ -28,8 +28,10 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   connections wait briefly for a slot when a reconnect races the old
   session's close. `tcp_rtt.rs` reads kernel RTT through netlink
   `sock_diag` without `unsafe`; it is published, never used for ordering.
-  `writer.rs` is only the commit gate shared with the agent runtime; route
-  built-in agents through the sequencer next (Step 4).
+  The sequencer thread is the only committer: built-in agents
+  (`scenario.rs`) submit `Task`s through the same `admit` path from their
+  map location and learn of other participants' fills from a distributor
+  subscription. Never commit from any other thread.
 - The origin owns the live runs; `storage.rs` appends one journal-format-3
   record per committed input (`commit_journal.rs`) before acknowledging and
   writes state-only checkpoints every `storage.checkpoint_interval` commands.

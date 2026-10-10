@@ -4,8 +4,8 @@
 //! after durability, through [`PublishingOrigin`]. Each FIX session subscribes
 //! and maps only its own participant's facts, so a resting maker receives its
 //! fills no matter which connection, administrator or built-in agent caused
-//! them. Commits (and therefore publishes) happen under the authoritative
-//! writer, so every subscriber observes batches in commit order.
+//! them. Commits (and therefore publishes) happen only on the admission
+//! sequencer thread, so every subscriber observes batches in commit order.
 
 use crate::admission::VenueClock;
 use crate::storage::NativeOrigin;
@@ -107,7 +107,7 @@ impl EventDistributor {
     }
 
     /// Queues one committed batch for every subscriber without blocking the
-    /// writer. A full queue marks that subscriber overflowed and drops it; the
+    /// committer. A full queue marks that subscriber overflowed and drops it; the
     /// session then disconnects instead of silently skipping reports.
     fn publish(&self, events: &[EventEnvelope], committed_us: u64, source: Endpoint) {
         if events.is_empty() {

@@ -4,14 +4,15 @@
 //! the team's real network delay is inside the stamp), the session maps and
 //! admits them without waiting, and one sequencer thread releases admitted
 //! work in `(release, arrival)` order at `t_rx + L(p, v)`: the team's
-//! virtual distance to the addressed venue. It executes under the
-//! authoritative writer gate and returns the result to the session, which
+//! virtual distance to the addressed venue. It is the only thread that
+//! commits, and it returns the result to the session, which
 //! sends every venue message `L(v, p)` after the venue produced it.
+//! Built-in agents submit through the same path from their own location
+//! (`scenario.rs`).
 
 use crate::config::AdmissionConfig;
 use crate::distributor::PublishingOrigin;
 use crate::wake::Waker;
-use crate::writer::AuthoritativeWriter;
 use bunting_admission_sequencer::{
     AdmissionError, AdmissionRecord, DelayEstimator, Endpoint, LatencyModel, RttSource, Sequencer,
 };
@@ -58,10 +59,11 @@ impl VenueClock {
     }
 }
 
-/// Everything a released job may use. The job runs on the sequencer thread
-/// while it holds the writer gate.
+/// Everything a released job may use. The job runs on the sequencer thread,
+/// the venue's only committer.
 pub(crate) struct JobContext<'a> {
     pub(crate) origin: &'a PublishingOrigin,
+    pub(crate) clock: &'a VenueClock,
     pub(crate) admission: &'a AdmissionRecord,
     /// Logical time of the release: the command's venue time.
     pub(crate) logical_time: LogicalTimeNs,
@@ -69,6 +71,30 @@ pub(crate) struct JobContext<'a> {
 
 pub(crate) type JobWork =
     Box<dyn FnOnce(&JobContext<'_>) -> Result<Vec<FixMessage>, String> + Send>;
+
+/// Released work: runs on the sequencer thread and delivers its own result
+/// without blocking.
+pub(crate) type Task = Box<dyn FnOnce(&JobContext<'_>) + Send>;
+
+/// A FIX session's work: its reply goes back on `reply`, from `source`.
+pub(crate) fn reply_task(
+    work: JobWork,
+    reply: SyncSender<Reply>,
+    waker: Waker,
+    source: Endpoint,
+) -> Task {
+    Box::new(move |context| {
+        let result = work(context);
+        // A full or closed reply channel means the session already
+        // disconnected; its committed effects stand.
+        let _ = reply.try_send(Reply {
+            result,
+            completed_us: context.clock.now_us(),
+            source,
+        });
+        waker.wake();
+    })
+}
 
 /// One inbound unit of work as the session saw it.
 pub(crate) struct Inbound<'a> {
@@ -92,13 +118,6 @@ pub(crate) struct Reply {
     pub(crate) source: Endpoint,
 }
 
-struct Job {
-    work: JobWork,
-    reply: SyncSender<Reply>,
-    waker: Waker,
-    destination: Endpoint,
-}
-
 /// One connection's published access latency (ADR 0035 §2). Teams add
 /// the published virtual table to it for each venue.
 #[derive(Clone, Debug, Serialize)]
@@ -114,7 +133,7 @@ pub(crate) struct ConnectionHealth {
 
 struct Inner {
     model: LatencyModel,
-    queue: Sequencer<Job>,
+    queue: Sequencer<Task>,
 }
 
 pub(crate) struct AdmissionService {
@@ -179,9 +198,7 @@ impl AdmissionService {
     pub(crate) fn admit(
         &self,
         inbound: &Inbound<'_>,
-        work: JobWork,
-        reply: SyncSender<Reply>,
-        waker: Waker,
+        task: Task,
     ) -> Result<AdmissionRecord, AdmissionError> {
         let mut inner = self
             .inner
@@ -194,16 +211,7 @@ impl AdmissionService {
             inbound.destination,
         )?;
         record.release_us = record.release_us.max(inbound.floor_us);
-        let record = inner.queue.admit(
-            self.clock.now_us(),
-            record,
-            Job {
-                work,
-                reply,
-                waker,
-                destination: inbound.destination,
-            },
-        )?;
+        let record = inner.queue.admit(self.clock.now_us(), record, task)?;
         drop(inner);
         self.wake.notify_all();
         Ok(record)
@@ -226,13 +234,9 @@ impl AdmissionService {
     }
 
     /// Releases due work forever. Only one thread may run this.
-    pub(crate) fn run_sequencer(
-        &self,
-        origin: &PublishingOrigin,
-        writer: &AuthoritativeWriter,
-    ) -> Result<(), String> {
+    pub(crate) fn run_sequencer(&self, origin: &PublishingOrigin) -> Result<(), String> {
         loop {
-            let (record, job) = {
+            let (record, task) = {
                 let mut inner = self
                     .inner
                     .lock()
@@ -254,22 +258,12 @@ impl AdmissionService {
                         .0;
                 }
             };
-            let result = {
-                let _gate = writer.lock()?;
-                (job.work)(&JobContext {
-                    origin,
-                    admission: &record,
-                    logical_time: self.clock.logical_time(record.release_us),
-                })
-            };
-            // A full or closed reply channel means the session already
-            // disconnected; its committed effects stand.
-            let _ = job.reply.try_send(Reply {
-                result,
-                completed_us: self.clock.now_us(),
-                source: job.destination,
+            task(&JobContext {
+                origin,
+                clock: &self.clock,
+                admission: &record,
+                logical_time: self.clock.logical_time(record.release_us),
             });
-            job.waker.wake();
         }
     }
 

@@ -60,12 +60,14 @@ FIX client (contestant engine, bunting TUI)
    ▼
 bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
    ├─ FIX acceptor: one thread per session (simfix-wire/session/mapping),
-   │   each subscribed to the committed-event distributor (20 ms delivery poll)
+   │   each subscribed to the committed-event distributor (woken on publish)
    ├─ admin HTTP: /health, /admin/runs/<id>
-   ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
+   ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents),
+   │   submitting through the sequencer from their own location
    ├─ per-connection reader thread stamps t_rx on arrival (real delay counts)
-   ├─ admission sequencer thread: release at t_rx + L(team, venue) (ADR 0035);
-   │   venue messages sent L(venue, team) after the venue produced them
+   ├─ admission sequencer thread, the only committer: release at
+   │   t_rx + L(team, venue) (ADR 0035); venue messages sent L(venue, team)
+   │   after the venue produced them
    └─ bunting-application ─► command-transaction ─► origin store (Memory | File)
                                                       owns live RunState per run;
                                                       bunting-engine applies in place
@@ -174,7 +176,6 @@ log. Per-command cost no longer grows with the size of the run.
 
 ### Target
 
-- Built-in agents admitted through the same sequencer (Step 4).
 - The distributor gains public per-listing market-data streams and resume
   cursors so reports missed while disconnected are replayed (today they are
   not).
@@ -187,10 +188,14 @@ latency map (teams, venues and the hub at locations; team-to-team distance
 included) is added in both directions; teams choose the venue for each
 order, with no router and no trade-through protection; measured access
 latency is journaled and published on `/admin/admission`. Built-in agents
-still commit under the writer gate outside the sequencer.
+submit through the same sequencer from their location in the map (slice
+18), and the sequencer thread is the venue's only committer; agents learn
+of fills other participants cause from the committed-event distributor.
+They still read the book and receive reports without the venue-to-agent
+delay, and their runtime state is not yet persisted (Step 4).
 
 **Target:** the same model for every input — FIX, BNP, agents, schedule —
-with agents given a location in the latency map (Step 4), team-to-team
+with agents also observing over their virtual paths, team-to-team
 messages (OTC negotiation, shared data) addressed over team-to-team paths, and public
 per-venue and consolidated market-data feeds delivered over the same
 virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).

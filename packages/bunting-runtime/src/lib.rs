@@ -120,12 +120,21 @@ pub trait RuntimeHost {
     ) -> Result<T, RuntimeError>;
 
     /// Commits through the application's authenticated transaction boundary and
-    /// returns only committed events.
+    /// returns only committed events: this command's, preceded by any other
+    /// participants' commits the host has not yet returned, in commit order.
     fn commit(
         &mut self,
         actor: &VerifiedActor,
         command: &bunting_market_events::Command,
     ) -> Result<Vec<EventEnvelope>, RuntimeError>;
+
+    /// Events other participants committed since the host last returned
+    /// events, in commit order. Agents learn of fills on their resting
+    /// orders, and of trades, from these. Hosts whose runtime is the only
+    /// committer return nothing.
+    fn take_committed(&mut self) -> Result<Vec<EventEnvelope>, RuntimeError> {
+        Ok(Vec::new())
+    }
 }
 
 struct ScheduledAgent {
@@ -235,6 +244,10 @@ impl DeterministicRuntime {
                 .get()
                 .max(self.logical_time.get().saturating_add(1)),
         );
+        let mut pending = VecDeque::new();
+        let elsewhere = host.take_committed()?;
+        self.observe_trades(&elsewhere);
+        self.dispatch(&elsewhere, &mut pending)?;
         let observation =
             host.read_state(self.config.run_id, |state| self.observation(state))??;
         let due = self
@@ -245,7 +258,6 @@ impl DeterministicRuntime {
                 (agent.next_wake.logical_time <= self.logical_time).then_some(index)
             })
             .collect::<Vec<_>>();
-        let mut pending = VecDeque::new();
         for index in due {
             let position = self.agents[index]
                 .managed
@@ -415,6 +427,8 @@ mod tests {
     struct MemoryHost {
         state: RunState,
         roles: Vec<ActorRole>,
+        /// Events other participants committed, not yet taken.
+        elsewhere: Vec<EventEnvelope>,
     }
 
     impl RuntimeHost for MemoryHost {
@@ -439,7 +453,14 @@ mod tests {
                 .map(|applied| applied.events)
                 .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))
         }
+
+        fn take_committed(&mut self) -> Result<Vec<EventEnvelope>, RuntimeError> {
+            Ok(std::mem::take(&mut self.elsewhere))
+        }
     }
+
+    /// A team trading with the built-in agent from outside the runtime.
+    const TEAM: u128 = 20;
 
     fn fixture() -> Result<(RuntimeConfig, MemoryHost), RuntimeError> {
         let instrument_id = InstrumentId::new(1);
@@ -451,17 +472,19 @@ mod tests {
                 .map_err(|_| RuntimeError::InvalidMarket)?,
         )
         .map_err(|_| RuntimeError::InvalidMarket)?;
-        let participant = ParticipantDefinition::new(
-            participant_id,
-            true,
-            RiskLimits::new(
-                QuantityLots::new(100),
-                QuantityLots::new(1_000),
-                QuantityLots::new(10_000),
-            ),
-            BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000_000))]),
-            BTreeMap::from([(instrument_id, QuantityLots::new(100))]),
-        );
+        let funded = |id: ParticipantId| {
+            ParticipantDefinition::new(
+                id,
+                true,
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(10_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000_000))]),
+                BTreeMap::from([(instrument_id, QuantityLots::new(100))]),
+            )
+        };
         let scenario = ScenarioDefinition::new(
             ScenarioId::new(1),
             ScenarioVersion::new(1),
@@ -473,7 +496,7 @@ mod tests {
             )
             .with_opening_mark(PriceTicks::new(100))],
             [listing],
-            [participant],
+            [funded(participant_id), funded(ParticipantId::new(TEAM))],
         )
         .map_err(|_| RuntimeError::InvalidMarket)?;
         let state = RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario)
@@ -500,6 +523,7 @@ mod tests {
             MemoryHost {
                 state,
                 roles: Vec::new(),
+                elsewhere: Vec::new(),
             },
         ))
     }
@@ -539,6 +563,59 @@ mod tests {
                 .map_err(|_| RuntimeError::InvalidSnapshot)?
         );
         assert_eq!(uninterrupted.snapshot(), resumed.snapshot());
+        Ok(())
+    }
+
+    #[test]
+    fn agents_learn_of_fills_caused_by_other_participants() -> Result<(), RuntimeError> {
+        use bunting_market_events::{Command, CommandPayload, OrderKind, Side, SubmitOrder};
+        use bunting_market_types::{CommandId, OrderId};
+        let (config, mut host) = fixture()?;
+        let mut runtime = DeterministicRuntime::new(config)?;
+        runtime.advance(&mut host)?;
+        let position = |runtime: &DeterministicRuntime| {
+            runtime.snapshot().agents[0]
+                .managed
+                .execution
+                .positions
+                .get(&InstrumentId::new(1))
+                .map_or(0, |position| position.quantity.get())
+        };
+        assert_eq!(position(&runtime), 0);
+        // The team lifts the agent's whole 102 offer; the runtime commits
+        // nothing itself and learns of the fill only from the host.
+        let lift = Command {
+            run_id: RunId::new(1),
+            command_id: CommandId::new(900),
+            correlation_id: CorrelationId::new(900),
+            logical_time: LogicalTimeNs::new(10),
+            expected_sequence: host.state.sequence(),
+            actor: ParticipantId::new(TEAM),
+            payload: CommandPayload::SubmitOrder(SubmitOrder {
+                order_id: OrderId::new(900),
+                instrument_id: InstrumentId::new(1),
+                participant_id: ParticipantId::new(TEAM),
+                side: Side::Buy,
+                quantity: QuantityLots::new(5),
+                kind: OrderKind::Limit {
+                    price: PriceTicks::new(102),
+                },
+            }),
+        };
+        let events = host
+            .state
+            .apply(&lift)
+            .map_err(|error| RuntimeError::Host(format!("{error:?}")))?
+            .events;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::TradeExecuted { .. }))
+        );
+        host.elsewhere = events;
+        runtime.advance(&mut host)?;
+        assert_eq!(position(&runtime), -5, "the agent knows it sold 5");
+        assert_eq!(runtime.snapshot().last_trade, PriceTicks::new(102));
         Ok(())
     }
 }
