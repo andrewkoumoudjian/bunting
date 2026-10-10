@@ -45,10 +45,11 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0027 | WASIX — **current packaging only**, host still open |
 | 0028 | Headless run authority, single ledger, live state, full replay |
 | 0029 | Engine-owned deterministic order book |
-| 0030 | **Target:** latency-modeled continuous admission (replaces 0024 intervals) |
+| 0030 | **Target:** latency-modeled continuous admission (replaces 0024 intervals); §1 and defaults superseded by 0034 |
 | 0031 | **Target:** FIX + certified Bunting Native Protocol only; app via `bunting-client` |
 | 0032 | NBC is reference evidence only; engine surface removed (slice 11) |
 | 0033 | Guidance reconciliation and status amendments |
+| 0034 | **Target:** fair remote admission — distance neutral, no gain from inflation, client implementation rewarded (amends 0030) |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,

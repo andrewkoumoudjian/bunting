@@ -2,6 +2,11 @@
 
 - Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
   **Target — not yet implemented**; the implementation log records each slice.
+- **Partially superseded by [ADR 0034](0034-fair-remote-admission.md)
+  (2026-10-10):** §1's delay measurement (sliding-window probe RTT) is
+  replaced by the minimum of kernel TCP RTT and lifetime probe RTT; §4's
+  outbound hold is mandatory in `equalized` and `geographic`; the default
+  mode is `equalized`. §2, §3 and §5 stand.
 - Would supersede: ADR 0024 (discrete matching intervals) and ADR 0028 item 7's
   open fairness question.
 - Depends on: ADR 0022 (single venue authority), ADR 0029 (owned book), the
