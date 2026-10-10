@@ -40,6 +40,10 @@ struct Venue {
     revoked: Issued,
     unregistered: Issued,
     foreign: Issued,
+    authority: Authority,
+    revocation_list: PathBuf,
+    revoked_serials: Vec<u64>,
+    team2_serial: u64,
 }
 
 fn free_port() -> Result<u16, String> {
@@ -84,7 +88,7 @@ fn start_venue(name: &str) -> Result<Venue, String> {
     let mut authority = Authority::new("Bunting test operator CA")?;
     let server = authority.server()?;
     let (team1, _) = authority.client("team 1")?;
-    let (team2, _) = authority.client("team 2")?;
+    let (team2, team2_serial) = authority.client("team 2")?;
     let (revoked, revoked_serial) = authority.client("revoked")?;
     let (unregistered, _) = authority.client("unregistered")?;
     let foreign = Authority::new("Somebody else's CA")?.client("foreign")?.0;
@@ -150,12 +154,16 @@ fn start_venue(name: &str) -> Result<Venue, String> {
     Ok(Venue {
         fix_port,
         bnp_port,
-        ca_pem: authority.ca_pem,
+        ca_pem: authority.ca_pem.clone(),
         team1,
         team2,
         revoked,
         unregistered,
         foreign,
+        authority,
+        revocation_list: directory.join("ca.crl"),
+        revoked_serials: vec![revoked_serial],
+        team2_serial,
     })
 }
 
@@ -527,5 +535,45 @@ fn bnp_crosses_the_same_virtual_path_as_fix() -> Result<(), String> {
         matches!(message, ServerMessage::Pong { nonce: 9, .. })
     })?;
     assert!(pinged.elapsed() < Duration::from_micros(FAR_US));
+    Ok(())
+}
+
+#[test]
+fn a_revocation_list_update_logs_out_the_live_session_without_a_restart() -> Result<(), String> {
+    let venue = start_venue("revocation")?;
+    let team1 = venue.connect(&venue.team1, None)?;
+    let team2 = venue.connect(&venue.team2, None)?;
+    // The operator revokes team 2 and replaces the CRL file in place.
+    let mut serials = venue.revoked_serials.clone();
+    serials.push(venue.team2_serial);
+    let crl = venue.authority.revocation_list(&serials)?;
+    let staged = venue.revocation_list.with_extension("crl.new");
+    std::fs::write(&staged, crl).map_err(|error| error.to_string())?;
+    std::fs::rename(&staged, &venue.revocation_list).map_err(|error| error.to_string())?;
+    // Team 2's live session is told why and closed (the client surfaces
+    // the venue's logout reason as the close).
+    let closed = until(&team2, |_| false).err().unwrap_or_default();
+    assert!(closed.contains("no longer trusted"), "{closed}");
+    // A new handshake with the revoked certificate fails.
+    let deadline = Instant::now() + TIMEOUT;
+    while Client::connect(&venue.config(&venue.team2, None)).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "revoked certificate still accepted"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A damaged CRL file is not applied: the previous trust, revocation
+    // included, stays in force.
+    std::fs::write(&venue.revocation_list, "not a CRL").map_err(|error| error.to_string())?;
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(Client::connect(&venue.config(&venue.team2, None)).is_err());
+    // Team 1 is unaffected.
+    team1
+        .send(&ClientMessage::Ping { nonce: 9 })
+        .map_err(|error| error.to_string())?;
+    until(&team1, |message| {
+        matches!(message, ServerMessage::Pong { nonce: 9, .. })
+    })?;
     Ok(())
 }

@@ -7,6 +7,8 @@ mod admin;
 mod admission;
 #[cfg(not(target_arch = "wasm32"))]
 mod bnp_host;
+#[cfg(not(target_arch = "wasm32"))]
+mod bnp_trust;
 mod commit_journal;
 pub mod config;
 mod consolidated;

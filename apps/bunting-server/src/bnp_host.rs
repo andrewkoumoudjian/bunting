@@ -16,6 +16,7 @@ use crate::acceptor::{ConnectionSlots, SLOT_WAIT};
 use crate::admission::{
     AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, Reply, reply_task,
 };
+use crate::bnp_trust::Trust;
 use crate::config::{BnpConfig, BnpRosterEntry};
 use crate::distributor::{PublishingOrigin, Resume};
 use crate::outbound::OutboundHold;
@@ -37,14 +38,12 @@ use bunting_engine::RunState;
 use bunting_market_events::{Command, Side};
 use bunting_market_types::{CorrelationId, ListingKey, ParticipantId, RunId};
 use bunting_origin_store::OriginStore;
-use rustls::pki_types::{CertificateDer, CertificateRevocationListDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig as TlsServerConfig, ServerConnection};
+use rustls::ServerConnection;
+use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 use simfix_mapping::MarketDataIncrement;
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufReader, ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
@@ -58,7 +57,8 @@ pub(crate) fn run(
     origin: &Arc<PublishingOrigin>,
     admission: &Arc<AdmissionService>,
 ) -> Result<(), String> {
-    let tls = Arc::new(tls_config(config)?);
+    let trust = Arc::new(Trust::load(config)?);
+    trust.watch(config.clone())?;
     let roster = Arc::new(roster(config)?);
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind BNP listener {}: {error}", config.bind))?;
@@ -76,7 +76,7 @@ pub(crate) fn run(
             continue;
         }
         let config = config.clone();
-        let tls = tls.clone();
+        let trust = trust.clone();
         let roster = roster.clone();
         let origin = origin.clone();
         let admission = admission.clone();
@@ -88,75 +88,13 @@ pub(crate) fn run(
                     return;
                 };
                 if let Err(error) =
-                    handle_connection(stream, &config, &tls, &roster, &origin, &admission)
+                    handle_connection(stream, &config, &trust, &roster, &origin, &admission)
                 {
                     eprintln!("bunting-server: BNP connection closed: {error}");
                 }
             })
             .map_err(|error| format!("cannot spawn BNP session: {error}"))?;
     }
-}
-
-/// TLS 1.3 only, client certificates required and verified against the
-/// operator CA and its revocation lists.
-fn tls_config(config: &BnpConfig) -> Result<TlsServerConfig, String> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let chain = read_pem(&config.certificate_chain, |reader| {
-        rustls_pemfile::certs(reader).collect::<Result<Vec<CertificateDer<'static>>, _>>()
-    })?;
-    if chain.is_empty() {
-        return Err(format!(
-            "bnp.certificate_chain {} holds no certificate",
-            config.certificate_chain
-        ));
-    }
-    let key: PrivateKeyDer<'static> = read_pem(&config.private_key, |reader| {
-        rustls_pemfile::private_key(reader)
-    })?
-    .ok_or_else(|| {
-        format!(
-            "bnp.private_key {} holds no private key",
-            config.private_key
-        )
-    })?;
-    let mut roots = RootCertStore::empty();
-    for certificate in read_pem(&config.client_ca, |reader| {
-        rustls_pemfile::certs(reader).collect::<Result<Vec<_>, _>>()
-    })? {
-        roots
-            .add(certificate)
-            .map_err(|error| format!("invalid bnp.client_ca certificate: {error}"))?;
-    }
-    if roots.is_empty() {
-        return Err(format!(
-            "bnp.client_ca {} holds no certificate",
-            config.client_ca
-        ));
-    }
-    let mut revocations: Vec<CertificateRevocationListDer<'static>> = Vec::new();
-    for path in &config.revocation_lists {
-        revocations.extend(read_pem(path, |reader| {
-            rustls_pemfile::crls(reader).collect::<Result<Vec<_>, _>>()
-        })?);
-    }
-    let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-        .with_crls(revocations)
-        .build()
-        .map_err(|error| format!("invalid BNP client verifier: {error}"))?;
-    TlsServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|error| format!("BNP TLS versions: {error}"))?
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(chain, key)
-        .map_err(|error| format!("invalid BNP server certificate or key: {error}"))
-}
-
-fn read_pem<T>(
-    path: &str,
-    read: impl FnOnce(&mut BufReader<File>) -> Result<T, std::io::Error>,
-) -> Result<T, String> {
-    let file = File::open(path).map_err(|error| format!("cannot open {path}: {error}"))?;
-    read(&mut BufReader::new(file)).map_err(|error| format!("invalid PEM in {path}: {error}"))
 }
 
 fn roster(config: &BnpConfig) -> Result<Roster, String> {
@@ -196,7 +134,7 @@ const READ_BYTES: usize = 16_384;
 fn handle_connection(
     mut stream: TcpStream,
     config: &BnpConfig,
-    tls: &Arc<TlsServerConfig>,
+    trust: &Trust,
     roster: &Roster,
     origin: &PublishingOrigin,
     admission: &AdmissionService,
@@ -206,7 +144,10 @@ fn handle_connection(
     stream
         .set_read_timeout(Some(handshake))
         .map_err(|error| format!("cannot configure BNP handshake timeout: {error}"))?;
-    let mut connection = ServerConnection::new(tls.clone())
+    // Read the generation first: a reload during the handshake makes the
+    // session re-verify against the newer trust.
+    let mut trust_generation = trust.generation();
+    let mut connection = ServerConnection::new(trust.current()?.tls.clone())
         .map_err(|error| format!("cannot start BNP TLS: {error}"))?;
     while connection.is_handshaking() {
         connection
@@ -216,10 +157,14 @@ fn handle_connection(
             return Err("BNP TLS handshake timed out".to_owned());
         }
     }
-    // The verifier proved the chain; the roster decides who it is.
-    let fingerprint: [u8; 32] = connection
+    // The verifier proved the chain; the roster decides who it is. The
+    // chain is kept so the session can re-verify it after a trust reload.
+    let peer_chain: Vec<CertificateDer<'static>> = connection
         .peer_certificates()
-        .and_then(|chain| chain.first())
+        .map(|chain| chain.iter().map(|der| der.clone().into_owned()).collect())
+        .unwrap_or_default();
+    let fingerprint: [u8; 32] = peer_chain
+        .first()
         .map(|leaf| Sha256::digest(leaf.as_ref()).into())
         .ok_or("BNP client presented no certificate")?;
     let mut channel = Channel {
@@ -438,6 +383,16 @@ fn handle_connection(
                 )? {
                     return Ok(());
                 }
+            }
+        }
+        // A reloaded revocation list applies to live sessions too.
+        if trust.generation() != trust_generation {
+            trust_generation = trust.generation();
+            if let Err(error) = trust.current()?.verify(&peer_chain) {
+                channel.send(&[ServerMessage::Logout {
+                    reason: format!("certificate no longer trusted: {error}"),
+                }])?;
+                return Err(format!("BNP client certificate no longer trusted: {error}"));
             }
         }
         if last_received.elapsed() > heartbeat.saturating_mul(3) {
