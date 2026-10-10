@@ -31,7 +31,11 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   The sequencer thread is the only committer: built-in agents
   (`scenario.rs`) submit `Task`s through the same `admit` path from their
   map location and learn of other participants' fills from a distributor
-  subscription. Never commit from any other thread.
+  subscription. Never commit from any other thread. With a file origin the
+  agent runtime checkpoints to `<origin>.agents.json` after each tick's
+  decisions and before submitting them; on restart, a pending action whose
+  command is already journaled must resolve to its recorded events, never
+  commit again.
 - The origin owns the live runs; `storage.rs` appends one journal-format-3
   record per committed input (`commit_journal.rs`) before acknowledging and
   writes state-only checkpoints every `storage.checkpoint_interval` commands.

@@ -49,8 +49,9 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let origin = origin.clone();
         let admission = admission.clone();
         let completed = completed.clone();
+        let checkpoint = crate::scenario::checkpoint_path(&config.storage);
         spawn_host("bunting-scenario", completed, move || {
-            crate::scenario::run(&runtime, &origin, &admission)
+            crate::scenario::run(&runtime, &origin, &admission, checkpoint)
         })?;
         task_count = task_count.saturating_add(1);
     }

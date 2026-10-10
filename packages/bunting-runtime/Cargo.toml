@@ -20,6 +20,7 @@ serde.workspace = true
 
 [dev-dependencies]
 bunting-risk-engine = { path = "../risk-engine" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

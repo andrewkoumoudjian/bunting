@@ -229,11 +229,22 @@ ambiguous writes; Unix-only `flock` writer lease; per-run bounds
 `max_commands_per_run` and `max_events_per_run`. `CompetitionArchive` still
 replays simulation commands only; the journal is its Step 4 input.
 
+Built-in agents (slice 19): every agent command is an ordinary journaled
+input. With a file origin the agent runtime is checkpointed next to it
+(`<origin>.agents.json`, atomic replace) once per tick, after its agents
+decide and before any decision is submitted; the checkpoint carries the
+pending actions and the event sequence handed to the agents. A restarted
+venue restores it, hands the agents other participants' commits since then,
+and re-submits the pending actions: one already in the journal resolves to
+its recorded events instead of committing again, so each agent action
+takes effect exactly once. A run with agent commands but no agent
+checkpoint, or a checkpoint for another runtime configuration, refuses to
+start.
+
 **Target (ADR 0025 as expanded by 0028 item 5):** archive = genesis snapshot +
 complete journal of every input (orders, cancels, agent commands, admin,
 schedule, admission metadata); the replayer verifies events, final hash and
-scores from genesis and from checkpoints. Built-in agent runtime snapshots are
-persisted with checkpoints so restarts resume identical RNG and wake state.
+scores from genesis and from checkpoints.
 
 ## 10. Time and calendar
 

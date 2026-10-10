@@ -197,3 +197,92 @@ pub fn cancel(client_order_id: &str, original: &str) -> FixMessage {
     message.push(54, "1");
     message
 }
+
+/// One side of a market-data snapshot: `(price, quantity)` per level.
+pub type Levels = Vec<(i64, i64)>;
+
+/// Bid and ask levels of one market-data snapshot.
+pub fn book_levels(snapshot: &FixMessage) -> (Levels, Levels) {
+    let (mut bids, mut asks) = (Vec::new(), Vec::new());
+    let mut side = None;
+    let number = |value: &str| {
+        #[allow(clippy::cast_possible_truncation)]
+        let rounded = value.parse::<f64>().unwrap_or(0.0).round() as i64;
+        rounded
+    };
+    for field in &snapshot.fields {
+        match field.tag {
+            269 => side = Some(field.value.clone()),
+            270 => match side.as_deref() {
+                Some("0") => bids.push((number(&field.value), 0)),
+                Some("1") => asks.push((number(&field.value), 0)),
+                _ => {}
+            },
+            271 => {
+                let level = match side.as_deref() {
+                    Some("0") => bids.last_mut(),
+                    Some("1") => asks.last_mut(),
+                    _ => None,
+                };
+                if let Some(level) = level {
+                    level.1 = number(&field.value);
+                }
+            }
+            _ => {}
+        }
+    }
+    (bids, asks)
+}
+
+/// Requests venue 1's book (ten levels) and returns its levels.
+pub fn book(client: &mut Client) -> Result<(Levels, Levels), String> {
+    let id = format!("book-{}", client.received.len());
+    let mut message = FixMessage::new("V");
+    for (tag, value) in [
+        (262, id.clone()),
+        (263, "0".to_owned()),
+        (264, "10".to_owned()),
+        (267, "2".to_owned()),
+        (269, "0".to_owned()),
+        (269, "1".to_owned()),
+        (48, "1".to_owned()),
+        (207, "1".to_owned()),
+    ] {
+        message.push(tag, value);
+    }
+    client.send(message)?;
+    let wanted = id.clone();
+    client.pump_until(move |client| {
+        client
+            .received
+            .iter()
+            .any(|message| message.msg_type == "W" && message.value(262) == Some(&wanted))
+    })?;
+    client
+        .received
+        .iter()
+        .rev()
+        .find(|message| message.msg_type == "W" && message.value(262) == Some(&id))
+        .map(book_levels)
+        .ok_or_else(|| "snapshot missing".to_owned())
+}
+
+/// Polls venue 1's book until `done(bid prices, ask prices)` holds.
+pub fn wait_for_book(
+    client: &mut Client,
+    done: impl Fn(&[i64], &[i64]) -> bool,
+) -> Result<(Vec<i64>, Vec<i64>), String> {
+    let prices = |levels: &Levels| levels.iter().map(|(price, _)| *price).collect::<Vec<_>>();
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let (bids, asks) = book(client)?;
+        let (bids, asks) = (prices(&bids), prices(&asks));
+        if done(&bids, &asks) {
+            return Ok((bids, asks));
+        }
+        if Instant::now() > deadline {
+            return Err(format!("book never matched: bids {bids:?} asks {asks:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

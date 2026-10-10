@@ -81,6 +81,14 @@ pub struct RuntimeAgentSnapshot {
     pub next_wake: NextWake,
 }
 
+/// One decided action not yet submitted: `agent` indexes the configured
+/// agents.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PendingAction {
+    pub agent: usize,
+    pub action: ExecutionAction,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeSnapshot {
     pub version: u16,
@@ -89,7 +97,14 @@ pub struct RuntimeSnapshot {
     pub previous_trade: PriceTicks,
     pub last_trade: PriceTicks,
     pub agents: Vec<RuntimeAgentSnapshot>,
+    /// Decided actions not yet submitted, in submission order. A runtime
+    /// restored mid-tick submits these before deciding anything new.
+    #[serde(default)]
+    pub pending: Vec<PendingAction>,
 }
+
+/// Snapshot format written by [`DeterministicRuntime::snapshot`].
+pub const RUNTIME_SNAPSHOT_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -120,8 +135,10 @@ pub trait RuntimeHost {
     ) -> Result<T, RuntimeError>;
 
     /// Commits through the application's authenticated transaction boundary and
-    /// returns only committed events: this command's, preceded by any other
-    /// participants' commits the host has not yet returned, in commit order.
+    /// returns this command's committed events. A command whose ID is
+    /// already committed (a runtime resumed from a checkpoint re-submitting
+    /// its pending actions) must not commit again: the host returns the
+    /// recorded events, so each action takes effect exactly once.
     fn commit(
         &mut self,
         actor: &VerifiedActor,
@@ -129,11 +146,20 @@ pub trait RuntimeHost {
     ) -> Result<Vec<EventEnvelope>, RuntimeError>;
 
     /// Events other participants committed since the host last returned
-    /// events, in commit order. Agents learn of fills on their resting
-    /// orders, and of trades, from these. Hosts whose runtime is the only
-    /// committer return nothing.
+    /// them, in commit order, never the runtime's own (those come from
+    /// [`Self::commit`]). Agents learn of fills on their resting orders, and
+    /// of trades, from these. Hosts whose runtime is the only committer
+    /// return nothing.
     fn take_committed(&mut self) -> Result<Vec<EventEnvelope>, RuntimeError> {
         Ok(Vec::new())
+    }
+
+    /// Durably records the runtime after a tick's decisions and before any
+    /// of them is submitted. Resuming from the latest checkpoint and
+    /// re-submitting its pending actions (see [`Self::commit`]) reproduces
+    /// an uninterrupted run.
+    fn checkpoint(&mut self, _snapshot: &RuntimeSnapshot) -> Result<(), RuntimeError> {
+        Ok(())
     }
 }
 
@@ -150,6 +176,7 @@ pub struct DeterministicRuntime {
     logical_time: LogicalTimeNs,
     previous_trade: PriceTicks,
     last_trade: PriceTicks,
+    pending: VecDeque<(usize, ExecutionAction)>,
 }
 
 impl DeterministicRuntime {
@@ -166,11 +193,18 @@ impl DeterministicRuntime {
             config,
             agents,
             logical_time: LogicalTimeNs::new(0),
+            pending: VecDeque::new(),
         })
     }
 
     pub fn restore(snapshot: RuntimeSnapshot) -> Result<Self, RuntimeError> {
-        if snapshot.version != 1 || snapshot.agents.len() != snapshot.config.agents.len() {
+        if !(1..=RUNTIME_SNAPSHOT_VERSION).contains(&snapshot.version)
+            || snapshot.agents.len() != snapshot.config.agents.len()
+            || snapshot
+                .pending
+                .iter()
+                .any(|pending| pending.agent >= snapshot.agents.len())
+        {
             return Err(RuntimeError::InvalidSnapshot);
         }
         snapshot.config.validate()?;
@@ -206,13 +240,18 @@ impl DeterministicRuntime {
             logical_time: snapshot.logical_time,
             previous_trade: snapshot.previous_trade,
             last_trade: snapshot.last_trade,
+            pending: snapshot
+                .pending
+                .into_iter()
+                .map(|pending| (pending.agent, pending.action))
+                .collect(),
         })
     }
 
     #[must_use]
     pub fn snapshot(&self) -> RuntimeSnapshot {
         RuntimeSnapshot {
-            version: 1,
+            version: RUNTIME_SNAPSHOT_VERSION,
             config: self.config.clone(),
             logical_time: self.logical_time,
             previous_trade: self.previous_trade,
@@ -227,17 +266,72 @@ impl DeterministicRuntime {
                     next_wake: agent.next_wake,
                 })
                 .collect(),
+            pending: self
+                .pending
+                .iter()
+                .map(|(agent, action)| PendingAction {
+                    agent: *agent,
+                    action: action.clone(),
+                })
+                .collect(),
         }
     }
 
+    /// The configured agents' participant IDs.
+    pub fn participants(&self) -> impl Iterator<Item = ParticipantId> + '_ {
+        self.agents.iter().map(|agent| agent.participant_id)
+    }
+
+    /// Runs one tick: unless actions decided before a restart are still
+    /// pending, takes other participants' commits, wakes due agents and
+    /// checkpoints; then submits every pending action and reacts to its
+    /// reports.
     pub fn advance<H: RuntimeHost>(&mut self, host: &mut H) -> Result<usize, RuntimeError> {
+        if self.pending.is_empty() {
+            self.decide(host)?;
+        }
+        let mut processed = 0_usize;
+        while let Some((index, action)) = self.pending.pop_front() {
+            if processed >= self.config.max_actions_per_tick {
+                return Err(RuntimeError::ActionBoundExceeded);
+            }
+            processed = processed.saturating_add(1);
+            let expected_sequence = host.read_state(self.config.run_id, RunState::sequence)?;
+            self.logical_time = LogicalTimeNs::new(self.logical_time.get().saturating_add(1));
+            let participant_id = self.agents[index].participant_id;
+            let command = self.agents[index]
+                .adapter
+                .command_for_action(
+                    &action,
+                    &BuntingCommandContext {
+                        run_id: self.config.run_id,
+                        actor: participant_id,
+                        expected_sequence,
+                        logical_time: self.logical_time,
+                        correlation_id: CorrelationId::new(u128::from(self.logical_time.get())),
+                    },
+                )
+                .map_err(|error| RuntimeError::Adapter(format!("command: {error:?}")))?;
+            let actor = built_in_actor(participant_id)?;
+            let events = host.commit(&actor, &command)?;
+            self.observe_trades(&events);
+            let mut reactions = VecDeque::new();
+            self.dispatch(&events, &mut reactions)?;
+            self.pending.extend(reactions);
+        }
+        Ok(processed)
+    }
+
+    /// Takes other participants' commits, wakes due agents into `pending`,
+    /// and checkpoints before anything is submitted.
+    fn decide<H: RuntimeHost>(&mut self, host: &mut H) -> Result<(), RuntimeError> {
         let Some(next_time) = self
             .agents
             .iter()
             .map(|agent| agent.next_wake.logical_time)
             .min()
         else {
-            return Ok(0);
+            return Ok(());
         };
         self.logical_time = LogicalTimeNs::new(
             next_time
@@ -280,34 +374,8 @@ impl DeterministicRuntime {
             self.agents[index].next_wake = next_wake;
             pending.extend(actions.into_iter().map(|action| (index, action)));
         }
-        let mut processed = 0_usize;
-        while let Some((index, action)) = pending.pop_front() {
-            if processed >= self.config.max_actions_per_tick {
-                return Err(RuntimeError::ActionBoundExceeded);
-            }
-            processed = processed.saturating_add(1);
-            let expected_sequence = host.read_state(self.config.run_id, RunState::sequence)?;
-            self.logical_time = LogicalTimeNs::new(self.logical_time.get().saturating_add(1));
-            let participant_id = self.agents[index].participant_id;
-            let command = self.agents[index]
-                .adapter
-                .command_for_action(
-                    &action,
-                    &BuntingCommandContext {
-                        run_id: self.config.run_id,
-                        actor: participant_id,
-                        expected_sequence,
-                        logical_time: self.logical_time,
-                        correlation_id: CorrelationId::new(u128::from(self.logical_time.get())),
-                    },
-                )
-                .map_err(|error| RuntimeError::Adapter(format!("command: {error:?}")))?;
-            let actor = built_in_actor(participant_id)?;
-            let events = host.commit(&actor, &command)?;
-            self.observe_trades(&events);
-            self.dispatch(&events, &mut pending)?;
-        }
-        Ok(processed)
+        self.pending = pending;
+        host.checkpoint(&self.snapshot())
     }
 
     fn observation(&self, state: &RunState) -> Result<AgentObservation, RuntimeError> {
@@ -429,6 +497,11 @@ mod tests {
         roles: Vec<ActorRole>,
         /// Events other participants committed, not yet taken.
         elsewhere: Vec<EventEnvelope>,
+        /// Every committed command's events, by command ID.
+        committed: BTreeMap<bunting_market_types::CommandId, Vec<EventEnvelope>>,
+        checkpoints: Vec<RuntimeSnapshot>,
+        /// Commits allowed before the host "crashes".
+        crash_after: Option<usize>,
     }
 
     impl RuntimeHost for MemoryHost {
@@ -447,11 +520,27 @@ mod tests {
             actor: &VerifiedActor,
             command: &bunting_market_events::Command,
         ) -> Result<Vec<EventEnvelope>, RuntimeError> {
+            if let Some(recorded) = self.committed.get(&command.command_id) {
+                return Ok(recorded.clone());
+            }
+            match &mut self.crash_after {
+                Some(0) => return Err(RuntimeError::Host("crashed".to_owned())),
+                Some(remaining) => *remaining -= 1,
+                None => {}
+            }
             self.roles.push(actor.identity().role);
-            self.state
+            let events = self
+                .state
                 .apply(command)
                 .map(|applied| applied.events)
-                .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))
+                .map_err(|error| RuntimeError::Host(format!("transition: {error:?}")))?;
+            self.committed.insert(command.command_id, events.clone());
+            Ok(events)
+        }
+
+        fn checkpoint(&mut self, snapshot: &RuntimeSnapshot) -> Result<(), RuntimeError> {
+            self.checkpoints.push(snapshot.clone());
+            Ok(())
         }
 
         fn take_committed(&mut self) -> Result<Vec<EventEnvelope>, RuntimeError> {
@@ -524,6 +613,9 @@ mod tests {
                 state,
                 roles: Vec::new(),
                 elsewhere: Vec::new(),
+                committed: BTreeMap::new(),
+                checkpoints: Vec::new(),
+                crash_after: None,
             },
         ))
     }
@@ -616,6 +708,51 @@ mod tests {
         runtime.advance(&mut host)?;
         assert_eq!(position(&runtime), -5, "the agent knows it sold 5");
         assert_eq!(runtime.snapshot().last_trade, PriceTicks::new(102));
+        Ok(())
+    }
+
+    #[test]
+    fn a_runtime_resumed_mid_tick_commits_each_action_exactly_once() -> Result<(), RuntimeError> {
+        let (config, host) = fixture()?;
+        let mut uninterrupted = DeterministicRuntime::new(config.clone())?;
+        let mut reference = host.clone();
+        for _ in 0..3 {
+            uninterrupted.advance(&mut reference)?;
+        }
+
+        // Tick 2 crashes after the first of its two commits is durable.
+        let mut runtime = DeterministicRuntime::new(config)?;
+        let mut store = host;
+        runtime.advance(&mut store)?;
+        store.crash_after = Some(1);
+        assert!(runtime.advance(&mut store).is_err());
+        drop(runtime);
+
+        // Restart from the last checkpoint: tick 2's decisions, both still
+        // pending. The first resolves to its recorded events.
+        store.crash_after = None;
+        let checkpoint = store
+            .checkpoints
+            .last()
+            .cloned()
+            .ok_or(RuntimeError::InvalidSnapshot)?;
+        assert_eq!(checkpoint.pending.len(), 2);
+        let restored: RuntimeSnapshot = serde_json::from_str(
+            &serde_json::to_string(&checkpoint).map_err(|_| RuntimeError::InvalidSnapshot)?,
+        )
+        .map_err(|_| RuntimeError::InvalidSnapshot)?;
+        let mut resumed = DeterministicRuntime::restore(restored)?;
+        assert_eq!(resumed.advance(&mut store)?, 2);
+        resumed.advance(&mut store)?;
+
+        let hash = |host: &MemoryHost| {
+            host.state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)
+        };
+        assert_eq!(hash(&store)?, hash(&reference)?);
+        assert_eq!(store.roles.len(), reference.roles.len(), "no double commit");
+        assert_eq!(resumed.snapshot(), uninterrupted.snapshot());
         Ok(())
     }
 }

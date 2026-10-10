@@ -351,10 +351,15 @@ fn write_checkpoint(path: &Path, runs: &BTreeMap<RunId, LiveRun>) -> Result<(), 
 }
 
 fn persist(path: &Path, checkpoint: &Checkpoint) -> Result<(), OriginError> {
+    persist_json(path, checkpoint)
+}
+
+/// Atomically and durably replaces `path` with `value` as JSON.
+pub(crate) fn persist_json<T: Serialize>(path: &Path, value: &T) -> Result<(), OriginError> {
     if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(|_| OriginError::Unavailable)?;
     }
-    let bytes = serde_json::to_vec(checkpoint).map_err(|_| OriginError::InvalidCommit)?;
+    let bytes = serde_json::to_vec(value).map_err(|_| OriginError::InvalidCommit)?;
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary).map_err(|_| OriginError::Unavailable)?;
     file.write_all(&bytes)
@@ -400,6 +405,16 @@ impl NativeOrigin {
         match self {
             Self::Memory(store) => store.insert_run(run),
             Self::File(store) => store.insert_run(run),
+        }
+    }
+
+    /// Every committed event of one run from durable storage: what a
+    /// process restarted on this store has to catch up on. A memory store
+    /// never outlives its process, so it has nothing to replay.
+    pub fn durable_events(&self, run_id: RunId) -> Result<Vec<EventEnvelope>, OriginError> {
+        match self {
+            Self::Memory(_) => Ok(Vec::new()),
+            Self::File(store) => store.events(run_id),
         }
     }
 }

@@ -312,6 +312,7 @@ dependencies = [
  "quarcc-bunting-adapter",
  "quarcc-execution-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
