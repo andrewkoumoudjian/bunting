@@ -236,7 +236,8 @@ async fn write_actions(stream: &mut TcpStream, actions: Vec<SessionAction>) -> i
             SessionAction::Disconnect => disconnect = true,
             SessionAction::Application(_)
             | SessionAction::PeerLogon(_)
-            | SessionAction::Persist(_) => {}
+            | SessionAction::Persist(_)
+            | SessionAction::TestResponse(_) => {}
         }
     }
     Ok(disconnect)

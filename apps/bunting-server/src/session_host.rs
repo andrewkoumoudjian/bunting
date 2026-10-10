@@ -652,7 +652,7 @@ fn process_session_actions(
             SessionAction::Application(_) => {
                 return Err("application action must be handled by caller".to_owned());
             }
-            SessionAction::PeerLogon(_) => {}
+            SessionAction::PeerLogon(_) | SessionAction::TestResponse(_) => {}
         }
     }
     Ok(())

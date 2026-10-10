@@ -80,6 +80,9 @@ pub enum SessionAction {
     Application(FixMessage),
     Persist(SessionSnapshot),
     Disconnect,
+    /// A `Heartbeat` answered a `TestRequest`; carries the echoed `TestReqID`
+    /// (tag 112) so the host can time its own probes.
+    TestResponse(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -312,6 +315,30 @@ impl FixSession {
         )
     }
 
+    /// Sends a latency probe: a `TestRequest` whose `TestReqID` the host chose
+    /// (and timestamps itself). Unlike the liveness `TestRequest` from
+    /// [`Self::poll`], an unanswered probe never disconnects the session.
+    ///
+    /// # Errors
+    /// Returns an error when the session is not established, the identifier
+    /// is empty, or framing fails.
+    pub fn probe(
+        &mut self,
+        probe_id: &str,
+        timestamp: &str,
+        now_millis: u64,
+    ) -> Result<Vec<SessionAction>, SessionError> {
+        if self.snapshot.state != ConnectionState::Established {
+            return Err(SessionError::NotEstablished);
+        }
+        if probe_id.is_empty() {
+            return Err(SessionError::InvalidConfig);
+        }
+        let mut request = FixMessage::new("1");
+        request.push(112, probe_id);
+        self.send_new(request, timestamp, now_millis, true, None)
+    }
+
     /// Emits heartbeat, test-request, or disconnect actions from explicit time.
     ///
     /// # Errors
@@ -490,7 +517,11 @@ impl FixSession {
                 if self.snapshot.outstanding_test_request.as_deref() == message.value(112) {
                     self.snapshot.outstanding_test_request = None;
                 }
-                Ok(Vec::new())
+                Ok(message
+                    .value(112)
+                    .map(|id| SessionAction::TestResponse(id.to_owned()))
+                    .into_iter()
+                    .collect())
             }
             "1" => {
                 let mut heartbeat = FixMessage::new("0");
@@ -742,6 +773,62 @@ mod tests {
         assert_eq!(
             session.receive_bytes(&frame, "20260713-12:00:00.004"),
             Err(SessionError::InvalidSequence)
+        );
+    }
+
+    #[test]
+    fn probes_report_echoed_ids_and_never_disconnect() {
+        let mut session = FixSession::try_new(config()).unwrap();
+        assert_eq!(
+            session.probe("rtt-1", "20260713-12:00:00.000", 0),
+            Err(SessionError::NotEstablished)
+        );
+        establish(&mut session);
+        let sent = session.probe("rtt-1", "20260713-12:00:00.002", 2).unwrap();
+        let frame = sent
+            .iter()
+            .find_map(|action| match action {
+                SessionAction::Send(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        let mut decoder = Decoder::try_new(WireLimits::default()).unwrap();
+        let probe = decoder.push(frame).unwrap().remove(0);
+        assert_eq!(
+            (probe.msg_type.as_str(), probe.value(112)),
+            ("1", Some("rtt-1"))
+        );
+        assert_eq!(session.snapshot().outstanding_test_request, None);
+        let reply = session
+            .receive_bytes_at(
+                &inbound_with("0", 2, &[(112, "rtt-1")]),
+                "20260713-12:00:00.009",
+                9,
+            )
+            .unwrap();
+        let responses = |actions: &[SessionAction]| {
+            actions
+                .iter()
+                .filter(|action| matches!(action, SessionAction::TestResponse(_)))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            responses(&reply),
+            vec![SessionAction::TestResponse("rtt-1".to_owned())]
+        );
+        // An ordinary heartbeat carries no TestReqID and reports nothing.
+        let plain = session
+            .receive_bytes_at(&inbound("0", 3), "20260713-12:00:00.010", 10)
+            .unwrap();
+        assert!(responses(&plain).is_empty());
+        // Unanswered probes do not count against liveness.
+        session.probe("rtt-2", "20260713-12:00:00.011", 11).unwrap();
+        assert!(
+            !session
+                .poll(20_000, "20260713-12:00:20.000")
+                .unwrap()
+                .contains(&SessionAction::Disconnect)
         );
     }
 

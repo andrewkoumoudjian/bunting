@@ -306,7 +306,8 @@ impl FixClient {
                     self.mark_disconnected("FIX peer requested disconnect")?;
                     critical = true;
                 }
-                SessionAction::Persist(_) => {}
+                // This client sends no latency probes of its own.
+                SessionAction::Persist(_) | SessionAction::TestResponse(_) => {}
             }
         }
         if self.connection_state() == ConnectionState::Established {
