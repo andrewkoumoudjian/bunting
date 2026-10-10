@@ -77,8 +77,14 @@ each order to the right venue.
   path to you, so near a venue the direct feed is faster and the tape can
   be stale. Its report sequence (83) is one per instrument, the same for
   everyone; its snapshot's 83 is the last report included. Feeds and
-  colocation are free, with no colocation purchase. Order-by-order feeds,
-  and broker numbers on venues that publish them, are planned (ADR 0036).
+  colocation are free, with no colocation purchase. Add 266=N to a direct
+  feed request for **order by order** instead of price levels: every
+  displayed order by an anonymous public reference (278) in queue order,
+  then each order added, changed (displayed quantity; it keeps its place)
+  or deleted, and each trade naming the order it hit. A reference is not
+  any order ID you or the venue use; an iceberg's refreshed slice gets a
+  new one. Broker numbers on venues that publish them are planned
+  (ADR 0036).
 
 ## Published limits
 

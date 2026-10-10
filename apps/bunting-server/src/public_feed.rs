@@ -12,6 +12,10 @@
 //! exactly the next batch. Batches drained before the reply arrives are
 //! buffered (bounded) until then.
 //!
+//! With 266=N the direct feed is order-by-order (L3): every displayed
+//! order by its anonymous public reference (278) instead of price levels,
+//! and each trade names the resting order it executed against.
+//!
 //! A subscription naming exchange 0 (207=0) is the consolidated tape of one
 //! instrument instead (ADR 0036): every venue's best bid and offer and every
 //! venue's trades, sent from the processor at the hub. Its snapshot states
@@ -21,7 +25,7 @@ use crate::consolidated::{ConsolidatedTape, TapeRecord};
 use crate::distributor::{CommittedBatch, Subscription};
 use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
-use bunting_application::{MarketDataEntryType, PublicListingUpdate};
+use bunting_application::{MarketDataEntryType, OrderAction, PublicListingUpdate};
 use bunting_market_events::Side;
 use bunting_market_types::{InstrumentId, ListingKey};
 use simfix_mapping::{MarketDataIncrement, MarketDataUpdateAction, market_incremental};
@@ -42,12 +46,22 @@ pub(crate) struct FeedMessage {
     pub(crate) message: FixMessage,
 }
 
+/// What a direct feed shows of the book.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Detail {
+    /// Aggregated price levels (L2).
+    Levels,
+    /// Every displayed order by public reference (L3, FIX 266=N).
+    Orders,
+}
+
 struct Feed {
     request_id: String,
     listing_key: ListingKey,
     bids: bool,
     offers: bool,
     trades: bool,
+    detail: Detail,
     /// Report sequence (FIX 83) of this feed's next entry.
     next_report: u64,
     /// `Some` until the snapshot's reply arrives.
@@ -164,6 +178,7 @@ impl<'a> PublicFeeds<'a> {
         request_id: &str,
         listing_key: ListingKey,
         entry_types: &[MarketDataEntryType],
+        aggregated: bool,
     ) -> Option<String> {
         if let Some(reason) = self.refuse(request_id) {
             return Some(reason);
@@ -175,6 +190,11 @@ impl<'a> PublicFeeds<'a> {
             bids: wants(MarketDataEntryType::Bid),
             offers: wants(MarketDataEntryType::Offer),
             trades: wants(MarketDataEntryType::Trade),
+            detail: if aggregated {
+                Detail::Levels
+            } else {
+                Detail::Orders
+            },
             next_report: 1,
             pending: Some(Vec::new()),
             last_send_us: 0,
@@ -341,8 +361,34 @@ impl Feed {
                     .map(|trade| MarketDataIncrement::Trade {
                         price: trade.price,
                         quantity: trade.quantity,
+                        reference: match self.detail {
+                            Detail::Orders => trade.maker_reference,
+                            Detail::Levels => None,
+                        },
                     }),
             );
+        }
+        if self.detail == Detail::Orders {
+            for change in &update.orders {
+                let wanted = match change.side {
+                    Side::Buy => self.bids,
+                    Side::Sell => self.offers,
+                };
+                if wanted {
+                    entries.push(MarketDataIncrement::Order {
+                        action: match change.action {
+                            OrderAction::Added => MarketDataUpdateAction::New,
+                            OrderAction::Changed => MarketDataUpdateAction::Change,
+                            OrderAction::Deleted => MarketDataUpdateAction::Delete,
+                        },
+                        side: change.side,
+                        reference: change.reference,
+                        price: change.price,
+                        quantity: change.quantity,
+                    });
+                }
+            }
+            return entries;
         }
         for change in &update.levels {
             let wanted = match change.side {
@@ -404,6 +450,7 @@ mod tests {
                 }],
                 best_bid: None,
                 best_ask: None,
+                orders: Vec::new(),
             }],
         })
     }
@@ -413,7 +460,7 @@ mod tests {
     #[test]
     fn a_feed_resumes_exactly_after_its_snapshot() -> Result<(), String> {
         let mut feeds = PublicFeeds::default();
-        assert_eq!(feeds.subscribe("a", listing(1), BOOK), None);
+        assert_eq!(feeds.subscribe("a", listing(1), BOOK, true), None);
         // Committed before and after the snapshot, drained before its reply.
         assert!(feeds.on_batch(&batch(0, 1, 100, 0, 5))?.is_empty());
         assert!(feeds.on_batch(&batch(1, 1, 101, 0, 3))?.is_empty());
@@ -433,10 +480,10 @@ mod tests {
     fn feeds_see_only_their_venue_and_requested_sides() -> Result<(), String> {
         let mut feeds = PublicFeeds::default();
         assert_eq!(
-            feeds.subscribe("bids", listing(1), &[MarketDataEntryType::Bid]),
+            feeds.subscribe("bids", listing(1), &[MarketDataEntryType::Bid], true),
             None
         );
-        assert_eq!(feeds.subscribe("venue2", listing(2), BOOK), None);
+        assert_eq!(feeds.subscribe("venue2", listing(2), BOOK, true), None);
         feeds.activate("bids", 0, &[]);
         feeds.activate("venue2", 0, &[]);
         // An ask change on venue 1: neither feed wants it.
@@ -448,24 +495,86 @@ mod tests {
     }
 
     #[test]
+    fn an_order_by_order_feed_sends_orders_and_trade_references_not_levels() -> Result<(), String> {
+        use bunting_application::{OrderChange, PublicTrade};
+        use bunting_market_types::{EventSequence, LogicalTimeNs};
+        let mut feeds = PublicFeeds::default();
+        let all = [
+            MarketDataEntryType::Bid,
+            MarketDataEntryType::Offer,
+            MarketDataEntryType::Trade,
+        ];
+        assert_eq!(feeds.subscribe("l2", listing(1), &all, true), None);
+        assert_eq!(feeds.subscribe("l3", listing(1), &all, false), None);
+        feeds.activate("l2", 0, &[]);
+        feeds.activate("l3", 0, &[]);
+        let mut committed = batch(0, 1, 100, 5, 4);
+        let update = &mut Arc::get_mut(&mut committed).ok_or("shared batch")?.public[0];
+        update.trades.push(PublicTrade {
+            sequence: EventSequence::new(1),
+            logical_time: LogicalTimeNs::new(0),
+            instrument_id: InstrumentId::new(1),
+            listing_key: listing(1),
+            price: PriceTicks::new(100),
+            quantity: QuantityLots::new(1),
+            maker_reference: Some(7),
+        });
+        update.orders.push(OrderChange {
+            action: OrderAction::Changed,
+            side: Side::Sell,
+            reference: 7,
+            price: PriceTicks::new(100),
+            quantity: QuantityLots::new(4),
+        });
+        let messages = feeds.on_batch(&committed)?;
+        let message = |id| {
+            messages
+                .iter()
+                .find(|message| message.request_id == id)
+                .map(|message| &message.message)
+                .ok_or(format!("no {id} message"))
+        };
+        let tags = |message: &FixMessage, tag| {
+            message
+                .fields
+                .iter()
+                .filter(|field| field.tag == tag)
+                .map(|field| field.value.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            tags(message("l2")?, 278).is_empty(),
+            "levels carry no reference"
+        );
+        assert_eq!(tags(message("l2")?, 269), ["2", "1"]);
+        assert_eq!(tags(message("l3")?, 278), ["7", "7"]);
+        assert_eq!(tags(message("l3")?, 279), ["0", "1"]);
+        assert_eq!(tags(message("l3")?, 271), ["1", "4"]);
+        Ok(())
+    }
+
+    #[test]
     fn duplicate_ids_limits_and_unsubscribe() {
         let mut feeds = PublicFeeds::default();
-        assert_eq!(feeds.subscribe("a", listing(1), BOOK), None);
-        assert!(feeds.subscribe("a", listing(2), BOOK).is_some());
-        assert!(feeds.subscribe("none", listing(1), &[]).is_some());
+        assert_eq!(feeds.subscribe("a", listing(1), BOOK, true), None);
+        assert!(feeds.subscribe("a", listing(2), BOOK, true).is_some());
+        assert!(feeds.subscribe("none", listing(1), &[], true).is_some());
         for index in 1..MAX_FEEDS_PER_SESSION {
-            assert_eq!(feeds.subscribe(&index.to_string(), listing(1), BOOK), None);
+            assert_eq!(
+                feeds.subscribe(&index.to_string(), listing(1), BOOK, true),
+                None
+            );
         }
-        assert!(feeds.subscribe("over", listing(1), BOOK).is_some());
+        assert!(feeds.subscribe("over", listing(1), BOOK, true).is_some());
         assert!(feeds.unsubscribe("a"));
         assert!(!feeds.unsubscribe("a"));
-        assert_eq!(feeds.subscribe("over", listing(1), BOOK), None);
+        assert_eq!(feeds.subscribe("over", listing(1), BOOK, true), None);
     }
 
     #[test]
     fn a_full_pending_buffer_is_an_error() -> Result<(), String> {
         let mut feeds = PublicFeeds::default();
-        assert_eq!(feeds.subscribe("a", listing(1), BOOK), None);
+        assert_eq!(feeds.subscribe("a", listing(1), BOOK, true), None);
         for ordinal in 0..u64::try_from(MAX_BUFFERED_BATCHES).map_err(|e| e.to_string())? {
             feeds.on_batch(&batch(ordinal, 1, 100, 0, 1))?;
         }
@@ -476,7 +585,7 @@ mod tests {
     #[test]
     fn send_times_never_go_backwards_within_a_feed() {
         let mut feeds = PublicFeeds::default();
-        assert_eq!(feeds.subscribe("a", listing(1), BOOK), None);
+        assert_eq!(feeds.subscribe("a", listing(1), BOOK, true), None);
         assert_eq!(feeds.send_time("a", 50), 50);
         assert_eq!(feeds.send_time("a", 40), 50);
         assert_eq!(feeds.send_time("a", 60), 60);

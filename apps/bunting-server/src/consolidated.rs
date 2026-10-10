@@ -228,7 +228,16 @@ impl ConsolidatedTape {
             let mut entries: Vec<_> = change
                 .trades
                 .iter()
-                .map(|&(price, quantity)| (key, MarketDataIncrement::Trade { price, quantity }))
+                .map(|&(price, quantity)| {
+                    (
+                        key,
+                        MarketDataIncrement::Trade {
+                            price,
+                            quantity,
+                            reference: None,
+                        },
+                    )
+                })
                 .collect();
             for (side, old, new) in [
                 (Side::Buy, old_bid, change.best_bid),
@@ -307,6 +316,7 @@ mod tests {
                     listing_key: key(venue),
                     price: PriceTicks::new(100),
                     quantity: QuantityLots::new(1),
+                    maker_reference: None,
                 }]
             } else {
                 Vec::new()
@@ -314,6 +324,7 @@ mod tests {
             levels: Vec::new(),
             best_bid: None,
             best_ask: ask,
+            orders: Vec::new(),
         }]
     }
 

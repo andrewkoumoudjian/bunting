@@ -2,9 +2,9 @@
 
 - Status: **Accepted** (2026-10-10). Per-venue trade and L2 feeds were
   implemented in slice 21 and the consolidated tape in slice 22 (see
-  `docs/implementation-log/`). The owner answered the four open questions
-  on 2026-10-10 (below). Order-by-order (L3) feeds and broker identifiers
-  are **Target**.
+  `docs/implementation-log/`), and order-by-order (L3) feeds in slice 23.
+  The owner answered the four open questions on 2026-10-10 (below).
+  Broker identifiers are **Target**.
 - Date: 2026-10-10
 - Depends on: ADR 0011 (committed-sequence streams), ADR 0022 (single
   venue), ADR 0029 (owned book), ADR 0035 (latency), slice 12 (committed-event
@@ -68,6 +68,21 @@ Until slice 21, public data was request/response L2 snapshots only.
    are in flight to the processor, the tape goes down (every subscriber is
    disconnected and new requests are refused) rather than publish a hole;
    direct feeds are unaffected.
+7. **Order-by-order feeds (slice 23).** A `V` with 266=N (AggregatedBook
+   = no) subscribes to a listing's order-by-order direct feed instead of
+   price levels. Its snapshot lists every displayed order, bids then
+   asks in matching priority, with an anonymous public reference (278)
+   and queue position (290). Each later commit sends, after its trades,
+   every order deleted (279=2), whose displayed quantity changed (279=1,
+   the order keeps its reference and place), or added (279=0), and each
+   trade names the resting order it executed against (278). The public
+   reference is the order's time priority in its book: unrelated to any
+   participant, client or venue order ID, and new whenever the order
+   loses priority, so an iceberg refresh appears as one reference deleted
+   and a new one added, as on real order-by-order feeds. Only displayed
+   quantity is shown. Order-level views cost O(orders) per touched
+   listing per commit, so the venue computes them only once any session
+   has asked for an order-by-order feed.
 
 ### Owner decisions (2026-10-10)
 
@@ -76,7 +91,7 @@ defaults:
 
 | Question | Owner decision | Status |
 |---|---|---|
-| L2 only, or L3 order-by-order? | **Both**: price-level and order-by-order direct feeds. | L2 implemented (slice 21); L3 Target, with anonymous per-venue order references, never the owner's IDs. |
+| L2 only, or L3 order-by-order? | **Both**: price-level and order-by-order direct feeds. | L2 implemented (slice 21); L3 implemented (slice 23), with anonymous public references, never the owner's IDs. |
 | A consolidated (SIP-like) feed, and where? | **Yes**, or per-venue feeds only, whichever is closer to reality. Real markets run both, so Bunting has both: direct feeds per venue and one consolidated tape from a processor at the hub. | Implemented (slice 22). |
 | Broker identifiers? | **The most realistic choice.** Practice differs by market: Toronto venues show a broker number on orders and trades unless the order is marked anonymous; US venues are anonymous. So broker identifiers are a **per-venue setting**: on venues that publish them, L3 orders and trades carry the team's broker number unless the order opts out as anonymous; other venues stay anonymous. | Target, with L3; until then every feed is anonymous. |
 | Data and colocation pricing? | **Free, with no colocation purchase** (confirmed). Locations come from the organizer's map. | Implemented (nothing to charge). Priced data or colocation would need a new owner decision. |
@@ -115,7 +130,10 @@ multi-entry `X` layout and its absence of identity tags),
 snapshot, venue and side filtering, limits, a full buffer is an error,
 send times never go backwards), `apps/bunting-server/src/consolidated.rs`
 (hub-arrival order and one report sequence, deletes and unchanged quotes,
-primed quotes, the in-flight bound takes the tape down), and end-to-end
+primed quotes, the in-flight bound takes the tape down), an L3 feed sends
+orders and trade references instead of levels, `diff_orders` (deletes,
+changes, additions; a refresh is a new reference), the 266 mapping and
+the L3 `W`/`X` layout, and end-to-end
 `apps/bunting-server/tests/public_feeds.rs` (two venues: venue 1's feed
 reaches the team 40 ms away no sooner than its path allows and after the
 near team; trades and level changes carry no identity; snapshot plus
@@ -123,7 +141,9 @@ increments equal a fresh snapshot after racing activity; unsubscribe stops
 the feed; the tape reaches a team beside venue 2 only after venue 2 ->
 hub -> team and later than venue 2's direct feed, names each entry's
 venue, has no report gaps, and snapshot plus records equal a fresh tape
-snapshot).
+snapshot; an L3 feed's trade names the order it hit, the partly filled
+order keeps its place, snapshot plus updates equal a fresh L3 snapshot
+whose orders sum to the L2 book, and no identity tags appear).
 
 ## Operational impact
 

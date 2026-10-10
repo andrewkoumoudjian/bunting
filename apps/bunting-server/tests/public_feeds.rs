@@ -565,3 +565,133 @@ fn the_consolidated_tape_lags_a_near_direct_feed_and_stays_consistent() -> Resul
     );
     Ok(())
 }
+
+/// FIX `V` for an order-by-order (L3) feed: 266=N.
+fn order_request(id: &str, request_type: &str, venue: u128) -> FixMessage {
+    let mut message = market_request(id, request_type, venue);
+    message.push(266, "N");
+    message
+}
+
+/// `(279, 269, 278, 270, 271)` of every entry of an order-by-order `X`.
+fn order_entries(message: &FixMessage) -> Vec<(String, String, u64, i64, i64)> {
+    let mut entries = Vec::new();
+    let mut current: Option<(String, String, u64, i64, i64)> = None;
+    for field in &message.fields {
+        if field.tag == 279 {
+            entries.extend(current.take());
+            current = Some(Default::default());
+        }
+        let Some(entry) = current.as_mut() else {
+            continue;
+        };
+        match field.tag {
+            279 => entry.0.clone_from(&field.value),
+            269 => entry.1.clone_from(&field.value),
+            278 => entry.2 = field.value.parse().unwrap_or(0),
+            270 => entry.3 = field.value.parse().unwrap_or(-1),
+            271 => entry.4 = field.value.parse().unwrap_or(-1),
+            _ => {}
+        }
+    }
+    entries.extend(current);
+    entries
+}
+
+/// Displayed orders by public reference: `(side 269, price, quantity)`.
+type Orders = BTreeMap<u64, (String, i64, i64)>;
+
+fn order_snapshot_book(message: &FixMessage) -> Orders {
+    let mut orders = Orders::new();
+    let (mut side, mut reference, mut price) = (String::new(), 0, 0);
+    for field in &message.fields {
+        match field.tag {
+            269 => side.clone_from(&field.value),
+            278 => reference = field.value.parse().unwrap_or(0),
+            270 => price = field.value.parse().unwrap_or(-1),
+            271 => {
+                orders.insert(
+                    reference,
+                    (side.clone(), price, field.value.parse().unwrap_or(-1)),
+                );
+            }
+            _ => {}
+        }
+    }
+    orders
+}
+
+#[test]
+fn an_order_by_order_feed_tracks_each_displayed_order_anonymously() -> Result<(), String> {
+    let port = start_server()?;
+    let mut maker = Client::logon(port, "MAKER", "maker", "bunting-maker-dev")?;
+    let mut team1 = Client::logon(port, "HUMAN", "participant", "bunting-local-dev")?;
+    for client in [&maker, &team1] {
+        fast_reads(client)?;
+    }
+    maker.send(order_at("801", "sell", 4, 103, 1))?;
+    maker.wait_report("801", "0")?;
+    team1.send(order_request("l3", "1", 1))?;
+    team1.pump_until(|client| !received(client, "W", "l3").is_empty())?;
+    let first = order_snapshot_book(&received(&team1, "W", "l3")[0]);
+    let [(&first_reference, _)] = first.iter().collect::<Vec<_>>()[..] else {
+        return Err(format!("expected one resting order, got {first:?}"));
+    };
+
+    // A second order joins the queue at 103, another rests at 104; team 1
+    // takes 3 from the front of the 103 queue; the 104 order is canceled.
+    maker.send(order_at("802", "sell", 2, 104, 1))?;
+    maker.send(order_at("803", "sell", 1, 103, 1))?;
+    maker.wait_report("803", "0")?;
+    team1.send(order_at("101", "buy", 3, 103, 1))?;
+    team1.wait_report("101", "F")?;
+    maker.send(cancel_at("804", "802", "sell"))?;
+    maker.wait_report("802", "4")?;
+    pump_all(&mut [&mut maker, &mut team1], Duration::from_millis(50))?;
+
+    let updates = received(&team1, "X", "l3");
+    let entries: Vec<_> = updates.iter().flat_map(order_entries).collect();
+    assert!(
+        entries.contains(&("0".to_owned(), "2".to_owned(), first_reference, 103, 3)),
+        "the trade names the order it executed against: {entries:?}"
+    );
+    // The book from snapshot plus updates equals a fresh order snapshot,
+    // and its orders add up to the price-level book.
+    let mut book = first;
+    for (action, entry_type, reference, price, quantity) in entries {
+        if entry_type == "2" {
+            continue;
+        }
+        if action == "2" {
+            book.remove(&reference);
+        } else {
+            book.insert(reference, (entry_type, price, quantity));
+        }
+    }
+    team1.send(order_request("check", "0", 1))?;
+    team1.send(market_request("levels", "0", 1))?;
+    team1.pump_until(|client| {
+        !received(client, "W", "check").is_empty() && !received(client, "W", "levels").is_empty()
+    })?;
+    let fresh = order_snapshot_book(&received(&team1, "W", "check")[0]);
+    assert_eq!(book, fresh);
+    assert_eq!(
+        fresh.values().cloned().collect::<Vec<_>>(),
+        [("1".to_owned(), 103, 1), ("1".to_owned(), 103, 1)],
+        "the partly filled order keeps its place ahead of the later one"
+    );
+    let mut levels = BTreeMap::<i64, i64>::new();
+    for (_, price, quantity) in fresh.values() {
+        *levels.entry(*price).or_default() += quantity;
+    }
+    assert_eq!(levels, snapshot_book(&received(&team1, "W", "levels")[0]).1);
+
+    // References are the book's own time priorities: no order, client or
+    // party identity appears.
+    for message in &updates {
+        for tag in [1, 11, 37, 41, 448, 452, 523] {
+            assert_eq!(message.value(tag), None, "tag {tag} leaks identity");
+        }
+    }
+    Ok(())
+}

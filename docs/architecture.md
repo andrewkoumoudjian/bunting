@@ -189,12 +189,17 @@ log. Per-command cost no longer grows with the size of the run.
    the processing delay; the `bunting-tape` thread releases due changes)
    and published per instrument with one report sequence; sessions
    subscribed with `V` 207=0 receive each record `L(hub, p)` later.
+9. Order-by-order feeds (slice 23, ADR 0036): once any session asks for
+   one (`V` 266=N), `PublishingOrigin` also keeps every listing's
+   displayed orders (`bunting_application::displayed_orders`, keyed by the
+   book's time priority as the public reference) and attaches each
+   commit's order changes and trade references to its public update.
 
 ### Target
 
 - Resume cursors so reports missed while disconnected are replayed (today
-  they are not); order-by-order (L3) feeds with per-venue broker
-  identifiers (ADR 0036).
+  they are not); per-venue broker identifiers on order-by-order feeds
+  (ADR 0036).
 
 ## 7. Admission and fairness
 
@@ -212,12 +217,12 @@ delay. With a file origin their runtime is checkpointed each tick and
 resumes exactly once after a restart (slice 19). Public per-venue feeds
 (trades and L2 depth changes) reach each subscriber over its own path from
 that venue (slice 21); the consolidated tape reaches them from the
-processor at the hub after each venue's path there (slice 22).
+processor at the hub after each venue's path there (slice 22), and
+order-by-order feeds over the same paths as price levels (slice 23).
 
 **Target:** the same model for every input — FIX, BNP, agents, schedule —
 with agents also observing over their virtual paths, team-to-team
-messages (OTC negotiation, shared data) addressed over team-to-team paths, and
-L3 feeds delivered over the same virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
+messages (OTC negotiation, shared data) addressed over team-to-team paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
 All admission inputs are journaled; replay never re-measures the network.
 
 ## 8. Interfaces

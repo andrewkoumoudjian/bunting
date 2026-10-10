@@ -2,7 +2,7 @@
 
 Status: **Exploration** — owner request 2026-10-10. Options A and B (per-venue
 trade and L2 feeds) were implemented in slice 21 and option D (consolidated
-tape) in slice 22 under [ADR 0036](../adr/0036-public-market-data-feeds.md),
+tape) in slice 22 and option C (order by order) in slice 23 under [ADR 0036](../adr/0036-public-market-data-feeds.md),
 which also records the owner's answers to the questions below (both L2 and
 L3; consolidated and direct feeds; the most realistic broker-identifier
 rule, which is per venue; data and colocation free); `RULES.md` states what
@@ -103,7 +103,8 @@ Design constraints whichever option is chosen:
 - [x] Owner decisions (2026-10-10, ADR 0036): L2 and L3; consolidated and
       direct feeds; broker identifiers per venue (the realistic choice);
       data and colocation free.
-- [ ] L3 order-by-order feed with anonymous per-venue references (option C).
+- [x] L3 order-by-order feed with anonymous public references (option C)
+      (slice 23).
 - [ ] Per-venue broker identifiers on L3 feeds and trades, unless an
       order is anonymous (option E).
 - [ ] Location coordinates helper: derive the latency map's links from

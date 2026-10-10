@@ -272,6 +272,10 @@ pub struct PublicTrade {
     pub listing_key: ListingKey,
     pub price: PriceTicks,
     pub quantity: QuantityLots,
+    /// Public reference of the resting order this trade executed against,
+    /// on order-by-order feeds only (see [`DisplayedOrder`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maker_reference: Option<u64>,
 }
 
 /// Projects only facts that are safe to publish without participant, order,
@@ -293,6 +297,7 @@ pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> O
                 listing_key,
                 price,
                 quantity,
+                maker_reference: None,
             })
         }
         _ => None,
@@ -320,6 +325,112 @@ pub struct PublicListingUpdate {
     /// Best visible bid and offer after the commit.
     pub best_bid: Option<(PriceTicks, QuantityLots)>,
     pub best_ask: Option<(PriceTicks, QuantityLots)>,
+    /// Order-by-order changes, when order-by-order feeds are enabled.
+    pub orders: Vec<OrderChange>,
+}
+
+/// One displayed order of a listing, for order-by-order (L3) feeds.
+///
+/// `reference` is the order's time priority in its book: anonymous,
+/// unrelated to any participant, client or venue order ID, and new
+/// whenever the order loses priority (an iceberg refresh shows as the old
+/// reference deleted and a new one added, as on real order-by-order
+/// feeds). Only the displayed quantity is shown.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisplayedOrder {
+    /// Internal key for diffing; never published.
+    pub order_id: OrderId,
+    pub reference: u64,
+    pub side: Side,
+    pub price: PriceTicks,
+    pub quantity: QuantityLots,
+}
+
+/// Every displayed order of one listing: bids then asks, each in matching
+/// priority (best price first, then time).
+///
+/// # Errors
+/// Returns an error for an unknown listing.
+pub fn displayed_orders(
+    state: &RunState,
+    listing_key: ListingKey,
+) -> Result<Vec<DisplayedOrder>, bunting_engine::EngineError> {
+    let listing = state
+        .listings()
+        .get(&listing_key)
+        .ok_or(bunting_engine::EngineError::UnknownListing)?;
+    Ok([Side::Buy, Side::Sell]
+        .into_iter()
+        .flat_map(|side| listing.resting(side))
+        .filter(|order| order.visible.get() > 0)
+        .map(|order| DisplayedOrder {
+            order_id: order.order_id,
+            reference: order.priority,
+            side: order.side,
+            price: order.price,
+            quantity: order.visible,
+        })
+        .collect())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum OrderAction {
+    Added,
+    /// The displayed quantity changed (a partial execution or reduction);
+    /// the order keeps its reference and priority.
+    Changed,
+    Deleted,
+}
+
+/// One order-by-order change. `quantity` is the displayed quantity after
+/// the change (zero when deleted).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct OrderChange {
+    pub action: OrderAction,
+    pub side: Side,
+    pub reference: u64,
+    pub price: PriceTicks,
+    pub quantity: QuantityLots,
+}
+
+/// Order-by-order difference between two committed views of one listing:
+/// deletions first, then changes, then additions in priority order, so a
+/// client applying them in order never holds two orders with one
+/// reference.
+#[must_use]
+pub fn diff_orders(before: &[DisplayedOrder], after: &[DisplayedOrder]) -> Vec<OrderChange> {
+    let old: BTreeMap<u64, &DisplayedOrder> = before
+        .iter()
+        .map(|order| (order.reference, order))
+        .collect();
+    let new: BTreeMap<u64, &DisplayedOrder> =
+        after.iter().map(|order| (order.reference, order)).collect();
+    let change = |action, order: &DisplayedOrder, quantity| OrderChange {
+        action,
+        side: order.side,
+        reference: order.reference,
+        price: order.price,
+        quantity,
+    };
+    let mut changes: Vec<_> = before
+        .iter()
+        .filter(|order| !new.contains_key(&order.reference))
+        .map(|order| change(OrderAction::Deleted, order, QuantityLots::new(0)))
+        .collect();
+    for order in after {
+        if let Some(previous) = old.get(&order.reference)
+            && previous.quantity != order.quantity
+        {
+            changes.push(change(OrderAction::Changed, order, order.quantity));
+        }
+    }
+    changes.extend(
+        after
+            .iter()
+            .filter(|order| !old.contains_key(&order.reference))
+            .map(|order| change(OrderAction::Added, order, order.quantity)),
+    );
+    changes
 }
 
 /// Visible depth of one listing: bids best first, asks best first.
@@ -514,6 +625,8 @@ pub enum FixApplicationRequest {
         request_type: MarketDataRequestType,
         market_depth: usize,
         entry_types: Vec<MarketDataEntryType>,
+        /// `false` for an order-by-order (L3) request (FIX 266=N).
+        aggregated: bool,
     },
     Competition(CompetitionRequest),
 }
@@ -600,12 +713,14 @@ impl FixApplicationState {
                 request_type,
                 market_depth,
                 entry_types,
+                aggregated,
             } => Ok(FixApplicationRequest::MarketData {
                 request_id,
                 listing_key,
                 request_type,
                 market_depth,
                 entry_types,
+                aggregated,
             }),
             InboundApplication::Intent(intent) => {
                 let client_order_id = match &intent {
@@ -802,6 +917,47 @@ mod tests {
             ]
         );
         assert!(diff_levels(&after, &after).is_empty());
+    }
+
+    #[test]
+    fn order_diffs_delete_change_then_add_by_public_reference() {
+        let order = |id, reference, side, price, quantity| DisplayedOrder {
+            order_id: OrderId::new(id),
+            reference,
+            side,
+            price: PriceTicks::new(price),
+            quantity: QuantityLots::new(quantity),
+        };
+        let before = vec![
+            order(1, 1, Side::Buy, 99, 5),
+            order(2, 2, Side::Sell, 101, 3),
+            order(3, 3, Side::Sell, 101, 2),
+        ];
+        // Order 1 partly filled, order 2 gone, order 3's iceberg slice
+        // refreshed behind a new order 4.
+        let after = vec![
+            order(1, 1, Side::Buy, 99, 4),
+            order(4, 4, Side::Sell, 101, 1),
+            order(3, 5, Side::Sell, 101, 2),
+        ];
+        let change = |action, side, reference, price, quantity| OrderChange {
+            action,
+            side,
+            reference,
+            price: PriceTicks::new(price),
+            quantity: QuantityLots::new(quantity),
+        };
+        assert_eq!(
+            diff_orders(&before, &after),
+            vec![
+                change(OrderAction::Deleted, Side::Sell, 2, 101, 0),
+                change(OrderAction::Deleted, Side::Sell, 3, 101, 0),
+                change(OrderAction::Changed, Side::Buy, 1, 99, 4),
+                change(OrderAction::Added, Side::Sell, 4, 101, 1),
+                change(OrderAction::Added, Side::Sell, 5, 101, 2),
+            ]
+        );
+        assert!(diff_orders(&after, &after).is_empty());
     }
     use bunting_api_contract::UnsignedDecimalString;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};

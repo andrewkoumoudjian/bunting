@@ -11,7 +11,7 @@ use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationSnapshot, FixApplicationState,
     FixCommandContext, MarketDataRequestType, VerifiedActor,
     competition::{account, discovery, news_tenders, risk_score},
-    listing_for_command, project_market,
+    displayed_orders, listing_for_command, project_market,
 };
 use bunting_engine::RunState;
 use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use simfix_mapping::{
     ApplyFinePayload, CONSOLIDATED_EXCHANGE, CompetitionRequest, PublishNewsPayload,
     RunAdvancePayload, RunReasonPayload, TenderAction, business_reject, competition_report,
-    consolidated_snapshot, market_snapshot,
+    consolidated_snapshot, market_snapshot, order_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
@@ -392,6 +392,7 @@ fn admit_message<'a>(
             listing_key,
             request_type: MarketDataRequestType::Subscribe,
             entry_types,
+            aggregated,
             ..
         } => {
             let refused = if is_consolidated(*listing_key) {
@@ -402,7 +403,10 @@ fn admit_message<'a>(
                     reply_to.waker,
                 )
             } else {
-                feeds.subscribe(request_id, *listing_key, entry_types)
+                if !aggregated {
+                    context.origin.enable_order_feeds();
+                }
+                feeds.subscribe(request_id, *listing_key, entry_types, *aggregated)
             };
             if let Some(reason) = refused {
                 return Ok(Some(reason));
@@ -499,6 +503,23 @@ fn job_for(
                 last,
                 &quotes,
             )])
+        }),
+        FixApplicationRequest::MarketData {
+            request_id,
+            listing_key,
+            aggregated: false,
+            ..
+        } => Box::new(move |context| {
+            // Order by order: every displayed order, by public reference.
+            let orders = ApplicationService::new(context.origin)
+                .read(run_id, |state| displayed_orders(state, listing_key))
+                .map_err(|error| format!("run read failed: {error}"))?
+                .map_err(|error| format!("market projection failed: {error}"))?;
+            let orders: Vec<_> = orders
+                .iter()
+                .map(|order| (order.side, order.reference, order.price, order.quantity))
+                .collect();
+            Ok(vec![order_snapshot(&request_id, listing_key, &orders)])
         }),
         FixApplicationRequest::MarketData {
             request_id,

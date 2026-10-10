@@ -75,7 +75,11 @@ venue's direct feed (48 + positive 207), 263=2 end; `X` entries carry 279,
 (207=0) names an instrument's consolidated tape: its `W` lists each venue's
 best bid and offer (each entry with its 207) and 83 = the last report
 included; its `X` entries are every venue's trades and best bid/offer
-changes with one per-instrument 83.
+changes with one per-instrument 83. With 266=N a direct feed is order by
+order: its `W` lists each displayed order (269, 278 public reference, 270,
+271, 290 queue position) and its `X` entries add (279=0), change (1) or
+delete (2) orders by 278, with trades (269=2) naming the order they
+executed against in 278.
 
 Every output carries run, listing/instrument and committed sequence. Public
 state may coalesce. A gap outside retention produces `UC` reset followed by a

@@ -30,6 +30,8 @@ pub enum InboundApplication {
         request_type: MarketDataRequestType,
         market_depth: usize,
         entry_types: Vec<MarketDataEntryType>,
+        /// `false` for order-by-order (266=N), else price levels.
+        aggregated: bool,
     },
     Competition(CompetitionRequest),
 }
@@ -225,6 +227,12 @@ pub fn map_inbound(
                 request_type,
                 market_depth: parse(message, 264)?,
                 entry_types,
+                // 266 (AggregatedBook): N asks for order-by-order data.
+                aggregated: match message.value(266) {
+                    None | Some("Y") => true,
+                    Some("N") => false,
+                    Some(_) => return Err(MappingError::InvalidTag(266)),
+                },
             })
         }
         _ => map_competition(message),
@@ -392,6 +400,34 @@ pub fn market_snapshot(
     message
 }
 
+/// An order-by-order (L3) snapshot of one listing (266=N): every displayed
+/// order by its anonymous public reference (278), bids then asks, each in
+/// matching priority with its queue position (290, from 1 per side).
+#[must_use]
+pub fn order_snapshot(
+    request_id: &str,
+    listing_key: ListingKey,
+    orders: &[(Side, u64, PriceTicks, QuantityLots)],
+) -> FixMessage {
+    let mut message = FixMessage::new("W");
+    message.push(262, request_id);
+    message.push(48, listing_key.instrument_id.get().to_string());
+    message.push(207, listing_key.venue_id.get().to_string());
+    message.push(266, "N");
+    message.push(268, orders.len().to_string());
+    let mut position = [0_u64; 2];
+    for (side, reference, price, quantity) in orders {
+        let index = usize::from(*side == Side::Sell);
+        position[index] = position[index].saturating_add(1);
+        message.push(269, if *side == Side::Buy { "0" } else { "1" });
+        message.push(278, reference.to_string());
+        message.push(270, price.get().to_string());
+        message.push(271, quantity.get().to_string());
+        message.push(290, position[index].to_string());
+    }
+    message
+}
+
 /// The consolidated tape's snapshot of one instrument: each venue's best bid
 /// and offer as the tape's processor last saw them, every entry naming its
 /// venue (207). `83` is the report sequence of the last change included, so
@@ -436,10 +472,21 @@ pub enum MarketDataIncrement {
         price: PriceTicks,
         quantity: QuantityLots,
     },
-    /// One anonymous trade.
+    /// One displayed order on an order-by-order feed, by its anonymous
+    /// public reference (278); the displayed quantity after the change.
+    Order {
+        action: MarketDataUpdateAction,
+        side: Side,
+        reference: u64,
+        price: PriceTicks,
+        quantity: QuantityLots,
+    },
+    /// One anonymous trade; on order-by-order feeds `reference` (278) names
+    /// the resting order it executed against.
     Trade {
         price: PriceTicks,
         quantity: QuantityLots,
+        reference: Option<u64>,
     },
 }
 
@@ -461,21 +508,26 @@ pub fn market_incremental(
     message.push(262, request_id);
     message.push(268, entries.len().to_string());
     for (offset, (listing_key, entry)) in (0_u64..).zip(entries) {
-        let (action, entry_type, price, quantity) = match *entry {
+        let side_type = |side| if side == Side::Buy { "0" } else { "1" };
+        let (action, entry_type, reference, price, quantity) = match *entry {
             MarketDataIncrement::Level {
                 action,
                 side,
                 price,
                 quantity,
-            } => (
+            } => (action, side_type(side), None, price, quantity),
+            MarketDataIncrement::Order {
                 action,
-                if side == Side::Buy { "0" } else { "1" },
+                side,
+                reference,
                 price,
                 quantity,
-            ),
-            MarketDataIncrement::Trade { price, quantity } => {
-                (MarketDataUpdateAction::New, "2", price, quantity)
-            }
+            } => (action, side_type(side), Some(reference), price, quantity),
+            MarketDataIncrement::Trade {
+                price,
+                quantity,
+                reference,
+            } => (MarketDataUpdateAction::New, "2", reference, price, quantity),
         };
         message.push(
             279,
@@ -488,6 +540,9 @@ pub fn market_incremental(
         message.push(269, entry_type);
         message.push(48, listing_key.instrument_id.get().to_string());
         message.push(207, listing_key.venue_id.get().to_string());
+        if let Some(reference) = reference {
+            message.push(278, reference.to_string());
+        }
         message.push(270, price.get().to_string());
         message.push(271, quantity.get().to_string());
         message.push(83, first_report_sequence.saturating_add(offset).to_string());
@@ -691,6 +746,7 @@ mod tests {
                     MarketDataIncrement::Trade {
                         price: PriceTicks::new(101),
                         quantity: QuantityLots::new(1),
+                        reference: None,
                     },
                 ),
             ],
@@ -711,6 +767,95 @@ mod tests {
         for tag in [37, 448, 1, 11, 41, 278] {
             assert_eq!(update.value(tag), None);
         }
+    }
+
+    #[test]
+    fn order_by_order_requests_snapshots_and_entries_carry_public_references()
+    -> Result<(), MappingError> {
+        let mut request = FixMessage::new("V");
+        for (tag, value) in [
+            (262, "l3"),
+            (263, "1"),
+            (264, "0"),
+            (266, "N"),
+            (267, "1"),
+            (269, "1"),
+            (48, "7"),
+            (207, "2"),
+        ] {
+            request.push(tag, value);
+        }
+        let context = MappingContext {
+            participant_id: ParticipantId::new(9),
+            next_intent_id: IntentId::new(1),
+        };
+        assert!(matches!(
+            map_inbound(&request, context)?,
+            InboundApplication::MarketDataRequest {
+                aggregated: false,
+                ..
+            }
+        ));
+        let mut invalid = request.clone();
+        invalid.fields.retain(|field| field.tag != 266);
+        invalid.push(266, "X");
+        assert!(matches!(
+            map_inbound(&invalid, context),
+            Err(MappingError::InvalidTag(266))
+        ));
+
+        let listing = ListingKey::new(VenueId::new(2), InstrumentId::new(7));
+        let snapshot = order_snapshot(
+            "l3",
+            listing,
+            &[
+                (Side::Buy, 4, PriceTicks::new(99), QuantityLots::new(2)),
+                (Side::Sell, 1, PriceTicks::new(101), QuantityLots::new(3)),
+                (Side::Sell, 3, PriceTicks::new(101), QuantityLots::new(1)),
+            ],
+        );
+        let positions: Vec<_> = snapshot
+            .fields
+            .iter()
+            .filter(|field| [278, 290].contains(&field.tag))
+            .map(|field| field.value.as_str())
+            .collect();
+        assert_eq!(positions, ["4", "1", "1", "1", "3", "2"]);
+        let update = market_incremental(
+            "l3",
+            1,
+            &[
+                (
+                    listing,
+                    MarketDataIncrement::Trade {
+                        price: PriceTicks::new(101),
+                        quantity: QuantityLots::new(1),
+                        reference: Some(1),
+                    },
+                ),
+                (
+                    listing,
+                    MarketDataIncrement::Order {
+                        action: MarketDataUpdateAction::Change,
+                        side: Side::Sell,
+                        reference: 1,
+                        price: PriceTicks::new(101),
+                        quantity: QuantityLots::new(2),
+                    },
+                ),
+            ],
+        );
+        let references: Vec<_> = update
+            .fields
+            .iter()
+            .filter(|field| field.tag == 278)
+            .map(|field| field.value.as_str())
+            .collect();
+        assert_eq!(references, ["1", "1"]);
+        for tag in [37, 448, 1, 11, 41] {
+            assert_eq!(update.value(tag), None);
+        }
+        Ok(())
     }
 
     #[test]

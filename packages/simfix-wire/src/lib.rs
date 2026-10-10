@@ -408,7 +408,7 @@ const STATUS_REQUEST: MessageRule = MessageRule {
 const MARKET_DATA_REQUEST: MessageRule = MessageRule {
     msg_type: "V",
     required_tags: &[262, 263, 264, 267, 269, 48, 207],
-    allowed_tags: &[262, 263, 264, 265, 267, 269, 146, 55, 48, 207],
+    allowed_tags: &[262, 263, 264, 265, 266, 267, 269, 146, 55, 48, 207],
 };
 
 #[must_use]

@@ -12,7 +12,10 @@ use crate::consolidated::ConsolidatedTape;
 use crate::storage::NativeOrigin;
 use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
-use bunting_application::{PublicDepth, PublicListingUpdate, diff_levels, project_public_event};
+use bunting_application::{
+    DisplayedOrder, PublicDepth, PublicListingUpdate, diff_levels, diff_orders, displayed_orders,
+    project_public_event,
+};
 use bunting_engine::RunState;
 use bunting_market_events::{EventEnvelope, EventPayload};
 use bunting_market_types::{CommandId, ListingKey, RunId};
@@ -263,6 +266,12 @@ pub(crate) struct PublishingOrigin {
     books: Mutex<BTreeMap<RunId, BTreeMap<ListingKey, PublicDepth>>>,
     /// The consolidated tape's processor, fed each commit's public changes.
     tape: ConsolidatedTape,
+    /// Set once any session asks for an order-by-order feed; until then no
+    /// commit pays for order-level views.
+    orders_enabled: AtomicBool,
+    /// Last published displayed orders of every listing, per run, once
+    /// order-by-order feeds are enabled.
+    orders: Mutex<BTreeMap<RunId, BTreeMap<ListingKey, Vec<DisplayedOrder>>>>,
 }
 
 impl PublishingOrigin {
@@ -278,7 +287,37 @@ impl PublishingOrigin {
             clock,
             books: Mutex::new(BTreeMap::new()),
             tape,
+            orders_enabled: AtomicBool::new(false),
+            orders: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Starts order-by-order views: the next commit records every listing's
+    /// displayed orders before it executes and publishes order changes from
+    /// then on. Idempotent.
+    pub(crate) fn enable_order_feeds(&self) {
+        self.orders_enabled.store(true, Ordering::Release);
+    }
+
+    /// Records every listing's displayed orders the first time a run commits
+    /// with order-by-order feeds enabled.
+    fn prime_orders(&self, run_id: RunId) -> Result<(), OriginError> {
+        if !self.orders_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut orders = self.orders.lock().map_err(|_| OriginError::Unavailable)?;
+        if orders.contains_key(&run_id) {
+            return Ok(());
+        }
+        let views = self.inner.read_run(run_id, |state| {
+            state
+                .listings()
+                .keys()
+                .filter_map(|&key| displayed_orders(state, key).ok().map(|view| (key, view)))
+                .collect::<BTreeMap<_, _>>()
+        })?;
+        orders.insert(run_id, views);
+        Ok(())
     }
 
     /// Records every listing's visible depth the first time a run commits
@@ -336,30 +375,64 @@ impl PublishingOrigin {
         if everything {
             touched.extend(known.keys().copied());
         }
+        let mut order_views = self.orders.lock().map_err(|_| OriginError::Unavailable)?;
+        let mut order_views = order_views.get_mut(&run_id);
+        let with_orders = order_views.is_some();
         let after = self.inner.read_run(run_id, |state| {
             touched
                 .iter()
-                .filter_map(|&key| state.visible_levels(key).ok().map(|depth| (key, depth)))
+                .filter_map(|&key| {
+                    let depth = state.visible_levels(key).ok()?;
+                    let orders = if with_orders {
+                        displayed_orders(state, key).ok()
+                    } else {
+                        None
+                    };
+                    Some((key, depth, orders))
+                })
                 .collect::<Vec<_>>()
         })?;
         let mut updates = Vec::new();
-        for (key, depth) in after {
+        for (key, depth, displayed) in after {
             let levels = known.get(&key).map_or_else(
                 || diff_levels(&(Vec::new(), Vec::new()), &depth),
                 |before| diff_levels(before, &depth),
             );
-            let trades: Vec<_> = events
+            let mut trades: Vec<_> = events
                 .iter()
                 .filter_map(|event| project_public_event(event, key))
                 .collect();
             known.insert(key, depth);
-            if !levels.is_empty() || !trades.is_empty() {
+            let mut orders = Vec::new();
+            if let (Some(views), Some(displayed)) = (order_views.as_deref_mut(), displayed) {
+                let before = views.remove(&key).unwrap_or_default();
+                // Each trade names the public reference its resting order
+                // had before this commit.
+                let makers = events.iter().filter_map(|event| match &event.payload {
+                    EventPayload::TradeExecuted {
+                        listing_key: Some(executed_at),
+                        maker_order_id,
+                        ..
+                    } if *executed_at == key => Some(*maker_order_id),
+                    _ => None,
+                });
+                for (trade, maker) in trades.iter_mut().zip(makers) {
+                    trade.maker_reference = before
+                        .iter()
+                        .find(|order| order.order_id == maker)
+                        .map(|order| order.reference);
+                }
+                orders = diff_orders(&before, &displayed);
+                views.insert(key, displayed);
+            }
+            if !levels.is_empty() || !trades.is_empty() || !orders.is_empty() {
                 updates.push(PublicListingUpdate {
                     listing_key: key,
                     trades,
                     levels,
                     best_bid: known.get(&key).and_then(|depth| depth.0.first().copied()),
                     best_ask: known.get(&key).and_then(|depth| depth.1.first().copied()),
+                    orders,
                 });
             }
         }
@@ -387,6 +460,7 @@ impl OriginStore for PublishingOrigin {
     ) -> Result<Executed, OriginError> {
         // Best effort: an unknown run fails in `execute` below.
         let _ = self.prime_books(input.run_id());
+        let _ = self.prime_orders(input.run_id());
         let executed = self.inner.execute_admitted(input, admission)?;
         // A duplicate's events were published when it first committed.
         if !executed.duplicate {
