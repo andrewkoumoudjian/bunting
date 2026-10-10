@@ -63,7 +63,8 @@ bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
    │   each subscribed to the committed-event distributor (20 ms delivery poll)
    ├─ admin HTTP: /health, /admin/runs/<id>
    ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
-   ├─ AuthoritativeWriter: sleep to 100 ms boundary, then arrival-ticket FIFO (ADR 0024)
+   ├─ admission sequencer thread: release at t_rx + (D − d̂) + L (ADR 0030/0034);
+   │   outbound held to commit + (D − d̂) + L per connection
    └─ bunting-application ─► command-transaction ─► origin store (Memory | File)
                                                       owns live RunState per run;
                                                       bunting-engine applies in place
@@ -141,42 +142,50 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 1. Session parses and bounds the FIX message; identity comes from configured
    credentials. Session-local command and order IDs are namespaced per
    participant session (slice 12) before they become canonical IDs.
-2. `AuthoritativeWriter::execute_interval` waits for the interval boundary and
-   arrival turn.
-3. Application reads the committed sequence through a borrowing
-   `read_run` closure and maps the message to a canonical command with
-   `logical_time` from wall-clock epoch milliseconds.
+2. The session stamps `t_rx` (venue monotonic clock) on read, maps the
+   message to a canonical command and admits it without waiting. The delay
+   estimate `d̂` is the minimum of kernel TCP RTT (netlink `sock_diag`) and
+   FIX probe RTT over the connection's lifetime, halved and capped at `D`
+   (ADR 0034).
+3. The sequencer thread releases admitted work in `(release, arrival)` order
+   at `t_rx + (D − d̂) + L`, stamps the command's expected sequence and
+   `logical_time = release`, and executes it under the writer gate.
 4. The origin's `LiveRun` checks idempotency and expected sequence and applies
    the command in place (`RunState::apply`). `ApplyError::Unchanged` leaves the
    run untouched; `ApplyError::Poisoned` rolls it back by re-executing the
    inputs since the last checkpoint (slice 14).
-5. File origin appends one command record (input, result, events, hash chain)
+5. File origin appends one command record (input, result, events, admission
+   record, hash chain)
    and `fdatasync`s it before acknowledging; a failed append stops the store
    until restart. Every 8,192 commands the live state becomes the rollback
    base and is written as a state-only checkpoint.
 6. `PublishingOrigin` publishes the committed events to the bounded
    committed-event distributor; every connected session maps the batch to its
    own participant's execution reports (slice 12), so resting makers receive
-   unsolicited fills. Per-participant live-order caps are engine risk
+   unsolicited fills. Each session holds every outbound application message
+   until `commit + (D − d̂) + L`, so all participants see a commit at the same
+   venue time. Per-participant live-order caps are engine risk
    (`RiskLimits.max_live_orders`).
 
 Measured cost: see slices 13 (before) and 14 (after) in the implementation
 log. Per-command cost no longer grows with the size of the run.
 
-### Target (Step 5 of the 2026-10-09 plan; Steps 1 and 3 landed in slices 12 and 14)
+### Target
 
-- Journal records gain the ADR 0030 admission metadata.
+- Built-in agents admitted through the same sequencer (Step 4).
 - The distributor gains public per-listing market-data streams and resume
   cursors so reports missed while disconnected are replayed (today they are
   not).
 
 ## 7. Admission and fairness
 
-**Current:** ADR 0024 interval writer (sleep to a 100 ms boundary, then FIFO by
-arrival ticket). Built-in agents commit under the writer lock outside that
-queue.
+**Current (slice 15):** ADR 0030 as amended by ADR 0034 for FIX sessions —
+`equalized` by default, `physical` and `geographic` available; kernel and
+probe RTT; outbound hold; admission records journaled; `/admin/admission`
+health. Built-in agents still commit under the writer gate outside the
+sequencer.
 
-**Target (ADR 0030):** continuous price-time matching per listing. A
+**Target (ADR 0030/0034):** continuous price-time matching per listing. A
 deterministic sequencer orders all inputs — FIX, BNP, agents, schedule — by
 `release = (t_rx − d̂(c)) + D_max + L(p, v)`, where `d̂` is half the windowed
 minimum RTT and `L` is scenario path latency plus seeded jitter. Outbound data

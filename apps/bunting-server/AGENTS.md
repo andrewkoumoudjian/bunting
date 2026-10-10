@@ -17,10 +17,14 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   path must commit through `PublishingOrigin` under the authoritative writer so
   subscribers see batches in commit order; never publish before commit or
   send reports inline from a command path.
-- `writer.rs` implements ADR 0024 intervals (current). The target is the
-  ADR 0030 latency-modeled sequencer; do not build new behavior on the
-  sleep-to-boundary writer, and route built-in agents through the same
-  admission path as FIX.
+- `admission.rs` + `session_host.rs` implement ADR 0034: stamp `t_rx` on
+  read, admit without blocking, release on the sequencer thread at
+  `t_rx + (D − d̂) + L`, journal the `AdmissionRecord`, and hold every
+  outbound application message until `commit + (D − d̂) + L` (never
+  heartbeats or probes). `tcp_rtt.rs` reads kernel RTT through netlink
+  `sock_diag` without `unsafe`. `writer.rs` is only the commit gate shared
+  with the agent runtime; route built-in agents through the sequencer next
+  (Step 4).
 - The origin owns the live runs; `storage.rs` appends one journal-format-3
   record per committed input (`commit_journal.rs`) before acknowledging and
   writes state-only checkpoints every `storage.checkpoint_interval` commands.

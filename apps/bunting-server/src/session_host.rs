@@ -470,12 +470,19 @@ impl<'a> ConnectionLatency<'a> {
         while self.probes.len() > MAX_OUTSTANDING_PROBES {
             self.probes.pop_first();
         }
-        let interval_us = self
+        let base_us = self
             .admission
             .config()
             .probe_interval_ms
-            .saturating_mul(1_000);
-        self.next_probe_us = sent_us.saturating_add(interval_us);
+            .saturating_mul(1_000)
+            .max(2);
+        // Spread probes over 50–150% of the interval so a client that reads
+        // its socket periodically still answers some probes at once: the
+        // lifetime minimum then converges to its true RTT instead of
+        // aliasing with its poll period (ADR 0034 §6).
+        self.next_probe_us = sent_us
+            .saturating_add(base_us / 2)
+            .saturating_add(spread(self.connection, id) % base_us);
         Ok(())
     }
 
@@ -520,6 +527,15 @@ impl Drop for ConnectionLatency<'_> {
     fn drop(&mut self) {
         self.admission.remove_connection(self.connection);
     }
+}
+
+/// `SplitMix64` of a connection and probe number: an even spread of probe
+/// times. It never orders or times market events.
+const fn spread(connection: u64, probe: u64) -> u64 {
+    let mut z = (connection ^ probe.rotate_left(32)).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// Outbound messages waiting for their equalized send time (ADR 0034 §3).

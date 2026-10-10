@@ -55,8 +55,9 @@ In `equalized` (and `geographic`) mode the venue promises:
 - **No gain from looking slower.** No participant can improve its admission
   order or data timing by making its connection appear slower, unless it
   forges kernel-level TCP behavior, and even then by at most
-  `D − true one-way delay`. Accidental slowness (slow heartbeat handling,
-  delayed ACKs, Nagle, pauses) never earns credit.
+  `D − true one-way delay`. With kernel RTT, accidental slowness (slow
+  heartbeat handling, delayed ACKs, Nagle, pauses) never earns credit; in
+  `probe_only` deployments see §6.
 - **Implementation rewarded.** With distance removed, the remaining
   difference between participants is their own processing time: how fast the
   client parses, decides and sends, whether it pipelines, keeps a warm
@@ -76,8 +77,10 @@ For each connection the gateway maintains:
 - `probe_min` — the minimum RTT over **the connection's lifetime** from
   periodic FIX TestRequest probes (unpredictable `TestReqID`, monotonic
   microsecond send stamp kept server-side), and later BNP `Ping`/`Pong`.
-  Probes are sent at logon (a short burst) and periodically, not only when
-  idle.
+  Probes are sent at logon (a short burst) and then at randomized intervals
+  (50–150% of the configured interval), not only when idle, so a client that
+  reads its socket periodically still answers some probes immediately and the
+  lifetime minimum converges to its true RTT.
 
 ```text
 d̂(c) = clamp( min(kernel_min, probe_min) / 2 , 0 , D )   # over available sources
@@ -146,9 +149,18 @@ The host must not add delays that depend on client implementation:
   `d̂`, which organizers can compare with each team's registered location.
   No server-only measurement can rule it out, because every RTT depends on
   the client answering.
-- **TLS terminated by a proxy.** The kernel RTT then measures the proxy hop,
-  so only probes are used and the inflation resistance above is weaker.
-  Competitive rounds should terminate TLS in-process (ADR 0031 target).
+- **TLS terminated by a proxy (`probe_only`).** The kernel RTT then measures
+  the proxy hop, so only probes are used, and a probe reply delay counts as
+  distance. *Observed* in `tests/fair_admission.rs` during slice 15: a test
+  client that read its socket only every ~50 ms was credited with that delay
+  and beat a nearer client that had sent first. Randomized probe timing
+  limits this for clients that read continuously, but a client that reads
+  slowly (by accident or design) still gains up to its reading delay, capped
+  at `D`. The rules require prompt TestRequest replies and prohibit
+  deliberate delay; the health page flags outliers. The server refuses
+  `kernel_and_probe` with a terminated TLS profile, because measuring the
+  proxy hop would silently withhold all compensation. Competitive rounds
+  should terminate TLS in-process (ADR 0031 target) to get kernel RTT.
 - **Asymmetric routes and jitter.** `RTT/2` misattributes asymmetric delay,
   and queueing above the path minimum counts against whoever it hits. Wired
   connections minimize this; it is stated, not hidden.

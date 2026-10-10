@@ -440,7 +440,7 @@ host neutrality regardless of what the server ships as.
 | 3 | ~~**Step 1**~~ — **done in slice 12** (plus a cross-session ID collision fix it uncovered) | Competition is unusable for passive strategies without it |
 | 4 | **Step 2** measurement baseline — **native baseline done in slice 13**; native-vs-WASIX parity still open (needs a WASIX toolchain) | Feeds the host ADR and proves Step 3 |
 | 5 | ~~**Step 3**~~ writer-owned live state + command journal — **done in slice 14** | ~1000× gap between matching and per-command overhead; needed by both products |
-| 6 | **Latency-modeled sequencer** (ADR 0030): periodic RTT probes in `simfix-session`, windowed-min estimator, `(release, arrival)` queue, outbound hold, scenario latency table | Replaces the interval writer (G4); needs Step 3's journal to record admission inputs |
+| 6 | ~~**Latency-modeled sequencer**~~ (ADR 0030 as amended by ADR 0034) — **done for FIX in slice 15**; agents join with Step 4 | Replaces the interval writer (G4); needs Step 3's journal to record admission inputs |
 | 7 | **Step 4** full archive + recoverable agents | Agents get a location in the latency model and go through the same sequencer |
 | 8 | **Step 6** calendar, sessions, opening/closing auctions, multi-day | Classroom realism; auctions are also part of "most realistic" venues |
 | ∥ | **BNP + `bunting-client` + app** (ADR 0031) | Adapter work; can run in parallel from order 3 onward with a second contributor |
