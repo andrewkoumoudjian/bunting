@@ -81,6 +81,10 @@ fn map() -> LatencyMap {
 }
 
 fn start_venue(name: &str) -> Result<Venue, String> {
+    start_venue_with(name, map())
+}
+
+fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
     let fix_port = free_port()?;
     let bnp_port = free_port()?;
     let directory = std::env::temp_dir().join(format!("bunting-bnp-{name}-{bnp_port}"));
@@ -113,7 +117,7 @@ fn start_venue(name: &str) -> Result<Venue, String> {
         participant_id: 10,
     });
     fix.max_connections = 3;
-    fix.admission = AdmissionConfig::with_map(map());
+    fix.admission = AdmissionConfig::with_map(map);
     let entry = |issued: &Issued, participant_id| {
         Ok::<_, String>(BnpRosterEntry {
             certificate_sha256: issued.fingerprint()?,
@@ -653,5 +657,92 @@ fn a_kill_switch_cancels_and_blocks_only_its_own_team_until_reset() -> Result<()
             }
         )
     })?;
+    Ok(())
+}
+
+/// The hub sits with team 2 and venue 1 is 30 ms away, so a report from
+/// the hub can be due before an earlier report from the venue.
+fn hub_near_team_map() -> LatencyMap {
+    let at = |location: &str| location.to_owned();
+    LatencyMap {
+        default_location: at("two"),
+        participants: vec![ParticipantPlacement {
+            participant_id: ParticipantId::new(10),
+            location: at("one"),
+        }],
+        venues: vec![VenuePlacement {
+            venue_id: VenueId::new(1),
+            location: at("one"),
+        }],
+        local: PathLatency {
+            latency_us: 0,
+            jitter_us: 0,
+        },
+        links: vec![Link {
+            between: [at("one"), at("two")],
+            latency: PathLatency {
+                latency_us: FAR_US,
+                jitter_us: 0,
+            },
+        }],
+        ..LatencyMap::default()
+    }
+}
+
+#[test]
+fn private_reports_arrive_in_sequence_order_so_resume_never_skips_one() -> Result<(), String> {
+    let venue = start_venue_with("ordering", hub_near_team_map())?;
+    let mut maker = venue.maker()?;
+    let team = venue.connect(&venue.team2, None)?;
+    team.send(&limit(1, Side::Buy, 1, 95))
+        .map_err(|error| error.to_string())?;
+    until(&team, |message| {
+        matches!(
+            message,
+            ServerMessage::OrderRested {
+                client_order_id: 1,
+                ..
+            }
+        )
+    })?;
+    // The maker fills the bid at the venue; a moment later the team's kill
+    // switch commits at the hub, beside the team. The kill switch is due
+    // first, but the fill was committed first.
+    maker.send(order("903", "sell", 1, Some(95)))?;
+    maker.wait_report("903", "F")?;
+    team.send(&ClientMessage::KillSwitch { request_id: 1 })
+        .map_err(|error| error.to_string())?;
+    let received = until(&team, |message| {
+        matches!(message, ServerMessage::KillSwitchActivated { .. })
+    })?;
+    let sequences: Vec<u64> = received
+        .iter()
+        .filter_map(|message| message.stamp().map(|stamp| stamp.sequence))
+        .collect();
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] <= pair[1]),
+        "private stream out of order: {received:?}"
+    );
+    assert!(
+        received.iter().any(|message| matches!(
+            message,
+            ServerMessage::Fill {
+                client_order_id: 1,
+                ..
+            }
+        )),
+        "the fill must arrive before the later kill switch: {received:?}"
+    );
+    // Reconnecting from the cursor misses nothing: the replay is empty.
+    let cursor = team.cursor();
+    team.close();
+    let resumed = venue.connect(&venue.team2, Some(cursor))?;
+    let replay = until(&resumed, |message| {
+        matches!(message, ServerMessage::ReplayComplete { .. })
+    })?;
+    assert!(
+        matches!(replay.as_slice(), [ServerMessage::ReplayComplete { through_sequence }] if *through_sequence == cursor),
+        "{replay:?}"
+    );
     Ok(())
 }

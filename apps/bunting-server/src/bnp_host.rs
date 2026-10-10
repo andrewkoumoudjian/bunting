@@ -279,16 +279,21 @@ fn handle_connection(
         latency.probe(&mut channel)?;
     }
     let mut outbound = OutboundHold::new(admission.config().max_outbound_hold);
+    // The private stream leaves in committed sequence order, as one ordered
+    // connection delivers it: a report waits for every earlier report of
+    // this session, even one from a farther venue. The client's cursor (the
+    // highest sequence seen) therefore never passes an undelivered report.
+    let mut private_floor = 0_u64;
     // Replay what the client missed, each batch over its path as when it
     // was live (already due), then mark the end of the replay.
     if let (Resume::Replay(batches), Some(after)) = (resume, resume_after) {
         let mut through = after;
-        let mut last_send = 0;
         for batch in &batches {
             let send_at = batch
                 .durable_us
-                .saturating_add(latency.delay_from(batch.source)?);
-            last_send = last_send.max(send_at);
+                .saturating_add(latency.delay_from(batch.source)?)
+                .max(private_floor);
+            private_floor = send_at;
             for message in identity.private_messages(&batch.events) {
                 if message.stamp().is_some_and(|stamp| stamp.sequence > after) {
                     outbound.hold(message, send_at)?;
@@ -303,7 +308,7 @@ fn handle_connection(
             ServerMessage::ReplayComplete {
                 through_sequence: through,
             },
-            last_send,
+            private_floor,
         )?;
     }
     let (reply_sender, replies) = sync_channel(admission.config().max_admission_queue);
@@ -450,7 +455,9 @@ fn handle_connection(
             }
             let send_at = batch
                 .durable_us
-                .saturating_add(latency.delay_from(batch.source)?);
+                .saturating_add(latency.delay_from(batch.source)?)
+                .max(private_floor);
+            private_floor = send_at;
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
