@@ -154,6 +154,7 @@ dependencies = [
  "bunting-ffi",
  "bunting-market-events",
  "bunting-market-types",
+ "bunting-origin-store",
  "bunting-py",
  "bunting-rs",
  "serde_json",
@@ -174,6 +175,7 @@ name = "bunting-cli"
 version = "0.1.0"
 dependencies = [
  "bunting-api-contract",
+ "bunting-market-types",
  "bunting-rs",
  "bunting-server",
  "bunting-tui",
@@ -329,6 +331,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-origin-store",
  "bunting-risk-engine",
+ "bunting-rs",
  "bunting-runtime",
  "bunting-tui",
  "quarcc-execution-engine",

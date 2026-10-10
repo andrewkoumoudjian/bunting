@@ -4,8 +4,8 @@ use bunting_engine::{EngineSnapshotEnvelope, RunState};
 use bunting_market_events::EventEnvelope;
 use bunting_market_types::{CommandId, RunId};
 use bunting_origin_store::{
-    AdmissionRecord, CommandResult, Executed, Execution, InMemoryOrigin, JournalInput, LiveRun,
-    OriginError, OriginStore, RunLimits, RunRecovery,
+    AdmissionRecord, CommandRecord, CommandResult, Executed, Execution, InMemoryOrigin,
+    JournalInput, LiveRun, OriginError, OriginStore, RunLimits, RunRecovery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -261,6 +261,36 @@ impl OriginStore for FileOriginStore {
             .ok_or(OriginError::UnknownRun)?
             .find(command_id))
     }
+}
+
+/// Reads one run's genesis snapshot and every complete journal record, in
+/// commit order, from the durable origin at `origin_path`, without taking
+/// the writer lease or repairing a crash tail. This is the source of a
+/// version 2 competition archive; the caller verifies it by replay.
+pub fn read_run_journal(
+    origin_path: &Path,
+    run_id: RunId,
+) -> Result<(EngineSnapshotEnvelope, Vec<CommandRecord>), OriginError> {
+    let mut genesis = None;
+    let mut records = Vec::new();
+    commit_journal::scan(&commit_journal::path_for(origin_path), false, |entry| {
+        match entry {
+            JournalEntry::Genesis { snapshot } if snapshot.state.run_id() == run_id => {
+                if genesis.replace(*snapshot).is_some() {
+                    return Err(OriginError::InvalidCommit);
+                }
+            }
+            JournalEntry::Command(record) if record.input.run_id() == run_id => {
+                if genesis.is_none() {
+                    return Err(OriginError::InvalidCommit);
+                }
+                records.push(*record);
+            }
+            JournalEntry::Genesis { .. } | JournalEntry::Command(_) => {}
+        }
+        Ok(())
+    })?;
+    Ok((genesis.ok_or(OriginError::UnknownRun)?, records))
 }
 
 /// Rebuilds every run from the journal, starting each from its checkpoint

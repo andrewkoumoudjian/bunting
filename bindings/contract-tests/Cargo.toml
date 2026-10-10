@@ -13,6 +13,7 @@ bunting-py = { path = "../bunting-py", package = "bunting-py" }
 bunting-engine.workspace = true
 bunting-market-events.workspace = true
 bunting-market-types.workspace = true
+bunting-origin-store = { path = "../../packages/origin-store" }
 bunting-rs = { path = "../../bunting-rs" }
 serde_json.workspace = true
 

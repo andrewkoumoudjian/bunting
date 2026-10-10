@@ -1,5 +1,7 @@
 use bunting_api_contract::{FIX_COMPETITION_PROFILE_VERSION, PRODUCT_CONTRACT_VERSION};
-use bunting_server::config::ServerConfig;
+use bunting_market_types::RunId;
+use bunting_server::config::{ServerConfig, StorageKind};
+use bunting_server::storage::read_run_journal;
 #[cfg(feature = "tui")]
 use bunting_tui::TuiOptions;
 use clap::{Parser, Subcommand};
@@ -63,6 +65,14 @@ enum Command {
     },
     /// Export the configured participant roster to a new protected JSON file.
     ExportRoster { config: PathBuf, output: PathBuf },
+    /// Export a run's full journaled history from a file origin as a
+    /// verified archive. Defaults to the configured scenario run.
+    ExportArchive {
+        config: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        run: Option<u128>,
+    },
 }
 
 pub async fn run() {
@@ -115,7 +125,44 @@ async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), St
         Command::Doctor { config } => doctor(config.as_deref()),
         Command::Conformance { agent } => conformance(&agent),
         Command::ExportRoster { config, output } => export_roster(&config, &output),
+        Command::ExportArchive {
+            config,
+            output,
+            run,
+        } => export_archive(&config, &output, run),
     }
+}
+
+fn export_archive(config_path: &Path, output_path: &Path, run: Option<u128>) -> Result<(), String> {
+    let config = ServerConfig::from_file(config_path).map_err(|error| error.to_string())?;
+    let origin = config
+        .storage
+        .path
+        .as_deref()
+        .filter(|_| config.storage.kind == StorageKind::File)
+        .ok_or_else(|| "configuration has no file origin to export".to_owned())?;
+    let run_id = run
+        .or_else(|| config.scenario.as_ref().map(|scenario| scenario.run_id))
+        .ok_or_else(|| "pass --run: the configuration names no scenario run".to_owned())?;
+    let (genesis, records) = read_run_journal(Path::new(origin), RunId::new(run_id))
+        .map_err(|error| format!("cannot read run {run_id} from {origin}: {error}"))?;
+    let archive = bunting_rs::CompetitionArchive::from_journal(genesis, records)
+        .map_err(|error| format!("run {run_id} does not replay: {error}"))?;
+    let json = archive.to_json().map_err(|error| error.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)
+        .map_err(|error| format!("cannot create {}: {error}", output_path.display()))?;
+    IoWrite::write_all(&mut file, json.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("cannot persist {}: {error}", output_path.display()))?;
+    println!(
+        "exported run {run_id}: {} commands, final hash {}",
+        archive.records.len(),
+        archive.final_state_hash
+    );
+    Ok(())
 }
 
 fn export_roster(config_path: &Path, output_path: &Path) -> Result<(), String> {
@@ -331,6 +378,15 @@ mod tests {
                 "export-roster",
                 "server.json",
                 "credentials.json",
+            ],
+            vec!["bunting", "export-archive", "server.json", "archive.json"],
+            vec![
+                "bunting",
+                "export-archive",
+                "server.json",
+                "archive.json",
+                "--run",
+                "7",
             ],
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());

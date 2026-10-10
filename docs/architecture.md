@@ -226,8 +226,7 @@ identical records, so every restart is a determinism check. An incomplete
 tail is cut off; a complete corrupt frame, a checkpoint ahead of the journal
 or a chain mismatch fails closed; pre-format-3 stores are refused. Poison on
 ambiguous writes; Unix-only `flock` writer lease; per-run bounds
-`max_commands_per_run` and `max_events_per_run`. `CompetitionArchive` still
-replays simulation commands only; the journal is its Step 4 input.
+`max_commands_per_run` and `max_events_per_run`.
 
 Built-in agents (slice 19): every agent command is an ordinary journaled
 input. With a file origin the agent runtime is checkpointed next to it
@@ -241,10 +240,17 @@ takes effect exactly once. A run with agent commands but no agent
 checkpoint, or a checkpoint for another runtime configuration, refuses to
 start.
 
-**Target (ADR 0025 as expanded by 0028 item 5):** archive = genesis snapshot +
-complete journal of every input (orders, cancels, agent commands, admin,
-schedule, admission metadata); the replayer verifies events, final hash and
-scores from genesis and from checkpoints.
+Archive v2 (slice 20, ADR 0025 as expanded by 0028 item 5):
+`CompetitionArchive` is a run's genesis snapshot plus every journaled command
+record in commit order (orders, cancels, agent commands, simulation
+administration and admission records), an optional checkpoint, and the final
+chain value and state hash. Replay goes through `RunRecovery`, the same path
+a restart uses: records the checkpoint covers are checked by fingerprint,
+sequence and chain, the rest are re-executed and must reproduce the record
+exactly. `bunting export-archive` reads a file origin's journal without the
+writer lease and writes a verified archive; `bunting replay`, `score` and
+`judge` consume it. Version 1 archives are refused. Schedule inputs join the
+archive automatically once they are journaled commands (Step 6).
 
 ## 10. Time and calendar
 

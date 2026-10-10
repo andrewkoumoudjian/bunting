@@ -5,7 +5,7 @@ mod archive;
 mod handle;
 
 pub use archive::{
-    ArchiveError, ArchivePolicy, COMPETITION_ARCHIVE_VERSION, CompetitionArchive, ReplayResult,
+    ArchiveCheckpoint, ArchiveError, COMPETITION_ARCHIVE_VERSION, CompetitionArchive, ReplayResult,
 };
 pub use bunting_application::{
     ApplicationService, ConsolidatedBbo, FixApplicationRequest, FixApplicationState,

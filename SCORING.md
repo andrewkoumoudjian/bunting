@@ -9,10 +9,13 @@ Live scores are provisional theatre. The official result is the final score
 report reproduced from the signed run archive:
 
 ```bash
+bunting export-archive server.json round.archive.json
 bunting replay round.archive.json
 bunting score round.archive.json
 ```
 
 `bunting judge` verifies every supplied archive before writing
 `leaderboard.json` and `leaderboard.html`; an event or final-state mismatch
-fails the command and produces no valid settlement.
+fails the command and produces no valid settlement. An archive holds the
+run's genesis snapshot and every journaled command record, so replay
+re-executes all order flow, agent commands and administration from genesis.

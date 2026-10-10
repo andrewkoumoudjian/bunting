@@ -5,7 +5,11 @@
 
 mod support;
 
+use bunting_market_types::RunId;
+use bunting_origin_store::JournalInput;
+use bunting_rs::CompetitionArchive;
 use bunting_server::config::{ScenarioConfig, ServerConfig, StorageKind};
+use bunting_server::storage::read_run_journal;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -145,5 +149,37 @@ fn agents_resume_after_the_venue_is_killed_mid_run() -> Result<(), String> {
     // Still running: nothing it resumed collided with the journal.
     std::thread::sleep(Duration::from_millis(200));
     assert!(matches!(server.0.try_wait(), Ok(None)));
+    drop(observer);
+    drop(server);
+
+    // The whole history across the crash exports as a version 2 archive
+    // that replays from genesis: team orders with their admission records
+    // and the agent's commands from both processes.
+    let (genesis, records) = read_run_journal(&folder.0.join("origin.json"), RunId::new(1))
+        .map_err(|error| error.to_string())?;
+    let archive =
+        CompetitionArchive::from_journal(genesis, records).map_err(|error| error.to_string())?;
+    let decoded = CompetitionArchive::from_json(&archive.to_json().map_err(|e| e.to_string())?)
+        .map_err(|error| error.to_string())?;
+    let replay = decoded.replay().map_err(|error| error.to_string())?;
+    assert_eq!(replay.final_state_hash, archive.final_state_hash);
+    assert!(
+        archive
+            .records
+            .iter()
+            .any(|record| record.admission.is_some())
+    );
+    let actors = archive
+        .records
+        .iter()
+        .filter_map(|record| match &record.input {
+            JournalInput::Command(command) => Some(command.actor),
+            JournalInput::Simulation(_) => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        actors.len() >= 2,
+        "expected team and agent commands: {actors:?}"
+    );
     Ok(())
 }
