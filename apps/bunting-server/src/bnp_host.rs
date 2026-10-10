@@ -44,7 +44,7 @@ use sha2::{Digest, Sha256};
 use simfix_mapping::MarketDataIncrement;
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
@@ -63,18 +63,23 @@ pub(crate) fn run(
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind BNP listener {}: {error}", config.bind))?;
     let slots = Arc::new(ConnectionSlots::new(config.max_connections));
+    let unauthenticated = Arc::new(PreAuthBudget::default());
     loop {
-        let (stream, _) = listener
+        let (stream, peer) = listener
             .accept()
             .map_err(|error| format!("BNP accept failed: {error}"))?;
+        // A connection holds no session slot until it has proved a
+        // registered certificate and sent Hello; until then it counts only
+        // against the unauthenticated budget, so idle or hostile sockets
+        // cannot lock registered teams out.
+        let Some(pre_auth) = PreAuthBudget::enter(&unauthenticated, peer.ip()) else {
+            // Refused before TLS: nothing is sent to an unauthenticated peer.
+            continue;
+        };
         // The venue never adds Nagle delay to a participant's messages.
         stream
             .set_nodelay(true)
             .map_err(|error| format!("cannot disable Nagle on BNP socket: {error}"))?;
-        if !slots.try_queue() {
-            // Refused before TLS: nothing is sent to an unauthenticated peer.
-            continue;
-        }
         let config = config.clone();
         let trust = trust.clone();
         let roster = roster.clone();
@@ -84,17 +89,92 @@ pub(crate) fn run(
         std::thread::Builder::new()
             .name("bunting-bnp-session".to_owned())
             .spawn(move || {
-                let Some(_slot) = slots.acquire(SLOT_WAIT) else {
-                    return;
+                let session = Session {
+                    config: &config,
+                    trust: &trust,
+                    roster: &roster,
+                    origin: &origin,
+                    admission: &admission,
+                    slots: &slots,
                 };
-                if let Err(error) =
-                    handle_connection(stream, &config, &trust, &roster, &origin, &admission)
-                {
+                if let Err(error) = handle_connection(stream, pre_auth, &session) {
                     eprintln!("bunting-server: BNP connection closed: {error}");
                 }
             })
             .map_err(|error| format!("cannot spawn BNP session: {error}"))?;
     }
+}
+
+/// Connections still in the TLS handshake or waiting for `Hello`, at most
+/// this many in total.
+const PRE_AUTH_CONNECTIONS: usize = 256;
+/// At most this many of them from one address. A classroom behind one NAT
+/// connects together, but each handshake lasts milliseconds.
+const PRE_AUTH_PER_ADDRESS: usize = 32;
+
+/// Counts connections that have not yet authenticated.
+#[derive(Default)]
+struct PreAuthBudget {
+    by_address: std::sync::Mutex<BTreeMap<IpAddr, usize>>,
+}
+
+impl PreAuthBudget {
+    fn enter(budget: &Arc<Self>, address: IpAddr) -> Option<PreAuthGuard> {
+        let mut by_address = budget.by_address.lock().ok()?;
+        let total: usize = by_address.values().sum();
+        let from_address = by_address.entry(address).or_default();
+        if total >= PRE_AUTH_CONNECTIONS || *from_address >= PRE_AUTH_PER_ADDRESS {
+            if *from_address == 0 {
+                by_address.remove(&address);
+            }
+            return None;
+        }
+        *from_address += 1;
+        Some(PreAuthGuard {
+            budget: budget.clone(),
+            address,
+        })
+    }
+}
+
+/// Releases one unauthenticated place when the connection authenticates
+/// or closes.
+struct PreAuthGuard {
+    budget: Arc<PreAuthBudget>,
+    address: IpAddr,
+}
+
+impl Drop for PreAuthGuard {
+    fn drop(&mut self) {
+        if let Ok(mut by_address) = self.budget.by_address.lock()
+            && let Some(count) = by_address.get_mut(&self.address)
+        {
+            *count -= 1;
+            if *count == 0 {
+                by_address.remove(&self.address);
+            }
+        }
+    }
+}
+
+/// A participant that stops reading is a slow consumer: once a write makes
+/// no progress for three heartbeat intervals it fails and the session
+/// closes, instead of its thread blocking on a full socket buffer forever.
+fn limit_slow_consumer(stream: &TcpStream, heartbeat_ms: u32) -> Result<(), String> {
+    stream
+        .set_write_timeout(Some(Duration::from_millis(u64::from(heartbeat_ms) * 3)))
+        .map_err(|error| format!("cannot configure BNP socket: {error}"))
+}
+
+/// What every BNP connection thread shares.
+#[derive(Clone, Copy)]
+struct Session<'a> {
+    config: &'a BnpConfig,
+    trust: &'a Trust,
+    roster: &'a Roster,
+    origin: &'a PublishingOrigin,
+    admission: &'a AdmissionService,
+    slots: &'a ConnectionSlots,
 }
 
 fn roster(config: &BnpConfig) -> Result<Roster, String> {
@@ -133,16 +213,22 @@ const READ_BYTES: usize = 16_384;
 )]
 fn handle_connection(
     mut stream: TcpStream,
-    config: &BnpConfig,
-    trust: &Trust,
-    roster: &Roster,
-    origin: &PublishingOrigin,
-    admission: &AdmissionService,
+    pre_auth: PreAuthGuard,
+    session: &Session<'_>,
 ) -> Result<(), String> {
+    let Session {
+        config,
+        trust,
+        roster,
+        origin,
+        admission,
+        slots,
+    } = *session;
     let handshake = Duration::from_millis(config.handshake_timeout_ms);
     let deadline = Instant::now() + handshake;
+    // A peer that stops reading cannot hold the handshake open either.
     stream
-        .set_read_timeout(Some(handshake))
+        .set_write_timeout(Some(handshake))
         .map_err(|error| format!("cannot configure BNP handshake timeout: {error}"))?;
     // Read the generation first: a reload during the handshake makes the
     // session re-verify against the newer trust.
@@ -150,12 +236,18 @@ fn handle_connection(
     let mut connection = ServerConnection::new(trust.current()?.tls.clone())
         .map_err(|error| format!("cannot start BNP TLS: {error}"))?;
     while connection.is_handshaking() {
+        // Every read waits only until the deadline, so a peer trickling
+        // bytes cannot stretch the handshake.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("BNP TLS handshake timed out".to_owned());
+        }
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| format!("cannot configure BNP handshake timeout: {error}"))?;
         connection
             .complete_io(&mut stream)
             .map_err(|error| format!("BNP TLS handshake failed: {error}"))?;
-        if Instant::now() > deadline {
-            return Err("BNP TLS handshake timed out".to_owned());
-        }
     }
     // The verifier proved the chain; the roster decides who it is. The
     // chain is kept so the session can re-verify it after a trust reload.
@@ -214,6 +306,23 @@ fn handle_connection(
         }
     };
     let pipelined: Vec<Vec<u8>> = frames.collect();
+    // Authenticated: leave the unauthenticated budget and take a session
+    // slot, waiting briefly for a previous connection to finish closing.
+    drop(pre_auth);
+    let Some(_slot) = slots
+        .try_queue()
+        .then(|| slots.acquire(SLOT_WAIT))
+        .flatten()
+    else {
+        let reason = format!(
+            "the venue is at its max_connections limit of {}",
+            config.max_connections
+        );
+        channel.send(&[ServerMessage::Logout {
+            reason: reason.clone(),
+        }])?;
+        return Err(reason);
+    };
     let _claim = match admission.claim_participant(Interface::Bnp, participant, SESSION_HANDOVER) {
         Ok(claim) => claim,
         Err(reason) => {
@@ -236,6 +345,7 @@ fn handle_connection(
         .stream
         .set_read_timeout(None)
         .map_err(|error| format!("cannot configure BNP socket: {error}"))?;
+    limit_slow_consumer(&channel.stream, config.heartbeat_ms)?;
     let clock = *admission.clock();
     let (events, waker) =
         crate::wake::connect(&channel.stream, READ_BYTES, move || clock.now_us())?;
@@ -616,9 +726,13 @@ impl Channel {
                 Some(frames) if !frames.is_empty() => return Ok(frames),
                 Some(_) => {}
             }
-            if Instant::now() > deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return Err("BNP Hello timed out".to_owned());
             }
+            self.stream
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| format!("cannot configure BNP Hello timeout: {error}"))?;
             let count = self
                 .stream
                 .read(&mut buffer)
@@ -1190,4 +1304,52 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(text, "{byte:02x}");
         text
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_participant_that_stops_reading_fails_the_write_instead_of_blocking() -> Result<(), String>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+        let address = listener.local_addr().map_err(|error| error.to_string())?;
+        let _reader = TcpStream::connect(address).map_err(|error| error.to_string())?;
+        let (mut writer, _) = listener.accept().map_err(|error| error.to_string())?;
+        limit_slow_consumer(&writer, 100)?;
+        let started = Instant::now();
+        let chunk = vec![0_u8; 65_536];
+        // The peer never reads: the buffers fill and the next write times out.
+        let error = loop {
+            if let Err(error) = writer.write_all(&chunk) {
+                break error;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "writes to a non-reading peer never failed"
+            );
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::WouldBlock | ErrorKind::TimedOut
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn the_unauthenticated_budget_caps_each_address_and_frees_on_close() {
+        let budget = Arc::new(PreAuthBudget::default());
+        let crowded: IpAddr = [10, 0, 0, 1].into();
+        let other: IpAddr = [10, 0, 0, 2].into();
+        let held: Vec<Option<PreAuthGuard>> = (0..PRE_AUTH_PER_ADDRESS)
+            .map(|_| PreAuthBudget::enter(&budget, crowded))
+            .collect();
+        assert!(held.iter().all(Option::is_some));
+        assert!(PreAuthBudget::enter(&budget, crowded).is_none());
+        assert!(PreAuthBudget::enter(&budget, other).is_some());
+        drop(held);
+        assert!(PreAuthBudget::enter(&budget, crowded).is_some());
+        assert!(budget.by_address.lock().is_ok_and(|map| map.is_empty()));
+    }
 }

@@ -583,6 +583,42 @@ fn a_revocation_list_update_logs_out_the_live_session_without_a_restart() -> Res
 }
 
 #[test]
+fn idle_unauthenticated_sockets_cannot_take_the_registered_teams_slots() -> Result<(), String> {
+    let venue = start_venue("idle-sockets")?;
+    // Four times max_connections in sockets that never start TLS: before
+    // the fix they filled every session slot and its waiting area.
+    let mut idle: Vec<TcpStream> = (0..12)
+        .map(|_| TcpStream::connect(("127.0.0.1", venue.bnp_port)))
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    let started = Instant::now();
+    let team1 = venue.connect(&venue.team1, None)?;
+    let team2 = venue.connect(&venue.team2, None)?;
+    for (nonce, team) in [(1, &team1), (2, &team2)] {
+        team.send(&ClientMessage::Ping { nonce })
+            .map_err(|error| error.to_string())?;
+        until(
+            team,
+            |message| matches!(message, ServerMessage::Pong { nonce: n, .. } if *n == nonce),
+        )?;
+    }
+    // The venue closes each idle socket at the handshake deadline.
+    let first = idle.first_mut().ok_or("no idle socket")?;
+    first
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .map_err(|error| error.to_string())?;
+    let mut byte = [0_u8; 1];
+    let read = std::io::Read::read(first, &mut byte);
+    assert!(
+        matches!(read, Ok(0))
+            || matches!(&read, Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+        "idle socket not closed: {read:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+    Ok(())
+}
+
+#[test]
 fn a_kill_switch_cancels_and_blocks_only_its_own_team_until_reset() -> Result<(), String> {
     let venue = start_venue("kill-switch")?;
     let team1 = venue.connect(&venue.team1, None)?;
