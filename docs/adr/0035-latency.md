@@ -1,7 +1,8 @@
 # ADR 0035: Latency — real connectivity counts, every venue and team is somewhere
 
 - Status: **Accepted** (2026-10-10) by owner direction; implemented in
-  slice 16 (see `docs/implementation-log/`).
+  slice 16, location map (§1a, team-to-team distance) in slice 17 (see
+  `docs/implementation-log/`).
 - Supersedes: **ADR 0034** in full, and ADR 0030's admission modes
   (`physical | equalized | geographic`), `D_max` and outbound equalization.
   ADR 0030's continuous price-time matching, `(release, arrival)` sequencer
@@ -23,6 +24,8 @@ The owner's direction for competitions, in order, on 2026-10-10:
    traders in New York reaching TSX, BATS and NYSE.
 3. "This shouldn't be a mode; this should be a real-life simulation":
    supersede any other setting with what most resembles real life.
+4. User-to-user distance must count too, because it governs how fast
+   information passes between teams.
 
 ADR 0034 did the opposite of (2) and (3): it cancelled real network delay
 and offered several modes. In real markets nobody cancels a trader's
@@ -38,25 +41,51 @@ model to switch to or from, and no equalization.
 ### 1. What reaches a venue, when
 
 ```text
-inbound:   release(x)  = t_rx(x) + L(p, v)
-outbound:  send_at(m)  = t_venue(m) + L(v, p)
+inbound:   release(x)  = t_rx(x) + L(p, d)
+outbound:  send_at(m)  = t_venue(m) + L(s, p)
 ```
 
 - `t_rx` is when the team's bytes reach the server, stamped by the
   connection's reader thread the instant they arrive. It already contains
   the team's **real** delay: distance, ISP, Wi-Fi or wired, VPN or proxy
   hops, TCP stack, Nagle, client processing.
-- `L(p, v)` is the **virtual** distance between the team's location and
-  venue `v`, from the run's published latency table (fixed part plus seeded
-  jitter), used in both directions. An empty table means every venue is in
-  one data centre with every team.
-- Outbound venue messages (execution reports, market data responses) leave
-  the server `L(v, p)` after the venue produced them; the team's real delay
+- `d` is where the message is addressed: the venue of the order's listing
+  (FIX tag 207), the venue whose market data is requested, or the hub for
+  organizer requests. `L(p, d)` is the **virtual** distance between the
+  team's location and `d` from the run's published latency map (§1a; fixed
+  part plus seeded jitter). An empty map puts every team and venue in one
+  data centre.
+- Outbound messages (execution reports, market data responses) leave the
+  server `L(s, p)` after they were produced, where `s` is where the command
+  that produced them was applied (its admitted destination; for unsequenced
+  inputs, the venue their events name, else the hub). The team's real delay
   then applies on the wire. Session messages (heartbeats, probes) are never
   delayed.
 - Ordering among orders to the same venue from one connection is preserved
   (one path is FIFO); orders to different venues follow their own paths, so
   an order to a near venue can overtake an earlier one to a far venue.
+
+### 1a. Locations: every team, venue and the hub is somewhere
+
+The latency map places each team, each venue and the hub at a named
+location (unplaced endpoints sit at `default_location`). Links between
+locations carry latency and jitter and are symmetric in their fixed part;
+endpoints at the same location use the `local` cross-connect. Every pair of
+locations in use must be linked, so every path is defined:
+
+- **team → venue and venue → team**: order entry, reports, market data;
+- **team → hub and hub → team**: organizer requests and announcements;
+- **team → team**: anything one team sends another — bilateral
+  negotiation, shared data, a future participant messaging channel. Two
+  teams in one city share information faster than teams on opposite sides
+  of a border, as on a real desk-to-desk line. No current FIX or BNP
+  message is addressed to another team yet; the path exists so those
+  features inherit realistic timing (exploration note row 7b).
+
+Each directed pair of endpoints has its own seeded jitter stream, so
+traffic in one direction never shifts another's draws, and every draw's
+position is journaled. Placements may only name the run's participants and
+venues.
 
 ### 2. Measurement is published, never compensated
 
@@ -91,7 +120,9 @@ FIX dictionaries load once per process.
   hide distance.
 - Multi-venue scenarios become strategic: venue choice, stale quotes from
   distant venues, and resting orders exposed to faster traders elsewhere.
-- Simpler configuration: the latency table plus probe/queue bounds.
+- Simpler configuration: one latency map (`fix.admission.map`) plus
+  probe/queue bounds; placing teams in cities produces every team-to-venue
+  and team-to-team distance at once.
 - The rules state the model plainly (`RULES.md`).
 
 ## Rejected alternatives
@@ -106,9 +137,11 @@ FIX dictionaries load once per process.
 
 ## Validation
 
-`packages/admission-sequencer` tests (real delay and venue distance add,
-measurement never changes order, nearer team wins at its venue, jitter
-determinism, sequencer bounds) and end-to-end `tests/real_latency.rs` (a
+`packages/admission-sequencer` tests (every path from locations, including
+team to team; unlinked or duplicate maps refused; real delay and venue
+distance add; measurement never changes order; nearer team wins at its
+venue; per-direction jitter determinism; sequencer bounds; map JSON),
+`distributor.rs` (a batch travels from where its command was applied) and end-to-end `tests/real_latency.rs` (a
 team behind a 30 ms-each-way connection loses although it sent 5 ms
 earlier; 30 ms real + 0 virtual beats ~0 real + 50 ms virtual) and
 `tests/venue_distance.rs` (with two venues, each team wins at the venue it

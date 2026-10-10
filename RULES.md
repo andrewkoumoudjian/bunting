@@ -11,12 +11,18 @@ Latency works as on a real network; there is no equalization and no alternative 
   depends on where you are, your network and connection method (wired or
   Wi-Fi, VPN or proxy hops), your TCP stack and your client's own speed,
   exactly as for a trading desk.
-- **Every venue is somewhere else.** The organizer publishes a latency table
-  giving each team's virtual distance to each venue (for example a team in
-  New York: New Jersey venues a fraction of a millisecond away, Toronto
-  several milliseconds). Your order reaches a venue's book that much after it
-  reaches the server; that venue's reports and market data leave the venue
-  that much before they are sent to you.
+- **Every venue, team and the organizer is somewhere.** The organizer
+  publishes a latency map: the virtual location of each team, each venue and
+  the organizer's hub, and the distance between locations (for example a
+  team in New York: New Jersey venues a fraction of a millisecond away,
+  Toronto several milliseconds). Your order reaches a venue's book that much
+  after it reaches the server; that venue's reports and market data leave
+  the venue that much before they are sent to you.
+- **Distance between teams counts too.** Anything passed from one team to
+  another through the venue travels the distance between their locations:
+  teams in the same city exchange information faster than teams far apart.
+  (No team-to-team message type exists yet; this rule governs any that is
+  added.)
 - **Orders to one venue stay in order; orders to different venues do not.**
   An order sent to a near venue can arrive before one you sent earlier to a
   far venue.
@@ -53,7 +59,7 @@ each order to the right venue.
 
 ## Published limits
 
-The event profile publishes the virtual latency table, `max_connections`,
+The event profile publishes the latency map, `max_connections`,
 `max_messages_per_interval` per `rate_limit_window_ms`, admission-queue,
 outbound-hold, wire-byte, journal, and pending-message limits before a
 round, and the scenario publishes each participant's risk limits, including

@@ -10,8 +10,9 @@
 use crate::admission::VenueClock;
 use crate::storage::NativeOrigin;
 use crate::wake::Waker;
+use bunting_admission_sequencer::Endpoint;
 use bunting_engine::RunState;
-use bunting_market_events::EventEnvelope;
+use bunting_market_events::{EventEnvelope, EventPayload};
 use bunting_market_types::{CommandId, RunId};
 use bunting_origin_store::{
     AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
@@ -24,13 +25,37 @@ use std::sync::{Arc, Mutex};
 /// Committed batches a session may fall behind before it is disconnected.
 pub(crate) const MAX_PENDING_BATCHES: usize = 4_096;
 
-/// One committed command's canonical events and its venue commit time,
-/// shared by every subscriber.
+/// One committed command's canonical events, its venue commit time and
+/// where it was applied, shared by every subscriber.
 pub(crate) struct Committed {
     /// Venue clock (microseconds) when the commit became durable; outbound
-    /// holds are measured from here (ADR 0034 §3).
-    pub(crate) committed_us: u64,
+    /// delays are measured from here (ADR 0035).
+    pub(crate) durable_us: u64,
+    /// Where the command was applied; its reports travel from here to each
+    /// team over the latency map.
+    pub(crate) source: Endpoint,
     pub(crate) events: Vec<EventEnvelope>,
+}
+
+/// Where a committed batch was applied: the admitted destination when the
+/// command came through the sequencer, otherwise (built-in agents, operator
+/// commands) the venue of the first event naming a listing, else the hub.
+fn batch_source(admission: Option<&AdmissionRecord>, events: &[EventEnvelope]) -> Endpoint {
+    if let Some(admission) = admission {
+        return admission.destination;
+    }
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::OrderReceived { listing_key, .. }
+            | EventPayload::OrderRested { listing_key, .. }
+            | EventPayload::OrderCanceled { listing_key, .. }
+            | EventPayload::TradeExecuted { listing_key, .. } => {
+                listing_key.map(|listing| Endpoint::Venue(listing.venue_id))
+            }
+            _ => None,
+        })
+        .unwrap_or(Endpoint::Hub)
 }
 
 pub(crate) type CommittedBatch = Arc<Committed>;
@@ -84,12 +109,13 @@ impl EventDistributor {
     /// Queues one committed batch for every subscriber without blocking the
     /// writer. A full queue marks that subscriber overflowed and drops it; the
     /// session then disconnects instead of silently skipping reports.
-    fn publish(&self, events: &[EventEnvelope], committed_us: u64) {
+    fn publish(&self, events: &[EventEnvelope], committed_us: u64, source: Endpoint) {
         if events.is_empty() {
             return;
         }
         let batch: CommittedBatch = Arc::new(Committed {
-            committed_us,
+            durable_us: committed_us,
+            source,
             events: events.to_vec(),
         });
         let Ok(mut subscribers) = self.subscribers.lock() else {
@@ -195,8 +221,11 @@ impl OriginStore for PublishingOrigin {
         let executed = self.inner.execute_admitted(input, admission)?;
         // A duplicate's events were published when it first committed.
         if !executed.duplicate {
-            self.distributor
-                .publish(&executed.events, self.clock.now_us());
+            self.distributor.publish(
+                &executed.events,
+                self.clock.now_us(),
+                batch_source(admission, &executed.events),
+            );
         }
         Ok(executed)
     }
@@ -221,9 +250,11 @@ impl OriginStore for PublishingOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bunting_market_events::EventPayload;
+    use bunting_admission_sequencer::RttSource;
+    use bunting_market_events::CancelReason;
     use bunting_market_types::{
-        CorrelationId, EventId, EventSequence, LogicalTimeNs, ParticipantId,
+        CorrelationId, EventId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, OrderId,
+        ParticipantId, QuantityLots, VenueId,
     };
 
     fn event(sequence: u64) -> EventEnvelope {
@@ -245,10 +276,10 @@ mod tests {
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
         let first = distributor.subscribe(None)?;
-        distributor.publish(&[event(1)], 1);
+        distributor.publish(&[event(1)], 1, Endpoint::Hub);
         let second = distributor.subscribe(None)?;
-        distributor.publish(&[event(2), event(3)], 2);
-        distributor.publish(&[], 3);
+        distributor.publish(&[event(2), event(3)], 2, Endpoint::Hub);
+        distributor.publish(&[], 3, Endpoint::Hub);
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
@@ -269,13 +300,51 @@ mod tests {
         let slow = distributor.subscribe(None)?;
         let fast = distributor.subscribe(None)?;
         for sequence in 1..=2 {
-            distributor.publish(&[event(sequence)], sequence);
+            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub);
         }
         assert_eq!(fast.drain()?.len(), 2);
-        distributor.publish(&[event(3)], 3);
+        distributor.publish(&[event(3)], 3, Endpoint::Hub);
         assert!(slow.drain().is_err());
         assert_eq!(fast.drain()?.len(), 1);
         assert_eq!(distributor.subscriber_count(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn a_batch_travels_from_where_its_command_was_applied() {
+        let mut canceled = event(1);
+        canceled.payload = EventPayload::OrderCanceled {
+            order_id: OrderId::new(1),
+            participant_id: ParticipantId::new(1),
+            instrument_id: InstrumentId::new(1),
+            listing_key: Some(ListingKey {
+                venue_id: VenueId::new(2),
+                instrument_id: InstrumentId::new(1),
+            }),
+            remaining: QuantityLots::new(1),
+            reason: CancelReason::KillSwitch,
+        };
+        let admitted = AdmissionRecord {
+            received_us: 0,
+            measured_one_way_us: None,
+            rtt_source: RttSource::None,
+            destination: Endpoint::Venue(VenueId::new(3)),
+            path_latency_us: 0,
+            jitter_position: None,
+            release_us: 0,
+            arrival_sequence: 0,
+        };
+        // A sequenced command: its admitted destination, never re-derived.
+        assert_eq!(
+            batch_source(Some(&admitted), &[canceled.clone()]),
+            Endpoint::Venue(VenueId::new(3))
+        );
+        // Unsequenced (agents, operators): the venue its events name, else
+        // the hub; never the acting team, whose path was not crossed.
+        assert_eq!(
+            batch_source(None, &[event(2), canceled]),
+            Endpoint::Venue(VenueId::new(2))
+        );
+        assert_eq!(batch_source(None, &[event(3)]), Endpoint::Hub);
     }
 }

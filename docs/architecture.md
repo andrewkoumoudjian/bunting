@@ -106,7 +106,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
-| `packages/admission-sequencer` | ADR 0035 latency: virtual team-to-venue table with seeded jitter (`t_rx + L(p, v)`, outbound `L(v, p)`), published access-latency estimator, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
+| `packages/admission-sequencer` | ADR 0035 latency: location map for teams, venues and the hub with per-direction seeded jitter (`t_rx + L(p, d)`, outbound `L(s, p)`, team-to-team paths), published access-latency estimator, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
 | `packages/origin-store` | `OriginStore` trait; writer-owned `LiveRun` (in-place apply, idempotency index, event-hash chain, rollback); `RunRecovery`; in-memory store |
 | `packages/command-transaction` | Thin command/simulation call shape over `OriginStore::execute` |
 | `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |
@@ -149,8 +149,8 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
    Real delay (kernel TCP RTT via netlink `sock_diag`, FIX probe RTT) is
    measured and published, never compensated (ADR 0035).
 3. The sequencer thread releases admitted work in `(release, arrival)` order
-   at `t_rx + L(p, v)` (the team's virtual distance to the addressed venue;
-   per-venue FIFO per connection), stamps the command's expected sequence
+   at `t_rx + L(p, d)` (the team's virtual distance to the addressed venue
+   or hub, from the latency map; per-destination FIFO per connection), stamps the command's expected sequence
    and `logical_time = release`, and executes it under the writer gate.
 4. The origin's `LiveRun` checks idempotency and expected sequence and applies
    the command in place (`RunState::apply`). `ApplyError::Unchanged` leaves the
@@ -164,8 +164,8 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 6. `PublishingOrigin` publishes the committed events to the bounded
    committed-event distributor; every connected session maps the batch to its
    own participant's execution reports (slice 12), so resting makers receive
-   unsolicited fills. Each venue message is sent `L(v, p)` after the venue
-   produced it, then crosses the team's real connection. One live FIX
+   unsolicited fills. Each batch is sent `L(s, p)` after commit, `s` being
+   where its command was applied, then crosses the team's real connection. One live FIX
    session per participant. Per-participant live-order caps are engine risk
    (`RiskLimits.max_live_orders`).
 
@@ -183,13 +183,15 @@ log. Per-command cost no longer grows with the size of the run.
 
 **Current (slice 16, ADR 0035):** latency for FIX sessions works as on a real network:
 real connectivity counts as it is; the published virtual team-to-venue
-latency table is added in both directions; teams choose the venue for each
+latency map (teams, venues and the hub at locations; team-to-team distance
+included) is added in both directions; teams choose the venue for each
 order, with no router and no trade-through protection; measured access
 latency is journaled and published on `/admin/admission`. Built-in agents
 still commit under the writer gate outside the sequencer.
 
 **Target:** the same model for every input — FIX, BNP, agents, schedule —
-with agents given a location in the latency table (Step 4), and public
+with agents given a location in the latency map (Step 4), team-to-team
+messages (OTC negotiation, shared data) addressed over team-to-team paths, and public
 per-venue and consolidated market-data feeds delivered over the same
 virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
 All admission inputs are journaled; replay never re-measures the network.

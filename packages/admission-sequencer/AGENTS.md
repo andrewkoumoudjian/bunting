@@ -2,8 +2,10 @@
 
 Implements ADR 0035 latency as a sans-I/O, clock-free
 library: the measured access-latency estimator (published, never used for
-ordering), the virtual team-to-venue latency table with seeded per-path,
-per-direction jitter (`release = t_rx + L(p, v)`, outbound `L(v, p)`), and
+ordering), the latency map (teams, venues and the hub at named locations;
+every directed path, including team to team, from location links, with a
+seeded jitter stream per direction; `release = t_rx + L(p, d)`, outbound
+`L(s, p)`), and
 the bounded `(release, arrival)` sequencer.
 
 Do not reintroduce modes, equalization or compensation (ADR 0035 supersedes

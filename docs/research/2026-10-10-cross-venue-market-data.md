@@ -24,7 +24,9 @@ must depend on which feeds it uses and how far it is from each venue.
   session (slice 12); sessions currently map only their own participant's
   reports.
 - Outbound delivery already applies the venue-to-team virtual path `L(v, p)`
-  (slice 16), so any new feed inherits realistic timing for free.
+  (slice 16) from the latency map, which also defines team-to-team paths
+  (slice 17), so any new feed or team-to-team channel inherits realistic
+  timing for free.
 - Public data today: request/response L2 snapshots per venue (FIX `V`, tag
   207). No streaming public trades or book updates.
 
@@ -94,6 +96,9 @@ Design constraints whichever option is chosen:
 - [ ] Consolidated feed from a configured processor location (option D).
 - [ ] L3 order-by-order feed with anonymous per-venue references (option C).
 - [ ] Owner decisions on options E and F.
-- [ ] Location-based latency table helper: derive `L(p, v)` from team and
-      venue coordinates (great-circle distance, fibre or microwave route
+- [ ] Location coordinates helper: derive the latency map's links from
+      location coordinates (great-circle distance, fibre or microwave route
       factor, venue gateway delay) instead of hand-written microseconds.
+- [ ] Team-to-team messages over FIX/BNP (OTC negotiation, a participant
+      messaging or data-sharing channel), admitted with the counterparty as
+      destination so they travel `L(a, b)`; owner to decide which exist.

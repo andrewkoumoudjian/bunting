@@ -2,15 +2,16 @@
 
 1. Install a release binary, run `bunting init`, replace every example secret,
    add the event roster, and run `bunting doctor <config>`.
-2. Publish `RULES.md`, `SCORING.md`, the virtual latency table
-   (`fix.admission.policy`: each team's distance to each venue, in
-   microseconds, with optional seeded jitter) and all configured limits
+2. Publish `RULES.md`, `SCORING.md`, the latency map (`fix.admission.map`:
+   the location of each team, venue and the hub, and the latency between
+   every pair of locations in use, in microseconds, with optional seeded
+   jitter; it fixes team-to-venue and team-to-team distance) and all configured limits
    unchanged before credentials are distributed. Latency is real (ADR 0035):
    teams' own connectivity counts and is not equalized, so host the server
    close to the participants (or run everyone on one network) when that
    matters, and say so in the rules. `GET /admin/admission` (bearer token)
    lists each connection's measured access latency for publication. Never
-   change the table during a round.
+   change the map during a round.
 3. Start `bunting-server <config>` through Wasmer, verify `/health`, export
    credentials through a protected channel, and let every team complete Logon
    plus discovery.

@@ -258,8 +258,8 @@ pub(crate) fn handle_fix_connection(
             }
         }
         // Every committed batch, whoever caused it, maps to this
-        // participant's own reports (slice 12); ADR 0034 holds them so
-        // every participant receives them at the same venue time.
+        // participant's own reports (slice 12); each travels from where it
+        // was applied to this team over the latency map (ADR 0035).
         for batch in subscription.drain()? {
             let messages = application
                 .committed_messages(participant, &batch.events)
@@ -268,8 +268,8 @@ pub(crate) fn handle_fix_connection(
                 continue;
             }
             let send_at = batch
-                .committed_us
-                .saturating_add(latency.delay_from(batch_source(&batch.events))?);
+                .durable_us
+                .saturating_add(latency.delay_from(batch.source)?);
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
@@ -419,32 +419,6 @@ fn job_for(
             )
         }),
     }
-}
-
-/// Where a committed batch originated: the venue of its first event that
-/// names a listing (order flow), otherwise the acting team (bilateral
-/// messages such as OTC negotiation, so they travel team-to-team) or the
-/// hub for organizer actions (a placement the map does not list resolves to
-/// the hub's location).
-fn batch_source(events: &[bunting_market_events::EventEnvelope]) -> Endpoint {
-    use bunting_market_events::EventPayload;
-    events
-        .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::OrderReceived { listing_key, .. }
-            | EventPayload::OrderRested { listing_key, .. }
-            | EventPayload::OrderCanceled { listing_key, .. }
-            | EventPayload::TradeExecuted { listing_key, .. } => {
-                listing_key.map(|listing| Endpoint::Venue(listing.venue_id))
-            }
-            _ => None,
-        })
-        .or_else(|| {
-            events
-                .first()
-                .map(|event| Endpoint::Participant(event.actor))
-        })
-        .unwrap_or(Endpoint::Hub)
 }
 
 /// One connection's delay estimate and probes (ADR 0034 §2).

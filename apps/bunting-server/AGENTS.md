@@ -20,9 +20,11 @@ in packages. Bound every connection, request, queue, journal and recovery file.
 - `wake.rs` + `admission.rs` + `session_host.rs` implement ADR 0035: a
   reader thread per connection stamps `t_rx` the moment bytes arrive; the
   session admits without blocking; the sequencer releases at
-  `t_rx + L(p, v)` (per-venue FIFO per connection) and journals the
-  `AdmissionRecord`; venue messages leave `L(v, p)` after the venue produced
-  them (never heartbeats or probes). One live session per participant;
+  `t_rx + L(p, d)` (per-destination FIFO per connection) and journals the
+  `AdmissionRecord`; committed batches carry where they were applied
+  (`Committed.source`, the admitted destination) and leave `L(s, p)` after
+  commit (never heartbeats or probes). Never derive a batch's source from
+  the acting team: its path to the destination was already crossed. One live session per participant;
   connections wait briefly for a slot when a reconnect races the old
   session's close. `tcp_rtt.rs` reads kernel RTT through netlink
   `sock_diag` without `unsafe`; it is published, never used for ordering.
