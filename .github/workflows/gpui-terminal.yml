@@ -1,0 +1,181 @@
+name: GPUI market terminal
+
+on:
+  pull_request:
+    paths:
+      - "apps/bunting-terminal/**"
+      - "apps/bunting-server/**"
+      - "apps/bunting-tui/src/lib.rs"
+      - "tools/build_wasi_server.sh"
+      - "tools/run_wasi_server.py"
+      - ".github/workflows/gpui-terminal.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpui-terminal-pr-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  TERMINAL_VERSION: "0.1.0"
+  TERMINAL_TAG: "bunting-terminal-v0.1.0-wasm-preview"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  wasi-server:
+    name: Build portable WASM server
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 19
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - name: Install WASIX host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes binutils lld
+      - name: Install cargo-wasix bootstrap toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Install pinned WASIX toolchain
+        uses: wasix-org/cargo-wasix@v0.1.28
+        env:
+          RUSTUP_TOOLCHAIN: 1.95.0
+        with:
+          version: "0.1.28"
+          toolchain-version: "v2026-07-07.3+rust-1.96"
+          locked: "true"
+      - name: Install pinned Wasmer runtime
+        run: |
+          set -o pipefail
+          curl --proto '=https' --tlsv1.2 -sSfL https://get.wasmer.io | sh -s -- v7.2.1
+          "$HOME/.wasmer/bin/wasmer" --version | grep -Fq 'wasmer 7.2.1'
+          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
+      - name: Build and validate portable server module
+        run: |
+          tools/build_wasi_server.sh
+          file target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm | grep -qi WebAssembly
+          wasmer validate target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm
+      - name: Smoke portable server module
+        run: |
+          set -euo pipefail
+          BUNTING_SERVER_ARTIFACT="$GITHUB_WORKSPACE/target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm" \
+            tools/run_wasi_server.py apps/bunting-server/config/local.json > /tmp/bunting-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 80); do
+            curl --fail --silent http://127.0.0.1:8080/health > /tmp/bunting-health.json && break
+            sleep 0.25
+          done
+          grep -Fq '"status":"ok"' /tmp/bunting-health.json
+          curl --fail --silent -H 'Authorization: Bearer replace-admin-token' \
+            http://127.0.0.1:8080/admin/runs/1 > /tmp/bunting-run.json
+          grep -Fq '"runId":"1"' /tmp/bunting-run.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bunting-server-portable-wasm
+          path: target/wasm32-wasmer-wasi-dl/release/bunting-server.wasm
+          if-no-files-found: error
+
+  macos-arm64:
+    name: Build macOS ARM64 DMG
+    needs: wasi-server
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: bunting-server-portable-wasm
+          path: apps/bunting-terminal/server-artifact
+      - name: Install GPUI Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup target add aarch64-apple-darwin --toolchain 1.95.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/bunting-terminal/target
+          key: gpui-terminal-arm64-${{ runner.os }}-${{ hashFiles('apps/bunting-terminal/Cargo.lock') }}
+      - name: Verify audited source graph
+        run: |
+          grep -q 'zed#1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba' apps/bunting-terminal/Cargo.lock
+          grep -q 'gpui-component?rev=88f102d13654fe25aa2fede076274b6b751a3704#88f102d1' apps/bunting-terminal/Cargo.lock
+      - name: Run terminal tests
+        run: cargo +1.95.0 test --locked --manifest-path apps/bunting-terminal/Cargo.toml
+      - name: Run Clippy diagnostics
+        continue-on-error: true
+        run: cargo +1.95.0 clippy --locked --manifest-path apps/bunting-terminal/Cargo.toml --all-targets -- -D warnings
+      - name: Run formatting diagnostics
+        continue-on-error: true
+        run: cargo +1.95.0 fmt --manifest-path apps/bunting-terminal/Cargo.toml --check
+      - name: Build Apple Silicon release binary
+        run: |
+          cargo +1.95.0 build --locked --release --target aarch64-apple-darwin \
+            --manifest-path apps/bunting-terminal/Cargo.toml
+          file apps/bunting-terminal/target/aarch64-apple-darwin/release/bunting-terminal
+          lipo -archs apps/bunting-terminal/target/aarch64-apple-darwin/release/bunting-terminal | grep -q arm64
+      - name: Package app and DMG
+        env:
+          BUNTING_TERMINAL_VERSION: ${{ env.TERMINAL_VERSION }}
+          BUNTING_TERMINAL_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          apps/bunting-terminal/scripts/package-macos-arm64.sh \
+            apps/bunting-terminal/target/aarch64-apple-darwin/release/bunting-terminal \
+            apps/bunting-terminal/dist \
+            apps/bunting-terminal/server-artifact/bunting-server.wasm \
+            apps/bunting-server/config/local.json \
+            apps/bunting-server/config/scenario.json
+          test -f "apps/bunting-terminal/dist/Bunting Market Terminal.app/Contents/Resources/server/bunting-server.wasm"
+          test -f "apps/bunting-terminal/dist/Bunting Market Terminal.app/Contents/Resources/server/local.json"
+          test -f "apps/bunting-terminal/dist/Bunting Market Terminal.app/Contents/Resources/server/scenario.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bunting-Market-Terminal-macos-arm64-wasm
+          path: |
+            apps/bunting-terminal/dist/Bunting-Market-Terminal-v0.1.0-macos-arm64.dmg
+            apps/bunting-terminal/dist/Bunting-Market-Terminal-v0.1.0-macos-arm64.dmg.sha256
+          if-no-files-found: error
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG="apps/bunting-terminal/dist/Bunting-Market-Terminal-v0.1.0-macos-arm64.dmg"
+          CHECKSUM="${DMG}.sha256"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          cat > release-notes.md <<'EOF'
+          Native Apple Silicon GPUI preview with a bundled portable Bunting WASM server.
+
+          - Apple Silicon arm64; minimum macOS 13.0
+          - Bundled: `bunting-server.wasm`, local config, and BNT scenario
+          - Runtime: Wasmer 7.2.1 installed or selected with `WASMER_BIN`
+          - Start: press **Start Server** in the title bar or disconnected banner
+          - State/logs: `~/Library/Application Support/Bunting Market Terminal/server`
+          - The app stops only the Wasmer child process it owns
+          - Ad-hoc signed; not Apple-notarized
+          - Source branch: `feat/gpui-market-terminal`; draft PR #19
+
+          The helper invokes Wasmer without a shell, grants config-derived directories, detects external listeners, reconnects FIX on readiness, and preserves operator-edited local files.
+          EOF
+          printf '\n- Source commit: `%s`\n' "$RELEASE_SHA" >> release-notes.md
+          if gh release view "${TERMINAL_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TERMINAL_TAG}" "${DMG}" "${CHECKSUM}" --repo "${GITHUB_REPOSITORY}" --clobber
+            gh release edit "${TERMINAL_TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --title "Bunting Market Terminal v${TERMINAL_VERSION} — WASM Server Preview" \
+              --notes-file release-notes.md --prerelease
+          else
+            gh release create "${TERMINAL_TAG}" "${DMG}" "${CHECKSUM}" --repo "${GITHUB_REPOSITORY}" \
+              --target "${RELEASE_SHA}" \
+              --title "Bunting Market Terminal v${TERMINAL_VERSION} — WASM Server Preview" \
+              --notes-file release-notes.md --prerelease
+          fi
