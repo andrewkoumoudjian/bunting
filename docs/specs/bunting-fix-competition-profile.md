@@ -69,6 +69,14 @@ bounded and updates contain absolute resulting quantity; zero/delete removes a
 level. TradeCaptureReportRequest `AD` and Report `AE` provide bounded committed
 trades and history, including time-and-sales and versioned OHLC intervals.
 
+Implemented today (ADR 0036): `V` 263=0 snapshot, 263=1 subscription to one
+venue's direct feed (48 + positive 207), 263=2 end; `X` entries carry 279,
+269, 48, 207, 270, 271 and a per-entry report sequence 83. Exchange 0
+(207=0) names an instrument's consolidated tape: its `W` lists each venue's
+best bid and offer (each entry with its 207) and 83 = the last report
+included; its `X` entries are every venue's trades and best bid/offer
+changes with one per-instrument 83.
+
 Every output carries run, listing/instrument and committed sequence. Public
 state may coalesce. A gap outside retention produces `UC` reset followed by a
 snapshot. Public data never contains participant-private ownership or ledger

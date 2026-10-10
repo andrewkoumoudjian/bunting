@@ -7,6 +7,7 @@ mod admin;
 mod admission;
 mod commit_journal;
 pub mod config;
+mod consolidated;
 mod distributor;
 mod public_feed;
 pub mod runtime;

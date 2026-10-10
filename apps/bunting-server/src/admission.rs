@@ -234,11 +234,17 @@ impl AdmissionService {
         source: Endpoint,
         participant: ParticipantId,
     ) -> Result<u64, String> {
+        self.delay_us(source, Endpoint::Participant(participant))
+    }
+
+    /// `L(from, to)` between any two endpoints, e.g. a venue's path to the
+    /// consolidated tape's processor at the hub.
+    pub(crate) fn delay_us(&self, from: Endpoint, to: Endpoint) -> Result<u64, String> {
         self.inner
             .lock()
             .map_err(|_| "admission lock poisoned".to_owned())?
             .model
-            .delay_us(source, Endpoint::Participant(participant))
+            .delay_us(from, to)
             .map_err(|error| error.to_string())
     }
 

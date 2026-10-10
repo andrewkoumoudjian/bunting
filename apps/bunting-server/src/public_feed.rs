@@ -11,23 +11,32 @@
 //! carries how many batches were published before it, so the feed resumes at
 //! exactly the next batch. Batches drained before the reply arrives are
 //! buffered (bounded) until then.
+//!
+//! A subscription naming exchange 0 (207=0) is the consolidated tape of one
+//! instrument instead (ADR 0036): every venue's best bid and offer and every
+//! venue's trades, sent from the processor at the hub. Its snapshot states
+//! the tape's last report sequence (83); the feed continues with the next.
 
-use crate::distributor::CommittedBatch;
+use crate::consolidated::{ConsolidatedTape, TapeRecord};
+use crate::distributor::{CommittedBatch, Subscription};
+use crate::wake::Waker;
+use bunting_admission_sequencer::Endpoint;
 use bunting_application::{MarketDataEntryType, PublicListingUpdate};
 use bunting_market_events::Side;
-use bunting_market_types::{ListingKey, VenueId};
+use bunting_market_types::{InstrumentId, ListingKey};
 use simfix_mapping::{MarketDataIncrement, MarketDataUpdateAction, market_incremental};
 use simfix_wire::FixMessage;
+use std::sync::Arc;
 
 /// Concurrent subscriptions one session may hold.
 pub(crate) const MAX_FEEDS_PER_SESSION: usize = 32;
 /// Batches buffered per feed while its snapshot is in flight.
 pub(crate) const MAX_BUFFERED_BATCHES: usize = crate::distributor::MAX_PENDING_BATCHES;
 
-/// One message ready to leave the venue: its venue, the venue time it
-/// became available, and the earliest send time the feed's order allows.
+/// One message ready to leave its source (a venue, or the tape's processor
+/// at the hub) and the venue time it became available there.
 pub(crate) struct FeedMessage {
-    pub(crate) venue_id: VenueId,
+    pub(crate) source: Endpoint,
     pub(crate) available_us: u64,
     pub(crate) request_id: String,
     pub(crate) message: FixMessage,
@@ -47,12 +56,105 @@ struct Feed {
     last_send_us: u64,
 }
 
-#[derive(Default)]
-pub(crate) struct PublicFeeds {
-    feeds: Vec<Feed>,
+/// One session's subscription to an instrument's consolidated tape.
+struct TapeFeed {
+    request_id: String,
+    instrument_id: InstrumentId,
+    /// `Some` until the snapshot's reply arrives.
+    pending: Option<Vec<Arc<TapeRecord>>>,
+    last_send_us: u64,
 }
 
-impl PublicFeeds {
+#[derive(Default)]
+pub(crate) struct PublicFeeds<'a> {
+    feeds: Vec<Feed>,
+    tape_feeds: Vec<TapeFeed>,
+    /// Held while any consolidated feed exists.
+    tape: Option<Subscription<'a, TapeRecord>>,
+}
+
+impl<'a> PublicFeeds<'a> {
+    /// Why a new subscription with this ID cannot start, if it cannot.
+    fn refuse(&self, request_id: &str) -> Option<String> {
+        if self.feeds.iter().any(|feed| feed.request_id == request_id)
+            || self
+                .tape_feeds
+                .iter()
+                .any(|feed| feed.request_id == request_id)
+        {
+            return Some(format!(
+                "market data request {request_id} is already subscribed"
+            ));
+        }
+        if self.feeds.len().saturating_add(self.tape_feeds.len()) >= MAX_FEEDS_PER_SESSION {
+            return Some(format!(
+                "max market data subscriptions {MAX_FEEDS_PER_SESSION}"
+            ));
+        }
+        None
+    }
+
+    /// Registers a pending consolidated-tape subscription before its request
+    /// is admitted. The session's tape subscription starts with its first
+    /// consolidated feed, so no record applied after the snapshot is missed.
+    pub(crate) fn subscribe_consolidated(
+        &mut self,
+        request_id: &str,
+        instrument_id: InstrumentId,
+        tape: &'a ConsolidatedTape,
+        waker: &Waker,
+    ) -> Option<String> {
+        if let Some(reason) = self.refuse(request_id) {
+            return Some(reason);
+        }
+        if self.tape.is_none() {
+            match tape.subscribe(Some(waker.clone())) {
+                Ok(subscription) => self.tape = Some(subscription),
+                Err(reason) => return Some(reason),
+            }
+        }
+        self.tape_feeds.push(TapeFeed {
+            request_id: request_id.to_owned(),
+            instrument_id,
+            pending: Some(Vec::new()),
+            last_send_us: 0,
+        });
+        None
+    }
+
+    /// Maps every tape record applied since the last call to each active
+    /// consolidated feed of its instrument, and buffers it for pending ones.
+    ///
+    /// # Errors
+    /// Returns an error when the tape disconnected this session or a pending
+    /// feed's buffer is full.
+    pub(crate) fn drain_tape(&mut self) -> Result<Vec<FeedMessage>, String> {
+        let Some(tape) = &self.tape else {
+            return Ok(Vec::new());
+        };
+        let mut messages = Vec::new();
+        for record in tape.drain()? {
+            for feed in &mut self.tape_feeds {
+                if feed.instrument_id != record.instrument_id {
+                    continue;
+                }
+                match &mut feed.pending {
+                    Some(buffer) => {
+                        if buffer.len() >= MAX_BUFFERED_BATCHES {
+                            return Err(format!(
+                                "market data request {} buffered more than {MAX_BUFFERED_BATCHES} tape records",
+                                feed.request_id
+                            ));
+                        }
+                        buffer.push(record.clone());
+                    }
+                    None => messages.push(feed.message(&record)),
+                }
+            }
+        }
+        Ok(messages)
+    }
+
     /// Registers a pending subscription before its request is admitted, so
     /// no batch committed after the snapshot can be missed. Returns a
     /// rejection reason for a duplicate request ID, the session limit, or a
@@ -63,15 +165,8 @@ impl PublicFeeds {
         listing_key: ListingKey,
         entry_types: &[MarketDataEntryType],
     ) -> Option<String> {
-        if self.feeds.iter().any(|feed| feed.request_id == request_id) {
-            return Some(format!(
-                "market data request {request_id} is already subscribed"
-            ));
-        }
-        if self.feeds.len() >= MAX_FEEDS_PER_SESSION {
-            return Some(format!(
-                "max market data subscriptions {MAX_FEEDS_PER_SESSION}"
-            ));
+        if let Some(reason) = self.refuse(request_id) {
+            return Some(reason);
         }
         let wants = |wanted| entry_types.contains(&wanted);
         let feed = Feed {
@@ -93,14 +188,42 @@ impl PublicFeeds {
 
     /// Stops a subscription; returns whether one with this request ID existed.
     pub(crate) fn unsubscribe(&mut self, request_id: &str) -> bool {
-        let before = self.feeds.len();
+        let before = self.feeds.len().saturating_add(self.tape_feeds.len());
         self.feeds.retain(|feed| feed.request_id != request_id);
-        self.feeds.len() != before
+        self.tape_feeds.retain(|feed| feed.request_id != request_id);
+        if self.tape_feeds.is_empty() {
+            self.tape = None;
+        }
+        self.feeds.len().saturating_add(self.tape_feeds.len()) != before
     }
 
-    /// The snapshot reply arrived: the feed continues with the first batch
-    /// published after it. Returns the buffered increments that follow.
-    pub(crate) fn activate(&mut self, request_id: &str, published_before: u64) -> Vec<FeedMessage> {
+    /// The snapshot reply arrived: a venue feed continues with the first
+    /// batch published after it, a consolidated feed with the first record
+    /// after the snapshot's last report sequence (83). Returns the buffered
+    /// increments that follow.
+    pub(crate) fn activate(
+        &mut self,
+        request_id: &str,
+        published_before: u64,
+        snapshot: &[FixMessage],
+    ) -> Vec<FeedMessage> {
+        if let Some(feed) = self
+            .tape_feeds
+            .iter_mut()
+            .find(|feed| feed.request_id == request_id)
+        {
+            let last = snapshot
+                .first()
+                .and_then(|message| message.value(83))
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let buffered = feed.pending.take().unwrap_or_default();
+            return buffered
+                .iter()
+                .filter(|record| record.first_report > last)
+                .map(|record| feed.message(record))
+                .collect();
+        }
         let Some(feed) = self
             .feeds
             .iter_mut()
@@ -151,13 +274,34 @@ impl PublicFeeds {
     /// Orders one feed's messages: a message never leaves before the
     /// previous one of the same feed, whatever the path's jitter.
     pub(crate) fn send_time(&mut self, request_id: &str, proposed_us: u64) -> u64 {
-        self.feeds
+        let last = self
+            .feeds
             .iter_mut()
             .find(|feed| feed.request_id == request_id)
-            .map_or(proposed_us, |feed| {
-                feed.last_send_us = feed.last_send_us.max(proposed_us);
-                feed.last_send_us
-            })
+            .map(|feed| &mut feed.last_send_us)
+            .or_else(|| {
+                self.tape_feeds
+                    .iter_mut()
+                    .find(|feed| feed.request_id == request_id)
+                    .map(|feed| &mut feed.last_send_us)
+            });
+        last.map_or(proposed_us, |last| {
+            *last = (*last).max(proposed_us);
+            *last
+        })
+    }
+}
+
+impl TapeFeed {
+    /// Every entry of a record: a consolidated feed always carries quotes
+    /// and trades, so its report sequence is the tape's, with no gaps.
+    fn message(&self, record: &TapeRecord) -> FeedMessage {
+        FeedMessage {
+            source: Endpoint::Hub,
+            available_us: record.hub_us,
+            request_id: self.request_id.clone(),
+            message: market_incremental(&self.request_id, record.first_report, &record.entries),
+        }
     }
 }
 
@@ -171,17 +315,16 @@ impl Feed {
         if entries.is_empty() {
             return None;
         }
-        let message = market_incremental(
-            &self.request_id,
-            self.listing_key,
-            self.next_report,
-            &entries,
-        );
+        let entries: Vec<_> = entries
+            .into_iter()
+            .map(|entry| (self.listing_key, entry))
+            .collect();
+        let message = market_incremental(&self.request_id, self.next_report, &entries);
         self.next_report = self
             .next_report
             .saturating_add(u64::try_from(entries.len()).unwrap_or(u64::MAX));
         Some(FeedMessage {
-            venue_id: self.listing_key.venue_id,
+            source: Endpoint::Venue(self.listing_key.venue_id),
             available_us: batch.durable_us,
             request_id: self.request_id.clone(),
             message,
@@ -231,10 +374,8 @@ impl Feed {
 mod tests {
     use super::*;
     use crate::distributor::Committed;
-    use bunting_admission_sequencer::Endpoint;
     use bunting_application::LevelChange;
-    use bunting_market_types::{InstrumentId, PriceTicks, QuantityLots};
-    use std::sync::Arc;
+    use bunting_market_types::{PriceTicks, QuantityLots, VenueId};
 
     fn listing(venue: u128) -> ListingKey {
         ListingKey::new(VenueId::new(venue), InstrumentId::new(1))
@@ -261,6 +402,8 @@ mod tests {
                     previous: QuantityLots::new(previous),
                     quantity: QuantityLots::new(quantity),
                 }],
+                best_bid: None,
+                best_ask: None,
             }],
         })
     }
@@ -274,7 +417,7 @@ mod tests {
         // Committed before and after the snapshot, drained before its reply.
         assert!(feeds.on_batch(&batch(0, 1, 100, 0, 5))?.is_empty());
         assert!(feeds.on_batch(&batch(1, 1, 101, 0, 3))?.is_empty());
-        let resumed = feeds.activate("a", 1);
+        let resumed = feeds.activate("a", 1, &[]);
         assert_eq!(resumed.len(), 1);
         assert_eq!(resumed[0].message.value(270), Some("101"));
         assert_eq!(resumed[0].message.value(279), Some("0"));
@@ -294,13 +437,13 @@ mod tests {
             None
         );
         assert_eq!(feeds.subscribe("venue2", listing(2), BOOK), None);
-        feeds.activate("bids", 0);
-        feeds.activate("venue2", 0);
+        feeds.activate("bids", 0, &[]);
+        feeds.activate("venue2", 0, &[]);
         // An ask change on venue 1: neither feed wants it.
         assert!(feeds.on_batch(&batch(0, 1, 100, 0, 5))?.is_empty());
         let other = feeds.on_batch(&batch(1, 2, 100, 0, 5))?;
         assert_eq!(other.len(), 1);
-        assert_eq!(other[0].venue_id, VenueId::new(2));
+        assert_eq!(other[0].source, Endpoint::Venue(VenueId::new(2)));
         Ok(())
     }
 

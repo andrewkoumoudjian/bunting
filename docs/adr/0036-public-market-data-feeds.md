@@ -1,10 +1,10 @@
-# ADR 0036: Public market data — per-venue direct feeds over the latency map
+# ADR 0036: Public market data — direct venue feeds and a consolidated tape over the latency map
 
 - Status: **Accepted** (2026-10-10). Per-venue trade and L2 feeds were
-  implemented in slice 21 (see `docs/implementation-log/`). The four owner
-  choices below are **provisional defaults**, recorded under the owner's
-  direction to keep building and revisit them later. The consolidated feed
-  and L3 feeds are **Target**.
+  implemented in slice 21 and the consolidated tape in slice 22 (see
+  `docs/implementation-log/`). The owner answered the four open questions
+  on 2026-10-10 (below). Order-by-order (L3) feeds, broker identifiers and
+  data/colocation pricing are **Target**.
 - Date: 2026-10-10
 - Depends on: ADR 0011 (committed-sequence streams), ADR 0022 (single
   venue), ADR 0029 (owned book), ADR 0035 (latency), slice 12 (committed-event
@@ -49,15 +49,37 @@ Until slice 21, public data was request/response L2 snapshots only.
 5. **Bounds.** At most 32 feeds per session; a feed's in-flight buffer and
    the session's outbound hold are bounded, and overflowing either
    disconnects the session rather than publishing a feed with a hole.
+6. **Consolidated tape (slice 22).** Like a securities information
+   processor, one processor sits at the hub's location on the map. Right
+   after each commit, each touched listing's trades and new best bid and
+   offer start towards it and reach it `L(v, hub)` plus
+   `fix.admission.consolidated_processing_us` later (default 500 µs). The
+   processor applies changes in hub-arrival order and publishes, per
+   instrument, every venue's trades and every change of a venue's best bid
+   or offer (279=0 new, 1 replaced, 2 gone), each entry naming its venue
+   (207) and numbered by one per-instrument report sequence (83) that is
+   the same for every subscriber. A `V` naming exchange 0 (207=0) is a
+   request to the processor: it travels `L(p, hub)`, its snapshot (`W`)
+   lists each venue's best bid and offer as the processor sees them then,
+   with 83 = the last report included, and a subscription continues with
+   the next report; records reach the subscriber `L(hub, p)` after the
+   processor applied them. A consolidated feed always carries quotes and
+   trades, so its report sequence has no gaps. If more than 65,536 changes
+   are in flight to the processor, the tape goes down (every subscriber is
+   disconnected and new requests are refused) rather than publish a hole;
+   direct feeds are unaffected.
 
-### Provisional owner defaults (revisit any time)
+### Owner decisions (2026-10-10)
 
-| Question | Default | Why this default |
+The owner answered the open questions, replacing slice 21's provisional
+defaults:
+
+| Question | Owner decision | Status |
 |---|---|---|
-| L2 only, or L3 order-by-order? | **L2 by price level, plus trades.** L3 later as an opt-in feed. | The most conservative: reveals no order-level queue information; L3 can be added without changing L2. |
-| A consolidated (SIP-like) feed, and where? | **Yes, later**, from a processor at the hub's location on the map, with a processing delay. Not built yet. | It is the realistic latency-arbitrage lever, but it needs no decision to start with direct feeds. |
-| Broker identifiers? | **None.** Feeds are fully anonymous. | Leaks the least; a per-venue broker-ID option can come later. |
-| Data and colocation pricing? | **Free; no colocation purchase.** Locations come from the organizer's map. | Keeps scoring unchanged until the owner chooses a pricing rule. |
+| L2 only, or L3 order-by-order? | **Both**: price-level and order-by-order direct feeds. | L2 implemented (slice 21); L3 Target, with anonymous per-venue order references, never the owner's IDs. |
+| A consolidated (SIP-like) feed, and where? | **Yes**, or per-venue feeds only, whichever is closer to reality. Real markets run both, so Bunting has both: direct feeds per venue and one consolidated tape from a processor at the hub. | Implemented (slice 22). |
+| Data and colocation pricing? | **The most realistic.** Real firms pay for direct feeds and colocation; consolidated data is cheaper. | Target: the fee rule (charged through the single ledger, published with the event profile) will be set in its own ADR before it is built. Until then data and colocation are free and locations come from the organizer's map. |
+| Broker identifiers? | **Yes.** | Target: shown on order-by-order feeds and trades unless an order is marked anonymous (as on Toronto venues); not yet published. |
 
 ## Consequences
 
@@ -67,7 +89,12 @@ Until slice 21, public data was request/response L2 snapshots only.
 - Each commit now reads the visible depth of the listings it touched
   (O(levels) of those books); simulation events re-read every listing of
   the run.
-- `RULES.md`, `PROTOCOL.md` and the FIX profile describe the feed.
+- Teams relying only on the consolidated tape see every venue's quotes
+  later than a team with direct feeds near those venues, which is the
+  classic latency-arbitrage exposure.
+- Each commit's public changes are also queued for the processor; its
+  state is bounded by the in-flight limit and one quote pair per listing.
+- `RULES.md`, `PROTOCOL.md` and the FIX profile describe the feeds.
 
 ## Rejected alternatives
 
@@ -86,24 +113,32 @@ Until slice 21, public data was request/response L2 snapshots only.
 multi-entry `X` layout and its absence of identity tags),
 `apps/bunting-server/src/public_feed.rs` (a feed resumes exactly after its
 snapshot, venue and side filtering, limits, a full buffer is an error,
-send times never go backwards), and end-to-end
+send times never go backwards), `apps/bunting-server/src/consolidated.rs`
+(hub-arrival order and one report sequence, deletes and unchanged quotes,
+primed quotes, the in-flight bound takes the tape down), and end-to-end
 `apps/bunting-server/tests/public_feeds.rs` (two venues: venue 1's feed
 reaches the team 40 ms away no sooner than its path allows and after the
 near team; trades and level changes carry no identity; snapshot plus
 increments equal a fresh snapshot after racing activity; unsubscribe stops
-the feed).
+the feed; the tape reaches a team beside venue 2 only after venue 2 ->
+hub -> team and later than venue 2's direct feed, names each entry's
+venue, has no report gaps, and snapshot plus records equal a fresh tape
+snapshot).
 
 ## Operational impact
 
-No new configuration. Organizers place venues and teams on the existing
-latency map; the feed follows it.
+Organizers place venues, teams and the hub on the existing latency map;
+the feeds follow it. `fix.admission.consolidated_processing_us` (default
+500) sets the processor's delay and is published with the map.
 
 ## Security impact
 
 The public projection is an allowlist (price, quantity, side, listing):
 no participant, order, command or account identity, and hidden quantity
 never appears. A slow subscriber cannot stall the committer or other
-sessions; it is disconnected at its bounds.
+sessions; it is disconnected at its bounds. The consolidated processor
+never blocks the committer: changes are queued under a bound, and
+exceeding it takes only the tape down.
 
 ## References
 

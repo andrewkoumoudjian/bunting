@@ -2,7 +2,8 @@
 //! venue's listing streams that venue's anonymous trades and depth changes,
 //! each sent from the venue over the subscriber's virtual path (ADR 0035).
 //! Team 1 sits 1 ms from venue 1 and 40 ms from venue 2, team 2 the reverse;
-//! the maker sits with venue 1.
+//! the maker sits with venue 1, and so does the hub, where the consolidated
+//! tape's processor runs (slice 22).
 
 mod support;
 
@@ -385,5 +386,182 @@ fn snapshot_plus_increments_track_the_book_until_unsubscribed() -> Result<(), St
     maker.wait_report("805", "0")?;
     pump_all(&mut [&mut maker, &mut team1], Duration::from_millis(50))?;
     assert_eq!(received(&team1, "X", "feed").len(), before);
+    Ok(())
+}
+
+/// The consolidated tape's view: each venue's best bid (`"0"`) and offer
+/// (`"1"`) as `(price, quantity)`.
+type Quotes = BTreeMap<(String, String), (i64, i64)>;
+
+/// `(279, 269, 207, 270, 271, 83)` of every entry of an `X`.
+fn tape_entries(message: &FixMessage) -> Vec<(String, String, String, i64, i64, u64)> {
+    let mut entries = Vec::new();
+    let mut current: Option<(String, String, String, i64, i64, u64)> = None;
+    for field in &message.fields {
+        let Some(entry) = (if field.tag == 279 {
+            entries.extend(current.take());
+            current = Some(Default::default());
+            current.as_mut()
+        } else {
+            current.as_mut()
+        }) else {
+            continue;
+        };
+        match field.tag {
+            279 => entry.0.clone_from(&field.value),
+            269 => entry.1.clone_from(&field.value),
+            207 => entry.2.clone_from(&field.value),
+            270 => entry.3 = field.value.parse().unwrap_or(-1),
+            271 => entry.4 = field.value.parse().unwrap_or(-1),
+            83 => entry.5 = field.value.parse().unwrap_or(0),
+            _ => {}
+        }
+    }
+    entries.extend(current);
+    entries
+}
+
+/// A consolidated `W`: its last report sequence (83) and quotes.
+fn tape_snapshot(message: &FixMessage) -> (u64, Quotes) {
+    let last = message
+        .value(83)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let mut quotes = Quotes::new();
+    let mut in_group = false;
+    let (mut side, mut venue, mut price) = (String::new(), String::new(), 0);
+    for field in &message.fields {
+        match field.tag {
+            268 => in_group = true,
+            269 if in_group => side.clone_from(&field.value),
+            207 if in_group => venue.clone_from(&field.value),
+            270 if in_group => price = field.value.parse().unwrap_or(-1),
+            271 if in_group => {
+                quotes.insert(
+                    (venue.clone(), side.clone()),
+                    (price, field.value.parse().unwrap_or(-1)),
+                );
+            }
+            _ => {}
+        }
+    }
+    (last, quotes)
+}
+
+/// The subscriber's consolidated view: its snapshot with every record
+/// applied, checking the tape's report sequence has no gap.
+fn tape_quotes(client: &Client, id: &str) -> Result<Quotes, String> {
+    let snapshot = received(client, "W", id);
+    let (last, mut quotes) = tape_snapshot(snapshot.first().ok_or("no tape snapshot")?);
+    let mut expected = last + 1;
+    for message in received(client, "X", id) {
+        for (action, entry_type, venue, price, quantity, report) in tape_entries(&message) {
+            assert_eq!(report, expected, "tape {id} has a gap");
+            expected += 1;
+            if entry_type == "2" {
+                continue;
+            }
+            if action == "2" {
+                quotes.remove(&(venue, entry_type));
+            } else {
+                quotes.insert((venue, entry_type), (price, quantity));
+            }
+        }
+    }
+    Ok(quotes)
+}
+
+#[test]
+fn the_consolidated_tape_lags_a_near_direct_feed_and_stays_consistent() -> Result<(), String> {
+    let port = start_server()?;
+    let mut maker = Client::logon(port, "MAKER", "maker", "bunting-maker-dev")?;
+    let mut team2 = Client::logon(port, "TEAM2", "team2", "bunting-team2-dev")?;
+    for client in [&maker, &team2] {
+        fast_reads(client)?;
+    }
+    // Team 2 sits with venue 2 and watches it directly and on the tape.
+    team2.send(market_request("direct", "1", 2))?;
+    team2.send(market_request("tape", "1", 0))?;
+    let deadline = Instant::now() + TIMEOUT;
+    while received(&team2, "W", "direct").is_empty() || received(&team2, "W", "tape").is_empty() {
+        if Instant::now() > deadline {
+            return Err("subscriptions were not acknowledged".to_owned());
+        }
+        pump_all(&mut [&mut team2], Duration::from_millis(5))?;
+    }
+
+    // An offer appears on venue 2 (40 ms from the maker and from the hub).
+    maker.send(order_at("901", "sell", 5, 100, 2))?;
+    let sent = Instant::now();
+    let mut seen: [Option<Instant>; 2] = [None, None];
+    let deadline = Instant::now() + TIMEOUT;
+    while seen.iter().any(Option::is_none) {
+        if Instant::now() > deadline {
+            return Err("the offer never reached both feeds".to_owned());
+        }
+        pump_all(&mut [&mut maker, &mut team2], Duration::from_micros(600))?;
+        if seen[0].is_none()
+            && received(&team2, "X", "direct")
+                .iter()
+                .any(|message| entries(message).contains(&("0".to_owned(), "1".to_owned(), 100, 5)))
+        {
+            seen[0] = Some(Instant::now());
+        }
+        if seen[1].is_none()
+            && received(&team2, "X", "tape").iter().any(|message| {
+                tape_entries(message)
+                    .iter()
+                    .any(|entry| (entry.1.as_str(), entry.2.as_str(), entry.3) == ("1", "2", 100))
+            })
+        {
+            seen[1] = Some(Instant::now());
+        }
+    }
+    let [Some(direct), Some(tape)] = seen else {
+        return Err("unreachable".to_owned());
+    };
+    let direct = direct.duration_since(sent);
+    let tape = tape.duration_since(sent);
+    // Maker -> venue 2 (40 ms), then venue 2 -> hub (40 ms) + processing
+    // + hub -> team 2 (40 ms) for the tape, or venue 2 -> team 2 (1 ms).
+    assert!(
+        tape >= Duration::from_millis(120) && direct < tape,
+        "the tape must lag the direct feed by its trip through the hub: direct {direct:?}, tape {tape:?}"
+    );
+
+    // Quotes on both venues and a trade: the tape names each entry's venue.
+    maker.send(order_at("902", "buy", 3, 99, 1))?;
+    maker.wait_report("902", "0")?;
+    team2.send(order_at("201", "buy", 2, 100, 2))?;
+    team2.wait_report("201", "F")?;
+    pump_all(&mut [&mut maker, &mut team2], Duration::from_millis(200))?;
+    let all: Vec<_> = received(&team2, "X", "tape")
+        .iter()
+        .flat_map(tape_entries)
+        .collect();
+    assert!(
+        all.iter().any(
+            |entry| (entry.1.as_str(), entry.2.as_str(), entry.3, entry.4) == ("2", "2", 100, 2)
+        ),
+        "{all:?}"
+    );
+    for message in received(&team2, "X", "tape") {
+        for tag in [1, 11, 37, 41, 448, 452, 523] {
+            assert_eq!(message.value(tag), None, "tag {tag} leaks identity");
+        }
+    }
+
+    // The subscriber's consolidated view equals a fresh tape snapshot.
+    team2.send(market_request("check", "0", 0))?;
+    team2.pump_until(|client| !received(client, "W", "check").is_empty())?;
+    let (_, fresh) = tape_snapshot(&received(&team2, "W", "check")[0]);
+    assert_eq!(tape_quotes(&team2, "tape")?, fresh);
+    assert_eq!(
+        fresh,
+        Quotes::from([
+            (("1".to_owned(), "0".to_owned()), (99, 3)),
+            (("2".to_owned(), "1".to_owned()), (100, 3)),
+        ])
+    );
     Ok(())
 }

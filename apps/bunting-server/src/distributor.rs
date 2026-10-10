@@ -8,6 +8,7 @@
 //! sequencer thread, so every subscriber observes batches in commit order.
 
 use crate::admission::VenueClock;
+use crate::consolidated::ConsolidatedTape;
 use crate::storage::NativeOrigin;
 use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
@@ -68,37 +69,30 @@ fn batch_source(admission: Option<&AdmissionRecord>, events: &[EventEnvelope]) -
 
 pub(crate) type CommittedBatch = Arc<Committed>;
 
-struct Subscriber {
-    sender: SyncSender<CommittedBatch>,
+struct Subscriber<T> {
+    sender: SyncSender<Arc<T>>,
     overflowed: Arc<AtomicBool>,
     waker: Option<Waker>,
 }
 
-/// Registry of bounded per-session queues.
-pub(crate) struct EventDistributor {
+/// Registry of bounded per-subscriber queues of shared items.
+pub(crate) struct Fanout<T> {
     capacity: usize,
     next_id: AtomicU64,
-    subscribers: Mutex<BTreeMap<u64, Subscriber>>,
-    published: AtomicU64,
+    subscribers: Mutex<BTreeMap<u64, Subscriber<T>>>,
 }
 
-impl EventDistributor {
+impl<T> Fanout<T> {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
             next_id: AtomicU64::new(0),
             subscribers: Mutex::new(BTreeMap::new()),
-            published: AtomicU64::new(0),
         }
     }
 
-    /// Batches published so far: the ordinal the next batch will carry.
-    pub(crate) fn published(&self) -> u64 {
-        self.published.load(Ordering::Acquire)
-    }
-
-    /// Registers a session; batches committed from now on are queued for it.
-    pub(crate) fn subscribe(&self, waker: Option<Waker>) -> Result<Subscription<'_>, String> {
+    /// Registers a subscriber; items sent from now on are queued for it.
+    pub(crate) fn subscribe(&self, waker: Option<Waker>) -> Result<Subscription<'_, T>, String> {
         let (sender, receiver) = sync_channel(self.capacity);
         let overflowed = Arc::new(AtomicBool::new(false));
         let id = self.next_id.fetch_add(1, Ordering::AcqRel);
@@ -114,38 +108,22 @@ impl EventDistributor {
                 },
             );
         Ok(Subscription {
-            distributor: self,
+            fanout: self,
             id,
             receiver,
             overflowed,
         })
     }
 
-    /// Queues one committed batch for every subscriber without blocking the
-    /// committer. A full queue marks that subscriber overflowed and drops it; the
-    /// session then disconnects instead of silently skipping reports.
-    fn publish(
-        &self,
-        events: &[EventEnvelope],
-        committed_us: u64,
-        source: Endpoint,
-        public: Vec<PublicListingUpdate>,
-    ) {
-        if events.is_empty() {
-            return;
-        }
-        let batch: CommittedBatch = Arc::new(Committed {
-            durable_us: committed_us,
-            source,
-            events: events.to_vec(),
-            ordinal: self.published.fetch_add(1, Ordering::AcqRel),
-            public,
-        });
+    /// Queues one item for every subscriber without blocking the sender. A
+    /// full queue marks that subscriber overflowed and drops it; it then
+    /// disconnects instead of silently skipping items.
+    pub(crate) fn send(&self, item: &Arc<T>) {
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
         };
         subscribers.retain(|_, subscriber| {
-            let keep = match subscriber.sender.try_send(batch.clone()) {
+            let keep = match subscriber.sender.try_send(item.clone()) {
                 Ok(()) => true,
                 Err(TrySendError::Full(_)) => {
                     subscriber.overflowed.store(true, Ordering::Release);
@@ -153,12 +131,26 @@ impl EventDistributor {
                 }
                 Err(TrySendError::Disconnected(_)) => false,
             };
-            // Wake the session for the batch, or to notice the overflow.
+            // Wake the subscriber for the item, or to notice the overflow.
             if let Some(waker) = &subscriber.waker {
                 waker.wake();
             }
             keep
         });
+    }
+
+    /// Disconnects every subscriber: each one's next drain fails, so its
+    /// session reconnects instead of reading a stream with a hole in it.
+    pub(crate) fn close_all(&self) {
+        let Ok(mut subscribers) = self.subscribers.lock() else {
+            return;
+        };
+        for subscriber in std::mem::take(&mut *subscribers).into_values() {
+            subscriber.overflowed.store(true, Ordering::Release);
+            if let Some(waker) = &subscriber.waker {
+                waker.wake();
+            }
+        }
     }
 
     #[cfg(test)]
@@ -169,40 +161,91 @@ impl EventDistributor {
     }
 }
 
-/// One session's ordered view of committed batches.
-pub(crate) struct Subscription<'a> {
-    distributor: &'a EventDistributor,
+/// Committed batches, in commit order, to every session and host.
+pub(crate) struct EventDistributor {
+    fanout: Fanout<Committed>,
+    published: AtomicU64,
+}
+
+impl EventDistributor {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            fanout: Fanout::new(capacity),
+            published: AtomicU64::new(0),
+        }
+    }
+
+    /// Batches published so far: the ordinal the next batch will carry.
+    pub(crate) fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    /// Registers a session; batches committed from now on are queued for it.
+    pub(crate) fn subscribe(&self, waker: Option<Waker>) -> Result<Subscription<'_>, String> {
+        self.fanout.subscribe(waker)
+    }
+
+    /// Queues one committed batch for every subscriber without blocking the
+    /// committer.
+    fn publish(
+        &self,
+        events: &[EventEnvelope],
+        committed_us: u64,
+        source: Endpoint,
+        public: Vec<PublicListingUpdate>,
+    ) {
+        if events.is_empty() {
+            return;
+        }
+        self.fanout.send(&Arc::new(Committed {
+            durable_us: committed_us,
+            source,
+            events: events.to_vec(),
+            ordinal: self.published.fetch_add(1, Ordering::AcqRel),
+            public,
+        }));
+    }
+
+    #[cfg(test)]
+    fn subscriber_count(&self) -> usize {
+        self.fanout.subscriber_count()
+    }
+}
+
+/// One subscriber's ordered view of a fanout.
+pub(crate) struct Subscription<'a, T = Committed> {
+    fanout: &'a Fanout<T>,
     id: u64,
-    receiver: Receiver<CommittedBatch>,
+    receiver: Receiver<Arc<T>>,
     overflowed: Arc<AtomicBool>,
 }
 
-impl Subscription<'_> {
-    /// Returns every batch queued so far, in commit order, without blocking.
+impl<T> Subscription<'_, T> {
+    /// Returns every item queued so far, in order, without blocking.
     ///
     /// # Errors
     /// Returns an error once the queue has overflowed; the caller must
-    /// disconnect so the participant recovers state rather than miss a report.
-    pub(crate) fn drain(&self) -> Result<Vec<CommittedBatch>, String> {
+    /// disconnect so the participant recovers state rather than miss an item.
+    pub(crate) fn drain(&self) -> Result<Vec<Arc<T>>, String> {
         if self.overflowed.load(Ordering::Acquire) {
             return Err(format!(
-                "committed report queue overflow: more than {} pending batches; reconnect to recover",
-                self.distributor.capacity
+                "stream closed: more than {} pending items or the source failed; reconnect to recover",
+                self.fanout.capacity
             ));
         }
-        let mut batches = Vec::new();
+        let mut items = Vec::new();
         loop {
             match self.receiver.try_recv() {
-                Ok(batch) => batches.push(batch),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(batches),
+                Ok(item) => items.push(item),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(items),
             }
         }
     }
 }
 
-impl Drop for Subscription<'_> {
+impl<T> Drop for Subscription<'_, T> {
     fn drop(&mut self) {
-        if let Ok(mut subscribers) = self.distributor.subscribers.lock() {
+        if let Ok(mut subscribers) = self.fanout.subscribers.lock() {
             subscribers.remove(&self.id);
         }
     }
@@ -218,15 +261,23 @@ pub(crate) struct PublishingOrigin {
     /// Last published visible depth of every listing, per run: the base the
     /// next commit's public depth changes are measured against.
     books: Mutex<BTreeMap<RunId, BTreeMap<ListingKey, PublicDepth>>>,
+    /// The consolidated tape's processor, fed each commit's public changes.
+    tape: ConsolidatedTape,
 }
 
 impl PublishingOrigin {
-    pub(crate) fn new(inner: NativeOrigin, capacity: usize, clock: VenueClock) -> Self {
+    pub(crate) fn new(
+        inner: NativeOrigin,
+        capacity: usize,
+        clock: VenueClock,
+        tape: ConsolidatedTape,
+    ) -> Self {
         Self {
             inner,
             distributor: EventDistributor::new(capacity),
             clock,
             books: Mutex::new(BTreeMap::new()),
+            tape,
         }
     }
 
@@ -244,6 +295,11 @@ impl PublishingOrigin {
                 .filter_map(|&key| state.visible_levels(key).ok().map(|depth| (key, depth)))
                 .collect::<BTreeMap<_, _>>()
         })?;
+        self.tape.prime(
+            depths
+                .iter()
+                .map(|(&key, (bids, asks))| (key, (bids.first().copied(), asks.first().copied()))),
+        );
         books.insert(run_id, depths);
         Ok(())
     }
@@ -302,6 +358,8 @@ impl PublishingOrigin {
                     listing_key: key,
                     trades,
                     levels,
+                    best_bid: known.get(&key).and_then(|depth| depth.0.first().copied()),
+                    best_ask: known.get(&key).and_then(|depth| depth.1.first().copied()),
                 });
             }
         }
@@ -314,6 +372,10 @@ impl PublishingOrigin {
 
     pub(crate) const fn distributor(&self) -> &EventDistributor {
         &self.distributor
+    }
+
+    pub(crate) const fn tape(&self) -> &ConsolidatedTape {
+        &self.tape
     }
 }
 
@@ -334,6 +396,8 @@ impl OriginStore for PublishingOrigin {
             let public = self
                 .public_updates(input.run_id(), &executed.events)
                 .unwrap_or_default();
+            self.tape
+                .hear(self.distributor.published(), durable_us, &public);
             self.distributor.publish(
                 &executed.events,
                 durable_us,

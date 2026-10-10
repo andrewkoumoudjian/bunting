@@ -111,6 +111,15 @@ pub struct AdmissionConfig {
     /// Outbound messages one session may have in flight on its virtual
     /// path; overflow disconnects.
     pub max_outbound_hold: usize,
+    /// Processing time of the consolidated tape's processor at the hub
+    /// (ADR 0036), added after each venue's path to the hub. Published with
+    /// the map.
+    #[serde(default = "default_consolidated_processing_us")]
+    pub consolidated_processing_us: u64,
+}
+
+const fn default_consolidated_processing_us() -> u64 {
+    500
 }
 
 impl AdmissionConfig {
@@ -128,6 +137,7 @@ impl AdmissionConfig {
             probe_interval_ms: 1_000,
             max_admission_queue: 4_096,
             max_outbound_hold: 4_096,
+            consolidated_processing_us: default_consolidated_processing_us(),
         }
     }
 }

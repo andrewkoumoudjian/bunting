@@ -53,11 +53,14 @@ lines.extend(
         "ExecutionReport (`8`), MarketDataRequest (`V`), "
         "MarketDataSnapshotFullRefresh (`W`) and MarketDataIncrementalRefresh "
         "(`X`); `V` with 263=1 subscribes to one venue's direct feed of "
-        "anonymous trades and level changes, 263=2 ends it. BuntingPayloadJSON (10020) contains "
+        "anonymous trades and level changes, 263=2 ends it; exchange 0 (207=0) "
+        "names an instrument's consolidated tape from the processor at the hub "
+        "(every venue's trades and best bid and offer, each entry naming its venue, "
+        "with one per-instrument report sequence 83). BuntingPayloadJSON (10020) contains "
         "bounded UTF-8 JSON for competition resources; it never changes FIX "
         "session sequencing or the authoritative event schema.",
         "",
-        "New FIX orders (D) and market-data requests (V) must include standard tag 207 (SecurityExchange), containing a positive numeric Bunting venue ID. FIX market snapshots (W) and incremental updates (X) publish both instrument tag 48 and exchange tag 207. No order submission or market feed may silently select a venue from instrument identity.",
+        "New FIX orders (D) and market-data requests (V) must include standard tag 207 (SecurityExchange), containing a positive numeric Bunting venue ID, or 0 for the consolidated tape in V. FIX market snapshots (W) and incremental updates (X) publish both instrument tag 48 and exchange tag 207. No order submission or market feed may silently select a venue from instrument identity.",
         "",
         "The venue keeps the existing Bunting codec while the QuickFIX-Go "
         "interoperability gate remains green. Unknown tags and malformed frames "

@@ -62,8 +62,17 @@ each order to the right venue.
   before a far one. Feeds never identify who traded or whose order a level
   holds, and hidden quantity stays hidden. Each entry carries a report
   sequence (tag 83) that increases by one per entry; 263=2 with the same
-  262 ends a feed. Feeds and colocation are free, and there is no
-  consolidated feed yet (ADR 0036).
+  262 ends a feed. The **consolidated tape** (`V` with 207=0) is one
+  feed per instrument from a processor at the hub: every venue's trades
+  and every change of each venue's best bid or offer, each entry naming
+  its venue (207). A venue's change reaches the processor after that
+  venue's path to the hub plus a processing delay
+  (`consolidated_processing_us`, published), and then you after the hub's
+  path to you, so near a venue the direct feed is faster and the tape can
+  be stale. Its report sequence (83) is one per instrument, the same for
+  everyone; its snapshot's 83 is the last report included. Feeds and
+  colocation are free for now; order-by-order feeds, broker identifiers
+  and feed and colocation fees are planned (ADR 0036).
 
 ## Published limits
 

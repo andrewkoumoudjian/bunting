@@ -1,10 +1,12 @@
 # Cross-venue market data: seeing every trade and order, realistically
 
 Status: **Exploration** — owner request 2026-10-10. Options A and B (per-venue
-trade and L2 feeds) were implemented in slice 21 under
-[ADR 0036](../adr/0036-public-market-data-feeds.md), which also records
-provisional answers to the owner questions below; `RULES.md` states what
-participants can see today.
+trade and L2 feeds) were implemented in slice 21 and option D (consolidated
+tape) in slice 22 under [ADR 0036](../adr/0036-public-market-data-feeds.md),
+which also records the owner's answers to the questions below (both L2 and
+L3; consolidated and direct feeds; the most realistic data and colocation
+pricing; broker identifiers yes); `RULES.md` states what participants can
+see today.
 
 ## The request
 
@@ -97,10 +99,14 @@ Design constraints whichever option is chosen:
       (slice 21).
 - [x] Per-venue L2 incremental feed with sequence numbers and snapshot
       recovery (option B) (slice 21; recovery is a new subscription).
-- [ ] Consolidated feed from a configured processor location (option D).
+- [x] Consolidated feed from a processor at the hub (option D) (slice 22).
+- [x] Owner decisions (2026-10-10, ADR 0036): L2 and L3; consolidated and
+      direct feeds; the most realistic pricing; broker identifiers.
 - [ ] L3 order-by-order feed with anonymous per-venue references (option C).
-- [ ] Owner decisions on options E and F (provisional: no broker IDs, free
-      data and no colocation purchase; ADR 0036).
+- [ ] Broker identifiers on L3 feeds and trades, unless an order is
+      anonymous (option E).
+- [ ] Feed and colocation fees through the ledger (option F), in its own
+      ADR first.
 - [ ] Location coordinates helper: derive the latency map's links from
       location coordinates (great-circle distance, fibre or microwave route
       factor, venue gateway delay) instead of hand-written microseconds.

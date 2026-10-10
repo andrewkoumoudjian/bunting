@@ -16,15 +16,16 @@ use bunting_application::{
 use bunting_engine::RunState;
 use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, LogicalTimeNs, ParticipantId, PriceTicks,
-    QuantityLots, RunId, TenderId,
+    CommandId, CorrelationId, EventSequence, ListingKey, LogicalTimeNs, ParticipantId, PriceTicks,
+    QuantityLots, RunId, TenderId, VenueId,
 };
 use bunting_origin_store::OriginStore;
 use quarcc_execution_engine::ExecutionConfig;
 use serde::{Deserialize, Serialize};
 use simfix_mapping::{
-    ApplyFinePayload, CompetitionRequest, PublishNewsPayload, RunAdvancePayload, RunReasonPayload,
-    TenderAction, business_reject, competition_report, market_snapshot,
+    ApplyFinePayload, CONSOLIDATED_EXCHANGE, CompetitionRequest, PublishNewsPayload,
+    RunAdvancePayload, RunReasonPayload, TenderAction, business_reject, competition_report,
+    consolidated_snapshot, market_snapshot,
 };
 use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
@@ -261,21 +262,28 @@ pub(crate) fn handle_fix_connection(
             let mut send_at = reply
                 .completed_us
                 .saturating_add(latency.delay_from(reply.source)?);
-            if let Some(feed) = &reply.feed {
-                send_at = feeds.send_time(feed, send_at);
-            }
+            let resumed = match &reply.feed {
+                Some(feed) => {
+                    send_at = feeds.send_time(feed, send_at);
+                    feeds.activate(feed, reply.published_before, &messages)
+                }
+                None => Vec::new(),
+            };
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
-            if let Some(feed) = &reply.feed {
-                for increment in feeds.activate(feed, reply.published_before) {
-                    hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
-                }
+            for increment in resumed {
+                hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
             }
         }
         // Every committed batch, whoever caused it, maps to this
         // participant's own reports (slice 12); each travels from where it
         // was applied to this team over the latency map (ADR 0035).
+        // The consolidated tape: every venue's quotes and trades, sent from
+        // the processor at the hub.
+        for increment in feeds.drain_tape()? {
+            hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
+        }
         for batch in subscription.drain()? {
             // Public feeds: anonymous trades and depth changes of each
             // subscribed listing, sent from its venue (direct feed).
@@ -303,7 +311,8 @@ pub(crate) fn handle_fix_connection(
 }
 
 /// Holds one public feed message until it has crossed the virtual path from
-/// its venue to this team, never ahead of the feed's previous message.
+/// its source (a venue, or the hub for the consolidated tape) to this team,
+/// never ahead of the feed's previous message.
 fn hold_feed(
     outbound: &mut OutboundHold,
     feeds: &mut PublicFeeds,
@@ -312,7 +321,7 @@ fn hold_feed(
 ) -> Result<(), String> {
     let proposed = increment
         .available_us
-        .saturating_add(latency.delay_from(Endpoint::Venue(increment.venue_id))?);
+        .saturating_add(latency.delay_from(increment.source)?);
     let send_at = feeds.send_time(&increment.request_id, proposed);
     outbound.hold(increment.message, send_at)
 }
@@ -342,13 +351,13 @@ struct AdmitContext<'a> {
 /// Maps one application message and admits it without waiting for its
 /// release. Returns a rejection reason instead of an error when the message
 /// is refused but the session stays up.
-fn admit_message(
+fn admit_message<'a>(
     message: &FixMessage,
-    context: &AdmitContext<'_>,
+    context: &AdmitContext<'a>,
     application: &mut FixApplicationState,
     latency: &ConnectionLatency<'_>,
     release_floors: &mut BTreeMap<Endpoint, u64>,
-    feeds: &mut PublicFeeds,
+    feeds: &mut PublicFeeds<'a>,
     reply_to: &ReplyTo<'_>,
 ) -> Result<Option<String>, String> {
     // Sequence and logical time are stamped at release (venue time); the
@@ -385,7 +394,17 @@ fn admit_message(
             entry_types,
             ..
         } => {
-            if let Some(reason) = feeds.subscribe(request_id, *listing_key, entry_types) {
+            let refused = if is_consolidated(*listing_key) {
+                feeds.subscribe_consolidated(
+                    request_id,
+                    listing_key.instrument_id,
+                    context.origin.tape(),
+                    reply_to.waker,
+                )
+            } else {
+                feeds.subscribe(request_id, *listing_key, entry_types)
+            };
+            if let Some(reason) = refused {
                 return Ok(Some(reason));
             }
             Some(request_id.clone())
@@ -398,6 +417,10 @@ fn admit_message(
             .read_run(context.run_id, |state| listing_for_command(state, command))
             .map_err(|error| format!("run read failed: {error}"))?
             .map_or(Endpoint::Hub, |listing| Endpoint::Venue(listing.venue_id)),
+        // The consolidated tape is served by its processor at the hub.
+        FixApplicationRequest::MarketData { listing_key, .. } if is_consolidated(*listing_key) => {
+            Endpoint::Hub
+        }
         FixApplicationRequest::MarketData { listing_key, .. } => {
             Endpoint::Venue(listing_key.venue_id)
         }
@@ -462,6 +485,24 @@ fn job_for(
         FixApplicationRequest::MarketData {
             request_id,
             listing_key,
+            ..
+        } if is_consolidated(listing_key) => Box::new(move |context| {
+            // The processor's view now: changes still on their way to the
+            // hub are not in it.
+            let (last, quotes) = context
+                .origin
+                .tape()
+                .snapshot(listing_key.instrument_id, context.clock.now_us())?;
+            Ok(vec![consolidated_snapshot(
+                &request_id,
+                listing_key.instrument_id,
+                last,
+                &quotes,
+            )])
+        }),
+        FixApplicationRequest::MarketData {
+            request_id,
+            listing_key,
             request_type,
             market_depth,
             ..
@@ -497,6 +538,11 @@ fn job_for(
             )
         }),
     }
+}
+
+/// Exchange 0 (207=0) names an instrument's consolidated tape.
+fn is_consolidated(listing_key: ListingKey) -> bool {
+    listing_key.venue_id == VenueId::new(CONSOLIDATED_EXCHANGE)
 }
 
 /// One connection's delay estimate and probes (ADR 0034 §2).

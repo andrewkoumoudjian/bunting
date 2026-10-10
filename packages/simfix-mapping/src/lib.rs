@@ -392,6 +392,32 @@ pub fn market_snapshot(
     message
 }
 
+/// The consolidated tape's snapshot of one instrument: each venue's best bid
+/// and offer as the tape's processor last saw them, every entry naming its
+/// venue (207). `83` is the report sequence of the last change included, so
+/// the increments that follow start at the next one.
+#[must_use]
+pub fn consolidated_snapshot(
+    request_id: &str,
+    instrument_id: InstrumentId,
+    last_report_sequence: u64,
+    quotes: &[(ListingKey, Side, PriceTicks, QuantityLots)],
+) -> FixMessage {
+    let mut message = FixMessage::new("W");
+    message.push(262, request_id);
+    message.push(48, instrument_id.get().to_string());
+    message.push(207, CONSOLIDATED_EXCHANGE.to_string());
+    message.push(83, last_report_sequence.to_string());
+    message.push(268, quotes.len().to_string());
+    for (listing_key, side, price, quantity) in quotes {
+        message.push(269, if *side == Side::Buy { "0" } else { "1" });
+        message.push(207, listing_key.venue_id.get().to_string());
+        message.push(270, price.get().to_string());
+        message.push(271, quantity.get().to_string());
+    }
+    message
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MarketDataUpdateAction {
     New,
@@ -417,20 +443,24 @@ pub enum MarketDataIncrement {
     },
 }
 
-/// Maps committed public changes of one listing to one FIX 5.0 SP2
-/// `MarketDataIncrementalRefresh` (35=X). Each entry carries the
-/// subscription's next report sequence (83) so a gap is detectable.
+/// `SecurityExchange` (207) value of the consolidated tape in market-data
+/// requests and messages; venue IDs are positive.
+pub const CONSOLIDATED_EXCHANGE: u128 = 0;
+
+/// Maps committed public changes to one FIX 5.0 SP2
+/// `MarketDataIncrementalRefresh` (35=X). Every entry names its listing
+/// (48 + 207) and carries the feed's next report sequence (83), increasing
+/// by one per entry, so a gap is detectable.
 #[must_use]
 pub fn market_incremental(
     request_id: &str,
-    listing_key: ListingKey,
     first_report_sequence: u64,
-    entries: &[MarketDataIncrement],
+    entries: &[(ListingKey, MarketDataIncrement)],
 ) -> FixMessage {
     let mut message = FixMessage::new("X");
     message.push(262, request_id);
     message.push(268, entries.len().to_string());
-    for (offset, entry) in (0_u64..).zip(entries) {
+    for (offset, (listing_key, entry)) in (0_u64..).zip(entries) {
         let (action, entry_type, price, quantity) = match *entry {
             MarketDataIncrement::Level {
                 action,
@@ -642,21 +672,27 @@ mod tests {
             &[(PriceTicks::new(101), QuantityLots::new(3))],
         );
         assert_eq!(snapshot.value(268), Some("2"));
+        let listing = ListingKey::new(VenueId::new(1), InstrumentId::new(7));
         let update = market_incremental(
             "book",
-            ListingKey::new(VenueId::new(1), InstrumentId::new(7)),
             5,
             &[
-                MarketDataIncrement::Level {
-                    action: MarketDataUpdateAction::Change,
-                    side: Side::Buy,
-                    price: PriceTicks::new(100),
-                    quantity: QuantityLots::new(4),
-                },
-                MarketDataIncrement::Trade {
-                    price: PriceTicks::new(101),
-                    quantity: QuantityLots::new(1),
-                },
+                (
+                    listing,
+                    MarketDataIncrement::Level {
+                        action: MarketDataUpdateAction::Change,
+                        side: Side::Buy,
+                        price: PriceTicks::new(100),
+                        quantity: QuantityLots::new(4),
+                    },
+                ),
+                (
+                    listing,
+                    MarketDataIncrement::Trade {
+                        price: PriceTicks::new(101),
+                        quantity: QuantityLots::new(1),
+                    },
+                ),
             ],
         );
         assert_eq!(update.msg_type, "X");

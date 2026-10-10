@@ -1,8 +1,10 @@
 use crate::admission::{AdmissionService, VenueClock};
 use crate::config::AdmissionConfig;
 use crate::config::ServerConfig;
+use crate::consolidated::ConsolidatedTape;
 use crate::distributor::{MAX_PENDING_BATCHES, PublishingOrigin};
 use crate::storage::NativeOrigin;
+use bunting_admission_sequencer::Endpoint;
 use bunting_engine::RunState;
 use bunting_engine::ScenarioDefinition;
 use bunting_market_types::{IterationId, RunId};
@@ -10,13 +12,15 @@ use bunting_origin_store::{OriginError, OriginStore};
 use std::collections::BTreeSet;
 use std::sync::{Arc, mpsc};
 
+/// Public changes on their way to the consolidated tape's processor.
+const MAX_TAPE_IN_FLIGHT: usize = 65_536;
+
 pub fn run(config: &ServerConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let origin =
         NativeOrigin::from_config(&config.storage).map_err(|error| origin_error(&error))?;
     bootstrap_run(config, &origin)?;
     let clock = VenueClock::start();
-    let origin = Arc::new(PublishingOrigin::new(origin, MAX_PENDING_BATCHES, clock));
     // Every command, from FIX sessions and built-in agents alike, is
     // admitted by one sequencer: the only thread that commits.
     let admission = Arc::new(AdmissionService::new(
@@ -26,6 +30,21 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
             .as_ref()
             .map_or_else(AdmissionConfig::colocated, |fix| fix.admission.clone()),
     )?);
+    // The consolidated tape's processor sits at the hub (ADR 0036).
+    let tape = {
+        let admission = admission.clone();
+        ConsolidatedTape::new(
+            admission.config().consolidated_processing_us,
+            MAX_TAPE_IN_FLIGHT,
+            Box::new(move |venue| admission.delay_us(Endpoint::Venue(venue), Endpoint::Hub)),
+        )
+    };
+    let origin = Arc::new(PublishingOrigin::new(
+        origin,
+        MAX_PENDING_BATCHES,
+        clock,
+        tape,
+    ));
     let (completed, listener) = mpsc::channel();
     let mut task_count = 0_usize;
     if let Some(admin) = config.admin.clone() {
@@ -43,6 +62,13 @@ pub fn run(config: &ServerConfig) -> Result<(), String> {
         let completed = completed.clone();
         spawn_host("bunting-sequencer", completed, move || {
             admission.run_sequencer(&origin)
+        })?;
+    }
+    {
+        let origin = origin.clone();
+        let completed = completed.clone();
+        spawn_host("bunting-tape", completed, move || {
+            origin.tape().run(|| clock.now_us())
         })?;
     }
     if let Some(runtime) = config.runtime.clone() {

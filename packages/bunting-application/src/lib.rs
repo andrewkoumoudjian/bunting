@@ -317,6 +317,9 @@ pub struct PublicListingUpdate {
     pub listing_key: ListingKey,
     pub trades: Vec<PublicTrade>,
     pub levels: Vec<LevelChange>,
+    /// Best visible bid and offer after the commit.
+    pub best_bid: Option<(PriceTicks, QuantityLots)>,
+    pub best_ask: Option<(PriceTicks, QuantityLots)>,
 }
 
 /// Visible depth of one listing: bids best first, asks best first.

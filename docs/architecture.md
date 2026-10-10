@@ -182,12 +182,19 @@ log. Per-command cost no longer grows with the size of the run.
    snapshot taken at the venue when the request arrives there, then one
    `X` per later commit touching that listing, each sent `L(v, p)` after
    commit from that listing's venue, with per-entry report sequence `83`.
+8. Consolidated tape (slice 22, ADR 0036): `PublishingOrigin` also hands
+   each commit's public changes to `ConsolidatedTape`
+   (`apps/bunting-server/src/consolidated.rs`), the processor at the hub.
+   A change is applied when it reaches the hub (`durable + L(v, hub)` plus
+   the processing delay; the `bunting-tape` thread releases due changes)
+   and published per instrument with one report sequence; sessions
+   subscribed with `V` 207=0 receive each record `L(hub, p)` later.
 
 ### Target
 
 - Resume cursors so reports missed while disconnected are replayed (today
-  they are not); a consolidated feed and order-by-order (L3) feeds
-  (ADR 0036).
+  they are not); order-by-order (L3) feeds with broker identifiers, and
+  feed and colocation fees (ADR 0036).
 
 ## 7. Admission and fairness
 
@@ -204,13 +211,13 @@ They still read the book and receive reports without the venue-to-agent
 delay. With a file origin their runtime is checkpointed each tick and
 resumes exactly once after a restart (slice 19). Public per-venue feeds
 (trades and L2 depth changes) reach each subscriber over its own path from
-that venue (slice 21).
+that venue (slice 21); the consolidated tape reaches them from the
+processor at the hub after each venue's path there (slice 22).
 
 **Target:** the same model for every input — FIX, BNP, agents, schedule —
 with agents also observing over their virtual paths, team-to-team
-messages (OTC negotiation, shared data) addressed over team-to-team paths, and a
-consolidated market-data feed and L3 feeds delivered over the same
-virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
+messages (OTC negotiation, shared data) addressed over team-to-team paths, and
+L3 feeds delivered over the same virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
 All admission inputs are journaled; replay never re-measures the network.
 
 ## 8. Interfaces

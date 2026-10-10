@@ -109,12 +109,14 @@ connectivity counted and a published location map (slices 15–17,
 [ADR 0035](docs/adr/0035-latency.md)); built-in agents admitted through the
 same sequencer and recoverable after a crash (slices 18–19); a version 2
 archive that replays every journaled input (slice 20); and per-venue public
-feeds of anonymous trades and depth changes (slice 21,
+feeds of anonymous trades and depth changes plus a consolidated tape from
+a processor at the hub (slices 21–22,
 [ADR 0036](docs/adr/0036-public-market-data-feeds.md)).
 
 Current priorities and their order are in the
 [October 9 exploration note §8](docs/research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan):
-the rest of cross-venue market data (consolidated and L3 feeds), the
+the rest of cross-venue market data (L3 feeds, broker identifiers, feed
+and colocation fees), the
 multi-day calendar with auctions, and the certified native protocol and
 app ([ADR 0031](docs/adr/0031-proposed-bunting-native-client-protocol.md)).
 Accepted Target decisions are not implemented until the implementation log
