@@ -262,7 +262,11 @@ pub enum CommandPayload {
         order: SubmitOrder,
     },
     CancelOrder(CancelOrder),
+    /// The acting participant's kill switch: cancels its live orders and
+    /// refuses its new orders until [`CommandPayload::ResetKillSwitch`].
     ActivateKillSwitch,
+    /// Lifts the acting participant's kill switch.
+    ResetKillSwitch,
 }
 
 /// Administrator/simulation command envelope separate from participant order flow.
@@ -508,7 +512,10 @@ pub enum EventPayload {
         participant_id: ParticipantId,
         delta: MoneyMinor,
     },
+    /// The envelope's actor activated its kill switch.
     KillSwitchActivated,
+    /// The envelope's actor reset its kill switch.
+    KillSwitchReset,
     Simulation(SimulationEvent),
 }
 

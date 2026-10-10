@@ -56,6 +56,7 @@ fn clients() -> Vec<ClientMessage> {
         }),
         ClientMessage::CancelOrder { client_order_id: 3 },
         ClientMessage::KillSwitch { request_id: 4 },
+        ClientMessage::KillSwitchReset { request_id: 5 },
         ClientMessage::Subscribe {
             request_id: 5,
             listing: listing(),
@@ -168,6 +169,7 @@ fn servers() -> Vec<ServerMessage> {
             delta: i128::MIN,
         },
         ServerMessage::KillSwitchActivated { stamp: stamp() },
+        ServerMessage::KillSwitchReset { stamp: stamp() },
         ServerMessage::MarketSnapshot {
             request_id: 1,
             listing: listing(),

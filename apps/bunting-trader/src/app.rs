@@ -65,6 +65,11 @@ enum Command {
     Sell(OrderArgs),
     /// Cancel an order by its client order ID.
     Cancel { client_order_id: u64 },
+    /// Activate your kill switch: cancel all your live orders and refuse
+    /// your new ones until you reset it. Other teams are unaffected.
+    KillSwitch,
+    /// Reset your kill switch so you can trade again.
+    ResetKillSwitch,
     /// List your live orders.
     Orders,
     /// Show your cash and positions.
@@ -223,6 +228,24 @@ fn execute(client: &Client, command: Command, ids: &mut impl FnMut() -> u64) -> 
                     ..
                 } => *id == client_order_id,
                 ServerMessage::Reject { reference, .. } => *reference == client_order_id,
+                _ => false,
+            })
+        }
+        Command::KillSwitch | Command::ResetKillSwitch => {
+            let request_id = ids();
+            let reset = matches!(command, Command::ResetKillSwitch);
+            send(
+                client,
+                &if reset {
+                    ClientMessage::KillSwitchReset { request_id }
+                } else {
+                    ClientMessage::KillSwitch { request_id }
+                },
+            )?;
+            until(client, |message| match message {
+                ServerMessage::KillSwitchActivated { .. } => !reset,
+                ServerMessage::KillSwitchReset { .. } => reset,
+                ServerMessage::Reject { reference, .. } => *reference == request_id,
                 _ => false,
             })
         }
@@ -414,9 +437,10 @@ fn watch(client: &Client, feeds: &[Listing]) -> Result<(), String> {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per shell command")]
 fn shell(client: &Client, ids: &mut impl FnMut() -> u64) -> Result<(), String> {
     eprintln!(
-        "commands: buy|sell <venue> <instrument> <qty> <price|market>, cancel <id>, sub <venue> <instrument>, unsub <request>, orders, account, listings, ping, quit"
+        "commands: buy|sell <venue> <instrument> <qty> <price|market>, cancel <id>, kill, reset, sub <venue> <instrument>, unsub <request>, orders, account, listings, ping, quit"
     );
     let (lines, input) = mpsc::channel();
     std::thread::spawn(move || {
@@ -482,6 +506,12 @@ fn shell(client: &Client, ids: &mut impl FnMut() -> u64) -> Result<(), String> {
             }
             ["cancel", id] => ClientMessage::CancelOrder {
                 client_order_id: id.parse().map_err(|_| "invalid order ID".to_owned())?,
+            },
+            ["kill"] => ClientMessage::KillSwitch {
+                request_id: u64::from(request),
+            },
+            ["reset"] => ClientMessage::KillSwitchReset {
+                request_id: u64::from(request),
             },
             ["sub", venue, instrument] => ClientMessage::Subscribe {
                 request_id: request,

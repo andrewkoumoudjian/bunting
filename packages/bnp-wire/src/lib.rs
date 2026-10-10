@@ -40,6 +40,7 @@ pub mod msg_type {
     pub const NEW_ORDER: u8 = 0x10;
     pub const CANCEL_ORDER: u8 = 0x11;
     pub const KILL_SWITCH: u8 = 0x12;
+    pub const KILL_SWITCH_RESET: u8 = 0x13;
     pub const SUBSCRIBE: u8 = 0x20;
     pub const UNSUBSCRIBE: u8 = 0x21;
     pub const SNAPSHOT_REQUEST: u8 = 0x22;
@@ -65,6 +66,7 @@ pub mod msg_type {
     pub const BALANCE_CHANGED: u8 = 0x58;
     pub const KILL_SWITCH_ACTIVATED: u8 = 0x59;
     pub const ORDER_REDUCED: u8 = 0x5a;
+    pub const KILL_SWITCH_RESET_DONE: u8 = 0x5b;
     pub const MARKET_SNAPSHOT: u8 = 0x60;
     pub const MARKET_UPDATE: u8 = 0x61;
     pub const LISTINGS: u8 = 0x70;
@@ -375,8 +377,14 @@ pub enum ClientMessage {
     CancelOrder {
         client_order_id: u64,
     },
-    /// Cancels every live order of the participant and blocks new ones.
+    /// Activates the participant's own kill switch: cancels its live
+    /// orders and refuses its new ones until `KillSwitchReset`. Other
+    /// participants are unaffected.
     KillSwitch {
+        request_id: u64,
+    },
+    /// Lifts the participant's kill switch.
+    KillSwitchReset {
         request_id: u64,
     },
     /// Starts a direct venue feed: a snapshot, then every later change.
@@ -418,6 +426,7 @@ impl ClientMessage {
             Self::NewOrder(_) => msg_type::NEW_ORDER,
             Self::CancelOrder { .. } => msg_type::CANCEL_ORDER,
             Self::KillSwitch { .. } => msg_type::KILL_SWITCH,
+            Self::KillSwitchReset { .. } => msg_type::KILL_SWITCH_RESET,
             Self::Subscribe { .. } => msg_type::SUBSCRIBE,
             Self::Unsubscribe { .. } => msg_type::UNSUBSCRIBE,
             Self::SnapshotRequest { .. } => msg_type::SNAPSHOT_REQUEST,
@@ -594,7 +603,12 @@ pub enum ServerMessage {
         stamp: Stamp,
         delta: i128,
     },
+    /// This participant's kill switch is active.
     KillSwitchActivated {
+        stamp: Stamp,
+    },
+    /// This participant's kill switch was reset.
+    KillSwitchReset {
         stamp: Stamp,
     },
     /// A feed's starting book (or a one-shot snapshot, with `next_report` 0).
@@ -654,6 +668,7 @@ impl ServerMessage {
             Self::PositionChanged { .. } => msg_type::POSITION_CHANGED,
             Self::BalanceChanged { .. } => msg_type::BALANCE_CHANGED,
             Self::KillSwitchActivated { .. } => msg_type::KILL_SWITCH_ACTIVATED,
+            Self::KillSwitchReset { .. } => msg_type::KILL_SWITCH_RESET_DONE,
             Self::MarketSnapshot { .. } => msg_type::MARKET_SNAPSHOT,
             Self::MarketUpdate { .. } => msg_type::MARKET_UPDATE,
             Self::Listings { .. } => msg_type::LISTINGS,
@@ -676,7 +691,8 @@ impl ServerMessage {
             | Self::CancelRejected { stamp, .. }
             | Self::PositionChanged { stamp, .. }
             | Self::BalanceChanged { stamp, .. }
-            | Self::KillSwitchActivated { stamp } => Some(*stamp),
+            | Self::KillSwitchActivated { stamp }
+            | Self::KillSwitchReset { stamp } => Some(*stamp),
             _ => None,
         }
     }

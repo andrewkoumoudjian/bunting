@@ -153,6 +153,9 @@ pub fn decode_client(frame: &[u8]) -> Result<ClientMessage, WireError> {
         t::KILL_SWITCH => ClientMessage::KillSwitch {
             request_id: r.u64()?,
         },
+        t::KILL_SWITCH_RESET => ClientMessage::KillSwitchReset {
+            request_id: r.u64()?,
+        },
         t::SUBSCRIBE => ClientMessage::Subscribe {
             request_id: r.u32()?,
             listing: r.listing()?,
@@ -286,6 +289,7 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
             delta: r.i128()?,
         },
         t::KILL_SWITCH_ACTIVATED => ServerMessage::KillSwitchActivated { stamp: r.stamp()? },
+        t::KILL_SWITCH_RESET_DONE => ServerMessage::KillSwitchReset { stamp: r.stamp()? },
         t::MARKET_SNAPSHOT => ServerMessage::MarketSnapshot {
             request_id: r.u32()?,
             listing: r.listing()?,
@@ -449,7 +453,8 @@ fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireE
             w.option(order.display_quantity, Writer::i64);
         }
         ClientMessage::CancelOrder { client_order_id } => w.u64(*client_order_id),
-        ClientMessage::KillSwitch { request_id } => w.u64(*request_id),
+        ClientMessage::KillSwitch { request_id }
+        | ClientMessage::KillSwitchReset { request_id } => w.u64(*request_id),
         ClientMessage::Subscribe {
             request_id,
             listing,
@@ -623,7 +628,9 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
             w.stamp(*stamp);
             w.i128(*delta);
         }
-        ServerMessage::KillSwitchActivated { stamp } => w.stamp(*stamp),
+        ServerMessage::KillSwitchActivated { stamp } | ServerMessage::KillSwitchReset { stamp } => {
+            w.stamp(*stamp);
+        }
         ServerMessage::MarketSnapshot {
             request_id,
             listing,

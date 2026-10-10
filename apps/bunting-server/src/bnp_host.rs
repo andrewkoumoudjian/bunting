@@ -755,7 +755,8 @@ const fn request_reference(message: &ClientMessage) -> u64 {
     match message {
         ClientMessage::NewOrder(order) => order.client_order_id,
         ClientMessage::CancelOrder { client_order_id } => *client_order_id,
-        ClientMessage::KillSwitch { request_id } => *request_id,
+        ClientMessage::KillSwitch { request_id }
+        | ClientMessage::KillSwitchReset { request_id } => *request_id,
         ClientMessage::Subscribe { request_id, .. }
         | ClientMessage::Unsubscribe { request_id }
         | ClientMessage::SnapshotRequest { request_id, .. }
@@ -821,8 +822,14 @@ fn admit(
                 ),
             )
         }
-        ClientMessage::KillSwitch { request_id } => {
-            let command = match context.identity.kill_switch(*request_id, correlation) {
+        ClientMessage::KillSwitch { request_id }
+        | ClientMessage::KillSwitchReset { request_id } => {
+            let command = if matches!(message, ClientMessage::KillSwitch { .. }) {
+                context.identity.kill_switch(*request_id, correlation)
+            } else {
+                context.identity.kill_switch_reset(*request_id, correlation)
+            };
+            let command = match command {
                 Ok(command) => command,
                 Err(error) => return Ok(Some(error.to_string())),
             };

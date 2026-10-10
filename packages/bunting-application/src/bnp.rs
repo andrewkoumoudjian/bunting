@@ -67,6 +67,7 @@ pub struct BnpIdentity {
     new_orders: u64,
     cancels: u64,
     kill_switches: u64,
+    kill_switch_resets: u64,
 }
 
 impl BnpIdentity {
@@ -80,6 +81,7 @@ impl BnpIdentity {
             new_orders: space(b"new-order"),
             cancels: space(b"cancel"),
             kill_switches: space(b"kill-switch"),
+            kill_switch_resets: space(b"kill-switch-reset"),
         }
     }
 
@@ -169,6 +171,22 @@ impl BnpIdentity {
         ))
     }
 
+    /// The command that resets this participant's kill switch.
+    ///
+    /// # Errors
+    /// Returns [`BnpMappingError::ZeroIdentifier`] for request ID 0.
+    pub fn kill_switch_reset(
+        &self,
+        request_id: u64,
+        correlation_id: CorrelationId,
+    ) -> Result<Command, BnpMappingError> {
+        Ok(self.command(
+            scoped(self.kill_switch_resets, request_id)?,
+            correlation_id,
+            CommandPayload::ResetKillSwitch,
+        ))
+    }
+
     fn command(
         &self,
         command_id: u128,
@@ -193,9 +211,14 @@ impl BnpIdentity {
     /// Whether a command came from this participant over BNP.
     fn is_own_command(&self, command_id: CommandId) -> bool {
         let high = command_id.get() >> 64;
-        [self.new_orders, self.cancels, self.kill_switches]
-            .into_iter()
-            .any(|space| high == u128::from(space))
+        [
+            self.new_orders,
+            self.cancels,
+            self.kill_switches,
+            self.kill_switch_resets,
+        ]
+        .into_iter()
+        .any(|space| high == u128::from(space))
     }
 
     /// This participant's private messages for one committed batch, in
@@ -366,6 +389,9 @@ impl BnpIdentity {
                 }),
                 EventPayload::KillSwitchActivated if event.actor == me => {
                     messages.push(ServerMessage::KillSwitchActivated { stamp });
+                }
+                EventPayload::KillSwitchReset if event.actor == me => {
+                    messages.push(ServerMessage::KillSwitchReset { stamp });
                 }
                 _ => {}
             }

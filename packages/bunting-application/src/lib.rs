@@ -138,7 +138,7 @@ pub fn authorize_command(actor: &VerifiedActor, command: &Command) -> Result<(),
             Some(order.participant_id)
         }
         CommandPayload::CancelOrder(cancel) => Some(cancel.participant_id),
-        CommandPayload::ActivateKillSwitch => None,
+        CommandPayload::ActivateKillSwitch | CommandPayload::ResetKillSwitch => None,
     };
     if payload_participant.is_some_and(|value| value != participant) {
         return Err(ApplicationError::ActorMismatch);
@@ -878,7 +878,7 @@ impl FixApplicationState {
                         cancel.order_id =
                             OrderId::new(canonical_id(namespace, cancel.order_id.get())?);
                     }
-                    CommandPayload::ActivateKillSwitch => {}
+                    CommandPayload::ActivateKillSwitch | CommandPayload::ResetKillSwitch => {}
                 }
                 if let CommandPayload::SubmitOrder(order) = &command.payload {
                     let listing_key = simfix_mapping::fix_order_listing(message)?
@@ -1005,7 +1005,7 @@ pub fn listing_for_command(state: &RunState, command: &Command) -> Option<Listin
             .ownership()
             .get(&cancel.order_id)
             .map(|owned| owned.listing_key),
-        CommandPayload::ActivateKillSwitch => None,
+        CommandPayload::ActivateKillSwitch | CommandPayload::ResetKillSwitch => None,
     }
 }
 

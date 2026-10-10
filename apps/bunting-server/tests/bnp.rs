@@ -11,8 +11,8 @@ use bunting_admission_sequencer::{
 };
 use bunting_api_contract::ActorRole;
 use bunting_client::bnp_wire::{
-    ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, OrderType, ResumeStatus, ServerMessage,
-    Side, TimeInForce, msg_type,
+    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, OrderType, RejectReason,
+    ResumeStatus, ServerMessage, Side, TimeInForce, msg_type,
 };
 use bunting_client::{Client, ClientConfig, ClientError, FeedBook};
 use bunting_market_types::{ParticipantId, VenueId};
@@ -574,6 +574,84 @@ fn a_revocation_list_update_logs_out_the_live_session_without_a_restart() -> Res
         .map_err(|error| error.to_string())?;
     until(&team1, |message| {
         matches!(message, ServerMessage::Pong { nonce: 9, .. })
+    })?;
+    Ok(())
+}
+
+#[test]
+fn a_kill_switch_cancels_and_blocks_only_its_own_team_until_reset() -> Result<(), String> {
+    let venue = start_venue("kill-switch")?;
+    let team1 = venue.connect(&venue.team1, None)?;
+    let team2 = venue.connect(&venue.team2, None)?;
+    let send = |client: &Client, message: ClientMessage| {
+        client.send(&message).map_err(|error| error.to_string())
+    };
+    send(&team1, limit(1, Side::Buy, 1, 91))?;
+    until(&team1, |message| {
+        matches!(
+            message,
+            ServerMessage::OrderRested {
+                client_order_id: 1,
+                ..
+            }
+        )
+    })?;
+    send(&team1, ClientMessage::KillSwitch { request_id: 1 })?;
+    let reports = until(&team1, |message| {
+        matches!(message, ServerMessage::KillSwitchActivated { .. })
+    })?;
+    // Its own resting order is canceled in the same commit.
+    let reports = [
+        reports,
+        until(&team1, |message| {
+            matches!(message, ServerMessage::OrderCanceled { .. })
+        })?,
+    ]
+    .concat();
+    assert!(reports.iter().any(|message| matches!(
+        message,
+        ServerMessage::OrderCanceled {
+            client_order_id: 1,
+            reason: CancelReason::KillSwitch,
+            ..
+        }
+    )));
+    // Team 1 is refused; team 2 still trades.
+    send(&team1, limit(2, Side::Buy, 1, 91))?;
+    until(&team1, |message| {
+        matches!(
+            message,
+            ServerMessage::OrderRejected {
+                client_order_id: 2,
+                reason: RejectReason::KillSwitchActive,
+                ..
+            }
+        )
+    })?;
+    send(&team2, limit(5, Side::Buy, 1, 90))?;
+    until(&team2, |message| {
+        matches!(
+            message,
+            ServerMessage::OrderRested {
+                client_order_id: 5,
+                ..
+            }
+        )
+    })?;
+    // After a reset team 1 trades again.
+    send(&team1, ClientMessage::KillSwitchReset { request_id: 1 })?;
+    until(&team1, |message| {
+        matches!(message, ServerMessage::KillSwitchReset { .. })
+    })?;
+    send(&team1, limit(3, Side::Buy, 1, 91))?;
+    until(&team1, |message| {
+        matches!(
+            message,
+            ServerMessage::OrderRested {
+                client_order_id: 3,
+                ..
+            }
+        )
     })?;
     Ok(())
 }

@@ -832,7 +832,10 @@ pub struct RunState {
     /// Live-order count per participant, maintained where orders become live
     /// and in `retire`. Participants with no live orders have no entry.
     live_orders: BTreeMap<ParticipantId, u32>,
-    kill_switch: bool,
+    /// Participants whose kill switch is active: their live orders were
+    /// canceled and their new orders are refused until they reset it.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    kill_switched: BTreeSet<ParticipantId>,
     #[serde(default)]
     simulation: SimulationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -931,7 +934,7 @@ impl RunState {
             retired: VecDeque::new(),
             expiries: BTreeSet::new(),
             live_orders: BTreeMap::new(),
-            kill_switch: false,
+            kill_switched: BTreeSet::new(),
             simulation,
             calendar: scenario.calendar.clone(),
             session_steps,
@@ -1017,9 +1020,10 @@ impl RunState {
         &self.fx_rates
     }
 
+    /// Whether `participant`'s kill switch is active.
     #[must_use]
-    pub const fn kill_switch_active(&self) -> bool {
-        self.kill_switch
+    pub fn kill_switch_active(&self, participant: ParticipantId) -> bool {
+        self.kill_switched.contains(&participant)
     }
 
     /// Net liquidation value of one participant in the reporting currency.
@@ -1191,7 +1195,9 @@ impl RunState {
                 self.listing_key_for_instrument(order.instrument_id)
                     .map_err(ApplyError::Unchanged)?,
             ),
-            CommandPayload::CancelOrder(_) | CommandPayload::ActivateKillSwitch => None,
+            CommandPayload::CancelOrder(_)
+            | CommandPayload::ActivateKillSwitch
+            | CommandPayload::ResetKillSwitch => None,
         };
         // One run clock (ADR 0037): an input stamped behind it is refused.
         if command.logical_time < self.simulation.clock.now {
@@ -1256,7 +1262,7 @@ impl RunState {
                 let outcome = if candidate.simulation.lifecycle != simulation::RunLifecycle::Active
                 {
                     Ok(Err(RejectCode::RunNotActive))
-                } else if candidate.kill_switch {
+                } else if candidate.kill_switched.contains(&order.participant_id) {
                     Ok(Err(RejectCode::KillSwitchActive))
                 } else if candidate
                     .simulation
@@ -1309,9 +1315,20 @@ impl RunState {
                     }
                 }
             }
+            // A participant's own kill switch: cancel its live orders and
+            // refuse its new ones until it resets. Other participants are
+            // unaffected.
             CommandPayload::ActivateKillSwitch => {
-                candidate.kill_switch = true;
-                payloads.push(EventPayload::KillSwitchActivated);
+                candidate.activate_kill_switch(
+                    command.actor,
+                    &mut payloads,
+                    &mut changed_listings,
+                )?;
+                (true, None, None)
+            }
+            CommandPayload::ResetKillSwitch => {
+                candidate.kill_switched.remove(&command.actor);
+                payloads.push(EventPayload::KillSwitchReset);
                 (true, None, None)
             }
         };
@@ -1324,6 +1341,31 @@ impl RunState {
             reject_code,
             order_id,
         )
+    }
+
+    /// Marks `participant` kill-switched and cancels its live orders, in
+    /// order-ID order.
+    fn activate_kill_switch(
+        &mut self,
+        participant: ParticipantId,
+        payloads: &mut Vec<EventPayload>,
+        changed_listings: &mut BTreeSet<ListingKey>,
+    ) -> Result<(), EngineError> {
+        self.kill_switched.insert(participant);
+        payloads.push(EventPayload::KillSwitchActivated);
+        let live: Vec<(OrderId, ListingKey)> = self
+            .ownership
+            .iter()
+            .filter(|(_, owned)| {
+                owned.participant_id == participant && owned.state == OwnedOrderState::Active
+            })
+            .map(|(order_id, owned)| (*order_id, owned.listing_key))
+            .collect();
+        for (order_id, listing_key) in live {
+            changed_listings.insert(listing_key);
+            self.cancel(order_id, CancelReason::KillSwitch, payloads)?;
+        }
+        Ok(())
     }
 
     /// Projects committed payloads, retires terminal orders and envelopes the
@@ -2575,6 +2617,66 @@ mod tests {
                 .realized_pnl,
             MoneyMinor::new(20)
         );
+    }
+
+    #[test]
+    fn a_kill_switch_cancels_and_blocks_only_its_own_participant_until_reset() {
+        let kill = |state: &RunState, command_id: u128, participant: u128, payload| Command {
+            run_id: state.run_id(),
+            command_id: CommandId::new(command_id),
+            correlation_id: CorrelationId::new(command_id),
+            logical_time: LogicalTimeNs::new(u64::try_from(command_id).unwrap() * 1_000_000),
+            expected_sequence: state.sequence(),
+            actor: ParticipantId::new(participant),
+            payload,
+        };
+        let mut state = run();
+        state = apply(state.clone(), &submit(&state, 1, 1, 1, 1, Side::Buy, 90, 2)).candidate;
+        state = apply(
+            state.clone(),
+            &submit(&state, 2, 1, 2, 2, Side::Sell, 120, 3),
+        )
+        .candidate;
+        state = apply(state.clone(), &submit(&state, 3, 2, 3, 1, Side::Buy, 91, 1)).candidate;
+        let killed = apply(
+            state.clone(),
+            &kill(&state, 4, 1, CommandPayload::ActivateKillSwitch),
+        );
+        assert!(killed.accepted);
+        // Both of participant 1's orders are canceled; participant 2's stays.
+        let canceled: Vec<_> = killed
+            .events
+            .iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::OrderCanceled {
+                    order_id,
+                    participant_id,
+                    reason: CancelReason::KillSwitch,
+                    ..
+                } => Some((order_id.get(), participant_id.get())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(canceled, [(1, 1), (2, 1)]);
+        state = killed.candidate;
+        assert!(state.kill_switch_active(ParticipantId::new(1)));
+        assert!(!state.kill_switch_active(ParticipantId::new(2)));
+        assert_eq!(state.live_order_count(ParticipantId::new(1)), 0);
+        // Participant 1 is refused; participant 2 still trades.
+        let refused = apply(state.clone(), &submit(&state, 5, 1, 4, 1, Side::Buy, 90, 1));
+        assert_eq!(refused.reject_code.as_deref(), Some("KillSwitchActive"));
+        state = refused.candidate;
+        let other = apply(state.clone(), &submit(&state, 6, 2, 5, 1, Side::Buy, 92, 1));
+        assert!(other.accepted);
+        state = other.candidate;
+        // After a reset participant 1 trades again.
+        state = apply(
+            state.clone(),
+            &kill(&state, 7, 1, CommandPayload::ResetKillSwitch),
+        )
+        .candidate;
+        assert!(!state.kill_switch_active(ParticipantId::new(1)));
+        assert!(apply(state.clone(), &submit(&state, 8, 1, 6, 1, Side::Buy, 90, 1)).accepted);
     }
 
     #[test]
