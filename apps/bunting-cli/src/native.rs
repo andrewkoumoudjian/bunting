@@ -157,13 +157,11 @@ fn doctor(path: Option<&Path>) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "configuration has no native FIX listener".to_owned())?;
     println!(
-        "ok: product={} fix={} roster={} admission={:?} max_one_way_delay_us={} rtt_sources={:?} max_connections={}",
+        "ok: product={} fix={} roster={} virtual_latency_paths={} max_connections={}",
         PRODUCT_CONTRACT_VERSION,
         FIX_COMPETITION_PROFILE_VERSION,
         fix.roster.len(),
-        fix.admission.policy.mode,
-        fix.admission.policy.max_one_way_delay_us,
-        fix.admission.rtt_sources,
+        fix.admission.policy.paths.len(),
         fix.max_connections
     );
     Ok(())

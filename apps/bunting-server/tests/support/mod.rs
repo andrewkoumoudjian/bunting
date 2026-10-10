@@ -29,8 +29,12 @@ pub struct Client {
 impl Client {
     pub fn logon(port: u16, comp_id: &str, username: &str, password: &str) -> Result<Self, String> {
         let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
+        // A well-built client: Nagle off, so small orders are not held for
+        // the peer's delayed ACK (~40 ms on Linux), which real latency
+        // would otherwise rightly charge to this client (ADR 0035).
         stream
-            .set_read_timeout(Some(Duration::from_millis(5)))
+            .set_nodelay(true)
+            .and_then(|()| stream.set_read_timeout(Some(Duration::from_millis(5))))
             .map_err(|error| error.to_string())?;
         let field = |tag: u32, value: &str| Field {
             tag,
@@ -68,9 +72,12 @@ impl Client {
     /// Reconnects with the same FIX session state, continuing its sequence
     /// numbers as a persistent FIX client does.
     pub fn reconnect(mut self, port: u16) -> Result<Self, String> {
+        // Close the old connection first, as a real client does.
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
         self.stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
         self.stream
-            .set_read_timeout(Some(Duration::from_millis(5)))
+            .set_nodelay(true)
+            .and_then(|()| self.stream.set_read_timeout(Some(Duration::from_millis(5))))
             .map_err(|error| error.to_string())?;
         let actions = self
             .session
@@ -122,7 +129,12 @@ impl Client {
                     let actions = self
                         .session
                         .receive_bytes_at(&buffer[..count], TIMESTAMP, now_millis())
-                        .map_err(|error| format!("{error:?}"))?;
+                        .map_err(|error| {
+                            format!(
+                                "{error:?} on {:?}",
+                                String::from_utf8_lossy(&buffer[..count]).replace('\u{1}', "|")
+                            )
+                        })?;
                     self.apply(actions)?;
                 }
                 Err(error)

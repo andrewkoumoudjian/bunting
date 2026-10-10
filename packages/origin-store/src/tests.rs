@@ -290,12 +290,10 @@ fn reads_borrow_the_live_state_and_checkpoints_move_the_base() {
 #[test]
 fn admission_metadata_is_journaled_verified_and_not_fingerprinted() {
     let admission = |release_us| AdmissionRecord {
-        mode: bunting_admission_sequencer::AdmissionMode::Equalized,
         received_us: 10,
-        one_way_delay_us: 4,
+        measured_one_way_us: Some(4),
         rtt_source: bunting_admission_sequencer::RttSource::Both,
-        max_one_way_delay_us: 25,
-        path_latency_us: 0,
+        path_latency_us: 21,
         jitter_position: None,
         release_us,
         arrival_sequence: 3,

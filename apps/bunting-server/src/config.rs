@@ -94,45 +94,36 @@ pub struct FixConfig {
     pub max_interval_queue: Option<usize>,
 }
 
-/// Which round trips feed the one-way delay estimate (ADR 0034 §2).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RttSources {
-    /// Kernel TCP RTT and FIX probes; the smaller wins. Requires that the
-    /// venue terminates the participant's TCP connection itself.
-    KernelAndProbe,
-    /// FIX probes only, for deployments behind a TCP- or TLS-terminating
-    /// proxy, where the kernel would measure the proxy hop.
-    ProbeOnly,
-}
-
+/// The real-life latency model (ADR 0035): each team's real network delay
+/// counts as it is, and the scenario's virtual distance from each team to
+/// each venue is added in both directions.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdmissionConfig {
-    /// Published before the round; never changed during it.
+    /// Virtual team-to-venue latency table; published before the round and
+    /// never changed during it.
     pub policy: bunting_admission_sequencer::LatencyPolicy,
-    pub rtt_sources: RttSources,
-    /// Interval between latency probes after the logon burst.
+    /// Interval between access-latency probes after the logon burst.
     pub probe_interval_ms: u64,
     /// Commands waiting for release, across all sessions.
     pub max_admission_queue: usize,
-    /// Outbound messages one session may have held; overflow disconnects.
+    /// Outbound messages one session may have in flight on its virtual
+    /// path; overflow disconnects.
     pub max_outbound_hold: usize,
 }
 
 impl AdmissionConfig {
-    /// Equalized admission with the given `D` in microseconds.
+    /// Every team colocated with every venue (zero virtual distance), so
+    /// only real network delay separates teams.
     #[must_use]
-    pub fn equalized(max_one_way_delay_us: u64) -> Self {
+    pub fn colocated() -> Self {
+        Self::with_policy(bunting_admission_sequencer::LatencyPolicy::default())
+    }
+
+    #[must_use]
+    pub const fn with_policy(policy: bunting_admission_sequencer::LatencyPolicy) -> Self {
         Self {
-            policy: bunting_admission_sequencer::LatencyPolicy {
-                mode: bunting_admission_sequencer::AdmissionMode::Equalized,
-                max_one_way_delay_us,
-                jitter_seed: 0,
-                default_path: bunting_admission_sequencer::PathLatency::default(),
-                paths: Vec::new(),
-            },
-            rtt_sources: RttSources::KernelAndProbe,
+            policy,
             probe_interval_ms: 1_000,
             max_admission_queue: 4_096,
             max_outbound_hold: 4_096,
@@ -247,9 +238,7 @@ impl ServerConfig {
                 max_journal_messages: 4_096,
                 max_pending_inbound: 64,
                 tls: TlsConfig::Disabled,
-                // Loopback: a small `D` keeps the local loop fast while still
-                // exercising the equalized path.
-                admission: AdmissionConfig::equalized(5_000),
+                admission: AdmissionConfig::colocated(),
                 matching_interval_ms: None,
                 max_interval_queue: None,
             }),
@@ -482,7 +471,7 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
                 .to_owned(),
         ));
     }
-    validate_admission(&fix.admission, &fix.tls)?;
+    validate_admission(&fix.admission)?;
     if fix.max_connections == 0
         || fix.max_connections > fix.roster.len()
         || !(1..=60_000).contains(&fix.rate_limit_window_ms)
@@ -503,19 +492,11 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
     Ok(())
 }
 
-fn validate_admission(admission: &AdmissionConfig, tls: &TlsConfig) -> Result<(), ConfigError> {
+fn validate_admission(admission: &AdmissionConfig) -> Result<(), ConfigError> {
     admission
         .policy
         .validate()
         .map_err(|error| ConfigError(format!("fix.admission.policy: {error}")))?;
-    if matches!(tls, TlsConfig::Terminated { .. })
-        && admission.rtt_sources == RttSources::KernelAndProbe
-    {
-        return Err(ConfigError(
-            "fix.admission.rtt_sources must be probe_only behind a TLS-terminating proxy: the kernel would measure the proxy hop and withhold compensation from distant participants"
-                .to_owned(),
-        ));
-    }
     if !(50..=60_000).contains(&admission.probe_interval_ms)
         || admission.max_admission_queue == 0
         || admission.max_outbound_hold == 0
@@ -554,7 +535,7 @@ mod tests {
             max_journal_messages: 1_024,
             max_pending_inbound: 32,
             tls: TlsConfig::Disabled,
-            admission: AdmissionConfig::equalized(150_000),
+            admission: AdmissionConfig::colocated(),
             matching_interval_ms: None,
             max_interval_queue: None,
         };
@@ -565,8 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn removed_interval_keys_and_proxied_kernel_rtt_fail_with_explanations()
-    -> Result<(), ConfigError> {
+    fn removed_interval_keys_fail_with_an_explanation() -> Result<(), ConfigError> {
         let mut config = ServerConfig::local_default();
         let Some(fix) = config.fix.as_mut() else {
             return Err(ConfigError("local profile has FIX".to_owned()));
@@ -575,20 +555,6 @@ mod tests {
         let error = config.validate().err().map(|error| error.0);
         assert!(error.is_some_and(|text| text.contains("rate_limit_window_ms")));
 
-        let mut config = ServerConfig::local_default();
-        let Some(fix) = config.fix.as_mut() else {
-            return Err(ConfigError("local profile has FIX".to_owned()));
-        };
-        fix.tls = TlsConfig::Terminated {
-            trusted_proxy: "127.0.0.1".to_owned(),
-            require_mutual_tls: true,
-        };
-        let error = validate_admission(&fix.admission, &fix.tls)
-            .err()
-            .map(|error| error.0);
-        assert!(error.is_some_and(|text| text.contains("probe_only")));
-        fix.admission.rtt_sources = RttSources::ProbeOnly;
-        validate_admission(&fix.admission, &fix.tls)?;
         Ok(())
     }
 

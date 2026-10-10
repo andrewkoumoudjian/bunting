@@ -1,11 +1,14 @@
 use crate::admission::{AdmissionService, VenueClock};
+use crate::config::AdmissionConfig;
 use crate::config::ServerConfig;
 use crate::distributor::{MAX_PENDING_BATCHES, PublishingOrigin};
 use crate::storage::NativeOrigin;
 use crate::writer::AuthoritativeWriter;
 use bunting_engine::RunState;
+use bunting_engine::ScenarioDefinition;
 use bunting_market_types::{IterationId, RunId};
 use bunting_origin_store::{OriginError, OriginStore};
+use std::collections::BTreeSet;
 use std::sync::{Arc, mpsc};
 
 pub fn run(config: &ServerConfig) -> Result<(), String> {
@@ -99,6 +102,9 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), Str
         definition
             .validate()
             .map_err(|error| format!("scenario validation failed: {error:?}"))?;
+        if let Some(fix) = &config.fix {
+            validate_latency_table(&definition, &fix.admission)?;
+        }
         let run = RunState::from_scenario(
             RunId::new(run_id),
             IterationId::new(iteration_id),
@@ -137,6 +143,33 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<(), Str
                     .map_err(|error| origin_error(&error))?;
             }
             Err(error) => return Err(origin_error(&error)),
+        }
+    }
+    Ok(())
+}
+
+/// The virtual latency table (ADR 0035) may only name participants and
+/// venues the scenario lists. An empty table is valid: every venue in one
+/// data centre with every team, so only real network delay separates them.
+fn validate_latency_table(
+    definition: &ScenarioDefinition,
+    admission: &AdmissionConfig,
+) -> Result<(), String> {
+    let venues = definition
+        .listings()
+        .keys()
+        .map(|listing| listing.venue_id)
+        .collect::<BTreeSet<_>>();
+    for entry in &admission.policy.paths {
+        if !definition
+            .participants()
+            .contains_key(&entry.participant_id)
+            || entry.venue_id.is_some_and(|venue| !venues.contains(&venue))
+        {
+            return Err(format!(
+                "fix.admission.policy.paths names participant {} or venue {:?} that the scenario does not list",
+                entry.participant_id, entry.venue_id
+            ));
         }
     }
     Ok(())

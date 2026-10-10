@@ -1,6 +1,6 @@
 # ADR 0024: Discrete matching intervals for competition fairness
 
-- Status: **Superseded** by ADR 0030 as amended by ADR 0034; the interval writer was removed in slice 15 (2026-10-10)
+- Status: **Superseded** by ADR 0030 and ADR 0035; the interval writer was removed in slice 15 (2026-10-10)
 - Date: 2026-07-29
 - Depends on: ADR 0022, ADR 0023
 

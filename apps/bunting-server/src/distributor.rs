@@ -9,6 +9,7 @@
 
 use crate::admission::VenueClock;
 use crate::storage::NativeOrigin;
+use crate::wake::Waker;
 use bunting_engine::RunState;
 use bunting_market_events::EventEnvelope;
 use bunting_market_types::{CommandId, RunId};
@@ -37,6 +38,7 @@ pub(crate) type CommittedBatch = Arc<Committed>;
 struct Subscriber {
     sender: SyncSender<CommittedBatch>,
     overflowed: Arc<AtomicBool>,
+    waker: Option<Waker>,
 }
 
 /// Registry of bounded per-session queues.
@@ -56,7 +58,7 @@ impl EventDistributor {
     }
 
     /// Registers a session; batches committed from now on are queued for it.
-    pub(crate) fn subscribe(&self) -> Result<Subscription<'_>, String> {
+    pub(crate) fn subscribe(&self, waker: Option<Waker>) -> Result<Subscription<'_>, String> {
         let (sender, receiver) = sync_channel(self.capacity);
         let overflowed = Arc::new(AtomicBool::new(false));
         let id = self.next_id.fetch_add(1, Ordering::AcqRel);
@@ -68,6 +70,7 @@ impl EventDistributor {
                 Subscriber {
                     sender,
                     overflowed: overflowed.clone(),
+                    waker,
                 },
             );
         Ok(Subscription {
@@ -92,16 +95,21 @@ impl EventDistributor {
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
         };
-        subscribers.retain(
-            |_, subscriber| match subscriber.sender.try_send(batch.clone()) {
+        subscribers.retain(|_, subscriber| {
+            let keep = match subscriber.sender.try_send(batch.clone()) {
                 Ok(()) => true,
                 Err(TrySendError::Full(_)) => {
                     subscriber.overflowed.store(true, Ordering::Release);
                     false
                 }
                 Err(TrySendError::Disconnected(_)) => false,
-            },
-        );
+            };
+            // Wake the session for the batch, or to notice the overflow.
+            if let Some(waker) = &subscriber.waker {
+                waker.wake();
+            }
+            keep
+        });
     }
 
     #[cfg(test)]
@@ -236,9 +244,9 @@ mod tests {
     #[test]
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
-        let first = distributor.subscribe()?;
+        let first = distributor.subscribe(None)?;
         distributor.publish(&[event(1)], 1);
-        let second = distributor.subscribe()?;
+        let second = distributor.subscribe(None)?;
         distributor.publish(&[event(2), event(3)], 2);
         distributor.publish(&[], 3);
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
@@ -258,8 +266,8 @@ mod tests {
     #[test]
     fn a_full_queue_disconnects_the_slow_subscriber_only() -> Result<(), String> {
         let distributor = EventDistributor::new(2);
-        let slow = distributor.subscribe()?;
-        let fast = distributor.subscribe()?;
+        let slow = distributor.subscribe(None)?;
+        let fast = distributor.subscribe(None)?;
         for sequence in 1..=2 {
             distributor.publish(&[event(sequence)], sequence);
         }

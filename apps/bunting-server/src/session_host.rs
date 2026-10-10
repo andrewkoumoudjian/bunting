@@ -1,6 +1,7 @@
 use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Reply};
 use crate::config::{FixConfig, RosterEntry};
 use crate::distributor::PublishingOrigin;
+use crate::wake::{SessionEvent, Waker};
 use bunting_admission_sequencer::DelayEstimator;
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
@@ -31,7 +32,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -62,6 +63,11 @@ pub(crate) fn handle_fix_connection(
     };
     let (logon_bytes, logon) = read_first_message(&mut stream, wire_limits)?;
     let credential = authenticate_logon(&logon, config)?;
+    // Held until this function returns, after the last snapshot persist.
+    let _claim = admission.claim_participant(
+        ParticipantId::new(credential.participant_id),
+        SESSION_HANDOVER,
+    )?;
     let session_path = session_path
         .map(|base| base.with_extension(format!("fix-session-{}.json", credential.participant_id)));
     let session_path = session_path.as_deref();
@@ -128,9 +134,15 @@ pub(crate) fn handle_fix_connection(
     .map_err(|error| format!("invalid configured actor: {error}"))?;
     let participant = ParticipantId::new(credential.participant_id);
     let run_id = RunId::new(config.run_id);
+    let clock = *admission.clock();
+    let (events, waker) =
+        crate::wake::connect(&stream, config.max_message_bytes.min(16_384), move || {
+            clock.now_us()
+        })?;
+    let _shutdown = crate::wake::ShutdownOnDrop::new(&stream)?;
     // Subscribe before handling any message so no committed batch for this
     // participant can fall between the subscription and the first command.
-    let subscription = origin.distributor().subscribe()?;
+    let subscription = origin.distributor().subscribe(Some(waker.clone()))?;
     let mut latency = ConnectionLatency::new(admission, participant);
     latency.refresh_kernel(&stream);
     // ADR 0034 §2: measure the path before the first order matters.
@@ -139,91 +151,94 @@ pub(crate) fn handle_fix_connection(
     }
     let (reply_sender, replies) = sync_channel(admission.config().max_admission_queue);
     let mut outbound = OutboundHold::new(admission.config().max_outbound_hold);
-    let mut buffer = vec![0; config.max_message_bytes.min(16_384)];
     let mut rate_window_started = Instant::now();
     let rate_window = Duration::from_millis(config.rate_limit_window_ms);
     let mut rate_messages = 0_usize;
-    let mut release_floor_us = 0_u64;
+    // Last release per destination: one path delivers in order (TCP), but
+    // an order to a near venue may overtake an earlier one to a far venue.
+    let mut release_floors = BTreeMap::<Option<VenueId>, u64>::new();
     loop {
+        // Sleep until the next held message or probe is due, or until the
+        // reader, the sequencer or the distributor wakes this session.
         let now_us = admission.clock().now_us();
         let wait = [outbound.next_due_us(), Some(latency.next_probe_us())]
             .into_iter()
             .flatten()
             .min()
             .map_or(DELIVERY_POLL, |due| {
-                Duration::from_micros(due.saturating_sub(now_us))
-                    .clamp(Duration::from_micros(200), DELIVERY_POLL)
+                Duration::from_micros(due.saturating_sub(now_us)).min(DELIVERY_POLL)
             });
-        stream
-            .set_read_timeout(Some(wait))
-            .map_err(|error| format!("cannot configure FIX delivery poll: {error}"))?;
-        match stream.read(&mut buffer) {
-            Ok(0) => return Ok(()),
-            Ok(count) => {
-                // ADR 0034 §4: stamp on read, before parsing; messages that
-                // arrived together share the stamp.
-                let received_us = admission.clock().now_us();
-                let actions = session
-                    .receive_bytes_at(&buffer[..count], &fix_timestamp(), epoch_millis())
-                    .map_err(|error| format!("FIX session rejected bytes: {error:?}"))?;
-                for action in actions {
-                    match action {
-                        SessionAction::Application(message) => {
-                            if rate_window_started.elapsed() >= rate_window {
-                                rate_window_started = Instant::now();
-                                rate_messages = 0;
-                            }
-                            let rejection = if rate_messages >= config.max_messages_per_interval {
-                                Some(format!(
-                                    "max_messages_per_interval limit {}",
-                                    config.max_messages_per_interval
-                                ))
-                            } else {
-                                rate_messages = rate_messages.saturating_add(1);
-                                admit_message(
-                                    &message,
-                                    &AdmitContext {
-                                        origin,
-                                        admission,
-                                        actor: &actor,
-                                        participant,
-                                        run_id,
-                                        received_us,
-                                        request_id: u128::from(
-                                            session.snapshot().incoming_sequence,
-                                        ),
-                                    },
-                                    &mut application,
-                                    &latency,
-                                    &mut release_floor_us,
-                                    &reply_sender,
-                                )?
-                            };
-                            if let Some(reason) = rejection {
-                                outbound.hold(
-                                    business_reject(&message.msg_type, &reason),
-                                    received_us.saturating_add(latency.hold_us(None)?),
-                                )?;
-                            }
+        let first = match events.recv_timeout(wait) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("FIX reader stopped".to_owned());
+            }
+        };
+        for event in first.into_iter().chain(events.try_iter()) {
+            let (received_us, bytes) = match event {
+                SessionEvent::Bytes { received_us, bytes } => (received_us, bytes),
+                SessionEvent::Closed(None) => return Ok(()),
+                SessionEvent::Closed(Some(reason)) => return Err(reason),
+                SessionEvent::Wake => continue,
+            };
+            // ADR 0034 §4: `received_us` was stamped by the reader the
+            // moment the bytes arrived; messages read together share it.
+            let actions = session
+                .receive_bytes_at(&bytes, &fix_timestamp(), epoch_millis())
+                .map_err(|error| format!("FIX session rejected bytes: {error:?}"))?;
+            for action in actions {
+                match action {
+                    SessionAction::Application(message) => {
+                        if rate_window_started.elapsed() >= rate_window {
+                            rate_window_started = Instant::now();
+                            rate_messages = 0;
                         }
-                        SessionAction::TestResponse(id) => latency.on_response(&id),
-                        SessionAction::PeerLogon(_) => {}
-                        other => process_session_actions(
-                            vec![other],
-                            &mut stream,
-                            session_path,
-                            &session,
-                            &application,
-                        )?,
+                        let rejection = if rate_messages >= config.max_messages_per_interval {
+                            Some(format!(
+                                "max_messages_per_interval limit {}",
+                                config.max_messages_per_interval
+                            ))
+                        } else {
+                            rate_messages = rate_messages.saturating_add(1);
+                            admit_message(
+                                &message,
+                                &AdmitContext {
+                                    origin,
+                                    admission,
+                                    actor: &actor,
+                                    participant,
+                                    run_id,
+                                    received_us,
+                                    request_id: u128::from(session.snapshot().incoming_sequence),
+                                },
+                                &mut application,
+                                &latency,
+                                &mut release_floors,
+                                &ReplyTo {
+                                    replies: &reply_sender,
+                                    waker: &waker,
+                                },
+                            )?
+                        };
+                        if let Some(reason) = rejection {
+                            outbound.hold(
+                                business_reject(&message.msg_type, &reason),
+                                received_us.saturating_add(latency.hold_us(None)?),
+                            )?;
+                        }
                     }
+                    SessionAction::TestResponse(id) => latency.on_response(&id),
+                    SessionAction::PeerLogon(_) => {}
+                    other => process_session_actions(
+                        vec![other],
+                        &mut stream,
+                        session_path,
+                        &session,
+                        &application,
+                    )?,
                 }
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(format!("FIX socket read failed: {error}")),
         }
         let actions = session
             .poll(epoch_millis(), &fix_timestamp())
@@ -235,7 +250,9 @@ pub(crate) fn handle_fix_connection(
         }
         for reply in replies.try_iter() {
             let messages = reply.result?;
-            let send_at = reply.completed_us.saturating_add(latency.hold_us(None)?);
+            let send_at = reply
+                .completed_us
+                .saturating_add(latency.hold_us(reply.venue)?);
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
@@ -269,6 +286,12 @@ const LOGON_PROBES: usize = 3;
 /// Outstanding probes per connection; older unanswered ones are dropped.
 const MAX_OUTSTANDING_PROBES: usize = 16;
 
+/// Where a released job's reply goes, and how its session is woken.
+struct ReplyTo<'a> {
+    replies: &'a SyncSender<Reply>,
+    waker: &'a Waker,
+}
+
 /// What [`admit_message`] needs from the connection, besides its state.
 struct AdmitContext<'a> {
     origin: &'a PublishingOrigin,
@@ -288,8 +311,8 @@ fn admit_message(
     context: &AdmitContext<'_>,
     application: &mut FixApplicationState,
     latency: &ConnectionLatency<'_>,
-    release_floor_us: &mut u64,
-    replies: &SyncSender<Reply>,
+    release_floors: &mut BTreeMap<Option<VenueId>, u64>,
+    reply_to: &ReplyTo<'_>,
 ) -> Result<Option<String>, String> {
     // Sequence and logical time are stamped at release (venue time); the
     // values here are placeholders the job overwrites.
@@ -327,11 +350,16 @@ fn admit_message(
         estimator: latency.estimator(),
         participant: context.participant,
         venue,
-        floor_us: *release_floor_us,
+        floor_us: release_floors.get(&venue).copied().unwrap_or(0),
     };
-    match context.admission.admit(&inbound, work, replies.clone()) {
+    match context.admission.admit(
+        &inbound,
+        work,
+        reply_to.replies.clone(),
+        reply_to.waker.clone(),
+    ) {
         Ok(record) => {
-            *release_floor_us = record.release_us;
+            release_floors.insert(venue, record.release_us);
             Ok(None)
         }
         Err(error) => Ok(Some(error.to_string())),
@@ -438,14 +466,11 @@ impl<'a> ConnectionLatency<'a> {
     }
 
     fn hold_us(&self, venue: Option<VenueId>) -> Result<u64, String> {
-        self.admission
-            .outbound_hold_us(&self.estimator, self.participant, venue)
+        self.admission.outbound_delay_us(self.participant, venue)
     }
 
     fn refresh_kernel(&mut self, stream: &TcpStream) {
-        if self.admission.uses_kernel_rtt()
-            && let Some(reading) = crate::tcp_rtt::kernel_rtt(stream)
-        {
+        if let Some(reading) = crate::tcp_rtt::kernel_rtt(stream) {
             self.estimator.record_kernel_min(reading.min_rtt_us);
             self.report();
         }
@@ -500,24 +525,15 @@ impl<'a> ConnectionLatency<'a> {
     }
 
     fn report(&self) {
-        let d_max = self.admission.config().policy.max_one_way_delay_us;
-        let one_way = self.estimator.one_way_delay_us(d_max);
-        let kernel = self.estimator.kernel_min_rtt_us();
-        let probe = self.estimator.probe_min_rtt_us();
         self.admission.report_connection(
             self.connection,
             ConnectionHealth {
                 participant_id: self.participant.get().to_string(),
                 rtt_source: self.estimator.source(),
-                kernel_min_rtt_us: kernel,
-                probe_min_rtt_us: probe,
+                kernel_min_rtt_us: self.estimator.kernel_min_rtt_us(),
+                probe_min_rtt_us: self.estimator.probe_min_rtt_us(),
                 probe_samples: self.estimator.probe_samples(),
-                one_way_delay_us: one_way,
-                beyond_max_one_way_delay: one_way >= d_max,
-                probe_far_above_kernel: matches!(
-                    (kernel, probe),
-                    (Some(kernel), Some(probe)) if probe > kernel.saturating_mul(4).max(kernel + 5_000)
-                ),
+                access_one_way_us: self.estimator.one_way_us(),
             },
         );
     }
@@ -594,8 +610,11 @@ fn new_identity_epoch() -> u128 {
     (nanos << 64) | u128::from(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Longest wait for inbound bytes before checking held messages, probes and
-/// heartbeats.
+/// How long a reconnecting participant waits for its previous session to
+/// finish closing before the logon is refused.
+const SESSION_HANDOVER: Duration = Duration::from_secs(5);
+
+/// Longest sleep without an event, so session heartbeats are checked.
 const DELIVERY_POLL: Duration = Duration::from_millis(20);
 
 /// Commits a competition mutation, if the request carries one, and then

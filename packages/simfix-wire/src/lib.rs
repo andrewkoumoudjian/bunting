@@ -131,7 +131,7 @@ pub enum WireError {
 pub struct Decoder {
     limits: WireLimits,
     buffer: Vec<u8>,
-    dictionary: CompetitionDictionary,
+    dictionary: &'static CompetitionDictionary,
 }
 
 impl Decoder {
@@ -143,7 +143,7 @@ impl Decoder {
         Ok(Self {
             limits,
             buffer: Vec::new(),
-            dictionary: CompetitionDictionary::load()?,
+            dictionary: CompetitionDictionary::shared()?,
         })
     }
 
@@ -428,7 +428,7 @@ pub fn competition_rule(msg_type: &str) -> Option<&'static MessageRule> {
 /// # Errors
 /// Returns an error for a missing, duplicate, or unsupported application tag.
 pub fn validate_competition(message: &FixMessage) -> Result<(), WireError> {
-    CompetitionDictionary::load()?.validate(message)?;
+    CompetitionDictionary::shared()?.validate(message)?;
     let Some(rule) = competition_rule(&message.msg_type) else {
         return Ok(());
     };
@@ -460,6 +460,21 @@ pub struct CompetitionDictionary {
 }
 
 impl CompetitionDictionary {
+    /// The process-wide dictionaries, loaded once on first use. Loading
+    /// parses both embedded dictionaries and costs milliseconds, so it must
+    /// never happen per message or per connection.
+    ///
+    /// # Errors
+    /// Returns an error if either embedded dictionary is malformed.
+    pub fn shared() -> Result<&'static Self, WireError> {
+        static SHARED: std::sync::OnceLock<Option<CompetitionDictionary>> =
+            std::sync::OnceLock::new();
+        SHARED
+            .get_or_init(|| Self::load().ok())
+            .as_ref()
+            .ok_or(WireError::DictionaryUnavailable)
+    }
+
     /// Loads the released FIXT.1.1 and FIX 5.0 SP2 dictionaries.
     ///
     /// # Errors

@@ -1,14 +1,16 @@
-//! Latency-modeled admission for the venue (ADR 0030 as amended by ADR 0034).
+//! Real-life latency admission for the venue (ADR 0035).
 //!
-//! Sessions stamp each inbound read with the venue clock, map it, and admit
-//! it here without waiting. One sequencer thread releases admitted work in
-//! `(release, arrival)` order when the venue clock reaches its release time,
-//! executes it under the authoritative writer gate and returns the result
-//! to the session, which holds every outbound message until
-//! `commit + (D − d̂) + L` so all participants see it together.
+//! Each connection's reader stamps inbound bytes the moment they arrive (so
+//! the team's real network delay is inside the stamp), the session maps and
+//! admits them without waiting, and one sequencer thread releases admitted
+//! work in `(release, arrival)` order at `t_rx + L(p, v)`: the team's
+//! virtual distance to the addressed venue. It executes under the
+//! authoritative writer gate and returns the result to the session, which
+//! sends every venue message `L(v, p)` after the venue produced it.
 
-use crate::config::{AdmissionConfig, RttSources};
+use crate::config::AdmissionConfig;
 use crate::distributor::PublishingOrigin;
+use crate::wake::Waker;
 use crate::writer::AuthoritativeWriter;
 use bunting_admission_sequencer::{
     AdmissionError, AdmissionRecord, DelayEstimator, LatencyModel, RttSource, Sequencer,
@@ -16,7 +18,7 @@ use bunting_admission_sequencer::{
 use bunting_market_types::{LogicalTimeNs, ParticipantId, VenueId};
 use serde::Serialize;
 use simfix_wire::FixMessage;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Condvar, Mutex};
@@ -74,7 +76,8 @@ pub(crate) struct Inbound<'a> {
     pub(crate) estimator: &'a DelayEstimator,
     pub(crate) participant: ParticipantId,
     pub(crate) venue: Option<VenueId>,
-    /// The connection's previous release: one session stays in TCP order.
+    /// The connection's previous release to the same venue: one path
+    /// delivers in order, different venues' paths do not.
     pub(crate) floor_us: u64,
 }
 
@@ -83,14 +86,20 @@ pub(crate) struct Reply {
     pub(crate) result: Result<Vec<FixMessage>, String>,
     /// Venue time at which the job finished (the commit time of any command).
     pub(crate) completed_us: u64,
+    /// The venue the work addressed: its response travels back over that
+    /// venue's simulated path (ADR 0030 §4).
+    pub(crate) venue: Option<VenueId>,
 }
 
 struct Job {
     work: JobWork,
     reply: SyncSender<Reply>,
+    waker: Waker,
+    venue: Option<VenueId>,
 }
 
-/// One connection's published latency figures (ADR 0034 operational impact).
+/// One connection's published access latency (ADR 0035 §2). Teams add
+/// the published virtual table to it for each venue.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConnectionHealth {
     pub(crate) participant_id: String,
@@ -98,12 +107,8 @@ pub(crate) struct ConnectionHealth {
     pub(crate) kernel_min_rtt_us: Option<u64>,
     pub(crate) probe_min_rtt_us: Option<u64>,
     pub(crate) probe_samples: u64,
-    pub(crate) one_way_delay_us: u64,
-    /// `d̂ ≥ D`: this participant is farther than the venue compensates.
-    pub(crate) beyond_max_one_way_delay: bool,
-    /// Probe RTT far above kernel RTT: slow probe replies, or an
-    /// unconfigured TCP-terminating proxy.
-    pub(crate) probe_far_above_kernel: bool,
+    /// Measured one-way access latency to the server.
+    pub(crate) access_one_way_us: Option<u64>,
 }
 
 struct Inner {
@@ -118,6 +123,25 @@ pub(crate) struct AdmissionService {
     wake: Condvar,
     connections: Mutex<BTreeMap<u64, ConnectionHealth>>,
     next_connection: AtomicU64,
+    /// Participants with a live FIX session; see [`Self::claim_participant`].
+    sessions: Mutex<BTreeSet<ParticipantId>>,
+    session_ended: Condvar,
+}
+
+/// Exclusive ownership of one participant's FIX session state, released
+/// when the session (and its final persisted snapshot) is done.
+pub(crate) struct ParticipantClaim<'a> {
+    admission: &'a AdmissionService,
+    participant: ParticipantId,
+}
+
+impl Drop for ParticipantClaim<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut sessions) = self.admission.sessions.lock() {
+            sessions.remove(&self.participant);
+        }
+        self.admission.session_ended.notify_all();
+    }
 }
 
 impl AdmissionService {
@@ -132,6 +156,8 @@ impl AdmissionService {
             wake: Condvar::new(),
             connections: Mutex::new(BTreeMap::new()),
             next_connection: AtomicU64::new(1),
+            sessions: Mutex::new(BTreeSet::new()),
+            session_ended: Condvar::new(),
         })
     }
 
@@ -141,10 +167,6 @@ impl AdmissionService {
 
     pub(crate) const fn config(&self) -> &AdmissionConfig {
         &self.config
-    }
-
-    pub(crate) fn uses_kernel_rtt(&self) -> bool {
-        self.config.rtt_sources == RttSources::KernelAndProbe
     }
 
     /// Decides and queues one inbound unit of work received at
@@ -158,6 +180,7 @@ impl AdmissionService {
         inbound: &Inbound<'_>,
         work: JobWork,
         reply: SyncSender<Reply>,
+        waker: Waker,
     ) -> Result<AdmissionRecord, AdmissionError> {
         let mut inner = self
             .inner
@@ -170,18 +193,25 @@ impl AdmissionService {
             inbound.venue,
         )?;
         record.release_us = record.release_us.max(inbound.floor_us);
-        let record = inner
-            .queue
-            .admit(self.clock.now_us(), record, Job { work, reply })?;
+        let record = inner.queue.admit(
+            self.clock.now_us(),
+            record,
+            Job {
+                work,
+                reply,
+                waker,
+                venue: inbound.venue,
+            },
+        )?;
         drop(inner);
         self.wake.notify_all();
         Ok(record)
     }
 
-    /// `(D − d̂) + L(v, p)` for one outbound message to `participant`.
-    pub(crate) fn outbound_hold_us(
+    /// `L(v, p)`: how long a venue's message to `participant` travels the
+    /// virtual path before it is written to the team's real connection.
+    pub(crate) fn outbound_delay_us(
         &self,
-        estimator: &DelayEstimator,
         participant: ParticipantId,
         venue: Option<VenueId>,
     ) -> Result<u64, String> {
@@ -189,7 +219,7 @@ impl AdmissionService {
             .lock()
             .map_err(|_| "admission lock poisoned".to_owned())?
             .model
-            .outbound_hold_us(estimator, participant, venue)
+            .outbound_delay_us(participant, venue)
             .map_err(|error| error.to_string())
     }
 
@@ -235,8 +265,44 @@ impl AdmissionService {
             let _ = job.reply.try_send(Reply {
                 result,
                 completed_us: self.clock.now_us(),
+                venue: job.venue,
             });
+            job.waker.wake();
         }
+    }
+
+    /// One live session per participant, as on a real FIX venue: a new
+    /// logon waits up to `wait` for the previous session to finish closing
+    /// (so its last persisted sequence numbers are the ones restored), and
+    /// is refused while that session is still connected.
+    pub(crate) fn claim_participant(
+        &self,
+        participant: ParticipantId,
+        wait: Duration,
+    ) -> Result<ParticipantClaim<'_>, String> {
+        let deadline = Instant::now() + wait;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "session registry lock poisoned".to_owned())?;
+        while sessions.contains(&participant) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "participant {participant} already has an active FIX session"
+                ));
+            }
+            sessions = self
+                .session_ended
+                .wait_timeout(sessions, remaining)
+                .map_err(|_| "session registry lock poisoned".to_owned())?
+                .0;
+        }
+        sessions.insert(participant);
+        Ok(ParticipantClaim {
+            admission: self,
+            participant,
+        })
     }
 
     pub(crate) fn register_connection(&self) -> u64 {
@@ -264,8 +330,7 @@ impl AdmissionService {
             .unwrap_or_default();
         let queued = self.inner.lock().map_or(0, |inner| inner.queue.len());
         serde_json::json!({
-            "policy": self.config.policy,
-            "rttSources": self.config.rtt_sources,
+            "virtualLatency": self.config.policy,
             "queued": queued,
             "connections": connections,
         })

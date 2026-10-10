@@ -2,15 +2,15 @@
 
 1. Install a release binary, run `bunting init`, replace every example secret,
    add the event roster, and run `bunting doctor <config>`.
-2. Publish `RULES.md`, `SCORING.md`, the admission policy (`fix.admission`:
-   mode, `D` = `max_one_way_delay_us`, `rtt_sources`) and all configured
-   limits unchanged before credentials are distributed. Choose `D` from a
-   practice round: `GET /admin/admission` (bearer token) lists each
-   connection's measured one-way delay and flags any team beyond `D` or with
-   probe RTT far above kernel RTT. Behind a TLS- or TCP-terminating proxy set
-   `rtt_sources` to `probe_only` (the server refuses `kernel_and_probe` with a
-   terminated TLS profile); in-process termination keeps the stronger kernel
-   measurement. Never change the policy during a round.
+2. Publish `RULES.md`, `SCORING.md`, the virtual latency table
+   (`fix.admission.policy`: each team's distance to each venue, in
+   microseconds, with optional seeded jitter) and all configured limits
+   unchanged before credentials are distributed. Latency is real (ADR 0035):
+   teams' own connectivity counts and is not equalized, so host the server
+   close to the participants (or run everyone on one network) when that
+   matters, and say so in the rules. `GET /admin/admission` (bearer token)
+   lists each connection's measured access latency for publication. Never
+   change the table during a round.
 3. Start `bunting-server <config>` through Wasmer, verify `/health`, export
    credentials through a protected channel, and let every team complete Logon
    plus discovery.

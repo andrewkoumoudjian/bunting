@@ -13,6 +13,7 @@ mod scenario;
 mod session_host;
 pub mod storage;
 mod tcp_rtt;
+mod wake;
 mod writer;
 
 pub const SERVICE_NAME: &str = "bunting-server";

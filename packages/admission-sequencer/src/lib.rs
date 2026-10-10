@@ -1,21 +1,24 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]
-//! Latency-modeled continuous admission (ADR 0030), sans-I/O and clock-free.
+//! Real-life latency model for venue admission (ADR 0035), sans-I/O and
+//! clock-free.
 //!
-//! The host measures; this crate decides. For a command received at server
-//! monotonic time `t_rx` on a connection whose one-way delay estimate is `d̂`:
+//! Nothing is equalized. A team's real network delay to the server (its
+//! connection method, TCP stack, uplink and distance) counts in full, as it
+//! does for a trading desk, and the scenario adds each team's virtual
+//! distance to each venue on top, in both directions:
 //!
 //! ```text
-//! physical:    release = t_rx
-//! equalized:   release = t_rx − d̂ + D_max
-//! geographic:  release = t_rx − d̂ + D_max + L(p, v)
+//! inbound:   release  = t_rx + L(p, v)      # t_rx already includes real delay
+//! outbound:  send_at  = commit + L(v, p)    # real delay then applies on the wire
 //! ```
 //!
-//! `d̂` is half the windowed-minimum RTT, clamped to `[0, D_max]`, so
-//! `release ≥ t_rx`. `L(p, v)` is a configured path latency plus a seeded
-//! jitter draw. The [`Sequencer`] releases commands in
-//! `(release, arrival_sequence)` order and never before their release time.
-//! All times are microseconds on the host's monotonic clock.
+//! `L(p, v)` is a configured path latency plus a seeded jitter draw. Real
+//! delay is still measured ([`DelayEstimator`]) and published as each team's
+//! access latency; it never changes ordering, so inflating it can only hurt.
+//! The [`Sequencer`] releases work in `(release, arrival_sequence)` order
+//! and never before its release time. All times are microseconds on the
+//! host's monotonic clock.
 
 use bunting_market_types::{ParticipantId, VenueId};
 use serde::{Deserialize, Serialize};
@@ -26,20 +29,8 @@ use std::fmt;
 /// Upper bound for any configured delay, so all arithmetic stays far from
 /// overflow and a misconfiguration cannot park commands for hours.
 pub const MAX_CONFIGURED_DELAY_US: u64 = 10_000_000;
-/// Upper bound for distinct `(participant, venue)` jitter streams.
+/// Upper bound for distinct `(direction, participant, venue)` jitter streams.
 pub const MAX_JITTER_STREAMS: usize = 65_536;
-
-/// How admission compensates for physical distance (ADR 0030 table).
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdmissionMode {
-    /// Server receive order; for LAN events where real latency counts.
-    Physical,
-    /// Estimated send time plus a constant; nobody gains from their ISP.
-    Equalized,
-    /// Estimated send time plus a constant plus simulated path latency.
-    Geographic,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
@@ -61,35 +52,31 @@ impl fmt::Display for AdmissionError {
             Self::TooManyStreams { limit } => {
                 write!(formatter, "jitter stream limit {limit}")
             }
-            Self::InvalidPolicy(reason) => write!(formatter, "invalid admission policy: {reason}"),
+            Self::InvalidPolicy(reason) => write!(formatter, "invalid latency policy: {reason}"),
         }
     }
 }
 
 impl std::error::Error for AdmissionError {}
 
-/// Which measurements a delay estimate came from (ADR 0034 §2).
+/// Which measurements a team's access-latency figure came from.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RttSource {
-    /// No sample yet: no compensation.
+    /// No sample yet.
     None,
-    /// Kernel TCP minimum RTT only (from ACKs the client's OS sends).
+    /// Kernel TCP minimum RTT only (handshake and ACK timing).
     Kernel,
     /// Application probes only (FIX `TestRequest`, BNP `Ping`).
     Probe,
-    /// Both; the estimate is the smaller.
+    /// Both; the figure is the smaller.
     Both,
 }
 
-/// One connection's one-way delay estimate (ADR 0034 §2).
-///
-/// `d̂ = clamp(min(kernel_min, probe_min) / 2, 0, D)`. Both minima are kept
-/// over the connection's lifetime, so the estimate never increases: a client
-/// cannot calibrate low and inflate later, and inflating one source gains
-/// nothing while the other stays honest. Accidental slowness (a slow
-/// heartbeat handler, delayed ACKs) raises samples, not the minimum, so it
-/// never earns credit.
+/// One connection's measured real network delay (ADR 0035 §2): half the
+/// minimum of the kernel TCP RTT and the probe RTT over the connection's
+/// lifetime. Published as the team's access latency; it never changes
+/// admission order.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DelayEstimator {
     kernel_min_us: Option<u64>,
@@ -158,11 +145,10 @@ impl DelayEstimator {
         }
     }
 
-    /// `d̂`, clamped to `D`. No sample means no compensation (`0`), never `D`.
+    /// Measured one-way access latency, if any sample exists.
     #[must_use]
-    pub fn one_way_delay_us(&self, max_one_way_delay_us: u64) -> u64 {
-        self.min_rtt_us()
-            .map_or(0, |rtt| (rtt / 2).min(max_one_way_delay_us))
+    pub fn one_way_us(&self) -> Option<u64> {
+        self.min_rtt_us().map(|rtt| rtt / 2)
     }
 }
 
@@ -176,8 +162,9 @@ pub struct PathLatency {
     pub jitter_us: u64,
 }
 
-/// One row of the scenario latency table. `venue_id: None` is the
-/// participant's default for every venue and for requests without a venue.
+/// One row of the scenario's latency table: the virtual distance between a
+/// team's location and a venue, used in both directions. `venue_id: None`
+/// is the team's default for every venue and for requests without a venue.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathEntry {
@@ -189,12 +176,9 @@ pub struct PathEntry {
 }
 
 /// Published per run before it starts; must not change mid-round.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LatencyPolicy {
-    pub mode: AdmissionMode,
-    /// `D_max`: the largest one-way delay the venue compensates.
-    pub max_one_way_delay_us: u64,
     /// Seeds every jitter stream; recorded with the run.
     #[serde(default)]
     pub jitter_seed: u64,
@@ -209,11 +193,6 @@ impl LatencyPolicy {
         let bounded = |path: &PathLatency| {
             path.latency_us <= MAX_CONFIGURED_DELAY_US && path.jitter_us <= MAX_CONFIGURED_DELAY_US
         };
-        if self.max_one_way_delay_us > MAX_CONFIGURED_DELAY_US {
-            return Err(AdmissionError::InvalidPolicy(
-                "max_one_way_delay_us exceeds 10 s",
-            ));
-        }
         if !bounded(&self.default_path) || !self.paths.iter().all(|entry| bounded(&entry.path)) {
             return Err(AdmissionError::InvalidPolicy("path latency exceeds 10 s"));
         }
@@ -232,7 +211,9 @@ impl LatencyPolicy {
         Ok(())
     }
 
-    fn path(&self, participant: ParticipantId, venue: Option<VenueId>) -> PathLatency {
+    /// The configured path for a team and venue.
+    #[must_use]
+    pub fn path(&self, participant: ParticipantId, venue: Option<VenueId>) -> PathLatency {
         let find = |venue: Option<VenueId>| {
             self.paths
                 .iter()
@@ -251,21 +232,19 @@ impl LatencyPolicy {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdmissionRecord {
-    pub mode: AdmissionMode,
-    /// Server monotonic receive time.
+    /// Server monotonic receive time; includes the team's real delay.
     pub received_us: u64,
-    /// `d̂(c)` applied (0 in `physical`).
-    pub one_way_delay_us: u64,
-    /// Measurements behind `one_way_delay_us`.
+    /// The team's measured one-way access latency at the time (published,
+    /// not used for ordering).
+    pub measured_one_way_us: Option<u64>,
+    /// Measurements behind `measured_one_way_us`.
     pub rtt_source: RttSource,
-    /// `D_max` applied (0 in `physical`).
-    pub max_one_way_delay_us: u64,
-    /// `L(p, v)` applied, jitter included (0 unless `geographic`).
+    /// `L(p, v)` applied, jitter included.
     pub path_latency_us: u64,
-    /// Position in the `(participant, venue)` jitter stream that produced
-    /// the jitter, when one was drawn.
+    /// Position in the `(participant, venue)` inbound jitter stream, when a
+    /// jitter draw was made.
     pub jitter_position: Option<u64>,
-    /// When the command reaches the book.
+    /// When the command reaches the venue's book.
     pub release_us: u64,
     /// Tie-breaker among equal releases: global admission order.
     pub arrival_sequence: u64,
@@ -279,24 +258,7 @@ enum Direction {
     Outbound = 1,
 }
 
-/// One direction's delay terms.
-struct Delay {
-    one_way: u64,
-    source: RttSource,
-    max_one_way: u64,
-    path: u64,
-    jitter_position: Option<u64>,
-}
-
-impl Delay {
-    /// `(D − d̂) + L`, written so it cannot underflow (`d̂ ≤ D` by
-    /// construction) and every term is at most 10 s.
-    const fn hold(&self) -> u64 {
-        (self.max_one_way - self.one_way).saturating_add(self.path)
-    }
-}
-
-/// Computes release times from the policy and per-path jitter streams.
+/// Computes virtual path delays from the policy and per-path jitter streams.
 #[derive(Clone, Debug)]
 pub struct LatencyModel {
     policy: LatencyPolicy,
@@ -318,82 +280,52 @@ impl LatencyModel {
     }
 
     /// Admission decision for a command received at `received_us` from a
-    /// connection with estimator `rtt`, addressed to `venue` (if any). The
-    /// arrival sequence and any clamp to the sequencer floor are filled in
-    /// by [`Sequencer::admit`].
+    /// team, addressed to `venue` (if any): it reaches the book after the
+    /// team's virtual path to that venue. The arrival sequence and any clamp
+    /// to the sequencer floor are filled in by [`Sequencer::admit`].
     pub fn decide(
         &mut self,
         received_us: u64,
-        rtt: &DelayEstimator,
+        measured: &DelayEstimator,
         participant: ParticipantId,
         venue: Option<VenueId>,
     ) -> Result<AdmissionRecord, AdmissionError> {
-        let delay = self.delay(Direction::Inbound, rtt, participant, venue)?;
+        let (path, jitter_position) = self.path_delay(Direction::Inbound, participant, venue)?;
         Ok(AdmissionRecord {
-            mode: self.policy.mode,
             received_us,
-            one_way_delay_us: delay.one_way,
-            rtt_source: delay.source,
-            max_one_way_delay_us: delay.max_one_way,
-            path_latency_us: delay.path,
-            jitter_position: delay.jitter_position,
-            release_us: received_us.saturating_add(delay.hold()),
+            measured_one_way_us: measured.one_way_us(),
+            rtt_source: measured.source(),
+            path_latency_us: path,
+            jitter_position,
+            release_us: received_us.saturating_add(path),
             arrival_sequence: 0,
         })
     }
 
-    /// How long to hold an outbound message for `participant` after commit
-    /// (ADR 0034 §3): `(D − d̂) + L(v, p)`, so it reaches every participant
-    /// at about `commit + D + L` whatever their distance. Zero in `physical`.
-    /// Session-level messages (heartbeats, probes) must never be held.
-    pub fn outbound_hold_us(
+    /// How long a venue's message to `participant` travels the virtual path
+    /// back: `L(v, p)`. The team's real delay then applies on the wire.
+    /// Session-level messages (heartbeats, probes) are never delayed.
+    pub fn outbound_delay_us(
         &mut self,
-        rtt: &DelayEstimator,
         participant: ParticipantId,
         venue: Option<VenueId>,
     ) -> Result<u64, AdmissionError> {
-        Ok(self
-            .delay(Direction::Outbound, rtt, participant, venue)?
-            .hold())
+        self.path_delay(Direction::Outbound, participant, venue)
+            .map(|(delay, _)| delay)
     }
 
-    fn delay(
+    fn path_delay(
         &mut self,
         direction: Direction,
-        rtt: &DelayEstimator,
         participant: ParticipantId,
         venue: Option<VenueId>,
-    ) -> Result<Delay, AdmissionError> {
-        let d_max = self.policy.max_one_way_delay_us;
-        let (path, jitter_position) = match self.policy.mode {
-            AdmissionMode::Physical => {
-                return Ok(Delay {
-                    one_way: 0,
-                    source: rtt.source(),
-                    max_one_way: 0,
-                    path: 0,
-                    jitter_position: None,
-                });
-            }
-            AdmissionMode::Equalized => (0, None),
-            AdmissionMode::Geographic => {
-                let path = self.policy.path(participant, venue);
-                if path.jitter_us == 0 {
-                    (path.latency_us, None)
-                } else {
-                    let (jitter, position) =
-                        self.draw_jitter(direction, participant, venue, path.jitter_us)?;
-                    (path.latency_us + jitter, Some(position))
-                }
-            }
-        };
-        Ok(Delay {
-            one_way: rtt.one_way_delay_us(d_max),
-            source: rtt.source(),
-            max_one_way: d_max,
-            path,
-            jitter_position,
-        })
+    ) -> Result<(u64, Option<u64>), AdmissionError> {
+        let path = self.policy.path(participant, venue);
+        if path.jitter_us == 0 {
+            return Ok((path.latency_us, None));
+        }
+        let (jitter, position) = self.draw_jitter(direction, participant, venue, path.jitter_us)?;
+        Ok((path.latency_us + jitter, Some(position)))
     }
 
     fn draw_jitter(

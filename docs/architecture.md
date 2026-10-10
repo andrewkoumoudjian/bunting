@@ -63,8 +63,9 @@ bunting-server  (std threads, blocking sockets; ships as WASIX module, ADR 0027)
    │   each subscribed to the committed-event distributor (20 ms delivery poll)
    ├─ admin HTTP: /health, /admin/runs/<id>
    ├─ scenario runtime thread: built-in agents (bunting-runtime + bunting-agents)
-   ├─ admission sequencer thread: release at t_rx + (D − d̂) + L (ADR 0030/0034);
-   │   outbound held to commit + (D − d̂) + L per connection
+   ├─ per-connection reader thread stamps t_rx on arrival (real delay counts)
+   ├─ admission sequencer thread: release at t_rx + L(team, venue) (ADR 0035);
+   │   venue messages sent L(venue, team) after the venue produced them
    └─ bunting-application ─► command-transaction ─► origin store (Memory | File)
                                                       owns live RunState per run;
                                                       bunting-engine applies in place
@@ -83,7 +84,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
         gateway: sessions, RTT probes, identity from certificate
              │
              ▼
-   admission sequencer (ADR 0030): release = t_rx − d̂ + D_max + L(p,v)
+   admission sequencer (ADR 0035): release = t_rx + L(p,v); outbound + L(v,p)
              │  one recorded order of inputs (humans, agents, admin, schedule)
              ▼
    single writer owning live RunState ── bunting-engine transition in place
@@ -105,7 +106,7 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/bunting-engine` | Run state, owned book, admission, ledger integration, simulation domain (tenders, OTC, news, facilities, scoring), snapshots/hashes |
 | `packages/ledger` | Single economic ledger: cash, reservations, fees, positions, cost basis, P&L, marks, FX |
 | `packages/risk-engine` | Pure admission over ledger counters |
-| `packages/admission-sequencer` | ADR 0030 latency model: windowed-min RTT estimator, `physical`/`equalized`/`geographic` release, seeded path jitter, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
+| `packages/admission-sequencer` | ADR 0035 real-life latency: virtual team-to-venue table with seeded jitter (`t_rx + L(p, v)`, outbound `L(v, p)`), published access-latency estimator, bounded `(release, arrival)` sequencer, `AdmissionRecord` (sans-I/O) |
 | `packages/origin-store` | `OriginStore` trait; writer-owned `LiveRun` (in-place apply, idempotency index, event-hash chain, rollback); `RunRecovery`; in-memory store |
 | `packages/command-transaction` | Thin command/simulation call shape over `OriginStore::execute` |
 | `packages/bunting-application` | Transport-neutral service: identity, commands, projections, FIX mapping, competition views |
@@ -142,14 +143,15 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 1. Session parses and bounds the FIX message; identity comes from configured
    credentials. Session-local command and order IDs are namespaced per
    participant session (slice 12) before they become canonical IDs.
-2. The session stamps `t_rx` (venue monotonic clock) on read, maps the
-   message to a canonical command and admits it without waiting. The delay
-   estimate `d̂` is the minimum of kernel TCP RTT (netlink `sock_diag`) and
-   FIX probe RTT over the connection's lifetime, halved and capped at `D`
-   (ADR 0034).
+2. The connection's reader thread stamps `t_rx` (venue monotonic clock) the
+   moment bytes arrive, so the team's real delay is inside it; the session
+   maps the message to a canonical command and admits it without waiting.
+   Real delay (kernel TCP RTT via netlink `sock_diag`, FIX probe RTT) is
+   measured and published, never compensated (ADR 0035).
 3. The sequencer thread releases admitted work in `(release, arrival)` order
-   at `t_rx + (D − d̂) + L`, stamps the command's expected sequence and
-   `logical_time = release`, and executes it under the writer gate.
+   at `t_rx + L(p, v)` (the team's virtual distance to the addressed venue;
+   per-venue FIFO per connection), stamps the command's expected sequence
+   and `logical_time = release`, and executes it under the writer gate.
 4. The origin's `LiveRun` checks idempotency and expected sequence and applies
    the command in place (`RunState::apply`). `ApplyError::Unchanged` leaves the
    run untouched; `ApplyError::Poisoned` rolls it back by re-executing the
@@ -162,9 +164,9 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 6. `PublishingOrigin` publishes the committed events to the bounded
    committed-event distributor; every connected session maps the batch to its
    own participant's execution reports (slice 12), so resting makers receive
-   unsolicited fills. Each session holds every outbound application message
-   until `commit + (D − d̂) + L`, so all participants see a commit at the same
-   venue time. Per-participant live-order caps are engine risk
+   unsolicited fills. Each venue message is sent `L(v, p)` after the venue
+   produced it, then crosses the team's real connection. One live FIX
+   session per participant. Per-participant live-order caps are engine risk
    (`RiskLimits.max_live_orders`).
 
 Measured cost: see slices 13 (before) and 14 (after) in the implementation
@@ -179,18 +181,18 @@ log. Per-command cost no longer grows with the size of the run.
 
 ## 7. Admission and fairness
 
-**Current (slice 15):** ADR 0030 as amended by ADR 0034 for FIX sessions —
-`equalized` by default, `physical` and `geographic` available; kernel and
-probe RTT; outbound hold; admission records journaled; `/admin/admission`
-health. Built-in agents still commit under the writer gate outside the
-sequencer.
+**Current (slice 16, ADR 0035):** one real-life model for FIX sessions:
+real connectivity counts as it is; the published virtual team-to-venue
+latency table is added in both directions; teams choose the venue for each
+order, with no router and no trade-through protection; measured access
+latency is journaled and published on `/admin/admission`. Built-in agents
+still commit under the writer gate outside the sequencer.
 
-**Target (ADR 0030/0034):** continuous price-time matching per listing. A
-deterministic sequencer orders all inputs — FIX, BNP, agents, schedule — by
-`release = (t_rx − d̂(c)) + D_max + L(p, v)`, where `d̂` is half the windowed
-minimum RTT and `L` is scenario path latency plus seeded jitter. Outbound data
-is held to the same model. Modes `physical | equalized | geographic`. All
-admission inputs are journaled; replay never re-measures the network.
+**Target:** the same model for every input — FIX, BNP, agents, schedule —
+with agents given a location in the latency table (Step 4), and public
+per-venue and consolidated market-data feeds delivered over the same
+virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
+All admission inputs are journaled; replay never re-measures the network.
 
 ## 8. Interfaces
 

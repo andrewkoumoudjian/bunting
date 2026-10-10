@@ -4,6 +4,7 @@
 
 mod support;
 
+use bunting_admission_sequencer::{LatencyPolicy, PathLatency};
 use bunting_server::config::{AdmissionConfig, ScenarioConfig, ServerConfig, StorageKind};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -44,9 +45,15 @@ fn start_server(storage: StorageKind) -> Result<u16, String> {
     let fix = config.fix.as_mut().ok_or("local profile has FIX")?;
     fix.bind = format!("127.0.0.1:{port}");
     fix.rate_limit_window_ms = 1;
-    // Equalized admission with a 2 ms `D`: the full ADR 0034 path, kept
-    // short so the end-to-end tests stay fast.
-    fix.admission = AdmissionConfig::equalized(2_000);
+    // Real-life admission with a 1 ms virtual distance to the venue: the
+    // full ADR 0035 path, kept short so the end-to-end tests stay fast.
+    fix.admission = AdmissionConfig::with_policy(LatencyPolicy {
+        default_path: PathLatency {
+            latency_us: 1_000,
+            jitter_us: 0,
+        },
+        ..LatencyPolicy::default()
+    });
     std::thread::spawn(move || bunting_server::runtime::run(&config));
     let deadline = Instant::now() + TIMEOUT;
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
