@@ -8,6 +8,7 @@ mod admission;
 mod commit_journal;
 pub mod config;
 mod distributor;
+mod public_feed;
 pub mod runtime;
 mod scenario;
 mod session_host;

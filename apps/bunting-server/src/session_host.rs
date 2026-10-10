@@ -1,6 +1,7 @@
 use crate::admission::{AdmissionService, ConnectionHealth, Inbound, JobWork, Reply, reply_task};
 use crate::config::{FixConfig, RosterEntry};
 use crate::distributor::PublishingOrigin;
+use crate::public_feed::{FeedMessage, PublicFeeds};
 use crate::wake::{SessionEvent, Waker};
 use bunting_admission_sequencer::{DelayEstimator, Endpoint};
 use bunting_api_contract::{
@@ -8,7 +9,7 @@ use bunting_api_contract::{
 };
 use bunting_application::{
     ApplicationService, FixApplicationRequest, FixApplicationSnapshot, FixApplicationState,
-    FixCommandContext, VerifiedActor,
+    FixCommandContext, MarketDataRequestType, VerifiedActor,
     competition::{account, discovery, news_tenders, risk_score},
     listing_for_command, project_market,
 };
@@ -157,6 +158,7 @@ pub(crate) fn handle_fix_connection(
     // Last release per destination: one path delivers in order (TCP), but
     // an order to a near venue may overtake an earlier one to a far venue.
     let mut release_floors = BTreeMap::<Endpoint, u64>::new();
+    let mut feeds = PublicFeeds::default();
     loop {
         // Sleep until the next held message or probe is due, or until the
         // reader, the sequencer or the distributor wakes this session.
@@ -215,6 +217,7 @@ pub(crate) fn handle_fix_connection(
                                 &mut application,
                                 &latency,
                                 &mut release_floors,
+                                &mut feeds,
                                 &ReplyTo {
                                     replies: &reply_sender,
                                     waker: &waker,
@@ -249,18 +252,36 @@ pub(crate) fn handle_fix_connection(
             latency.probe(&mut session, &mut stream, session_path, &application)?;
         }
         for reply in replies.try_iter() {
+            if reply.result.is_err()
+                && let Some(feed) = &reply.feed
+            {
+                feeds.unsubscribe(feed);
+            }
             let messages = reply.result?;
-            let send_at = reply
+            let mut send_at = reply
                 .completed_us
                 .saturating_add(latency.delay_from(reply.source)?);
+            if let Some(feed) = &reply.feed {
+                send_at = feeds.send_time(feed, send_at);
+            }
             for message in messages {
                 outbound.hold(message, send_at)?;
+            }
+            if let Some(feed) = &reply.feed {
+                for increment in feeds.activate(feed, reply.published_before) {
+                    hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
+                }
             }
         }
         // Every committed batch, whoever caused it, maps to this
         // participant's own reports (slice 12); each travels from where it
         // was applied to this team over the latency map (ADR 0035).
         for batch in subscription.drain()? {
+            // Public feeds: anonymous trades and depth changes of each
+            // subscribed listing, sent from its venue (direct feed).
+            for increment in feeds.on_batch(&batch)? {
+                hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
+            }
             let messages = application
                 .committed_messages(participant, &batch.events)
                 .map_err(|error| format!("FIX report mapping failed: {error}"))?;
@@ -279,6 +300,21 @@ pub(crate) fn handle_fix_connection(
             send_messages(&mut session, &mut stream, due, session_path, &application)?;
         }
     }
+}
+
+/// Holds one public feed message until it has crossed the virtual path from
+/// its venue to this team, never ahead of the feed's previous message.
+fn hold_feed(
+    outbound: &mut OutboundHold,
+    feeds: &mut PublicFeeds,
+    latency: &ConnectionLatency<'_>,
+    increment: FeedMessage,
+) -> Result<(), String> {
+    let proposed = increment
+        .available_us
+        .saturating_add(latency.delay_from(Endpoint::Venue(increment.venue_id))?);
+    let send_at = feeds.send_time(&increment.request_id, proposed);
+    outbound.hold(increment.message, send_at)
 }
 
 /// Probes sent right after logon, before the participant's first order.
@@ -312,6 +348,7 @@ fn admit_message(
     application: &mut FixApplicationState,
     latency: &ConnectionLatency<'_>,
     release_floors: &mut BTreeMap<Endpoint, u64>,
+    feeds: &mut PublicFeeds,
     reply_to: &ReplyTo<'_>,
 ) -> Result<Option<String>, String> {
     // Sequence and logical time are stamped at release (venue time); the
@@ -329,6 +366,31 @@ fn admit_message(
     let request = match request {
         Ok(request) => request,
         Err(error) => return Ok(Some(error.to_string())),
+    };
+    // A subscription is registered before admission so no batch committed
+    // after its snapshot is missed; an unsubscribe stops it here.
+    let feed = match &request {
+        FixApplicationRequest::MarketData {
+            request_id,
+            request_type: MarketDataRequestType::Unsubscribe,
+            ..
+        } => {
+            return Ok((!feeds.unsubscribe(request_id))
+                .then(|| format!("no market data subscription {request_id}")));
+        }
+        FixApplicationRequest::MarketData {
+            request_id,
+            listing_key,
+            request_type: MarketDataRequestType::Subscribe,
+            entry_types,
+            ..
+        } => {
+            if let Some(reason) = feeds.subscribe(request_id, *listing_key, entry_types) {
+                return Ok(Some(reason));
+            }
+            Some(request_id.clone())
+        }
+        _ => None,
     };
     let destination = match &request {
         FixApplicationRequest::Command(command) => context
@@ -359,13 +421,19 @@ fn admit_message(
         reply_to.replies.clone(),
         reply_to.waker.clone(),
         destination,
+        feed.clone(),
     );
     match context.admission.admit(&inbound, task) {
         Ok(record) => {
             release_floors.insert(destination, record.release_us);
             Ok(None)
         }
-        Err(error) => Ok(Some(error.to_string())),
+        Err(error) => {
+            if let Some(feed) = &feed {
+                feeds.unsubscribe(feed);
+            }
+            Ok(Some(error.to_string()))
+        }
     }
 }
 
@@ -394,9 +462,18 @@ fn job_for(
         FixApplicationRequest::MarketData {
             request_id,
             listing_key,
+            request_type,
             market_depth,
             ..
         } => Box::new(move |context| {
+            // FIX 264=0 is the full book; a feed's increments always
+            // continue from a full-depth snapshot.
+            let market_depth =
+                if market_depth == 0 || request_type == MarketDataRequestType::Subscribe {
+                    usize::MAX
+                } else {
+                    market_depth
+                };
             let projection = ApplicationService::new(context.origin)
                 .read(run_id, |state| project_market(state, listing_key))
                 .map_err(|error| format!("run read failed: {error}"))?

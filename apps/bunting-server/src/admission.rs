@@ -82,6 +82,7 @@ pub(crate) fn reply_task(
     reply: SyncSender<Reply>,
     waker: Waker,
     source: Endpoint,
+    feed: Option<String>,
 ) -> Task {
     Box::new(move |context| {
         let result = work(context);
@@ -91,6 +92,8 @@ pub(crate) fn reply_task(
             result,
             completed_us: context.clock.now_us(),
             source,
+            published_before: context.origin.distributor().published(),
+            feed,
         });
         waker.wake();
     })
@@ -116,6 +119,12 @@ pub(crate) struct Reply {
     /// Where the work ran (a venue, or the hub): its response travels back
     /// over the virtual path from there.
     pub(crate) source: Endpoint,
+    /// Committed batches published before the job finished (the sequencer
+    /// thread is the only publisher): a snapshot in the reply reflects
+    /// exactly those, so a feed continues from this ordinal.
+    pub(crate) published_before: u64,
+    /// The market-data subscription this reply's snapshot starts.
+    pub(crate) feed: Option<String>,
 }
 
 /// One connection's published access latency (ADR 0035 §2). Teams add

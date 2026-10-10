@@ -1,8 +1,7 @@
 # ADR 0034: Fair remote admission — distance neutral, implementation rewarded
 
-- Status: **Superseded** by [ADR 0035](0035-latency.md) (2026-10-10): the owner chose latency as on a real network, with no modes: real network delay counts and is never equalized. Kept as decision history.
-  session that followed slice 15b. **Target — implemented in slices recorded
-  in `docs/implementation-log/`.**
+- Status: **Superseded** by [ADR 0035](0035-latency.md) (2026-10-10): the owner chose latency as on a real network, with no modes: real network delay counts and is never equalized. Kept as decision history. It was
+  implemented in slice 15 and removed in slice 16.
 - Date: 2026-10-10
 - Supersedes in part: ADR 0030 §1 (delay measurement), makes ADR 0030 §4
   (outbound equalization) mandatory, and changes ADR 0030's default mode.
@@ -205,3 +204,19 @@ The host must not add delays that depend on client implementation:
   when this lands.
 - Admission records gain `rtt_source`; the journal already carries admission
   metadata (slice 15b).
+
+## Operational impact
+
+Historical: equalized admission required no per-team configuration beyond
+`D_max`; slice 16 removed it.
+
+## Security impact
+
+Historical: equalization invited latency inflation (a client delaying its
+probe replies to earn compensation), one reason ADR 0035 replaced it.
+
+## References
+
+- [ADR 0030](0030-proposed-latency-modeled-continuous-admission.md),
+  [ADR 0035](0035-latency.md)
+- `docs/implementation-log/` slices 15 and 16

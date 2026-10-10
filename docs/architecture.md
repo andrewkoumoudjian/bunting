@@ -174,11 +174,20 @@ Bunting semantics, book tests and oracle coverage before entering the schema.
 Measured cost: see slices 13 (before) and 14 (after) in the implementation
 log. Per-command cost no longer grows with the size of the run.
 
+7. Public feeds (slice 21, ADR 0036): right after each commit, on the
+   sequencer thread, `PublishingOrigin` computes the anonymous public view
+   of every listing the commit touched (its trades and visible-depth level
+   changes against the last published depth) and attaches it to the batch.
+   A FIX session subscribed to a listing (`V` 263=1) receives a full-depth
+   snapshot taken at the venue when the request arrives there, then one
+   `X` per later commit touching that listing, each sent `L(v, p)` after
+   commit from that listing's venue, with per-entry report sequence `83`.
+
 ### Target
 
-- The distributor gains public per-listing market-data streams and resume
-  cursors so reports missed while disconnected are replayed (today they are
-  not).
+- Resume cursors so reports missed while disconnected are replayed (today
+  they are not); a consolidated feed and order-by-order (L3) feeds
+  (ADR 0036).
 
 ## 7. Admission and fairness
 
@@ -192,12 +201,15 @@ submit through the same sequencer from their location in the map (slice
 18), and the sequencer thread is the venue's only committer; agents learn
 of fills other participants cause from the committed-event distributor.
 They still read the book and receive reports without the venue-to-agent
-delay, and their runtime state is not yet persisted (Step 4).
+delay. With a file origin their runtime is checkpointed each tick and
+resumes exactly once after a restart (slice 19). Public per-venue feeds
+(trades and L2 depth changes) reach each subscriber over its own path from
+that venue (slice 21).
 
 **Target:** the same model for every input — FIX, BNP, agents, schedule —
 with agents also observing over their virtual paths, team-to-team
-messages (OTC negotiation, shared data) addressed over team-to-team paths, and public
-per-venue and consolidated market-data feeds delivered over the same
+messages (OTC negotiation, shared data) addressed over team-to-team paths, and a
+consolidated market-data feed and L3 feeds delivered over the same
 virtual paths ([exploration](research/2026-10-10-cross-venue-market-data.md)).
 All admission inputs are journaled; replay never re-measures the network.
 

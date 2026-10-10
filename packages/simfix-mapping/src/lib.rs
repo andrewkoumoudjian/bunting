@@ -27,7 +27,7 @@ pub enum InboundApplication {
     MarketDataRequest {
         request_id: String,
         listing_key: ListingKey,
-        subscription: bool,
+        request_type: MarketDataRequestType,
         market_depth: usize,
         entry_types: Vec<MarketDataEntryType>,
     },
@@ -90,6 +90,17 @@ pub struct ApplyFinePayload {
     pub currency_id: CurrencyId,
     pub amount: MoneyMinor,
     pub reason: String,
+}
+
+/// FIX `SubscriptionRequestType` (263).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarketDataRequestType {
+    /// `0`: one snapshot.
+    Snapshot,
+    /// `1`: a snapshot followed by incremental updates.
+    Subscribe,
+    /// `2`: stop the updates of an earlier subscription with the same 262.
+    Unsubscribe,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,9 +197,10 @@ pub fn map_inbound(
             local_order_id: LocalOrderId::new(parse(message, 37)?),
         })),
         "V" => {
-            let subscription = match required(message, 263)? {
-                "0" => false,
-                "1" | "2" => true,
+            let request_type = match required(message, 263)? {
+                "0" => MarketDataRequestType::Snapshot,
+                "1" => MarketDataRequestType::Subscribe,
+                "2" => MarketDataRequestType::Unsubscribe,
                 _ => return Err(MappingError::UnsupportedSubscriptionType),
             };
             let group = message
@@ -210,7 +222,7 @@ pub fn map_inbound(
                     VenueId::new(parse(message, 207)?),
                     InstrumentId::new(parse(message, 48)?),
                 ),
-                subscription,
+                request_type,
                 market_depth: parse(message, 264)?,
                 entry_types,
             })
@@ -387,32 +399,69 @@ pub enum MarketDataUpdateAction {
     Delete,
 }
 
-/// Maps one committed level change to FIX 5.0 SP2 `MarketDataIncrementalRefresh`.
+/// One entry of a public incremental refresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarketDataIncrement {
+    /// The visible quantity at one price level after the change (zero for
+    /// a `Delete`).
+    Level {
+        action: MarketDataUpdateAction,
+        side: Side,
+        price: PriceTicks,
+        quantity: QuantityLots,
+    },
+    /// One anonymous trade.
+    Trade {
+        price: PriceTicks,
+        quantity: QuantityLots,
+    },
+}
+
+/// Maps committed public changes of one listing to one FIX 5.0 SP2
+/// `MarketDataIncrementalRefresh` (35=X). Each entry carries the
+/// subscription's next report sequence (83) so a gap is detectable.
 #[must_use]
 pub fn market_incremental(
     request_id: &str,
     listing_key: ListingKey,
-    side: Side,
-    action: MarketDataUpdateAction,
-    price: PriceTicks,
-    quantity: QuantityLots,
+    first_report_sequence: u64,
+    entries: &[MarketDataIncrement],
 ) -> FixMessage {
     let mut message = FixMessage::new("X");
     message.push(262, request_id);
-    message.push(268, "1");
-    message.push(
-        279,
-        match action {
-            MarketDataUpdateAction::New => "0",
-            MarketDataUpdateAction::Change => "1",
-            MarketDataUpdateAction::Delete => "2",
-        },
-    );
-    message.push(269, if side == Side::Buy { "0" } else { "1" });
-    message.push(48, listing_key.instrument_id.get().to_string());
-    message.push(207, listing_key.venue_id.get().to_string());
-    message.push(270, price.get().to_string());
-    message.push(271, quantity.get().to_string());
+    message.push(268, entries.len().to_string());
+    for (offset, entry) in (0_u64..).zip(entries) {
+        let (action, entry_type, price, quantity) = match *entry {
+            MarketDataIncrement::Level {
+                action,
+                side,
+                price,
+                quantity,
+            } => (
+                action,
+                if side == Side::Buy { "0" } else { "1" },
+                price,
+                quantity,
+            ),
+            MarketDataIncrement::Trade { price, quantity } => {
+                (MarketDataUpdateAction::New, "2", price, quantity)
+            }
+        };
+        message.push(
+            279,
+            match action {
+                MarketDataUpdateAction::New => "0",
+                MarketDataUpdateAction::Change => "1",
+                MarketDataUpdateAction::Delete => "2",
+            },
+        );
+        message.push(269, entry_type);
+        message.push(48, listing_key.instrument_id.get().to_string());
+        message.push(207, listing_key.venue_id.get().to_string());
+        message.push(270, price.get().to_string());
+        message.push(271, quantity.get().to_string());
+        message.push(83, first_report_sequence.saturating_add(offset).to_string());
+    }
     message
 }
 
@@ -567,6 +616,20 @@ mod tests {
             entry_types,
             vec![MarketDataEntryType::Bid, MarketDataEntryType::Offer]
         );
+        for (value, expected) in [
+            ("0", MarketDataRequestType::Snapshot),
+            ("1", MarketDataRequestType::Subscribe),
+            ("2", MarketDataRequestType::Unsubscribe),
+        ] {
+            market.fields.retain(|field| field.tag != 263);
+            market.push(263, value);
+            let InboundApplication::MarketDataRequest { request_type, .. } =
+                map_inbound(&market, context)?
+            else {
+                return Err(MappingError::UnsupportedMessage);
+            };
+            assert_eq!(request_type, expected);
+        }
         Ok(())
     }
 
@@ -582,14 +645,36 @@ mod tests {
         let update = market_incremental(
             "book",
             ListingKey::new(VenueId::new(1), InstrumentId::new(7)),
-            Side::Buy,
-            MarketDataUpdateAction::Change,
-            PriceTicks::new(100),
-            QuantityLots::new(4),
+            5,
+            &[
+                MarketDataIncrement::Level {
+                    action: MarketDataUpdateAction::Change,
+                    side: Side::Buy,
+                    price: PriceTicks::new(100),
+                    quantity: QuantityLots::new(4),
+                },
+                MarketDataIncrement::Trade {
+                    price: PriceTicks::new(101),
+                    quantity: QuantityLots::new(1),
+                },
+            ],
         );
         assert_eq!(update.msg_type, "X");
         assert_eq!(update.value(207), Some("1"));
+        assert_eq!(update.value(268), Some("2"));
         assert_eq!(update.value(279), Some("1"));
+        assert_eq!(update.value(83), Some("5"));
+        let types: Vec<_> = update
+            .fields
+            .iter()
+            .filter(|field| field.tag == 269 || field.tag == 83)
+            .map(|field| field.value.as_str())
+            .collect();
+        assert_eq!(types, ["0", "5", "2", "6"]);
+        // Public entries never carry party, order or account identity.
+        for tag in [37, 448, 1, 11, 41, 278] {
+            assert_eq!(update.value(tag), None);
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ state, applies committed fines and cashflows, sorts net liquidation value
 descending, and uses participant ID as the deterministic tie-break.
 
 Live scores are provisional theatre. The official result is the final score
-report reproduced from the signed run archive:
+report reproduced from the run archive (hash-chained, not yet signed):
 
 ```bash
 bunting export-archive server.json round.archive.json

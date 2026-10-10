@@ -8,7 +8,7 @@ use bunting_api_contract::{ActorIdentity, ActorRole};
 use bunting_command_transaction::{CommandTransaction, ExecutedTransaction, TransactionError};
 use bunting_engine::RunState;
 use bunting_market_events::{
-    Command, CommandPayload, EventEnvelope, EventPayload, SimulationCommand,
+    Command, CommandPayload, EventEnvelope, EventPayload, Side, SimulationCommand,
     SimulationCommandRequest,
 };
 use bunting_market_types::{
@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use simfix_mapping::{
     CompetitionRequest, InboundApplication, MappingContext, MappingError, map_inbound,
 };
+pub use simfix_mapping::{MarketDataEntryType, MarketDataRequestType};
 use simfix_wire::FixMessage;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -298,6 +299,62 @@ pub fn project_public_event(event: &EventEnvelope, listing_key: ListingKey) -> O
     }
 }
 
+/// One price level's visible quantity changing in a public feed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct LevelChange {
+    pub side: Side,
+    pub price: PriceTicks,
+    /// Visible quantity before the change; zero for a new level.
+    pub previous: QuantityLots,
+    /// Visible quantity after the change; zero when the level was removed.
+    pub quantity: QuantityLots,
+}
+
+/// The public, anonymous changes one commit made to one listing: its
+/// trades in execution order, then its visible depth changes by level.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PublicListingUpdate {
+    pub listing_key: ListingKey,
+    pub trades: Vec<PublicTrade>,
+    pub levels: Vec<LevelChange>,
+}
+
+/// Visible depth of one listing: bids best first, asks best first.
+pub type PublicDepth = (
+    Vec<(PriceTicks, QuantityLots)>,
+    Vec<(PriceTicks, QuantityLots)>,
+);
+
+/// Level-by-level difference between two committed views of one book:
+/// every price whose visible quantity changed, with its new quantity (zero
+/// for a removed level). Bids are listed before asks, each in price order.
+#[must_use]
+pub fn diff_levels(before: &PublicDepth, after: &PublicDepth) -> Vec<LevelChange> {
+    let mut changes = Vec::new();
+    for (side, old, new) in [
+        (Side::Buy, &before.0, &after.0),
+        (Side::Sell, &before.1, &after.1),
+    ] {
+        let old: BTreeMap<PriceTicks, QuantityLots> = old.iter().copied().collect();
+        let new: BTreeMap<PriceTicks, QuantityLots> = new.iter().copied().collect();
+        let prices: std::collections::BTreeSet<PriceTicks> =
+            old.keys().chain(new.keys()).copied().collect();
+        for price in prices {
+            let previous = old.get(&price).copied().unwrap_or(QuantityLots::new(0));
+            let current = new.get(&price).copied().unwrap_or(QuantityLots::new(0));
+            if previous != current {
+                changes.push(LevelChange {
+                    side,
+                    price,
+                    previous,
+                    quantity: current,
+                });
+            }
+        }
+    }
+    changes
+}
+
 /// Derives an opaque stable session identifier without persisting bearer or
 /// transport credentials.
 #[must_use]
@@ -451,8 +508,9 @@ pub enum FixApplicationRequest {
     MarketData {
         request_id: String,
         listing_key: ListingKey,
-        subscription: bool,
+        request_type: MarketDataRequestType,
         market_depth: usize,
+        entry_types: Vec<MarketDataEntryType>,
     },
     Competition(CompetitionRequest),
 }
@@ -536,14 +594,15 @@ impl FixApplicationState {
             InboundApplication::MarketDataRequest {
                 request_id,
                 listing_key,
-                subscription,
+                request_type,
                 market_depth,
-                ..
+                entry_types,
             } => Ok(FixApplicationRequest::MarketData {
                 request_id,
                 listing_key,
-                subscription,
+                request_type,
                 market_depth,
+                entry_types,
             }),
             InboundApplication::Intent(intent) => {
                 let client_order_id = match &intent {
@@ -719,6 +778,28 @@ pub fn listing_for_command(state: &RunState, command: &Command) -> Option<Listin
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_diffs_name_every_changed_price_with_before_and_after() {
+        let level = |price, quantity| (PriceTicks::new(price), QuantityLots::new(quantity));
+        let before = (vec![level(99, 5), level(98, 2)], vec![level(101, 3)]);
+        let after = (vec![level(99, 4), level(98, 2)], vec![level(102, 1)]);
+        let change = |side, price, previous, quantity| LevelChange {
+            side,
+            price: PriceTicks::new(price),
+            previous: QuantityLots::new(previous),
+            quantity: QuantityLots::new(quantity),
+        };
+        assert_eq!(
+            diff_levels(&before, &after),
+            vec![
+                change(Side::Buy, 99, 5, 4),
+                change(Side::Sell, 101, 3, 0),
+                change(Side::Sell, 102, 0, 1),
+            ]
+        );
+        assert!(diff_levels(&after, &after).is_empty());
+    }
     use bunting_api_contract::UnsignedDecimalString;
     use bunting_engine::{ListingDefinition, ParticipantDefinition, ScenarioDefinition};
     use bunting_market_events::{

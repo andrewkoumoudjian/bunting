@@ -1,7 +1,10 @@
 # Cross-venue market data: seeing every trade and order, realistically
 
-Status: **Exploration (to do)** — owner request 2026-10-10. Nothing here is
-implemented; `RULES.md` states what participants can see today.
+Status: **Exploration** — owner request 2026-10-10. Options A and B (per-venue
+trade and L2 feeds) were implemented in slice 21 under
+[ADR 0036](../adr/0036-public-market-data-feeds.md), which also records
+provisional answers to the owner questions below; `RULES.md` states what
+participants can see today.
 
 ## The request
 
@@ -90,12 +93,14 @@ Design constraints whichever option is chosen:
 
 ## To do (tracked in the exploration note §8)
 
-- [ ] Per-venue public trade stream (option A) over the virtual path.
-- [ ] Per-venue L2 incremental feed with sequence numbers and snapshot
-      recovery (option B).
+- [x] Per-venue public trade stream (option A) over the virtual path
+      (slice 21).
+- [x] Per-venue L2 incremental feed with sequence numbers and snapshot
+      recovery (option B) (slice 21; recovery is a new subscription).
 - [ ] Consolidated feed from a configured processor location (option D).
 - [ ] L3 order-by-order feed with anonymous per-venue references (option C).
-- [ ] Owner decisions on options E and F.
+- [ ] Owner decisions on options E and F (provisional: no broker IDs, free
+      data and no colocation purchase; ADR 0036).
 - [ ] Location coordinates helper: derive the latency map's links from
       location coordinates (great-circle distance, fibre or microwave route
       factor, venue gateway delay) instead of hand-written microseconds.

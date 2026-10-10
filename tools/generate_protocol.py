@@ -50,8 +50,10 @@ lines.extend(
     [
         "",
         "Standard order entry uses NewOrderSingle (`D`), OrderCancelRequest (`F`), "
-        "ExecutionReport (`8`), MarketDataRequest (`V`), and "
-        "MarketDataSnapshotFullRefresh (`W`). BuntingPayloadJSON (10020) contains "
+        "ExecutionReport (`8`), MarketDataRequest (`V`), "
+        "MarketDataSnapshotFullRefresh (`W`) and MarketDataIncrementalRefresh "
+        "(`X`); `V` with 263=1 subscribes to one venue's direct feed of "
+        "anonymous trades and level changes, 263=2 ends it. BuntingPayloadJSON (10020) contains "
         "bounded UTF-8 JSON for competition resources; it never changes FIX "
         "session sequencing or the authoritative event schema.",
         "",

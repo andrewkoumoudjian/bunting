@@ -96,7 +96,7 @@ now versus the accepted target.
 
 ## Status and priorities
 
-Implemented through `1d857d1` (see
+Implemented through slice 21 (see
 [`docs/implementation-log/`](docs/implementation-log/2026-10-07-core-slice-0.md)):
 single ledger, explicit listing identity and venue market data, owned order
 book, append-only native origin journal, removal of the Cloudflare command
@@ -104,13 +104,18 @@ Worker, removal of NBC compatibility, and (slice 12) fills delivered to every
 affected participant, engine-owned live-order limits and per-session FIX
 identity namespacing, a command-path measurement baseline (slice 13) and
 (slice 14) a writer-owned live run with a command-sourced journal and
-state-only checkpoints.
+state-only checkpoints; latency-modeled continuous admission with real
+connectivity counted and a published location map (slices 15–17,
+[ADR 0035](docs/adr/0035-latency.md)); built-in agents admitted through the
+same sequencer and recoverable after a crash (slices 18–19); a version 2
+archive that replays every journaled input (slice 20); and per-venue public
+feeds of anonymous trades and depth changes (slice 21,
+[ADR 0036](docs/adr/0036-public-market-data-feeds.md)).
 
 Current priorities and their order are in the
 [October 9 exploration note §8](docs/research/2026-10-09-exploration-and-next-steps.md#8-owner-decisions-2026-10-09-and-revised-plan):
-latency-modeled continuous admission
-([ADR 0030](docs/adr/0030-proposed-latency-modeled-continuous-admission.md)),
-multi-day calendar, and the certified native protocol and
+the rest of cross-venue market data (consolidated and L3 feeds), the
+multi-day calendar with auctions, and the certified native protocol and
 app ([ADR 0031](docs/adr/0031-proposed-bunting-native-client-protocol.md)).
 Accepted Target decisions are not implemented until the implementation log
 says so.

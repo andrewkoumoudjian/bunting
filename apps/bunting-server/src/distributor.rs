@@ -11,13 +11,14 @@ use crate::admission::VenueClock;
 use crate::storage::NativeOrigin;
 use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
+use bunting_application::{PublicDepth, PublicListingUpdate, diff_levels, project_public_event};
 use bunting_engine::RunState;
 use bunting_market_events::{EventEnvelope, EventPayload};
-use bunting_market_types::{CommandId, RunId};
+use bunting_market_types::{CommandId, ListingKey, RunId};
 use bunting_origin_store::{
     AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,13 @@ pub(crate) struct Committed {
     /// team over the latency map.
     pub(crate) source: Endpoint,
     pub(crate) events: Vec<EventEnvelope>,
+    /// Position in the venue's publish order, from zero. A reply stamped
+    /// with [`EventDistributor::published`] reflects exactly the batches
+    /// before it.
+    pub(crate) ordinal: u64,
+    /// Anonymous public trades and depth changes of each listing this
+    /// commit touched, computed from the state right after it committed.
+    pub(crate) public: Vec<PublicListingUpdate>,
 }
 
 /// Where a committed batch was applied: the admitted destination when the
@@ -71,6 +79,7 @@ pub(crate) struct EventDistributor {
     capacity: usize,
     next_id: AtomicU64,
     subscribers: Mutex<BTreeMap<u64, Subscriber>>,
+    published: AtomicU64,
 }
 
 impl EventDistributor {
@@ -79,7 +88,13 @@ impl EventDistributor {
             capacity: capacity.max(1),
             next_id: AtomicU64::new(0),
             subscribers: Mutex::new(BTreeMap::new()),
+            published: AtomicU64::new(0),
         }
+    }
+
+    /// Batches published so far: the ordinal the next batch will carry.
+    pub(crate) fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
     }
 
     /// Registers a session; batches committed from now on are queued for it.
@@ -109,7 +124,13 @@ impl EventDistributor {
     /// Queues one committed batch for every subscriber without blocking the
     /// committer. A full queue marks that subscriber overflowed and drops it; the
     /// session then disconnects instead of silently skipping reports.
-    fn publish(&self, events: &[EventEnvelope], committed_us: u64, source: Endpoint) {
+    fn publish(
+        &self,
+        events: &[EventEnvelope],
+        committed_us: u64,
+        source: Endpoint,
+        public: Vec<PublicListingUpdate>,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -117,6 +138,8 @@ impl EventDistributor {
             durable_us: committed_us,
             source,
             events: events.to_vec(),
+            ordinal: self.published.fetch_add(1, Ordering::AcqRel),
+            public,
         });
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
@@ -192,6 +215,9 @@ pub(crate) struct PublishingOrigin {
     inner: NativeOrigin,
     distributor: EventDistributor,
     clock: VenueClock,
+    /// Last published visible depth of every listing, per run: the base the
+    /// next commit's public depth changes are measured against.
+    books: Mutex<BTreeMap<RunId, BTreeMap<ListingKey, PublicDepth>>>,
 }
 
 impl PublishingOrigin {
@@ -200,7 +226,86 @@ impl PublishingOrigin {
             inner,
             distributor: EventDistributor::new(capacity),
             clock,
+            books: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Records every listing's visible depth the first time a run commits
+    /// through this origin, so the first public changes have a base.
+    fn prime_books(&self, run_id: RunId) -> Result<(), OriginError> {
+        let mut books = self.books.lock().map_err(|_| OriginError::Unavailable)?;
+        if books.contains_key(&run_id) {
+            return Ok(());
+        }
+        let depths = self.inner.read_run(run_id, |state| {
+            state
+                .listings()
+                .keys()
+                .filter_map(|&key| state.visible_levels(key).ok().map(|depth| (key, depth)))
+                .collect::<BTreeMap<_, _>>()
+        })?;
+        books.insert(run_id, depths);
+        Ok(())
+    }
+
+    /// The public, anonymous view of one commit: trades and depth changes of
+    /// every listing its events touched. A batch that names no listing on
+    /// some book event (or carries a simulation event that may move books)
+    /// re-reads every listing of the run.
+    fn public_updates(
+        &self,
+        run_id: RunId,
+        events: &[EventEnvelope],
+    ) -> Result<Vec<PublicListingUpdate>, OriginError> {
+        let mut books = self.books.lock().map_err(|_| OriginError::Unavailable)?;
+        let Some(known) = books.get_mut(&run_id) else {
+            return Ok(Vec::new());
+        };
+        let mut touched = BTreeSet::new();
+        let mut everything = false;
+        for event in events {
+            match &event.payload {
+                EventPayload::OrderRested { listing_key, .. }
+                | EventPayload::OrderCanceled { listing_key, .. }
+                | EventPayload::TradeExecuted { listing_key, .. } => match listing_key {
+                    Some(key) => {
+                        touched.insert(*key);
+                    }
+                    None => everything = true,
+                },
+                EventPayload::Simulation(_) => everything = true,
+                _ => {}
+            }
+        }
+        if everything {
+            touched.extend(known.keys().copied());
+        }
+        let after = self.inner.read_run(run_id, |state| {
+            touched
+                .iter()
+                .filter_map(|&key| state.visible_levels(key).ok().map(|depth| (key, depth)))
+                .collect::<Vec<_>>()
+        })?;
+        let mut updates = Vec::new();
+        for (key, depth) in after {
+            let levels = known.get(&key).map_or_else(
+                || diff_levels(&(Vec::new(), Vec::new()), &depth),
+                |before| diff_levels(before, &depth),
+            );
+            let trades: Vec<_> = events
+                .iter()
+                .filter_map(|event| project_public_event(event, key))
+                .collect();
+            known.insert(key, depth);
+            if !levels.is_empty() || !trades.is_empty() {
+                updates.push(PublicListingUpdate {
+                    listing_key: key,
+                    trades,
+                    levels,
+                });
+            }
+        }
+        Ok(updates)
     }
 
     pub(crate) const fn inner(&self) -> &NativeOrigin {
@@ -218,13 +323,22 @@ impl OriginStore for PublishingOrigin {
         input: &JournalInput,
         admission: Option<&AdmissionRecord>,
     ) -> Result<Executed, OriginError> {
+        // Best effort: an unknown run fails in `execute` below.
+        let _ = self.prime_books(input.run_id());
         let executed = self.inner.execute_admitted(input, admission)?;
         // A duplicate's events were published when it first committed.
         if !executed.duplicate {
+            let durable_us = self.clock.now_us();
+            // The commit is durable; a failed public projection must not
+            // hide its reports, so it publishes without public updates.
+            let public = self
+                .public_updates(input.run_id(), &executed.events)
+                .unwrap_or_default();
             self.distributor.publish(
                 &executed.events,
-                self.clock.now_us(),
+                durable_us,
                 batch_source(admission, &executed.events),
+                public,
             );
         }
         Ok(executed)
@@ -276,10 +390,10 @@ mod tests {
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
         let first = distributor.subscribe(None)?;
-        distributor.publish(&[event(1)], 1, Endpoint::Hub);
+        distributor.publish(&[event(1)], 1, Endpoint::Hub, Vec::new());
         let second = distributor.subscribe(None)?;
-        distributor.publish(&[event(2), event(3)], 2, Endpoint::Hub);
-        distributor.publish(&[], 3, Endpoint::Hub);
+        distributor.publish(&[event(2), event(3)], 2, Endpoint::Hub, Vec::new());
+        distributor.publish(&[], 3, Endpoint::Hub, Vec::new());
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
@@ -300,10 +414,10 @@ mod tests {
         let slow = distributor.subscribe(None)?;
         let fast = distributor.subscribe(None)?;
         for sequence in 1..=2 {
-            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub);
+            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub, Vec::new());
         }
         assert_eq!(fast.drain()?.len(), 2);
-        distributor.publish(&[event(3)], 3, Endpoint::Hub);
+        distributor.publish(&[event(3)], 3, Endpoint::Hub, Vec::new());
         assert!(slow.drain().is_err());
         assert_eq!(fast.drain()?.len(), 1);
         assert_eq!(distributor.subscriber_count(), 1);

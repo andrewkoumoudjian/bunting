@@ -1,7 +1,10 @@
 # ADR 0030: Latency-modeled continuous admission
 
 - Status: **Accepted** (2026-10-09) by owner direction, recorded in ADR 0033.
-  **Target — not yet implemented**; the implementation log records each slice.
+  **Implemented:** the `(release, arrival)` sequencer and journaled
+  admission records for FIX in slice 15, built-in agents through the same
+  sequencer in slice 18 (see `docs/implementation-log/`). BNP and schedule
+  inputs remain Target.
 - **Partially superseded by [ADR 0035](0035-latency.md)
   (2026-10-10):** admission modes, `D_max`, delay compensation and outbound
   equalization are removed; real network delay counts and the virtual

@@ -50,12 +50,20 @@ each order to the right venue.
   a team that sees that move first can trade against your stale quote here
   before your cancel arrives, because your cancel travels the same virtual
   path as your order. Quote sizes, prices and venues with that in mind.
-- **What you can see today:** your own execution reports on every venue,
-  and market-data snapshots of any venue's book on request (FIX `V` with
-  tag 207), each delivered over your virtual path from that venue. Public
-  streaming of every venue's trades and book changes is being designed (see
-  `docs/research/2026-10-10-cross-venue-market-data.md`); until then other
-  teams' trades on a venue are visible only through that venue's book.
+- **What you can see:** your own execution reports on every venue;
+  snapshots of any venue's book (FIX `V`, 263=0, tag 207; 264=0 is the
+  full book); and each venue's **direct feed** (`V`, 263=1): a full-depth
+  snapshot, then a `MarketDataIncrementalRefresh` (`X`) for every committed
+  change to that listing, with anonymous trades (269=2) and price-level
+  changes (269=0/1; 279=0 new, 1 change, 2 delete; tag 271 is the
+  level's resulting quantity, zero when deleted). Every feed message
+  leaves the venue when the change commits and reaches you over your
+  virtual path from that venue, so a near team sees a venue's activity
+  before a far one. Feeds never identify who traded or whose order a level
+  holds, and hidden quantity stays hidden. Each entry carries a report
+  sequence (tag 83) that increases by one per entry; 263=2 with the same
+  262 ends a feed. Feeds and colocation are free, and there is no
+  consolidated feed yet (ADR 0036).
 
 ## Published limits
 

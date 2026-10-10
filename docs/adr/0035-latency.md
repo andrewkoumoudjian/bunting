@@ -147,3 +147,25 @@ earlier; 30 ms real + 0 virtual beats ~0 real + 50 ms virtual) and
 `tests/venue_distance.rs` (with two venues, each team wins at the venue it
 is near although it sent 10 ms later; a far venue's data arrives later by
 the virtual round trip).
+
+## Operational impact
+
+Organizers publish one latency map (`fix.admission.map`): locations for
+teams, venues and the hub, plus links between locations. Real access
+latency per connection is visible on `/admin/admission`. Hosting far from
+the teams makes everyone slower; nothing compensates it.
+
+## Security impact
+
+Measured delay is published but never used for ordering, so a client gains
+nothing by slowing its probe replies. Bounded admission and outbound
+queues disconnect a session at its limits instead of stalling the venue.
+
+## References
+
+- [ADR 0030](0030-proposed-latency-modeled-continuous-admission.md) (§3
+  sequencer, §5 journaled inputs), [ADR 0034](0034-fair-remote-admission.md)
+  (superseded), [ADR 0036](0036-public-market-data-feeds.md) (feeds over
+  the same map)
+- `RULES.md` (participant-facing model), `docs/implementation-log/` slices
+  16–18
