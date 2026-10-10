@@ -293,6 +293,7 @@ fn admission_metadata_is_journaled_verified_and_not_fingerprinted() {
         mode: bunting_admission_sequencer::AdmissionMode::Equalized,
         received_us: 10,
         one_way_delay_us: 4,
+        rtt_source: bunting_admission_sequencer::RttSource::Both,
         max_one_way_delay_us: 25,
         path_latency_us: 0,
         jitter_position: None,

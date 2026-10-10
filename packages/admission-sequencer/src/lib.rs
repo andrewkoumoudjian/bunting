@@ -20,14 +20,12 @@
 use bunting_market_types::{ParticipantId, VenueId};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap};
 use std::fmt;
 
 /// Upper bound for any configured delay, so all arithmetic stays far from
 /// overflow and a misconfiguration cannot park commands for hours.
 pub const MAX_CONFIGURED_DELAY_US: u64 = 10_000_000;
-/// Upper bound for the RTT sample window.
-pub const MAX_RTT_WINDOW: usize = 1_024;
 /// Upper bound for distinct `(participant, venue)` jitter streams.
 pub const MAX_JITTER_STREAMS: usize = 65_536;
 
@@ -70,44 +68,87 @@ impl fmt::Display for AdmissionError {
 
 impl std::error::Error for AdmissionError {}
 
-/// Windowed-minimum RTT estimator (the NTP/BBR propagation-delay filter):
-/// queuing spikes raise single samples but not the window minimum.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RttEstimator {
-    window: usize,
-    samples: VecDeque<u64>,
+/// Which measurements a delay estimate came from (ADR 0034 §2).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RttSource {
+    /// No sample yet: no compensation.
+    None,
+    /// Kernel TCP minimum RTT only (from ACKs the client's OS sends).
+    Kernel,
+    /// Application probes only (FIX `TestRequest`, BNP `Ping`).
+    Probe,
+    /// Both; the estimate is the smaller.
+    Both,
 }
 
-impl RttEstimator {
-    /// `window` is clamped to `1..=MAX_RTT_WINDOW`.
+/// One connection's one-way delay estimate (ADR 0034 §2).
+///
+/// `d̂ = clamp(min(kernel_min, probe_min) / 2, 0, D)`. Both minima are kept
+/// over the connection's lifetime, so the estimate never increases: a client
+/// cannot calibrate low and inflate later, and inflating one source gains
+/// nothing while the other stays honest. Accidental slowness (a slow
+/// heartbeat handler, delayed ACKs) raises samples, not the minimum, so it
+/// never earns credit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DelayEstimator {
+    kernel_min_us: Option<u64>,
+    probe_min_us: Option<u64>,
+    probe_samples: u64,
+}
+
+impl DelayEstimator {
     #[must_use]
-    pub fn new(window: usize) -> Self {
-        let window = window.clamp(1, MAX_RTT_WINDOW);
+    pub const fn new() -> Self {
         Self {
-            window,
-            samples: VecDeque::with_capacity(window),
+            kernel_min_us: None,
+            probe_min_us: None,
+            probe_samples: 0,
         }
     }
 
-    pub fn record(&mut self, rtt_us: u64) {
-        if self.samples.len() == self.window {
-            self.samples.pop_front();
+    /// Records one application probe round trip.
+    pub fn record_probe(&mut self, rtt_us: u64) {
+        self.probe_min_us = Some(self.probe_min_us.map_or(rtt_us, |min| min.min(rtt_us)));
+        self.probe_samples = self.probe_samples.saturating_add(1);
+    }
+
+    /// Records the kernel's current minimum RTT for the socket. A zero
+    /// reading means "no sample yet" on Linux and is ignored.
+    pub fn record_kernel_min(&mut self, min_rtt_us: u64) {
+        if min_rtt_us == 0 {
+            return;
         }
-        self.samples.push_back(rtt_us);
+        self.kernel_min_us = Some(
+            self.kernel_min_us
+                .map_or(min_rtt_us, |min| min.min(min_rtt_us)),
+        );
     }
 
     #[must_use]
-    pub fn sample_count(&self) -> usize {
-        self.samples.len()
+    pub const fn probe_samples(&self) -> u64 {
+        self.probe_samples
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> RttSource {
+        match (self.kernel_min_us, self.probe_min_us) {
+            (None, None) => RttSource::None,
+            (Some(_), None) => RttSource::Kernel,
+            (None, Some(_)) => RttSource::Probe,
+            (Some(_), Some(_)) => RttSource::Both,
+        }
     }
 
     #[must_use]
     pub fn min_rtt_us(&self) -> Option<u64> {
-        self.samples.iter().copied().min()
+        match (self.kernel_min_us, self.probe_min_us) {
+            (Some(kernel), Some(probe)) => Some(kernel.min(probe)),
+            (kernel, probe) => kernel.or(probe),
+        }
     }
 
-    /// `d̂ = clamp(min_rtt / 2, 0, D_max)`. A connection that has never
-    /// answered a probe gets no compensation (`0`), never `D_max`.
+    /// `d̂`, clamped to `D`. No sample means no compensation (`0`), never `D`.
     #[must_use]
     pub fn one_way_delay_us(&self, max_one_way_delay_us: u64) -> u64 {
         self.min_rtt_us()
@@ -205,6 +246,8 @@ pub struct AdmissionRecord {
     pub received_us: u64,
     /// `d̂(c)` applied (0 in `physical`).
     pub one_way_delay_us: u64,
+    /// Measurements behind `one_way_delay_us`.
+    pub rtt_source: RttSource,
     /// `D_max` applied (0 in `physical`).
     pub max_one_way_delay_us: u64,
     /// `L(p, v)` applied, jitter included (0 unless `geographic`).
@@ -218,11 +261,36 @@ pub struct AdmissionRecord {
     pub arrival_sequence: u64,
 }
 
+/// Separates inbound and outbound jitter streams, so the number of outbound
+/// messages never shifts the inbound draws recorded in the journal.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Direction {
+    Inbound = 0,
+    Outbound = 1,
+}
+
+/// One direction's delay terms.
+struct Delay {
+    one_way: u64,
+    source: RttSource,
+    max_one_way: u64,
+    path: u64,
+    jitter_position: Option<u64>,
+}
+
+impl Delay {
+    /// `(D − d̂) + L`, written so it cannot underflow (`d̂ ≤ D` by
+    /// construction) and every term is at most 10 s.
+    const fn hold(&self) -> u64 {
+        (self.max_one_way - self.one_way).saturating_add(self.path)
+    }
+}
+
 /// Computes release times from the policy and per-path jitter streams.
 #[derive(Clone, Debug)]
 pub struct LatencyModel {
     policy: LatencyPolicy,
-    streams: BTreeMap<(ParticipantId, Option<VenueId>), u64>,
+    streams: BTreeMap<(Direction, ParticipantId, Option<VenueId>), u64>,
 }
 
 impl LatencyModel {
@@ -246,56 +314,86 @@ impl LatencyModel {
     pub fn decide(
         &mut self,
         received_us: u64,
-        rtt: &RttEstimator,
+        rtt: &DelayEstimator,
         participant: ParticipantId,
         venue: Option<VenueId>,
     ) -> Result<AdmissionRecord, AdmissionError> {
-        let d_max = self.policy.max_one_way_delay_us;
-        let (one_way, max_one_way, path, jitter_position) = match self.policy.mode {
-            AdmissionMode::Physical => (0, 0, 0, None),
-            AdmissionMode::Equalized => (rtt.one_way_delay_us(d_max), d_max, 0, None),
-            AdmissionMode::Geographic => {
-                let path = self.policy.path(participant, venue);
-                let (jitter, position) = if path.jitter_us == 0 {
-                    (0, None)
-                } else {
-                    let (jitter, position) =
-                        self.draw_jitter(participant, venue, path.jitter_us)?;
-                    (jitter, Some(position))
-                };
-                (
-                    rtt.one_way_delay_us(d_max),
-                    d_max,
-                    path.latency_us + jitter,
-                    position,
-                )
-            }
-        };
-        // Written as `t_rx + (D_max − d̂) + L`: `one_way ≤ max_one_way`, so
-        // nothing underflows even when the monotonic `t_rx` is below `d̂`
-        // (early after host start), and `release ≥ received_us`.
-        let release_us = received_us
-            .saturating_add(max_one_way - one_way)
-            .saturating_add(path);
+        let delay = self.delay(Direction::Inbound, rtt, participant, venue)?;
         Ok(AdmissionRecord {
             mode: self.policy.mode,
             received_us,
-            one_way_delay_us: one_way,
-            max_one_way_delay_us: max_one_way,
-            path_latency_us: path,
-            jitter_position,
-            release_us,
+            one_way_delay_us: delay.one_way,
+            rtt_source: delay.source,
+            max_one_way_delay_us: delay.max_one_way,
+            path_latency_us: delay.path,
+            jitter_position: delay.jitter_position,
+            release_us: received_us.saturating_add(delay.hold()),
             arrival_sequence: 0,
+        })
+    }
+
+    /// How long to hold an outbound message for `participant` after commit
+    /// (ADR 0034 §3): `(D − d̂) + L(v, p)`, so it reaches every participant
+    /// at about `commit + D + L` whatever their distance. Zero in `physical`.
+    /// Session-level messages (heartbeats, probes) must never be held.
+    pub fn outbound_hold_us(
+        &mut self,
+        rtt: &DelayEstimator,
+        participant: ParticipantId,
+        venue: Option<VenueId>,
+    ) -> Result<u64, AdmissionError> {
+        Ok(self
+            .delay(Direction::Outbound, rtt, participant, venue)?
+            .hold())
+    }
+
+    fn delay(
+        &mut self,
+        direction: Direction,
+        rtt: &DelayEstimator,
+        participant: ParticipantId,
+        venue: Option<VenueId>,
+    ) -> Result<Delay, AdmissionError> {
+        let d_max = self.policy.max_one_way_delay_us;
+        let (path, jitter_position) = match self.policy.mode {
+            AdmissionMode::Physical => {
+                return Ok(Delay {
+                    one_way: 0,
+                    source: rtt.source(),
+                    max_one_way: 0,
+                    path: 0,
+                    jitter_position: None,
+                });
+            }
+            AdmissionMode::Equalized => (0, None),
+            AdmissionMode::Geographic => {
+                let path = self.policy.path(participant, venue);
+                if path.jitter_us == 0 {
+                    (path.latency_us, None)
+                } else {
+                    let (jitter, position) =
+                        self.draw_jitter(direction, participant, venue, path.jitter_us)?;
+                    (path.latency_us + jitter, Some(position))
+                }
+            }
+        };
+        Ok(Delay {
+            one_way: rtt.one_way_delay_us(d_max),
+            source: rtt.source(),
+            max_one_way: d_max,
+            path,
+            jitter_position,
         })
     }
 
     fn draw_jitter(
         &mut self,
+        direction: Direction,
         participant: ParticipantId,
         venue: Option<VenueId>,
         jitter_us: u64,
     ) -> Result<(u64, u64), AdmissionError> {
-        let key = (participant, venue);
+        let key = (direction, participant, venue);
         if !self.streams.contains_key(&key) && self.streams.len() >= MAX_JITTER_STREAMS {
             return Err(AdmissionError::TooManyStreams {
                 limit: MAX_JITTER_STREAMS,
@@ -304,7 +402,8 @@ impl LatencyModel {
         let position = self.streams.entry(key).or_insert(0);
         let current = *position;
         *position = position.wrapping_add(1);
-        let stream = stream_seed(self.policy.jitter_seed, participant, venue);
+        let stream =
+            stream_seed(self.policy.jitter_seed, participant, venue) ^ splitmix64(direction as u64);
         let draw = splitmix64(stream ^ splitmix64(current));
         Ok((draw % (jitter_us + 1), current))
     }
