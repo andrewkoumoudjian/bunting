@@ -33,7 +33,7 @@ enum Command {
         /// Versioned server configuration JSON.
         config: Option<PathBuf>,
     },
-    /// Run the native FIX participant/operator terminal.
+    /// Run the trading terminal over the Bunting Native Protocol.
     #[cfg(feature = "tui")]
     Tui {
         #[command(flatten)]
@@ -75,21 +75,29 @@ enum Command {
     },
 }
 
-pub async fn run() {
-    if let Err(error) = execute(std::env::args_os()).await {
+pub fn run() {
+    if let Err(error) = execute(std::env::args_os()) {
         eprintln!("bunting: {error}");
         std::process::exit(2);
     }
 }
 
-#[cfg_attr(not(feature = "tui"), allow(clippy::unused_async))]
-async fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
+fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     let arguments = compatibility_arguments(arguments);
     let cli = Cli::try_parse_from(arguments).map_err(|error| error.to_string())?;
     match cli.command {
         Command::Server { config } => run_server(config.as_deref()),
         #[cfg(feature = "tui")]
-        Command::Tui { options } => bunting_tui::run(options).await,
+        Command::Tui { options } => {
+            // `--local` starts this same executable as `bunting server`.
+            let server = std::env::current_exe()
+                .ok()
+                .map(|program| bunting_tui::ServerProgram {
+                    program,
+                    arguments: vec![OsString::from("server")],
+                });
+            bunting_tui::run(&options, server)
+        }
         Command::Init { config_dir } => init(config_dir.as_deref()),
         Command::Version => {
             println!(
@@ -354,8 +362,8 @@ mod tests {
             ["bunting", "server", "local.json"].map(OsString::from)
         );
         assert_eq!(
-            compatibility_arguments(["bunting-tui", "--fixture"].map(OsString::from)),
-            ["bunting", "tui", "--fixture"].map(OsString::from)
+            compatibility_arguments(["bunting-tui", "--local"].map(OsString::from)),
+            ["bunting", "tui", "--local"].map(OsString::from)
         );
     }
 
@@ -390,6 +398,6 @@ mod tests {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
         #[cfg(feature = "tui")]
-        assert!(Cli::try_parse_from(["bunting", "tui", "--fixture"]).is_ok());
+        assert!(Cli::try_parse_from(["bunting", "tui", "--local"]).is_ok());
     }
 }

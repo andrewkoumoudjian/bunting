@@ -8,3 +8,5 @@ The released native executable is named `bunting`, with `bunting-server` and
 `bunting-tui` as aliases routed by executable name. `bunting server <config>`
 runs the venue in-process by calling `bunting_server::runtime::run`
 (ADR 0044); keep server behavior in `apps/bunting-server`, not here.
+`bunting tui` passes this executable (as `bunting server`) to the terminal for
+`--local` practice venues (ADR 0047).

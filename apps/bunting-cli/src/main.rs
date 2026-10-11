@@ -4,9 +4,8 @@
 mod native;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
-    native::run().await;
+fn main() {
+    native::run();
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -1,0 +1,137 @@
+{
+  "schema_version": 2,
+  "scenario_id": 1,
+  "scenario_version": 1,
+  "reporting_currency": 1,
+  "instruments": [
+    {
+      "instrument_id": 1,
+      "symbol": "BNT",
+      "currency": 1,
+      "kind": "equity",
+      "multiplier": 1,
+      "shortable": false,
+      "opening_mark": 100
+    },
+    {
+      "instrument_id": 2,
+      "symbol": "QRC",
+      "currency": 1,
+      "kind": "equity",
+      "multiplier": 1,
+      "shortable": false,
+      "opening_mark": 100
+    }
+  ],
+  "listings": {
+    "1:1": {
+      "key": "1:1",
+      "symbol": "BNT",
+      "price_bounds": {
+        "min": 1,
+        "max": 1000000
+      }
+    },
+    "1:2": {
+      "key": "1:2",
+      "symbol": "QRC",
+      "price_bounds": {
+        "min": 1,
+        "max": 1000000
+      }
+    },
+    "2:2": {
+      "key": "2:2",
+      "symbol": "QRC",
+      "price_bounds": {
+        "min": 1,
+        "max": 1000000
+      }
+    }
+  },
+  "participants": {
+    "1": {
+      "participant_id": 1,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "2": {
+      "participant_id": 2,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "10": {
+      "participant_id": 10,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "11": {
+      "participant_id": 11,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "12": {
+      "participant_id": 12,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    }
+  },
+  "simulation": {
+    "clock": {
+      "now": 0,
+      "step_ns": 1000000,
+      "mode": {
+        "mode": "paced",
+        "step_interval_ns": 1000000
+      }
+    }
+  }
+}

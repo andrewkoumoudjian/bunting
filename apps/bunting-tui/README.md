@@ -1,72 +1,77 @@
 # Bunting trading terminal
 
-This native Ratatui workstation adapts the Longbridge Terminal component
-hierarchy and interaction model to Bunting. Production mode is a FIXT.1.1
-session with FIX 5.0 SP2 application semantics and is a
-initiator over configured TCP or TLS; it never reads or mutates
-`bunting-engine`. The embedded engine-backed acceptor remains available only
-behind `--fixture` for deterministic native testing.
+A terminal trading app for Bunting venues over the Bunting Native Protocol
+(ADR 0047). It shows every venue's book for the instrument you select side
+by side, the trades as they reach you, your orders, fills and account, and
+your connection with its measured round trips. You choose the venue for
+each order; each venue sits at its own distance, so a far venue answers
+later and its book is older by the time you see it.
 
-The terminal ships named `local`, `remote` and `cloudflare-gateway` profile
-templates. Profiles select endpoint, transport, CompIDs, username, credential
-environment variable, team, run, requested role, heartbeat and reset policy.
-Passwords and tokens are read from the named environment variable and are
-never persisted or shown in the bounded raw FIX journal.
-
-The default configuration path is `~/.config/bunting/terminal.json` (or
-`$XDG_CONFIG_HOME/bunting/terminal.json`). A custom file and profile can be
-selected without changing saved defaults:
+## Practise on your own machine
 
 ```bash
-export BUNTING_LOCAL_PASSWORD='...'
-cargo run --locked -p bunting-tui -- --profile local
-cargo run --locked -p bunting-tui -- \
-  --config ./terminal.json --profile remote
+bunting tui --local
 ```
 
-TLS profiles use platform trust roots and may add a PEM CA through `ca_file`:
+This starts a private venue (the same `bunting server` a host runs) with
+fresh certificates in `$XDG_STATE_HOME/bunting/local-venue`, and connects to
+it. Built-in agents quote BNT on venue 1; QRC is listed on venue 1 and on
+venue 2, two milliseconds away. Use `--venue-dir` to keep the files
+elsewhere and `--server-bin` to run another `bunting` or `bunting-server`.
+
+## Connect to a hosted venue
+
+Use the certificate the organizers registered for your team, with the same
+flags and environment as `bunting-trader`:
+
+```bash
+bunting tui --server venue.example.com:9443 \
+  --ca competition-ca.pem --cert team.pem --key team.key
+```
+
+Or save the venue in `$XDG_CONFIG_HOME/bunting/terminal.json` (paths are
+relative to the file) and run `bunting tui --profile finals`:
 
 ```json
 {
-  "kind": "tls",
-  "server_name": "fix.example.com",
-  "ca_file": "/absolute/path/to/competition-ca.pem"
+  "version": 2,
+  "default": "finals",
+  "profiles": {
+    "finals": {
+      "server": "venue.example.com:9443",
+      "ca": "competition-ca.pem",
+      "cert": "team.pem",
+      "key": "team.key"
+    }
+  }
 }
 ```
 
-Use `/workspace save NAME`, `/workspace load NAME`, and
-`/workspace remove NAME` to manage bounded named layouts. `R` reconnects a
-disconnected session while preserving its in-memory sequence/journal state;
-`/session reset` works only for a profile with `allow_sequence_reset: true` and
-requests `ResetSeqNumFlag(141)=Y`. The server remains authoritative over reset
-authorization and verified identity.
+The terminal reconnects by itself and resumes your private reports from
+where it left off.
 
-The embedded server also starts a deterministic local agent population. Each
-policy wake emits bounded intent into its own QUARCC execution engine, then the
-QUARCC adapter maps the resulting action to the same canonical market-command
-boundary used by a remote server. The human remains an independent FIX
-participant alongside those agents.
+## Keys
 
-The account, simulation, collaboration and administration workspaces are
-capability-gated. They show `BACKEND UNAVAILABLE` until the corresponding FIX
-report type is actually observed, and privileged projections remain hidden
-because the current server mapping does not return a verified role claim.
+| Key | Action |
+|---|---|
+| `↑` `↓` | instrument |
+| `←` `→` | venue |
+| `b` / `s` | buy / sell ticket on the selected venue |
+| `Tab`, `←` `→`, digits, `Enter` | in the ticket: field, change, edit, send |
+| `[` `]` | select an order |
+| `c` / `C` | cancel the selected order / all your orders |
+| `K` | kill switch (asks first) |
+| `r` | reload open orders and account |
+| `1`–`4` | orders, fills, account, log |
+| `?` / `q` | help / quit |
 
-Select any built-in policies by repeating or comma-separating `--agent`; the
-default population is a static liquidity provider, a zero-intelligence noise
-trader and a long-momentum trader. `--agent-tick-ms` controls wall-clock pacing
-without changing deterministic logical wake times:
+## What the numbers mean
 
-```bash
-cargo run --locked -p bunting-tui -- --fixture \
-  --agent avellaneda_stoikov,poisson_noise --agent-tick-ms 250
-```
+- **Order rt**: time from sending an order to the venue's first answer,
+  measured here: your network both ways plus the venue's distance both ways.
+- **Ping**: round trip to the venue host with no virtual distance.
+- **Trades, as they reached you**: every venue's trades in arrival order.
+  This is not a consolidated tape.
 
-Use `--endpoint 127.0.0.1:9880` for a process-local endpoint override. The
-loopback acceptor is a native test harness; the Cloudflare Worker remains
-outbound-TCP-only and does not accept raw TCP. A Cloudflare participant profile
-therefore points at the external gateway/acceptor from the product contract,
-never at raw Worker ingress.
-
-The component adaptations and their licenses are recorded in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Order-by-order books and the consolidated tape are FIX-only in BNP v1; the
+terminal will show them once the protocol carries them.

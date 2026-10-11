@@ -22,4 +22,4 @@ mod connection;
 pub use bnp_wire;
 pub use book::{FeedBook, FeedError};
 #[cfg(not(target_arch = "wasm32"))]
-pub use connection::{Client, ClientConfig, ClientError, certificate_fingerprint};
+pub use connection::{Client, ClientConfig, ClientError, ClientSender, certificate_fingerprint};

@@ -346,6 +346,15 @@ impl Client {
             .send(message)
     }
 
+    /// A handle that writes requests from another thread while this one
+    /// receives. Each send is written to the socket before it returns.
+    #[must_use]
+    pub fn sender(&self) -> ClientSender {
+        ClientSender {
+            writer: self.writer.clone(),
+        }
+    }
+
     /// The next server message, waiting at most `timeout`. Probes and
     /// heartbeats are handled by the reader and never returned.
     ///
@@ -385,6 +394,27 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         let _ = self.shutdown.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Writes requests on any thread for a [`Client`] received on another.
+/// Sends fail once the connection is closed.
+#[derive(Clone)]
+pub struct ClientSender {
+    writer: Arc<Mutex<Writer>>,
+}
+
+impl ClientSender {
+    /// Sends one request, written to the socket before this returns.
+    ///
+    /// # Errors
+    /// Returns an error when the connection is closed or the message
+    /// cannot be encoded.
+    pub fn send(&self, message: &ClientMessage) -> Result<(), ClientError> {
+        self.writer
+            .lock()
+            .map_err(|_| ClientError::Closed(Some("writer poisoned".to_owned())))?
+            .send(message)
     }
 }
 

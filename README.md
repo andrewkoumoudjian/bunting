@@ -41,10 +41,11 @@ that already exist. Windows users can download and extract the matching
 `.tar.gz` archive from
 [GitHub Releases](https://github.com/andrewkoumoudjian/bunting/releases).
 
-Start a self-contained terminal fixture:
+Practise in the trading terminal against a private local venue (the real
+server, started for you with throwaway certificates):
 
 ```bash
-bunting tui --fixture
+bunting tui --local
 ```
 
 To run the FIX venue server, review the installed credentials and network
@@ -155,7 +156,8 @@ reviewed package boundary. Generated release assembly belongs under ignored
 - `bunting-rs`: composition crate and competition archive replay;
 - `apps/bunting-server`: venue host (FIX acceptor, admin, writer, durable origin, built-in agents);
 - `apps/bunting-cli`: native CLI (TUI, init, replay, scoring);
-- `apps/bunting-tui`: Longbridge-derived Ratatui trading terminal and FIX test harness;
+- `packages/bunting-trading-state`: participant trading state shared by the trading apps (books, trades, orders, account, latency) and the local practice venue (ADR 0047);
+- `apps/bunting-tui`: Ratatui trading terminal over BNP, a renderer of `bunting-trading-state`;
 - `bindings/*`: C ABI, Python and C++ bindings over `bunting-rs`.
 
 ## Checks

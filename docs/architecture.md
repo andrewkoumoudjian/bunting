@@ -55,7 +55,7 @@ venue. Every transport, UI and host is an adapter.
 ### Current
 
 ```text
-FIX client (contestant engine, bunting TUI)
+FIX client (contestant engine)
    │  TCP; TLS only via a trusted terminating proxy
    ▼
 bunting-server  (std threads, blocking sockets; runs as `bunting server`, ADR 0044)
@@ -119,7 +119,8 @@ FIX client ──┐                         ┌── certified app / TUI / bin
 | `packages/browser-wire` | Unserved browser JSON transport — **retire** under ADR 0031 |
 | `bunting-rs` | Curated composition crate and competition archive replay |
 | `apps/bunting-server` | Venue host: acceptor, admin, writer, storage, scenario runtime |
-| `apps/bunting-tui`, `apps/bunting-cli` | Native participant/operator terminal and CLI |
+| `packages/bunting-trading-state` | Participant trading state for every trading app, session runner over `bunting-client`, local practice venue (ADR 0047) |
+| `apps/bunting-tui`, `apps/bunting-cli` | Trading terminal over BNP (renders `bunting-trading-state`) and CLI |
 | `bindings/*` | C ABI, Python, C++ over `bunting-rs` |
 
 Dependency direction: `packages/*` → `bunting-rs` → `apps/*`, `bindings/*`.
@@ -238,12 +239,13 @@ private reports keyed by committed event sequence with resume from a
 retained window, direct L2 feeds, listings, open orders and account
 snapshots, probes and Ping/Pong. Same sequencer and latency path as FIX.
 Native builds only. Reference client: `packages/bunting-client` and
-`apps/bunting-trader`. Admin HTTP on loopback. The browser contract has no
+`apps/bunting-trader`; the trading terminal (`apps/bunting-tui`, slice of
+ADR 0047) renders `packages/bunting-trading-state` over the same client. Admin HTTP on loopback. The browser contract has no
 host.
 
 **Target (ADR 0031):** instructor/admin control and run/news streams over
-BNP; L3 and consolidated feeds over BNP; the TUI, a GUI app and bindings on
-`bunting-client`. Nothing else accepts participant
+BNP; L3 and consolidated feeds over BNP; a GUI app (on `bunting-trading-state`) and bindings
+on `bunting-client`. Nothing else accepts participant
 traffic.
 
 ## 9. Persistence, replay and archive

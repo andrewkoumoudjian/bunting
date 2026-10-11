@@ -41,8 +41,6 @@ rustix = { version = "=1.1.4", features = ["fs", "net"] }
 bunting-client.workspace = true
 bunting-risk-engine = { path = "../../packages/risk-engine" }
 bunting-rs = { path = "../../bunting-rs" }
-bunting-tui = { path = "../bunting-tui" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Test-only certificate authority for the BNP mutual-TLS tests (ADR 0040).
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 
