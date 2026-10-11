@@ -16,7 +16,7 @@
   [ADR 0042](0042-bnp-operators-and-run-stream.md): instructor and
   administrator certificates and the run stream. Extended in slice 44: a
   participant's resting and reduced reports carry its order's public
-  reference (decision 13). Extended in slice 45 by
+  reference (decision 13). Extended in slice 46 by
   [ADR 0043](0043-bnp-tenders-and-otc.md): tenders and OTC negotiations.
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
@@ -125,7 +125,7 @@ hold were FIX-typed. The server had no in-process TLS.
   over the message type; FIX behavior is unchanged.
 - Order-by-order and consolidated feeds came in slice 35, instructor/admin
   control and the run stream in slice 41 (ADR 0042), tenders and OTC
-  negotiations in slice 45 (ADR 0043).
+  negotiations in slice 46 (ADR 0043).
 
 ## Rejected alternatives
 

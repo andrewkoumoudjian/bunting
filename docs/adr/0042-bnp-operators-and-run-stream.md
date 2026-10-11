@@ -58,7 +58,7 @@ classroom use beside the competition.
   same virtual distance as their reports.
 - `open_tender`, OTC, cashflow and facility commands remain FIX-only (their
   payloads need their own typed layouts) and `SetPacing` has no interface.
-  Amended by [ADR 0043](0043-bnp-tenders-and-otc.md) (slice 45): tenders
+  Amended by [ADR 0043](0043-bnp-tenders-and-otc.md) (slice 46): tenders
   and OTC are on BNP, and `OperatorCommand` request IDs are u64.
 
 ## Rejected alternatives

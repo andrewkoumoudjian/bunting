@@ -1,6 +1,6 @@
 # ADR 0043: Tenders and OTC negotiations over BNP
 
-- Status: **Accepted** (2026-10-11), implemented in slice 45. Extends
+- Status: **Accepted** (2026-10-11), implemented in slice 46. Extends
   [ADR 0040](0040-bunting-native-protocol-v1.md) and
   [ADR 0042](0042-bnp-operators-and-run-stream.md); implements the deal part
   of [ADR 0031](0031-proposed-bunting-native-client-protocol.md).
