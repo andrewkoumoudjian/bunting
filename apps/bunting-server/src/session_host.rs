@@ -61,6 +61,12 @@ pub(crate) fn handle_fix_connection(
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))
         .map_err(|error| format!("cannot configure FIX read timeout: {error}"))?;
+    // A frame the socket stops taking for `write_timeout_ms` ends the
+    // session (`write_frame`), so a slow or vanished consumer never holds
+    // the session loop, its heartbeat checks or the participant's claim.
+    stream
+        .set_write_timeout(Some(Duration::from_millis(config.write_timeout_ms)))
+        .map_err(|error| format!("cannot configure FIX write timeout: {error}"))?;
     let wire_limits = WireLimits {
         max_message_bytes: config.max_message_bytes,
         max_buffer_bytes: config.max_message_bytes.saturating_mul(2),
@@ -1047,9 +1053,16 @@ fn process_session_actions(
 ) -> Result<(), String> {
     for action in actions {
         match action {
-            SessionAction::Send(frame) => stream
-                .write_all(&frame)
-                .map_err(|error| format!("FIX socket write failed: {error}"))?,
+            SessionAction::Send(frame) => write_frame(stream, &frame).map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) {
+                    "FIX peer stopped reading for write_timeout_ms; session closed".to_owned()
+                } else {
+                    format!("FIX socket write failed: {error}")
+                }
+            })?,
             SessionAction::Persist(_) => persist_session(session_path, session, application)?,
             SessionAction::Disconnect => return Err("FIX session requested disconnect".to_owned()),
             SessionAction::Application(_) => {
@@ -1059,6 +1072,48 @@ fn process_session_actions(
         }
     }
     Ok(())
+}
+
+/// Writes one frame within the socket's write timeout. Each blocked write
+/// call is bounded by that timeout, but a reader that drains a few bytes at
+/// a time could keep `write_all` alive for minutes, so once a frame goes
+/// out partially the rest must follow within one more timeout.
+fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> std::io::Result<()> {
+    let written = loop {
+        match stream.write(frame) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            result => break result?,
+        }
+    };
+    if written == frame.len() {
+        return Ok(());
+    }
+    let limit = stream
+        .write_timeout()?
+        .ok_or_else(|| std::io::Error::other("FIX write timeout is not configured"))?;
+    let deadline = Instant::now() + limit;
+    let mut rest = &frame[written..];
+    let result = loop {
+        if rest.is_empty() {
+            break Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the peer stopped reading",
+            ));
+        }
+        stream.set_write_timeout(Some(remaining))?;
+        match stream.write(rest) {
+            Ok(0) => break Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => rest = &rest[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => break Err(error),
+        }
+    };
+    stream.set_write_timeout(Some(limit))?;
+    result
 }
 
 fn persist_session(

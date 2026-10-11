@@ -128,6 +128,12 @@ round, and the scenario publishes each participant's risk limits, including
 orders do not count). The engine enforces risk limits for the participant
 across all of its connections. A rejected message names the limit it exceeded.
 
+Read what the venue sends you. A FIX connection whose socket stops taking a
+message for `write_timeout_ms` (5 seconds by default) is closed, so a client
+that hangs or vanishes frees its session and can log on again at once.
+Log on again with your FIX sequence numbers and request a resend of what you
+missed, as with any FIX disconnect.
+
 Execution reports for a team's orders, including fills on resting orders
 caused by other teams or built-in agents, are delivered on that team's
 connection after the venue commits them, over your virtual path from that

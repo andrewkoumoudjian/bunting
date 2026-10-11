@@ -31,6 +31,16 @@ pub struct Client {
 impl Client {
     pub fn logon(port: u16, comp_id: &str, username: &str, password: &str) -> Result<Self, String> {
         let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
+        Self::logon_on(stream, comp_id, username, password)
+    }
+
+    /// [`Self::logon`] over a stream the test connected itself.
+    pub fn logon_on(
+        stream: TcpStream,
+        comp_id: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, String> {
         // A well-built client: Nagle off, so small orders are not held for
         // the peer's delayed ACK (~40 ms on Linux), which real latency
         // would otherwise rightly charge to this client (ADR 0035).

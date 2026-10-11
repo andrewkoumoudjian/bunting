@@ -69,6 +69,12 @@ pub struct FixConfig {
     pub run_id: u128,
     pub roster: Vec<RosterEntry>,
     pub heartbeat_seconds: u32,
+    /// How long one write to a participant's socket may make no progress
+    /// before the venue ends that session, as a slow consumer: a client
+    /// that stops reading must not hold its session, and so block its own
+    /// reconnect, until the kernel abandons the connection.
+    #[serde(default = "default_write_timeout_ms")]
+    pub write_timeout_ms: u64,
     pub max_connections: usize,
     /// Window for `max_messages_per_interval`, a per-participant rate limit.
     /// It has no effect on ordering (ADR 0034).
@@ -116,6 +122,10 @@ pub struct AdmissionConfig {
     /// the map.
     #[serde(default = "default_consolidated_processing_us")]
     pub consolidated_processing_us: u64,
+}
+
+const fn default_write_timeout_ms() -> u64 {
+    5_000
 }
 
 const fn default_consolidated_processing_us() -> u64 {
@@ -290,6 +300,7 @@ impl ServerConfig {
                     },
                 ],
                 heartbeat_seconds: 30,
+                write_timeout_ms: default_write_timeout_ms(),
                 max_connections: 2,
                 rate_limit_window_ms: 100,
                 max_messages_per_interval: 64,
@@ -572,9 +583,10 @@ fn validate_fix(fix: &FixConfig, profile: DeploymentProfile) -> Result<(), Confi
         || fix.max_journal_messages == 0
         || fix.max_pending_inbound == 0
         || fix.heartbeat_seconds == 0
+        || !(1..=60_000).contains(&fix.write_timeout_ms)
     {
         return Err(ConfigError(
-            "FIX bounds are invalid; max_connections must fit the roster, rate_limit_window_ms must be 1..=60000, and message, wire, heartbeat, journal and pending limits must be positive"
+            "FIX bounds are invalid; max_connections must fit the roster, rate_limit_window_ms and write_timeout_ms must be 1..=60000, and message, wire, heartbeat, journal and pending limits must be positive"
                 .to_owned(),
         ));
     }
@@ -677,6 +689,7 @@ mod tests {
                 participant_id: 1,
             }],
             heartbeat_seconds: 30,
+            write_timeout_ms: default_write_timeout_ms(),
             max_connections: 1,
             rate_limit_window_ms: 100,
             max_messages_per_interval: 64,
