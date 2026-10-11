@@ -4,12 +4,12 @@
   rebuild, to "reimplement the app using rust gpui components from the zed
   library and from the long bridge components library and refer to all
   starred gpui projects as reference". Phase 1 (this ADR and the
-  `apps/bunting-desk` skeleton) lands first; the trading views land once the
-  TUI's shared state crate is on `main`.
+  `apps/bunting-desk` skeleton) landed in slice 31; the trading views build
+  on `packages/bunting-trading-state` (ADR 0047, slice 30).
 - Date: 2026-10-10
 - Depends on: ADR 0031 (FIX and BNP only), ADR 0035 (latency), ADR 0036
   (market data), ADR 0040 (BNP v1), ADR 0044 (native `bunting server`), and
-  the TUI rebuild's ADRs 0047–0049 for the shared client state.
+  ADR 0047 (shared `bunting-trading-state`, rendered by the TUI).
 - Reserves: ADRs 0051 and 0052 for follow-up desktop decisions.
 
 ## Context
@@ -84,7 +84,7 @@ Andrew's public GitHub stars page unless marked):
 3. **The app is its own Cargo workspace**, listed in the root workspace's
    `exclude`, with its own `Cargo.lock` and `rust-toolchain.toml` pinned to
    Rust 1.97. It depends on first-party packages (`bunting-client`, and the
-   shared state crate once it exists) by path. This is the one sanctioned
+   `bunting-trading-state`) by path. This is the one sanctioned
    exception to "the root owns the single `Cargo.lock`": the GPUI graph
    needs a newer compiler than the venue, pulls about 850 crates and system
    graphics libraries, and cannot run on `wasm32-unknown-unknown` the way
@@ -95,7 +95,7 @@ Andrew's public GitHub stars page unless marked):
    --locked` and `git diff --check`, and a CI job runs them on Linux,
    macOS and Windows.
 4. **Layering.** `bunting-client` owns the BNP connection. The shared state
-   crate from the TUI rebuild owns session state, books, tape, orders,
+   crate, `bunting-trading-state` (ADR 0047), owns session state, books, tape, orders,
    fills, positions and latency, and is the only model. `bunting-desk` owns
    GPUI views, layout and input. One I/O thread owns the `Client`, forwards
    every `ServerMessage` to the UI through a bounded channel and takes
@@ -112,6 +112,13 @@ Andrew's public GitHub stars page unless marked):
    and the order ticket on the right, open orders, fills, positions and
    account at the bottom, and connection and latency in the status bar.
    Layout persists per user under a versioned key.
+   Visual direction (owner, 2026-10-10: "zed and delta has very good
+   ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
+   a status bar, a command palette, keyboard first) for the trading
+   screen, and the Delta portfolio app's clear account presentation
+   (*inferred*: Delta the portfolio tracker, not the `delta` diff pager)
+   for positions, P&L and account. Both are design references only; no
+   source or assets are copied.
 7. **Realism rules for the UI** (ADR 0035):
    - every order names its venue; there is no default router and no
      "best venue" button that hides the choice;
