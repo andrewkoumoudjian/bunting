@@ -75,6 +75,7 @@ transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
 | `implementation-log/` | Current | Per-slice record of changes and checks |
 | `plans/2026-10-07-evidence-led-core-roadmap.md` | Current (slice definitions) | Ordering superseded by the 2026-10-09 note §8 |
 | `research/` | Current as dated evidence | Point-in-time; later commits may have changed the code |
+| `reviews/` | Current as dated evidence | Independent reviews; findings name the commit reviewed and stay open until a fix commit cites them |
 | `specs/bunting-product-contract.md` | Target | Product boundary; interfaces per ADR 0031 |
 | `specs/bunting-fix-competition-profile.md` | Current | FIX profile; admission timing changes with ADR 0030 |
 | `specs/bnp-v1.md` | Current | Bunting Native Protocol v1 wire contract (ADR 0040, slice 25) |
