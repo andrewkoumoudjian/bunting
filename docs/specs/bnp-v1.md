@@ -1,7 +1,7 @@
 # Bunting Native Protocol, version 1
 
 - Status: **Current** (slice 25; order-by-order and tape feeds and access
-  delay added in slice 35; operators and the run stream in slice 39,
+  delay added in slice 35; operators and the run stream in slice 41,
   [ADR 0042](../adr/0042-bnp-operators-and-run-stream.md)). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
 - Code: `packages/bnp-wire` (types and codec; the field order in
   `src/codec.rs` is this contract), `packages/bunting-application/src/bnp.rs`

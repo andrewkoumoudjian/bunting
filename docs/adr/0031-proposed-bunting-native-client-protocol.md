@@ -8,7 +8,7 @@
   (registered certificate fingerprint, not subject). Since slice 29 the
   FIX/BNP parity test (validation 4) runs and CRLs reload live
   ([ADR 0041](0041-bnp-live-certificate-revocation.md)). Instructor/admin
-  control and run/news streams are built in slice 39
+  control and run/news streams are built in slice 41
   ([ADR 0042](0042-bnp-operators-and-run-stream.md)). The GUI app and
   bindings remain Target.
 - Would supersede: the browser procedure contract's role in ADR 0016/0020
