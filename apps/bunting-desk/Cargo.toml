@@ -18,6 +18,8 @@ name = "bunting-desk"
 path = "src/main.rs"
 
 [dependencies]
+bunting-trading-state = { path = "../../packages/bunting-trading-state" }
+clap = { version = "4.6.1", features = ["derive", "env"] }
 # Zed's GPUI (Longbridge's gpui-pre snapshot) plus Longbridge's components,
 # exactly pinned. Upgrades are deliberate, one version at a time.
 gpui-kit = { version = "=0.7.1", default-features = false, features = ["component", "assets"] }
