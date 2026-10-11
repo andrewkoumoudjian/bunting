@@ -57,7 +57,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0040 | Bunting Native Protocol v1: fixed binary frames, TLS 1.3 mTLS with a certificate-fingerprint roster, stateless identities, resume by committed sequence, same latency path as FIX (slice 25); per-participant kill switch, ordered private stream and pre-auth limits (slice 32); order-by-order and tape feeds over BNP (slice 35) |
 | 0044 | Host: native `bunting` binary (Linux, macOS, Windows) and container image; WASIX retired (slice 27) |
 | 0047 | Trading terminal as a BNP client: shared `bunting-trading-state` (pure model, session runner, local practice venue) rendered by `bunting-tui`; no embedded engine |
-| 0050 | Desktop trading app `apps/bunting-desk` on GPUI and Longbridge's `gpui-kit`, its own Cargo workspace on Rust 1.97, rendering `bunting-trading-state`; skeleton (slice 31), trading views **Target** |
+| 0050 | Desktop trading app `apps/bunting-desk` on GPUI and Longbridge's `gpui-kit`, its own Cargo workspace on Rust 1.97, rendering `bunting-trading-state`: per-venue books, ticket with venue choice, trades, orders, fills, positions, account, kill switch (slices 31–32); release archives **Target** |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,

@@ -176,7 +176,7 @@ impl Render for BooksPanel {
                 Button::new(SharedString::from(format!("instrument-{id}")))
                     .label(each.symbol.clone())
                     .small()
-                    .toggled(selected)
+                    .when_toggled(selected)
                     .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
                         desk.select_instrument(id, cx);
                     })),
@@ -272,6 +272,7 @@ impl BooksPanel {
             .test_support()
             .flex_1()
             .min_w(px(220.))
+            .max_w(px(420.))
             .p_2()
             .gap_1()
             .border_1()
@@ -511,7 +512,7 @@ impl Render for TicketPanel {
                 )))
                 .label(label)
                 .small()
-                .toggled(chosen == Some(listing))
+                .when_toggled(chosen == Some(listing))
                 .on_click(window.listener_for(
                     &self.desk,
                     move |desk, _, _, cx| {
@@ -553,7 +554,7 @@ impl Render for TicketPanel {
                     Button::new("ticket-limit")
                         .label("Limit")
                         .small()
-                        .toggled(self.kind == TicketKind::Limit)
+                        .when_toggled(self.kind == TicketKind::Limit)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.kind = TicketKind::Limit;
                             cx.notify();
@@ -563,7 +564,7 @@ impl Render for TicketPanel {
                     Button::new("ticket-market")
                         .label("Market")
                         .small()
-                        .toggled(self.kind == TicketKind::Market)
+                        .when_toggled(self.kind == TicketKind::Market)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.kind = TicketKind::Market;
                             cx.notify();
@@ -593,7 +594,7 @@ impl Render for TicketPanel {
                 Button::new(SharedString::from(format!("ticket-tif-{}", tif.label())))
                     .label(tif.label())
                     .xsmall()
-                    .toggled(self.tif == tif)
+                    .when_toggled(self.tif == tif)
                     .disabled(self.kind == TicketKind::Market)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.tif = tif;

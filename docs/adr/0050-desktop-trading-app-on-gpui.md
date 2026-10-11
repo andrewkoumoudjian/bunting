@@ -97,10 +97,13 @@ Andrew's public GitHub stars page unless marked):
 4. **Layering.** `bunting-client` owns the BNP connection. The shared state
    crate, `bunting-trading-state` (ADR 0047), owns session state, books, tape, orders,
    fills, positions and latency, and is the only model. `bunting-desk` owns
-   GPUI views, layout and input. One I/O thread owns the `Client`, forwards
-   every `ServerMessage` to the UI through a bounded channel and takes
-   outbound commands through another; GPUI's foreground executor applies
-   them to the state and re-renders. No async runtime is added.
+   GPUI views, layout and input. The shared crate's `Session` keeps the
+   `Client` connected on its own thread and queues venue events (bounded);
+   the app's `Desk` entity drains them every 4 ms on GPUI's foreground
+   executor, stamping each with the instant the session received it, and
+   redraws at most every 16 ms. Orders, cancels and the kill switch are
+   written on the UI thread the moment the user acts, never queued behind
+   the drain. No async runtime is added.
 5. **Hosted first, local by spawning a venue.** The app connects to a hosted
    venue with the participant's certificate, CA and key. Local play starts a
    child `bunting server <config>` on loopback and connects over BNP like any
@@ -185,14 +188,17 @@ Andrew's public GitHub stars page unless marked):
 - Headless view tests with `gpui-kit`'s `test-support` render the workspace
   and drive order entry, cancel and kill switch against scripted server
   messages.
-- An end-to-end test starts a local `bunting server`, connects the app's I/O
-  layer over BNP and sees an order accepted and filled.
+- End to end (slice 32, by hand): `bunting-desk --local` under Xvfb with
+  Mesa's software Vulkan started a real `bunting server`, showed its live
+  book and trades, and a buy picked from the book was accepted and filled
+  (order round trip shown, account debited). An automated end-to-end test
+  is still to come.
 - The seven root gates still pass, and `cargo tree` of the root workspace
   contains no `gpui` crate.
 
 ## Operational impact
 
-The app ships as its own release archive per platform once Phase 2 lands.
+The app is to ship as its own release archive per platform (not yet built).
 CI gains one desk job per OS. The root workspace, its lockfile and the
 venue's release are unchanged.
 
