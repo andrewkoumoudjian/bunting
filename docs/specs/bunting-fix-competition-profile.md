@@ -8,7 +8,7 @@ Orchestra repository as the normative standard dictionary. The released
 `rustyfix-dictionary` crate supplies the runtime FIXT.1.1 and FIX 5.0 SP2
 QuickFIX dictionaries; it is a validation implementation, not the normative
 source. Bunting's generated Orchestra overlay defines only project-owned
-Bunting `U*` messages plus tags `10000`-`10021` for simulation concepts. The
+Bunting `U*` messages plus tags `10000`-`10022` for simulation concepts. The
 machine-readable dictionary is
 [`schemas/fix/bunting.fixlatest.competition.v1.json`](../../schemas/fix/bunting.fixlatest.competition.v1.json).
 The existing `simfix-*` packages implement only the subset marked implemented
@@ -54,6 +54,15 @@ side, quantity, order type, price and TIF are used. Bunting tags carry run,
 command, correlation, expected version and logical time. Composite, bulk-cancel
 and special order actions use `U7` or an explicitly versioned `U*` payload until
 a suitable standard FIX workflow is selected.
+
+Implemented today on `D` and `G`: TimeInForce (59) absent or 0 DAY (as in
+standard FIX), 1 GTC, 3 IOC, 4 FOK, 6 GTD with `BuntingExpireTimeNs` (10022)
+in run-time nanoseconds (Bunting's run clock has no UTC date, so standard
+ExpireTime 126 is not used); ExecInst (18) = 6 post-only; DisplayQty (1138)
+iceberg, 0 < 1138 <= 38. A market order (40=1) takes 59 absent, 0 or 3 and
+neither 18 nor 1138. An order its time in force ends (DAY at the close, GTD
+at its time, an IOC or FOK remainder) is reported with ExecType and
+OrdStatus C (expired); a market order's unfilled rest is canceled (4).
 
 ExecutionReport `8`, OrderCancelReject `9` and BusinessMessageReject `j` report
 only committed outcomes. Reports preserve ClOrdID/OrigClOrdID/OrderID/ExecID,

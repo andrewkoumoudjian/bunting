@@ -90,6 +90,30 @@ each order to the right venue.
   which venues publish them; the consolidated tape never does
   (ADR 0036).
 
+## Order types and time in force
+
+FIX and BNP take the same orders:
+
+- **Limit** at a price, and **market**, which takes what is on the other
+  side now and cancels the rest (it is never posted).
+- **Time in force** on a limit: DAY (expires at the venue's close), GTC
+  (until canceled), IOC (fills what it can at once; the rest expires),
+  FOK (fills completely at once or expires), GTD (expires at a run time
+  you give). On FIX it is TimeInForce (59): no 59 means DAY, as in
+  standard FIX, so send 59=1 for an order that should rest overnight;
+  0 DAY, 1 GTC, 3 IOC, 4 FOK, 6 GTD with `BuntingExpireTimeNs` (10022)
+  in run-time nanoseconds. A venue without a trading calendar never
+  closes, so there a DAY order rests until canceled. A market order on
+  FIX takes no 59, 59=0 or 59=3.
+- **Post-only** (FIX ExecInst 18=6): rejected (`PostOnlyWouldCross`)
+  instead of trading if it would take liquidity on arrival.
+- **Iceberg** (FIX DisplayQty 1138): shows that much at a time; each
+  refreshed slice joins the back of the queue.
+
+IOC and FOK cannot be post-only or icebergs. An order a time in force
+ends (a DAY order at the close, a GTD order at its time, the rest of an
+IOC or FOK) is reported as expired (FIX ExecType C), not canceled.
+
 ## Trading sessions and auctions (ADR 0037)
 
 The venue keeps one run clock: every order, cancel and request is stamped

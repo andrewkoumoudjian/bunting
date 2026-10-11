@@ -101,6 +101,8 @@ fn fix_mapped_and_canonical_commands_commit_identical_authoritative_state()
         (38, "3"),
         (40, "2"),
         (44, "101"),
+        // GTC, matching the canonical `OrderKind::Limit`; no 59 is DAY.
+        (59, "1"),
     ] {
         message.push(tag, value);
     }

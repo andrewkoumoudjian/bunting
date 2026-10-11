@@ -232,8 +232,15 @@ fn a_paced_run_skips_the_night_and_carries_orders_to_the_next_day() -> Result<()
     });
     let (port, admin_port) = start_with(&scenario)?;
     let mut buyer = Client::logon(port, "HUMAN", "participant", "bunting-local-dev")?;
-    buyer.send(order("1", "buy", 1, Some(99)))?;
+    // A GTC bid (59=1) and a DAY bid (no 59, as in FIX).
+    let mut good_till_canceled = order("1", "buy", 1, Some(99));
+    good_till_canceled.push(59, "1");
+    buyer.send(good_till_canceled)?;
     buyer.wait_report("1", "0")?;
+    buyer.send(order("3", "buy", 1, Some(98)))?;
+    buyer.wait_report("3", "0")?;
+    // Day 0's close expires the DAY bid (ExecType C), not cancels it.
+    buyer.wait_report("3", "C")?;
     // Day 0 closes one second in; the next pre-open is an hour of run time
     // later, reached at once instead of an hour from now.
     let started = Instant::now();
@@ -253,11 +260,17 @@ fn a_paced_run_skips_the_night_and_carries_orders_to_the_next_day() -> Result<()
         "took {:?}",
         started.elapsed()
     );
-    // Day 1 trades from the open, and the GTC bid carried overnight.
+    // Day 1 trades from the open.
     let mut seller = Client::logon(port, "TEAM2", "team2", "bunting-team2-dev")?;
     std::thread::sleep(Duration::from_millis(400));
-    seller.send(order("2", "sell", 1, Some(99)))?;
+    // An IOC offer for two fills against the one GTC bid that carried
+    // overnight; its time in force ends the rest (ExecType C) instead of
+    // letting it rest.
+    let mut immediate = order("2", "sell", 2, Some(98));
+    immediate.push(59, "3");
+    seller.send(immediate)?;
     seller.wait_report("2", "F")?;
+    seller.wait_report("2", "C")?;
     buyer.wait_report("1", "F")?;
     Ok(())
 }

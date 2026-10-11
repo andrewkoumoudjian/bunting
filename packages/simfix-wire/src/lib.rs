@@ -388,7 +388,7 @@ const STANDARD_HEADER_TAGS: &[u32] = &[49, 56, 34, 43, 52, 122];
 const NEW_ORDER_SINGLE: MessageRule = MessageRule {
     msg_type: "D",
     required_tags: &[11, 48, 207, 54, 38, 40],
-    allowed_tags: &[11, 48, 207, 54, 38, 40, 44, 59, 60, 10021],
+    allowed_tags: &[11, 48, 207, 54, 38, 40, 44, 59, 18, 1138, 60, 10021, 10022],
 };
 const CANCEL_REQUEST: MessageRule = MessageRule {
     msg_type: "F",
@@ -398,7 +398,7 @@ const CANCEL_REQUEST: MessageRule = MessageRule {
 const REPLACE_REQUEST: MessageRule = MessageRule {
     msg_type: "G",
     required_tags: &[11, 41, 48, 54, 38, 40],
-    allowed_tags: &[11, 41, 37, 48, 54, 38, 40, 44, 59, 60],
+    allowed_tags: &[11, 41, 37, 48, 54, 38, 40, 44, 59, 18, 1138, 60, 10022],
 };
 const STATUS_REQUEST: MessageRule = MessageRule {
     msg_type: "H",
@@ -506,7 +506,7 @@ impl CompetitionDictionary {
         for field in &message.fields {
             if self.session.field_by_tag(field.tag).is_none()
                 && self.application.field_by_tag(field.tag).is_none()
-                && !(10_000..=10_021).contains(&field.tag)
+                && !(10_000..=10_022).contains(&field.tag)
             {
                 return Err(WireError::UnknownTag(field.tag));
             }

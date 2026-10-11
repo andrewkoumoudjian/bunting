@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 //! FIX 5.0 SP2 application mapping with session concerns kept outside market authority.
 
-use bunting_market_events::{NewsAudience, OrderKind, Side};
+use bunting_market_events::{NewsAudience, OrderKind, Side, TimeInForcePolicy};
 use bunting_market_types::{
-    CurrencyId, InstrumentId, ListingKey, MoneyMinor, NewsId, ParticipantId, PriceTicks,
-    QuantityLots, VenueId,
+    CurrencyId, InstrumentId, ListingKey, LogicalTimeNs, MoneyMinor, NewsId, ParticipantId,
+    PriceTicks, QuantityLots, VenueId,
 };
 use quarcc_execution_engine::{
     ExecutionIntent, NormalizedVenueReport, VenueReportKind,
@@ -635,12 +635,61 @@ fn parse_side(value: &str) -> Result<Side, MappingError> {
         _ => Err(MappingError::InvalidTag(54)),
     }
 }
+/// Order type (40) with its time in force (59) and order options.
+///
+/// As in FIX, an order without 59 is a DAY order: it expires at its venue's
+/// close (with no trading calendar a day never ends). 59=1 GTC, 3 IOC,
+/// 4 FOK, 6 GTD with `BuntingExpireTimeNs` (10022) in run time. `ExecInst`
+/// (18) = 6 (participate, don't initiate) makes a limit order post-only;
+/// `DisplayQty` (1138) makes it an iceberg showing that much at a time. A
+/// market order is immediate-or-cancel: it takes 59 absent, 0 or 3 and no
+/// options. The engine still judges whether a policy fits the session.
 fn parse_order_kind(message: &FixMessage) -> Result<OrderKind, MappingError> {
+    let post_only = match message.value(18) {
+        None => false,
+        Some("6") => true,
+        Some(_) => return Err(MappingError::InvalidTag(18)),
+    };
+    let display_quantity = if message.value(1138).is_some() {
+        let display = parse::<i64>(message, 1138)?;
+        if display <= 0 || display > parse::<i64>(message, 38)? {
+            return Err(MappingError::InvalidTag(1138));
+        }
+        Some(QuantityLots::new(display))
+    } else {
+        None
+    };
+    if message.value(10022).is_some() && message.value(59) != Some("6") {
+        return Err(MappingError::InvalidTag(10022));
+    }
+    let time_in_force = match message.value(59) {
+        None | Some("0") => TimeInForcePolicy::Day,
+        Some("1") => TimeInForcePolicy::Gtc,
+        Some("3") => TimeInForcePolicy::Ioc,
+        Some("4") => TimeInForcePolicy::Fok,
+        Some("6") => TimeInForcePolicy::Gtd {
+            expires_at: LogicalTimeNs::new(parse(message, 10022)?),
+        },
+        Some(_) => return Err(MappingError::InvalidTag(59)),
+    };
     match required(message, 40)? {
-        "1" => Ok(OrderKind::Market),
-        "2" => Ok(OrderKind::Limit {
-            price: PriceTicks::new(parse(message, 44)?),
-        }),
+        "1" if post_only || display_quantity.is_some() => Err(MappingError::UnsupportedOrderType),
+        "1" => match time_in_force {
+            TimeInForcePolicy::Day | TimeInForcePolicy::Ioc => Ok(OrderKind::Market),
+            _ => Err(MappingError::InvalidTag(59)),
+        },
+        "2" => {
+            let price = PriceTicks::new(parse(message, 44)?);
+            if time_in_force == TimeInForcePolicy::Gtc && !post_only && display_quantity.is_none() {
+                return Ok(OrderKind::Limit { price });
+            }
+            Ok(OrderKind::LimitWithPolicy {
+                price,
+                time_in_force,
+                post_only,
+                display_quantity,
+            })
+        }
         _ => Err(MappingError::UnsupportedOrderType),
     }
 }
@@ -688,10 +737,14 @@ mod tests {
             Err(MappingError::Dictionary(WireError::MissingRequiredTag(207)))
         );
         assert_eq!(order.quantity, QuantityLots::new(3));
+        // No TimeInForce (59) is a DAY order, as in FIX.
         assert_eq!(
             order.kind,
-            OrderKind::Limit {
-                price: PriceTicks::new(101)
+            OrderKind::LimitWithPolicy {
+                price: PriceTicks::new(101),
+                time_in_force: TimeInForcePolicy::Day,
+                post_only: false,
+                display_quantity: None,
             }
         );
         assert!(!order.anonymous);
@@ -712,6 +765,90 @@ mod tests {
         assert_eq!(
             map_inbound(&invalid, context),
             Err(MappingError::InvalidTag(10021))
+        );
+        Ok(())
+    }
+
+    fn kind_of(fields: &[(u32, &str)]) -> Result<OrderKind, MappingError> {
+        let mut message = FixMessage::new("D");
+        for (tag, value) in [(11, "1"), (48, "7"), (207, "2"), (54, "1"), (38, "10")] {
+            message.push(tag, value);
+        }
+        for (tag, value) in fields {
+            message.push(*tag, *value);
+        }
+        let context = MappingContext {
+            participant_id: ParticipantId::new(9),
+            next_intent_id: IntentId::new(10),
+        };
+        match map_inbound(&message, context)? {
+            InboundApplication::Intent(ExecutionIntent::Submit { order, .. }) => Ok(order.kind),
+            _ => Err(MappingError::UnsupportedMessage),
+        }
+    }
+
+    #[test]
+    fn time_in_force_and_order_options_map_like_bnp() -> Result<(), MappingError> {
+        let price = PriceTicks::new(101);
+        let policy = |time_in_force, post_only, display: Option<i64>| OrderKind::LimitWithPolicy {
+            price,
+            time_in_force,
+            post_only,
+            display_quantity: display.map(QuantityLots::new),
+        };
+        let limit = [(40, "2"), (44, "101")];
+        let with = |extra: &[(u32, &'static str)]| {
+            let mut fields = limit.to_vec();
+            fields.extend_from_slice(extra);
+            kind_of(&fields)
+        };
+        assert_eq!(with(&[(59, "1")])?, OrderKind::Limit { price });
+        assert_eq!(
+            with(&[(59, "0")])?,
+            policy(TimeInForcePolicy::Day, false, None)
+        );
+        assert_eq!(
+            with(&[(59, "3")])?,
+            policy(TimeInForcePolicy::Ioc, false, None)
+        );
+        assert_eq!(
+            with(&[(59, "4")])?,
+            policy(TimeInForcePolicy::Fok, false, None)
+        );
+        assert_eq!(
+            with(&[(59, "6"), (10022, "5000")])?,
+            policy(
+                TimeInForcePolicy::Gtd {
+                    expires_at: LogicalTimeNs::new(5_000)
+                },
+                false,
+                None
+            )
+        );
+        assert_eq!(
+            with(&[(59, "1"), (18, "6"), (1138, "4")])?,
+            policy(TimeInForcePolicy::Gtc, true, Some(4))
+        );
+        // GTD needs its expiry, and an expiry needs GTD.
+        assert_eq!(with(&[(59, "6")]), Err(MappingError::MissingTag(10022)));
+        assert_eq!(
+            with(&[(59, "1"), (10022, "5000")]),
+            Err(MappingError::InvalidTag(10022))
+        );
+        assert_eq!(with(&[(59, "2")]), Err(MappingError::InvalidTag(59)));
+        assert_eq!(with(&[(18, "G")]), Err(MappingError::InvalidTag(18)));
+        assert_eq!(with(&[(1138, "0")]), Err(MappingError::InvalidTag(1138)));
+        assert_eq!(with(&[(1138, "11")]), Err(MappingError::InvalidTag(1138)));
+        // A market order is immediate: no TIF, DAY or IOC, and no options.
+        assert_eq!(kind_of(&[(40, "1")])?, OrderKind::Market);
+        assert_eq!(kind_of(&[(40, "1"), (59, "3")])?, OrderKind::Market);
+        assert_eq!(
+            kind_of(&[(40, "1"), (59, "1")]),
+            Err(MappingError::InvalidTag(59))
+        );
+        assert_eq!(
+            kind_of(&[(40, "1"), (18, "6")]),
+            Err(MappingError::UnsupportedOrderType)
         );
         Ok(())
     }

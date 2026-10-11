@@ -226,11 +226,12 @@ fn run_fix(venue: &Venue) -> Result<Vec<Duration>, String> {
                 id,
                 quantity,
                 price,
-            } => (
-                id,
-                order(&id.to_string(), "buy", quantity, Some(price)),
-                None,
-            ),
+            } => {
+                // GTC (59=1), as the BNP script sends; no 59 is DAY on FIX.
+                let mut message = order(&id.to_string(), "buy", quantity, Some(price));
+                message.push(59, "1");
+                (id, message, None)
+            }
             // The venue confirms a cancel on the original order's ID.
             Step::Cancel { id, original } => (
                 original,

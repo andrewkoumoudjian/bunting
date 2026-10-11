@@ -2,7 +2,7 @@
 //! Mapping between QUARCC participant actions and committed Bunting facts.
 
 use bunting_market_events::{
-    CancelOrder, Command, CommandPayload, EventEnvelope, EventPayload, SubmitOrder,
+    CancelOrder, CancelReason, Command, CommandPayload, EventEnvelope, EventPayload, SubmitOrder,
 };
 use bunting_market_types::{
     CommandId, CorrelationId, EventSequence, LogicalTimeNs, OrderId, ParticipantId, QuantityLots,
@@ -141,13 +141,21 @@ impl BuntingExecutionAdapter {
                         },
                     )
                 }
+                // A DAY or GTD order the clock ends is expired, not
+                // canceled (FIX ExecType C), so the participant can tell the
+                // two apart.
                 EventPayload::OrderCanceled {
                     order_id,
                     participant_id,
+                    reason,
                     ..
                 } if *participant_id == actor => (
                     LocalOrderId::new(order_id.get()),
-                    VenueReportKind::Cancelled,
+                    if *reason == CancelReason::Expired {
+                        VenueReportKind::Expired
+                    } else {
+                        VenueReportKind::Cancelled
+                    },
                 ),
                 EventPayload::TradeExecuted {
                     maker_order_id,
@@ -199,7 +207,7 @@ impl BuntingExecutionAdapter {
                         .checked_sub(*cumulative_quantity)
                         .ok_or(AdapterError::ArithmeticOverflow)?,
                 ),
-                VenueReportKind::Cancelled => Some(QuantityLots::new(0)),
+                VenueReportKind::Cancelled | VenueReportKind::Expired => Some(QuantityLots::new(0)),
                 _ => None,
             };
             reports.push(NormalizedVenueReport {
