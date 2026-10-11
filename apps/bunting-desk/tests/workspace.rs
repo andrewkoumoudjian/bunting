@@ -336,6 +336,7 @@ fn a_resting_order_can_be_canceled_from_the_orders_panel(cx: &mut TestAppContext
             order_id: 900,
             price: 99,
             remaining: 1,
+            reference: Some(4),
         }),
     );
     click(&fixture, cx, &format!("cancel-{client_order_id}"));
