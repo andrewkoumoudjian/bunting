@@ -87,6 +87,68 @@ jobs:
             target/wheels/*.whl
           if-no-files-found: error
 
+  desk:
+    name: Desktop app ${{ matrix.target }}
+    # Its own workspace and toolchain (ADR 0050); a separate archive so the
+    # venue and terminal do not carry the GPU stack.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable_suffix: ""
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            executable_suffix: ""
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            executable_suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            executable_suffix: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable_suffix: .exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - name: Install Linux graphics development packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libxcb1-dev libfontconfig-dev \
+            libfreetype-dev libasound2-dev libzstd-dev
+      - name: Install the app's pinned Rust toolchain and target
+        working-directory: apps/bunting-desk
+        shell: bash
+        run: |
+          rustup show
+          rustup target add "${{ matrix.target }}"
+      - name: Build the desktop app
+        working-directory: apps/bunting-desk
+        shell: bash
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Package the desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          package="bunting-desk-${tag}-${{ matrix.target }}"
+          mkdir -p "stage/${package}/bin" dist
+          cp "apps/bunting-desk/target/${{ matrix.target }}/release/bunting-desk${{ matrix.executable_suffix }}" "stage/${package}/bin/"
+          cp README.md RULES.md "stage/${package}/"
+          tar -C stage -czf "dist/${package}.tar.gz" "${package}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desk-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   container:
     name: Container image
     runs-on: ubuntu-latest
@@ -110,7 +172,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [native, container]
+    needs: [native, desk, container]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -133,6 +195,8 @@ jobs:
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
             'bunting server ~/.config/bunting/server/local.json' \
             '```' \
+            '' \
+            'Desktop app: download the `bunting-desk` archive for your platform and put `bunting-desk` beside `bunting` (or on `PATH`) so `bunting-desk --local` can start a practice venue.' \
             '' \
             'Windows: download the `x86_64-pc-windows-msvc` archive. Containers: `docker pull ghcr.io/andrewkoumoudjian/bunting:'"$tag"'` (configuration at `/etc/bunting/server.json`, state on `/var/lib/bunting`). Verify manual downloads with `SHA256SUMS`.' \
             '' \

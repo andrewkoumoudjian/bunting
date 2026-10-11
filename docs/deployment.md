@@ -12,7 +12,10 @@ ADR 0023, while Cloudflare is a read-only publication wrapper under ADR 0022.
 Install a release with `install.sh` (see the README) or download an archive.
 Each archive's `bin/` holds `bunting` plus `bunting-server` and `bunting-tui`
 aliases that route to `bunting server` and `bunting tui`, and the
-`bunting-trader` participant app. From a checkout:
+`bunting-trader` participant app. The GPUI desktop app ships separately as
+`bunting-desk-<tag>-<target>.tar.gz` ([ADR 0050](adr/0050-desktop-trading-app-on-gpui.md));
+put `bunting-desk` beside `bunting` or on `PATH` so `bunting-desk --local`
+can start a practice venue. From a checkout:
 
 ```bash
 cargo build --locked --release -p bunting-cli

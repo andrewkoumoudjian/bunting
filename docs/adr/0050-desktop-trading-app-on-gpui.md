@@ -207,8 +207,11 @@ Andrew's public GitHub stars page unless marked):
 
 ## Operational impact
 
-The app is to ship as its own release archive per platform (not yet built).
-CI gains one desk job per OS. The root workspace, its lockfile and the
+The app ships as its own release archive per platform,
+`bunting-desk-<tag>-<target>.tar.gz`, built by the `desk` job of
+`.github/workflows/release.yml` for the venue's five release targets (the
+venue archive does not carry the GPU stack). CI gains one desk job per OS,
+which also runs when `bunting-trading-state` changes. The root workspace, its lockfile and the
 venue's release are unchanged.
 
 ## Security impact

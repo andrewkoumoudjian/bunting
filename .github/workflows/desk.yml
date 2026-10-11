@@ -9,6 +9,7 @@ on:
     paths:
       - "apps/bunting-desk/**"
       - "packages/bunting-client/**"
+      - "packages/bunting-trading-state/**"
       - "packages/bnp-wire/**"
       - "tools/check_desk.sh"
       - ".github/workflows/desk.yml"
@@ -18,6 +19,7 @@ on:
     paths:
       - "apps/bunting-desk/**"
       - "packages/bunting-client/**"
+      - "packages/bunting-trading-state/**"
       - "packages/bnp-wire/**"
       - "tools/check_desk.sh"
       - ".github/workflows/desk.yml"
