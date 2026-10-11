@@ -326,9 +326,19 @@ the mark, lowest); DAY orders expire after the closing auction; GTC orders
 carry overnight. Phase changes and auctions are engine events applied as
 the run clock passes each boundary.
 
+**Current (slice 36, ADR 0037 stage 4):** at each close the venue records
+every listing's official closing price (the day's last trade on it, which
+is the closing auction print when there is one, else its previous close,
+else the instrument's mark) in a `DayClosed` event and
+`RunState::official_close`. Valuation keeps the instrument mark, its last
+trade on any listing. Positions, cash and GTC orders carry over. When every
+venue is closed and the next boundary is a pre-open
+(`RunState::night_until`), the timer of a paced run submits one tick at
+that pre-open, so the night (and the wait before the first pre-open) takes
+no real time; the run clock re-anchors there.
+
 **Target (ADR 0037):** listing halts that reopen by auction, indicative
-auction data and phase messages on the feeds, end-of-day marks and
-multi-day runs.
+auction data and phase messages on the feeds, closing prices on the feeds.
 
 ## 11. Hosting
 

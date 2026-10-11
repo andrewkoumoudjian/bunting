@@ -11,9 +11,9 @@ use book::{Book, Match};
 use bunting_ledger::{Fill, FillParty, LedgerError};
 pub use bunting_ledger::{FxRate, InstrumentTerms, Ledger, Reservation};
 use bunting_market_events::{
-    CancelReason, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope, EventPayload,
-    OrderKind, RejectCode, SessionPhase, Side, SimulationCommand, SimulationCommandRequest,
-    TimeInForcePolicy,
+    CancelReason, ClosingPrice, Command, CommandPayload, EVENT_SCHEMA_VERSION, EventEnvelope,
+    EventPayload, OrderKind, RejectCode, SessionPhase, Side, SimulationCommand,
+    SimulationCommandRequest, TimeInForcePolicy,
 };
 use bunting_market_types::{
     CurrencyId, EventId, EventSequence, InstrumentId, IterationId, ListingKey, LogicalTimeNs,
@@ -843,6 +843,13 @@ pub struct RunState {
     /// Session boundaries each venue has passed (ADR 0037 §2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     session_steps: BTreeMap<VenueId, u64>,
+    /// Each listing's last trade price since its venue last closed
+    /// (ADR 0037 §4); kept only when the run has a calendar.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    day_trades: BTreeMap<ListingKey, PriceTicks>,
+    /// Each listing's latest official closing price.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    closes: BTreeMap<ListingKey, PriceTicks>,
 }
 
 impl RunState {
@@ -938,6 +945,8 @@ impl RunState {
             simulation,
             calendar: scenario.calendar.clone(),
             session_steps,
+            day_trades: BTreeMap::new(),
+            closes: BTreeMap::new(),
         })
     }
 
@@ -1474,6 +1483,29 @@ impl RunState {
         calendar::Calendar::phase_after(self.session_steps.get(&venue).copied().unwrap_or(0))
     }
 
+    /// A listing's latest official closing price (ADR 0037 §4).
+    #[must_use]
+    pub fn official_close(&self, listing_key: ListingKey) -> Option<PriceTicks> {
+        self.closes.get(&listing_key).copied()
+    }
+
+    /// When every venue is closed and the next boundary is a pre-open, the
+    /// run time of that pre-open: the night, which a paced venue skips
+    /// (ADR 0037 §4). `None` without a calendar or while any venue trades.
+    #[must_use]
+    pub fn night_until(&self) -> Option<LogicalTimeNs> {
+        if self
+            .session_steps
+            .keys()
+            .any(|venue| self.session_phase(*venue) != SessionPhase::Closed)
+        {
+            return None;
+        }
+        let (_, _, boundary) = self.next_boundary()?;
+        (boundary.phase == SessionPhase::PreOpen && boundary.at > self.simulation.clock.now)
+            .then_some(boundary.at)
+    }
+
     /// The earliest session boundary any venue has yet to pass.
     fn next_boundary(&self) -> Option<(VenueId, u64, calendar::Boundary)> {
         let calendar = self.calendar.as_ref()?;
@@ -1539,7 +1571,45 @@ impl RunState {
                 phase: boundary.phase,
             },
         ));
+        if boundary.phase == SessionPhase::Closed {
+            let closes = self.close_day(venue);
+            payloads.push(EventPayload::Simulation(
+                bunting_market_events::SimulationEvent::DayClosed {
+                    venue_id: venue,
+                    day: boundary.day,
+                    closes,
+                },
+            ));
+        }
         Ok(())
+    }
+
+    /// Records the official closing price of each of `venue`'s listings:
+    /// the day's last trade on it (the closing auction prints last), else
+    /// its previous close, else the instrument's mark. A listing with none
+    /// of these has no close. Valuation keeps using the instrument's mark,
+    /// its last trade on any listing, which for a single listing is this
+    /// close.
+    fn close_day(&mut self, venue: VenueId) -> Vec<ClosingPrice> {
+        let listings = self
+            .listings
+            .keys()
+            .filter(|listing| listing.venue_id == venue)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut closes = Vec::with_capacity(listings.len());
+        for listing_key in listings {
+            let price = self
+                .day_trades
+                .remove(&listing_key)
+                .or_else(|| self.closes.get(&listing_key).copied())
+                .or_else(|| self.ledger.mark(listing_key.instrument_id));
+            if let Some(price) = price {
+                self.closes.insert(listing_key, price);
+                closes.push(ClosingPrice { listing_key, price });
+            }
+        }
+        closes
     }
 
     /// Uncrosses one listing's book at its call-auction price (ADR 0037 §3).
@@ -1924,6 +1994,9 @@ impl RunState {
             seller: Some(seller),
             set_mark: true,
         })?;
+        if self.calendar.is_some() {
+            self.day_trades.insert(listing_key, price);
+        }
         reduce_order(maker_id, quantity, &mut self.ownership, payloads)?;
         let mut settled = vec![(maker_id, maker.expires_at)];
         if auction {
@@ -3874,12 +3947,70 @@ mod tests {
         );
         assert_eq!(state.session_phase(VenueId::new(1)), SessionPhase::Closed);
         assert_eq!(state.next_due(), Some(LogicalTimeNs::new(110_000_000)));
+        // Nothing traded, so each of the venue's two listings closes at
+        // its instrument's opening mark.
+        assert_eq!(day_closes(&applied.events), [(0, vec![100, 100])]);
+        // The night until the next pre-open is skipped by a paced venue.
+        assert_eq!(state.night_until(), Some(LogicalTimeNs::new(110_000_000)));
         // After the last day the venue stays closed.
         state
             .apply_simulation(&clock_tick(&state, 250, 250_000_000))
             .unwrap();
         assert_eq!(state.next_due(), None);
         assert_eq!(state.session_phase(VenueId::new(1)), SessionPhase::Closed);
+    }
+
+    /// `(day, prices)` of each `DayClosed` event.
+    fn day_closes(events: &[EventEnvelope]) -> Vec<(u32, Vec<i64>)> {
+        events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Simulation(bunting_market_events::SimulationEvent::DayClosed {
+                    day,
+                    closes,
+                    ..
+                }) => Some((*day, closes.iter().map(|close| close.price.get()).collect())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_official_close_is_the_last_trade_else_the_previous_close() {
+        let mut state = calendar_run();
+        // Before the first pre-open is night too; while trading it is not.
+        assert_eq!(state.night_until(), Some(LogicalTimeNs::new(10_000_000)));
+        state
+            .apply_simulation(&clock_tick(&state, 20, 20_000_000))
+            .unwrap();
+        assert_eq!(state.night_until(), None);
+        state
+            .apply(&submit(&state, 21, 2, 1, 1, Side::Sell, 105, 1))
+            .unwrap();
+        state
+            .apply(&submit(&state, 22, 1, 2, 1, Side::Buy, 105, 1))
+            .unwrap();
+        let first = state
+            .apply_simulation(&clock_tick(&state, 95, 95_000_000))
+            .unwrap();
+        // Instrument 1 traded at 105; instrument 2 keeps its opening mark.
+        assert_eq!(day_closes(&first.events), [(0, vec![105, 100])]);
+        let listing = *state.listings.keys().next().unwrap();
+        assert_eq!(state.official_close(listing), Some(PriceTicks::new(105)));
+        // Day 1 has no trade: its close repeats the previous one.
+        let second = state
+            .apply_simulation(&clock_tick(&state, 195, 195_000_000))
+            .unwrap();
+        assert_eq!(day_closes(&second.events), [(1, vec![105, 100])]);
+        assert_eq!(state.night_until(), None, "no day follows the last");
+        // Closes survive a checkpoint across the day boundary.
+        let json = EngineSnapshotEnvelope::new(state.clone())
+            .unwrap()
+            .to_json()
+            .unwrap();
+        let restored = EngineSnapshotEnvelope::from_json(&json).unwrap().state;
+        assert_eq!(restored, state);
+        assert_eq!(restored.official_close(listing), Some(PriceTicks::new(105)));
     }
 
     #[test]

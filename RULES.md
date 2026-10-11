@@ -115,6 +115,14 @@ trades continuously, as before. With one, each trading day runs:
 - **Closing auction** at the close, by the same rule; then DAY orders
   expire and the venue is closed until the next trading day's pre-open.
 
+At each close the venue records every listing's official closing price:
+the closing auction price, else the day's last trade there, else the
+previous close. A run may last several trading days. Positions, cash and
+good-till-cancel orders carry from one day to the next; nights, weekends
+and holidays are skipped, so the next pre-open follows the close at once.
+Your net liquidation value and score use each instrument's last trade on
+any venue.
+
 Your order reaches the venue over your path as always, so an order sent
 just before the open or the close can arrive too late for the auction.
 

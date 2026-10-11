@@ -430,6 +430,23 @@ pub enum SimulationEvent {
         price: PriceTicks,
         quantity: QuantityLots,
     },
+    /// A venue closed trading day `day` and recorded the official closing
+    /// price of each of its listings that has one (ADR 0037 §4). Its
+    /// closing auction and DAY expiries precede this event.
+    DayClosed {
+        venue_id: VenueId,
+        day: u32,
+        closes: Vec<ClosingPrice>,
+    },
+}
+
+/// One listing's official closing price: its closing auction price, else
+/// the day's last trade on it, else its previous close, else the
+/// instrument's mark (ADR 0037 §4).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ClosingPrice {
+    pub listing_key: ListingKey,
+    pub price: PriceTicks,
 }
 
 /// A venue's trading-session phase (ADR 0037 §2). A scenario without a

@@ -109,20 +109,7 @@ impl RunClock {
             anchors.remove(&run_id);
             return view.now;
         };
-        let fresh = Anchor {
-            run_ns: view.now.get(),
-            venue_us,
-            pace,
-        };
-        let anchor = anchors.entry(run_id).or_insert(fresh);
-        let mapped = anchor.run_at(venue_us);
-        if anchor.pace != pace || venue_us < anchor.venue_us || mapped < view.now.get() {
-            // The pace changed, or an operator moved the clock past the
-            // mapping: continue from the clock.
-            *anchor = fresh;
-            return view.now;
-        }
-        LogicalTimeNs::new(mapped)
+        LogicalTimeNs::new(current(&mut anchors, run_id, view, pace, venue_us).run_at(venue_us))
     }
 
     /// The venue instant at which run time reaches `at`, if run time is
@@ -136,16 +123,47 @@ impl RunClock {
     ) -> Option<u64> {
         let pace = view.pace()?;
         let mut anchors = self.anchors.lock().ok()?;
-        let anchor = anchors.entry(run_id).or_insert(Anchor {
-            run_ns: view.now.get(),
-            venue_us: now_us,
-            pace,
-        });
-        (anchor.pace == pace).then(|| anchor.venue_at(at.get()))
+        Some(current(&mut anchors, run_id, view, pace, now_us).venue_at(at.get()))
     }
 }
 
+/// The run's anchor at venue instant `venue_us`, restarted from the clock
+/// when the pace changed or the clock moved past the mapping (an operator
+/// `Advance`, or a skipped night).
+fn current(
+    anchors: &mut BTreeMap<RunId, Anchor>,
+    run_id: RunId,
+    view: ClockView,
+    pace: (u64, u64),
+    venue_us: u64,
+) -> &Anchor {
+    let fresh = Anchor {
+        run_ns: view.now.get(),
+        venue_us,
+        pace,
+    };
+    let anchor = anchors.entry(run_id).or_insert(fresh);
+    if anchor.pace != pace || venue_us < anchor.venue_us || anchor.run_at(venue_us) < view.now.get()
+    {
+        *anchor = fresh;
+    }
+    anchor
+}
+
 impl JobContext<'_> {
+    /// The run time a venue clock tick applies at: its release instant,
+    /// or, during the night of a paced run, the next pre-open.
+    fn tick_time(&self, run_id: RunId) -> Result<LogicalTimeNs, String> {
+        let (view, night) = ApplicationService::new(self.origin)
+            .read(run_id, |state| (ClockView::of(state), state.night_until()))
+            .map_err(|error| format!("run read failed: {error}"))?;
+        let stamp = self.run_time(run_id)?;
+        Ok(match night {
+            Some(night) if view.pace().is_some() => stamp.max(night),
+            _ => stamp,
+        })
+    }
+
     /// The run time at which this job applies: its release instant on the
     /// run's clock. Read and used on the sequencer thread, the only
     /// committer, so no other input can move the clock in between.
@@ -167,11 +185,26 @@ pub(crate) fn run_timer(
     run_id: RunId,
 ) -> Result<(), String> {
     let mut queued: Option<u64> = None;
+    let mut skipped: Option<LogicalTimeNs> = None;
     loop {
-        let (view, due) = ApplicationService::new(origin)
-            .read(run_id, |state| (ClockView::of(state), state.next_due()))
+        let (view, due, night) = ApplicationService::new(origin)
+            .read(run_id, |state| {
+                (ClockView::of(state), state.next_due(), state.night_until())
+            })
             .map_err(|error| format!("timer run read failed: {error}"))?;
         let now_us = admission.clock().now_us();
+        // A paced run does not trade through the night: once every venue
+        // has closed, one tick moves the clock to the next pre-open
+        // (ADR 0037 §4).
+        if let Some(night) = night
+            && view.pace().is_some()
+            && skipped != Some(night)
+        {
+            admission
+                .schedule(now_us, tick_task(run_id))
+                .map_err(|error| format!("clock tick admission: {error}"))?;
+            skipped = Some(night);
+        }
         let at = due.and_then(|due| {
             admission
                 .run_clock()
@@ -194,7 +227,7 @@ pub(crate) fn run_timer(
 
 fn tick_task(run_id: RunId) -> Task {
     Box::new(move |context| {
-        let outcome = context.run_time(run_id).and_then(|logical_time| {
+        let outcome = context.tick_time(run_id).and_then(|logical_time| {
             ApplicationService::new(context.origin)
                 .execute_clock_tick(run_id, logical_time, context.admission)
                 .map_err(|error| error.to_string())

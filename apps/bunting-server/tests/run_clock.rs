@@ -208,3 +208,56 @@ fn a_pre_open_collects_crossing_orders_and_the_open_fills_them_at_one_price() ->
     }
     Ok(())
 }
+
+/// One calendar day of the multi-day test: an hour.
+const DAY_NS: u64 = 3_600_000_000_000;
+
+#[test]
+fn a_paced_run_skips_the_night_and_carries_orders_to_the_next_day() -> Result<(), String> {
+    let mut scenario: serde_json::Value =
+        serde_json::from_str(include_str!("../config/scenario.json"))
+            .map_err(|error| error.to_string())?;
+    scenario["participants"]["2"]["initial_positions"] = serde_json::json!({ "1": 1_000 });
+    // A one-second session each hour-long day, two days.
+    scenario["calendar"] = serde_json::json!({
+        "day_ns": DAY_NS,
+        "days": 2,
+        "sessions": [{
+            "venue_id": 1,
+            "pre_open_ns": 0,
+            "open_ns": 300_000_000_u64,
+            "closing_call_ns": 800_000_000_u64,
+            "close_ns": 1_000_000_000_u64
+        }]
+    });
+    let (port, admin_port) = start_with(&scenario)?;
+    let mut buyer = Client::logon(port, "HUMAN", "participant", "bunting-local-dev")?;
+    buyer.send(order("1", "buy", 1, Some(99)))?;
+    buyer.wait_report("1", "0")?;
+    // Day 0 closes one second in; the next pre-open is an hour of run time
+    // later, reached at once instead of an hour from now.
+    let started = Instant::now();
+    let deadline = started + TIMEOUT;
+    loop {
+        let (_, run_time) = run_view(admin_port)?;
+        if run_time >= DAY_NS {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("the night was not skipped; run time {run_time} ns"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    // Day 1 trades from the open, and the GTC bid carried overnight.
+    let mut seller = Client::logon(port, "TEAM2", "team2", "bunting-team2-dev")?;
+    std::thread::sleep(Duration::from_millis(400));
+    seller.send(order("2", "sell", 1, Some(99)))?;
+    seller.wait_report("2", "F")?;
+    buyer.wait_report("1", "F")?;
+    Ok(())
+}

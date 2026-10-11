@@ -8,7 +8,8 @@
      (**implemented**, slice 28, except listing halts);
   3. opening and closing call auctions (**implemented**, slice 28,
      except indicative data and phase messages on the feeds);
-  4. end-of-day marks and multi-day runs.
+  4. end-of-day marks and multi-day runs (**implemented**, slice 36; see
+     the stage 4 amendment).
 - Date: 2026-10-10
 - Depends on: ADR 0029 (engine-owned book), ADR 0030 §3 (the sequencer is
   the only committer), ADR 0035 (latency), ADR 0028 (single ledger, full
@@ -135,6 +136,16 @@ Bunting has none of this (gap G9). A 2026-10-10 survey of the code found:
   timer jumps the run clock from one day's close to the next day's
   pre-open (the night is not traded), so a five-day run takes five
   trading sessions of real time.
+
+Amendment (slice 36, 2026-10-11). The official close of a listing is its
+day's last trade (the closing auction prints last), else its previous
+close, else the instrument's mark; `DayClosed` carries one per listing.
+NLV and scores keep the instrument mark, the last trade on any listing:
+for a single listing that is the official close, and with several venues
+a later trade elsewhere is fresher than one venue's close, so overriding
+it would value positions at a stale price. The paced night skip also
+covers the wait before the first pre-open, and scheduled actions or
+expiries due during a night apply at the skip, in time order.
 
 ## Consequences
 

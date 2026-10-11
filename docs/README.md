@@ -52,7 +52,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0034 | **Historical** — equalized admission; superseded by 0035 |
 | 0035 | Latency: real connectivity counts, virtual distance added both ways, no modes (slice 16) |
 | 0036 | Public market data: per-venue direct feeds of trades and L2 (slice 21) a consolidated tape from a processor at the hub (slice 22) and order-by-order feeds (slice 23) over the latency map, with per-venue broker identifiers (slice 24); owner decisions 2026-10-10 (data and colocation free) |
-| 0037 | One run clock and venue timer (slice 26); calendar, session phases, DAY expiry and opening and closing call auctions (slice 28); **Target:** listing halts, indicative auction data on feeds, end-of-day marks and multi-day runs |
+| 0037 | One run clock and venue timer (slice 26); calendar, session phases, DAY expiry and opening and closing call auctions (slice 28); official closes and multi-day paced runs (slice 36); **Target:** listing halts, indicative auction data on feeds |
 | 0041 | BNP certificate revocation reloads live; revoked sessions are logged out (slice 29) |
 | 0040 | Bunting Native Protocol v1: fixed binary frames, TLS 1.3 mTLS with a certificate-fingerprint roster, stateless identities, resume by committed sequence, same latency path as FIX (slice 25); per-participant kill switch, ordered private stream and pre-auth limits (slice 32); order-by-order and tape feeds over BNP (slice 35) |
 | 0044 | Host: native `bunting` binary (Linux, macOS, Windows) and container image; WASIX retired (slice 27) |
