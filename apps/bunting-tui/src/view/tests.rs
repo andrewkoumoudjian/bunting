@@ -354,3 +354,35 @@ fn a_bad_ticket_stays_open_with_the_reason() -> Result<(), String> {
     assert!(draw(&model, &ui)?.contains("choose a venue listing"));
     Ok(())
 }
+
+#[test]
+fn your_resting_order_is_marked_in_its_queue() -> Result<(), String> {
+    let mut model = market();
+    let mut ui = Ui::default();
+    ui.handle(key(KeyCode::Char('b')), &mut model, 100);
+    let effects = ui.handle(key(KeyCode::Enter), &mut model, 100);
+    let [Effect::Send(ClientMessage::NewOrder(order))] = effects.as_slice() else {
+        return Err(format!("expected one order, got {effects:?}"));
+    };
+    // The venue reports it resting as venue 1's second order at 99.
+    model.apply(
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp: Stamp {
+                sequence: 4,
+                logical_time_ns: 4,
+            },
+            client_order_id: order.client_order_id,
+            order_id: 9,
+            price: 99,
+            remaining: 2,
+            reference: Some(2),
+        }),
+        200,
+    );
+    ui.handle(key(KeyCode::Char('o')), &mut model, 300);
+    let screen = draw(&model, &ui)?;
+    assert!(screen.contains("2 b5*"), "{screen}");
+    assert!(!screen.contains("1 b4*"), "{screen}");
+    assert!(screen.contains("#2 · 3 ahead"), "{screen}");
+    Ok(())
+}

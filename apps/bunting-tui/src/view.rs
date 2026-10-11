@@ -31,6 +31,7 @@ const WARN: Style = Style::new().fg(Color::Yellow);
 const BAD: Style = Style::new().fg(Color::Red).add_modifier(Modifier::BOLD);
 const SELECTED: Style = Style::new().add_modifier(Modifier::REVERSED);
 const TITLE: Style = Style::new().add_modifier(Modifier::BOLD);
+const OWN: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
 pub fn render(frame: &mut Frame<'_>, screen: &Screen<'_>) {
     let [header, body, bottom, footer] = Layout::vertical([
@@ -316,7 +317,7 @@ fn render_book(
     let mut rows = Vec::new();
     if let Some(feed) = feed {
         let (asks, bids) = if by_order {
-            order_rows(feed, depth)
+            order_rows(screen.model, feed, listing, depth)
         } else {
             level_rows(screen.model, feed, listing, depth)
         };
@@ -410,13 +411,24 @@ fn level_rows(
 
 /// Every displayed order, asks (worst shown first) then bids, each with its
 /// place in its price's queue and its broker where the venue publishes it.
-fn order_rows(feed: &Feed, depth: usize) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
+/// This participant's own orders, found by the reference the venue reported
+/// for them, are marked `*` and highlighted.
+fn order_rows(
+    model: &Model,
+    feed: &Feed,
+    listing: Listing,
+    depth: usize,
+) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
     let row = |order: &QueuedOrder| {
+        let mine = model.own_order(listing, order.reference).is_some();
         let place = order.broker.map_or_else(
             || format!("{}", order.position_at_price),
             |broker| format!("{} b{broker}", order.position_at_price),
         );
-        let style = if order.position_at_price == 1 {
+        let place = if mine { format!("{place}*") } else { place };
+        let style = if mine {
+            OWN
+        } else if order.position_at_price == 1 {
             Style::new()
         } else {
             DIM
@@ -617,6 +629,9 @@ fn render_orders(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
                 ),
                 Cell::from(row.filled.to_string()),
                 Cell::from(row.remaining.to_string()),
+                Cell::from(screen.model.queue_place(row).map_or_else(String::new, |q| {
+                    format!("#{} · {} ahead", q.position_at_price, q.quantity_ahead)
+                })),
                 Cell::from(row.status.label()).style(status_style),
                 Cell::from(row.answer_us.map_or_else(String::new, duration)),
                 Cell::from(if row.client_order_id == 0 {
@@ -642,6 +657,7 @@ fn render_orders(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
             Constraint::Length(8),
             Constraint::Length(7),
             Constraint::Length(7),
+            Constraint::Length(14),
             Constraint::Fill(2),
             Constraint::Length(10),
             Constraint::Fill(1),
@@ -655,6 +671,7 @@ fn render_orders(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
             "price",
             "filled",
             "left",
+            "queue",
             "status",
             "answer",
             "client id",
@@ -933,7 +950,7 @@ fn render_confirm(frame: &mut Frame<'_>, active: bool) {
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let area = centered(frame.area(), 70, 21);
+    let area = centered(frame.area(), 70, 22);
     frame.render_widget(Clear, area);
     let text = [
         " Each venue lists the instrument separately and sits at its own",
@@ -941,7 +958,8 @@ fn render_help(frame: &mut Frame<'_>) {
         " and its reports and the venue's feed come back the same way.",
         "",
         " Books: one direct feed per venue. 'mine' is your own resting",
-        " quantity at a price; o shows every order with its queue place.",
+        " quantity at a price; o shows every order with its queue place,",
+        " yours marked * (the venue reports each resting order's place).",
         " Tape: each venue's best bid and offer and all trades, published",
         " at the hub; near a venue it lags that venue's direct feed.",
         " Direct feeds: every venue's trades in the order they reached you.",

@@ -190,17 +190,16 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
             .and_then(|f| f.book.best_bid())
             .is_some_and(|level| level.price == 1)
     })?;
-    // The only bid on venue 1's QRC book is first in its queue, and the
+    // The only bid on venue 1's QRC book is first in its queue, found by
+    // the reference the venue reported for it, and the
     // tape shows a bid of 1 on both venues.
     trader.until("the near order first in its queue", |model| {
         model
-            .feed(QRC_NEAR)
-            .map(|f| f.book.orders(Side::Buy))
-            .is_some_and(|orders| {
-                orders
-                    .iter()
-                    .any(|o| o.price == 1 && o.position_at_price == 1 && o.quantity_ahead == 0)
-            })
+            .orders()
+            .iter()
+            .find(|row| row.client_order_id == near_bid)
+            .and_then(|row| model.queue_place(row))
+            .is_some_and(|q| q.price == 1 && q.position_at_price == 1 && q.quantity_ahead == 0)
     })?;
     trader.until("both bids on the tape", |model| {
         model.tape(2).is_some_and(|tape| {

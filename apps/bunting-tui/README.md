@@ -75,8 +75,10 @@ where it left off.
 - **Venue measures**: the one-way delay the venue measured for your
   connection. It is published to you and never used to order anything.
 - **Queue** (press `o`): each displayed order's place at its price and its
-  broker, on venues that publish brokers. Your own orders are not marked
-  in this view yet; `mine` in the levels view is your resting quantity.
+  broker, on venues that publish brokers. Your own orders are marked `*`,
+  found by the reference the venue reports for each resting order, and the
+  orders tab shows each one's place and the quantity ahead of it. `mine`
+  in the levels view is your resting quantity at each price.
 - **Tape from the hub**: every venue's best bid and offer (bold: the best
   across venues) and every venue's trades, published by the processor at
   the hub. Near a venue it lags that venue's direct feed.
