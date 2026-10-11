@@ -5,13 +5,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use bunting_desk::{Desk, LayoutStore, Outbox, PANELS, Workspace};
-use gpui_kit::component::dock::PanelState;
 use bunting_trading_state::SessionEvent;
 use bunting_trading_state::bunting_client::bnp_wire::{
     BookOrder, ClientMessage, EntryKind, Level, Listing, ListingInfo, OrderType, ResumeStatus,
     Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote, Welcome,
 };
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::dock::PanelState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowHandle,
@@ -489,13 +489,19 @@ fn workspaces_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
     click(&fixture, cx, "workspace-1");
     let market_making = panes(&fixture, cx);
     assert_eq!(
-        market_making.iter().filter(|name| *name == "ticket").count(),
+        market_making
+            .iter()
+            .filter(|name| *name == "ticket")
+            .count(),
         2
     );
     // Another ticket opens beside the others.
     click(&fixture, cx, "add-ticket");
     assert_eq!(
-        panes(&fixture, cx).iter().filter(|name| *name == "ticket").count(),
+        panes(&fixture, cx)
+            .iter()
+            .filter(|name| *name == "ticket")
+            .count(),
         3
     );
     // Going back shows the first workspace as it was, and returning keeps
@@ -504,7 +510,10 @@ fn workspaces_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
     assert_eq!(panes(&fixture, cx), trading);
     click(&fixture, cx, "workspace-1");
     assert_eq!(
-        panes(&fixture, cx).iter().filter(|name| *name == "ticket").count(),
+        panes(&fixture, cx)
+            .iter()
+            .filter(|name| *name == "ticket")
+            .count(),
         3
     );
     // A new workspace starts from the trading preset.
