@@ -1,8 +1,10 @@
 use crate::admission::{
-    AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, Reply, reply_task,
+    AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, ParticipantClaim, Reply,
+    reply_task,
 };
 use crate::config::{FixConfig, RosterEntry};
-use crate::distributor::PublishingOrigin;
+use crate::delivery::{Delivery, DeliveryCursor, bounds};
+use crate::distributor::{Committed, PublishingOrigin, Resume};
 use crate::outbound::OutboundHold;
 use crate::public_feed::{FeedMessage, PublicFeeds};
 use crate::wake::{SessionEvent, Waker};
@@ -75,7 +77,7 @@ pub(crate) fn handle_fix_connection(
     let (logon_bytes, logon) = read_first_message(&mut stream, wire_limits)?;
     let credential = authenticate_logon(&logon, config)?;
     // Held until this function returns, after the last snapshot persist.
-    let _claim = admission.claim_participant(
+    let claim = admission.claim_participant(
         Interface::Fix,
         ParticipantId::new(credential.participant_id),
         SESSION_HANDOVER,
@@ -154,7 +156,36 @@ pub(crate) fn handle_fix_connection(
     let _shutdown = crate::wake::ShutdownOnDrop::new(&stream)?;
     // Subscribe before handling any message so no committed batch for this
     // participant can fall between the subscription and the first command.
-    let subscription = origin.distributor().subscribe(Some(waker.clone()))?;
+    // A participant whose previous session closed with reports unwritten,
+    // or who was away while reports committed, resumes where that session
+    // left off (`crate::delivery`); otherwise the stream starts now.
+    let run_sequence = || {
+        origin
+            .read_run(run_id, |state| state.event_sequence().get())
+            .ok()
+    };
+    let previous = claim.take_cursor();
+    let start = run_sequence().unwrap_or(0);
+    let after = previous.as_ref().map_or(start, |cursor| cursor.through);
+    let (subscription, resume) =
+        origin
+            .distributor()
+            .subscribe_resuming(Some(waker.clone()), after, run_sequence)?;
+    let (cursor, replay) = match (previous, resume) {
+        (Some(cursor), Resume::Replay(batches)) => (cursor, batches),
+        (None, Resume::Replay(batches)) => (DeliveryCursor::at(after), batches),
+        (Some(_), Resume::Gap) => {
+            eprintln!(
+                "bunting-server: FIX participant {participant} missed reports older than the retention window"
+            );
+            (DeliveryCursor::at(start), Vec::new())
+        }
+        (None, Resume::Gap) => (DeliveryCursor::at(start), Vec::new()),
+    };
+    let mut delivery = DeliveryGuard {
+        claim: &claim,
+        delivery: Delivery::new(&cursor),
+    };
     let mut latency = ConnectionLatency::new(admission, participant);
     latency.refresh_kernel(&stream);
     // ADR 0034 §2: measure the path before the first order matters.
@@ -163,6 +194,18 @@ pub(crate) fn handle_fix_connection(
     }
     let (reply_sender, replies) = sync_channel(admission.config().max_admission_queue);
     let mut outbound = OutboundHold::new(admission.config().max_outbound_hold);
+    for batch in replay {
+        if bounds(&batch).is_some_and(|(_, last)| cursor.owes(last)) {
+            hold_reports(
+                &mut application,
+                participant,
+                &latency,
+                &mut outbound,
+                &mut delivery.delivery,
+                &batch,
+            )?;
+        }
+    }
     let mut rate_window_started = Instant::now();
     let rate_window = Duration::from_millis(config.rate_limit_window_ms);
     let mut rate_messages = 0_usize;
@@ -300,23 +343,65 @@ pub(crate) fn handle_fix_connection(
             for increment in feeds.on_batch(&batch)? {
                 hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
             }
-            let messages = application
-                .committed_messages(participant, &batch.events)
-                .map_err(|error| format!("FIX report mapping failed: {error}"))?;
-            if messages.is_empty() {
-                continue;
-            }
-            let send_at = batch
-                .durable_us
-                .saturating_add(latency.delay_from(batch.source)?);
-            for message in messages {
-                outbound.hold(message, send_at)?;
-            }
+            hold_reports(
+                &mut application,
+                participant,
+                &latency,
+                &mut outbound,
+                &mut delivery.delivery,
+                &batch,
+            )?;
         }
-        let due = outbound.take_due(admission.clock().now_us());
+        let now_us = admission.clock().now_us();
+        let due = outbound.take_due(now_us);
         if !due.is_empty() {
             send_messages(&mut session, &mut stream, due, session_path, &application)?;
         }
+        delivery.delivery.on_written(now_us);
+    }
+}
+
+/// Holds this participant's reports of one committed batch until they have
+/// crossed the path from where it was applied (ADR 0035), and records the
+/// batch with the session's delivery tracker.
+fn hold_reports(
+    application: &mut FixApplicationState,
+    participant: ParticipantId,
+    latency: &ConnectionLatency<'_>,
+    outbound: &mut OutboundHold<FixMessage>,
+    delivery: &mut Delivery,
+    batch: &Committed,
+) -> Result<(), String> {
+    let Some(bounds) = bounds(batch) else {
+        return Ok(());
+    };
+    let messages = application
+        .committed_messages(participant, &batch.events)
+        .map_err(|error| format!("FIX report mapping failed: {error}"))?;
+    if messages.is_empty() {
+        delivery.on_batch(bounds, None);
+        return Ok(());
+    }
+    let send_at = batch
+        .durable_us
+        .saturating_add(latency.delay_from(batch.source)?);
+    for message in messages {
+        outbound.hold(message, send_at)?;
+    }
+    delivery.on_batch(bounds, Some(send_at));
+    Ok(())
+}
+
+/// Leaves the session's delivery cursor for the participant's next session
+/// when this one ends, however it ends.
+struct DeliveryGuard<'a> {
+    claim: &'a ParticipantClaim<'a>,
+    delivery: Delivery,
+}
+
+impl Drop for DeliveryGuard<'_> {
+    fn drop(&mut self) {
+        self.claim.store_cursor(self.delivery.cursor());
     }
 }
 

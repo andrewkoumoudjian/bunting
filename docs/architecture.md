@@ -199,10 +199,25 @@ log. Per-command cost no longer grows with the size of the run.
    policy and each order's journaled `anonymous` flag
    (`bunting_application::order_broker`, `trade_brokers`).
 
+10. Missed reports across a FIX reconnect (slice 34): each FIX session
+    tracks which committed batches it has written to its participant
+    (`apps/bunting-server/src/delivery.rs`): a low-water sequence below
+    which everything was written, plus the batches above it still on
+    their path. Reports leave in send-time order, not commit order (a near
+    venue's fill overtakes a far venue's earlier one), so a single
+    "highest sent" cursor would skip the overtaken report. When the
+    session closes, the cursor is left with the participant's claim
+    (`ParticipantClaim::store_cursor`); the next session resumes from the
+    distributor's retention window (`subscribe_resuming`) and sends exactly
+    the reports the last one never wrote, with no added delay. Reports it
+    did write are recovered by FIX sequence-number resend. The cursor
+    lives in memory, like the retention window: after a venue restart, or
+    beyond the window, the stream starts live.
+
 ### Target
 
-- Resume cursors so reports missed while disconnected are replayed (today
-  they are not).
+- Resume over a venue restart (the cursor and retention window are in
+  memory today).
 
 ## 7. Admission and fairness
 

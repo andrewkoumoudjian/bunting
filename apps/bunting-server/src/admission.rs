@@ -11,6 +11,7 @@
 //! (`scenario.rs`).
 
 use crate::config::AdmissionConfig;
+use crate::delivery::DeliveryCursor;
 use crate::distributor::PublishingOrigin;
 use crate::run_clock::RunClock;
 use crate::wake::Waker;
@@ -145,6 +146,10 @@ pub(crate) struct AdmissionService {
     /// [`Self::claim_participant`].
     sessions: Mutex<BTreeSet<(Interface, ParticipantId)>>,
     session_ended: Condvar,
+    /// Where each participant's last FIX session left its private reports,
+    /// so the next one sends what it never wrote (`crate::delivery`).
+    /// In memory, like the distributor's retention window it resumes from.
+    cursors: Mutex<BTreeMap<(Interface, ParticipantId), DeliveryCursor>>,
 }
 
 /// A participant interface. Each allows one live session per participant.
@@ -168,6 +173,24 @@ impl Interface {
 pub(crate) struct ParticipantClaim<'a> {
     admission: &'a AdmissionService,
     key: (Interface, ParticipantId),
+}
+
+impl ParticipantClaim<'_> {
+    /// The delivery cursor the participant's previous session left.
+    pub(crate) fn take_cursor(&self) -> Option<DeliveryCursor> {
+        self.admission
+            .cursors
+            .lock()
+            .ok()
+            .and_then(|mut cursors| cursors.remove(&self.key))
+    }
+
+    /// Leaves `cursor` for the participant's next session.
+    pub(crate) fn store_cursor(&self, cursor: DeliveryCursor) {
+        if let Ok(mut cursors) = self.admission.cursors.lock() {
+            cursors.insert(self.key, cursor);
+        }
+    }
 }
 
 impl Drop for ParticipantClaim<'_> {
@@ -194,6 +217,7 @@ impl AdmissionService {
             next_connection: AtomicU64::new(1),
             sessions: Mutex::new(BTreeSet::new()),
             session_ended: Condvar::new(),
+            cursors: Mutex::new(BTreeMap::new()),
         })
     }
 

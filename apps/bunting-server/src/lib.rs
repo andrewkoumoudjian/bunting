@@ -12,6 +12,7 @@ mod bnp_trust;
 mod commit_journal;
 pub mod config;
 mod consolidated;
+mod delivery;
 mod distributor;
 mod outbound;
 mod public_feed;
