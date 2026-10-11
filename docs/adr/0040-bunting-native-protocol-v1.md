@@ -14,7 +14,7 @@
   order-by-order and consolidated-tape feeds and the published access delay
   (decision 12). Extended in slice 41 by
   [ADR 0042](0042-bnp-operators-and-run-stream.md): instructor and
-  administrator certificates and the run stream. Extended in slice 43: a
+  administrator certificates and the run stream. Extended in slice 44: a
   participant's resting and reduced reports carry its order's public
   reference (decision 13).
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
@@ -105,7 +105,7 @@ hold were FIX-typed. The server had no in-process TLS.
     feed publisher, at the same times, as FIX's (`bnp_feeds.rs`). An order
     snapshot larger than a frame is sent in parts. `AccessDelay` publishes
     the session's measured delay, as the venue already did for operators.
-13. **Own order reference (slice 43).** `OrderRested` and `OrderReduced`
+13. **Own order reference (slice 44).** `OrderRested` and `OrderReduced`
     carry the order's public reference on the order-by-order feed (its book
     time priority), as OUCH's accepted message carries the reference ITCH
     publishes, so a team can find its own queue place. A new value means the

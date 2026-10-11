@@ -3,7 +3,7 @@
 - Status: **Current** (slice 25; order-by-order and tape feeds and access
   delay added in slice 35; operators and the run stream in slice 41,
   [ADR 0042](../adr/0042-bnp-operators-and-run-stream.md); own order
-  reference in reports in slice 43). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
+  reference in reports in slice 44). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
 - Code: `packages/bnp-wire` (types and codec; the field order in
   `src/codec.rs` is this contract), `packages/bunting-application/src/bnp.rs`
   (identity and event mapping), `apps/bunting-server/src/bnp_host.rs` (venue
@@ -209,7 +209,7 @@ units).
   back of its level. With an order-by-order subscription the client finds its
   own place in the queue from it. Reports replayed on resume carry the
   reference they had when first sent; after a venue restart there are none to
-  replay (slice 43).
+  replay (slice 44).
 - `OrderAccepted` and `OrderDone` are sent only for orders entered over BNP;
   orders the same participant entered over FIX reach BNP as their fills,
   cancels and rests.
