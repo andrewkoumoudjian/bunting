@@ -4,9 +4,10 @@
 
 use crate::desk::Desk;
 use crate::format;
+use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
 use bunting_trading_state::{
-    Connection, FeedState, NoticeLevel, OrderStatus, OrderTicket, TicketKind, TicketTif,
+    Connection, FeedState, NoticeLevel, OrderStatus, OrderTicket, TicketKind, TicketTif, TradePrint,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -21,10 +22,13 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
     px, uniform_list,
 };
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 
 /// Book levels shown per side.
 const BOOK_DEPTH: usize = 12;
+/// Displayed orders shown per side in the order-by-order view.
+const ORDER_DEPTH: usize = 16;
 /// Venues shown side by side.
 const MAX_VENUE_COLUMNS: usize = 6;
 /// Height of one row in the scrolling lists.
@@ -148,8 +152,50 @@ fn header(cells: &[(&'static str, f32)], cx: &App) -> Div {
 
 // ---- books -----------------------------------------------------------------
 
-reader_panel!(BooksPanel);
+/// How the books show depth.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Depth {
+    /// Quantity per price.
+    Levels,
+    /// Every displayed order with its place in the queue, where the venue
+    /// sends order-by-order data.
+    Orders,
+}
+
+pub struct BooksPanel {
+    desk: Entity<Desk>,
+    focus: FocusHandle,
+    depth: Depth,
+    _observe: Subscription,
+}
+
 dock_panel!(BooksPanel, "books", "Books");
+
+impl BooksPanel {
+    pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
+        Self {
+            _observe: cx.observe(&desk, |_, _, cx| cx.notify()),
+            desk,
+            focus: cx.focus_handle(),
+            depth: Depth::Orders,
+        }
+    }
+
+    fn depth_button(&self, depth: Depth, cx: &mut Context<Self>) -> Button {
+        let (id, label) = match depth {
+            Depth::Levels => ("books-levels", "Levels"),
+            Depth::Orders => ("books-orders", "Orders"),
+        };
+        Button::new(id)
+            .label(label)
+            .xsmall()
+            .when_toggled(self.depth == depth)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.depth = depth;
+                cx.notify();
+            }))
+    }
+}
 
 impl Render for BooksPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -182,7 +228,14 @@ impl Render for BooksPanel {
                     })),
             );
         }
-        body = body.child(tabs);
+        body = body.child(
+            h_flex().justify_between().child(tabs).child(
+                h_flex()
+                    .gap_1()
+                    .child(self.depth_button(Depth::Orders, cx))
+                    .child(self.depth_button(Depth::Levels, cx)),
+            ),
+        );
         let Some(instrument) = instrument else {
             return body;
         };
@@ -190,10 +243,15 @@ impl Render for BooksPanel {
         for info in instrument.listings.iter().take(MAX_VENUE_COLUMNS) {
             columns = columns.child(self.book_column(info.listing, chosen, window, cx));
         }
-        body.child(columns).child(muted(
-            "Click a venue to send there, or a price to put it on the ticket. ● marks your resting quantity.",
-            cx,
-        ))
+        let hint = match self.depth {
+            Depth::Levels => {
+                "Click a venue to send there, or a price to put it on the ticket. ● marks your resting quantity."
+            }
+            Depth::Orders => {
+                "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker where the venue publishes one. Click a venue to send there, or an order to put its price on the ticket."
+            }
+        };
+        body.child(columns).child(muted(hint, cx))
     }
 }
 
@@ -306,12 +364,51 @@ impl BooksPanel {
                     .child(format!("{gaps} feed gaps, resubscribed")),
             );
         }
+        let spread = muted(
+            spread.map_or_else(
+                || "one-sided".to_owned(),
+                |spread| format!("spread {spread}"),
+            ),
+            cx,
+        );
+        let bid_color = cx.theme().chart_bullish;
+        let ask_color = cx.theme().chart_bearish;
+        if self.depth == Depth::Orders {
+            if let Some(feed) = feed.filter(|feed| feed.order_by_order) {
+                let asks = feed.book.orders(Side::Sell);
+                let bids = feed.book.orders(Side::Buy);
+                column = column.child(header(
+                    &[
+                        ("place", 44.),
+                        ("ahead", 56.),
+                        ("qty", 56.),
+                        ("price", 64.),
+                        ("broker", 56.),
+                    ],
+                    cx,
+                ));
+                for (index, order) in asks.iter().take(ORDER_DEPTH).enumerate().rev() {
+                    column = column.child(self.order_row(listing, order, index, ask_color, window));
+                }
+                column = column.child(spread);
+                for (index, order) in bids.iter().take(ORDER_DEPTH).enumerate() {
+                    column = column.child(self.order_row(listing, order, index, bid_color, window));
+                }
+                let hidden =
+                    asks.len().saturating_sub(ORDER_DEPTH) + bids.len().saturating_sub(ORDER_DEPTH);
+                if hidden > 0 {
+                    column = column.child(muted(format!("{hidden} more orders deeper"), cx));
+                }
+                return column;
+            }
+            if feed.is_some_and(|feed| matches!(feed.state, FeedState::Live)) {
+                column = column.child(muted("This venue sends price levels only.", cx));
+            }
+        }
         column = column.child(header(
             &[("mine", 44.), ("bid", 64.), ("price", 72.), ("ask", 64.)],
             cx,
         ));
-        let bid_color = cx.theme().chart_bullish;
-        let ask_color = cx.theme().chart_bearish;
         for (index, (level, mine)) in asks.iter().enumerate().rev() {
             column = column.child(self.level_row(
                 listing,
@@ -323,13 +420,7 @@ impl BooksPanel {
                 window,
             ));
         }
-        column = column.child(muted(
-            spread.map_or_else(
-                || "one-sided".to_owned(),
-                |spread| format!("spread {spread}"),
-            ),
-            cx,
-        ));
+        column = column.child(spread);
         for (index, (level, mine)) in bids.iter().enumerate() {
             column = column.child(self.level_row(
                 listing,
@@ -342,6 +433,48 @@ impl BooksPanel {
             ));
         }
         column
+    }
+
+    /// One displayed order: its place at its price, the displayed quantity
+    /// ahead of it, its size, price and broker.
+    fn order_row(
+        &self,
+        listing: Listing,
+        order: &QueuedOrder,
+        index: usize,
+        color: Hsla,
+        window: &mut Window,
+    ) -> impl IntoElement {
+        let side_name = match order.side {
+            Side::Buy => "bid",
+            Side::Sell => "ask",
+        };
+        let price = order.price;
+        div()
+            .id(SharedString::from(format!(
+                "{side_name}-order-{}-{index}",
+                listing.venue_id
+            )))
+            .test_support()
+            .cursor_pointer()
+            .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
+                desk.pick_price(listing, price, cx);
+            }))
+            .child(row(vec![
+                (cell(format!("#{}", order.position_at_price)), 44.),
+                (cell(order.quantity_ahead.to_string()), 56.),
+                (colored(order.quantity.to_string(), color), 56.),
+                (colored(price.to_string(), color), 64.),
+                (
+                    cell(
+                        order
+                            .broker
+                            .map(|broker| broker.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    56.,
+                ),
+            ]))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -656,7 +789,7 @@ impl Render for TicketPanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().danger)
-                    .child("Kill switch active: the venue refuses new orders."),
+                    .child("Kill switch active: the venue refuses new orders until you reset it."),
             );
         }
         body.child(
@@ -671,7 +804,15 @@ impl Render for TicketPanel {
                             desk.cancel_all(cx);
                         })),
                 )
-                .child(
+                .child(if killed {
+                    Button::new("kill-switch-reset")
+                        .label("Reset kill switch")
+                        .small()
+                        .warning()
+                        .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
+                            desk.reset_kill_switch(cx);
+                        }))
+                } else {
                     Button::new("kill-switch")
                         .label("Kill switch")
                         .small()
@@ -684,7 +825,7 @@ impl Render for TicketPanel {
                                     .confirm()
                                     .title("Activate the kill switch?")
                                     .description(
-                                        "The venue cancels every live order of yours, FIX orders included, and refuses new ones.",
+                                        "The venue cancels every live order of yours, FIX orders included, and refuses new ones until you reset it.",
                                     )
                                     .ok_text("Kill switch")
                                     .on_ok(move |_, _, cx| {
@@ -692,8 +833,8 @@ impl Render for TicketPanel {
                                         true
                                     })
                             });
-                        })),
-                ),
+                        }))
+                }),
         )
     }
 }
@@ -714,12 +855,121 @@ impl WhenToggled for Button {
 
 // ---- trades ------------------------------------------------------------------
 
-reader_panel!(TradesPanel);
-dock_panel!(TradesPanel, "tape", "Trades");
+/// Which trades the tape panel lists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TradeSource {
+    /// The consolidated tape from the hub: every venue's best quotes and
+    /// trades.
+    Consolidated,
+    /// Each venue's own direct feed.
+    Direct,
+}
+
+pub struct TradesPanel {
+    desk: Entity<Desk>,
+    focus: FocusHandle,
+    source: TradeSource,
+    _observe: Subscription,
+}
+
+dock_panel!(TradesPanel, "tape", "Tape");
+
+impl TradesPanel {
+    pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
+        Self {
+            _observe: cx.observe(&desk, |_, _, cx| cx.notify()),
+            desk,
+            focus: cx.focus_handle(),
+            source: TradeSource::Consolidated,
+        }
+    }
+
+    fn source_button(&self, source: TradeSource, cx: &mut Context<Self>) -> Button {
+        let (id, label) = match source {
+            TradeSource::Consolidated => ("tape-consolidated", "Consolidated"),
+            TradeSource::Direct => ("tape-direct", "Direct feeds"),
+        };
+        Button::new(id)
+            .label(label)
+            .xsmall()
+            .when_toggled(self.source == source)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.source = source;
+                cx.notify();
+            }))
+    }
+
+    /// Each venue's best bid and offer as the tape last showed them; the
+    /// best across venues is bold.
+    fn quotes(&self, cx: &App) -> Div {
+        let desk = self.desk.read(cx);
+        let Some(instrument) = desk.instrument() else {
+            return div();
+        };
+        let tape = desk.model().tape(instrument.instrument_id);
+        let state = match tape.map(|tape| &tape.state) {
+            Some(FeedState::Live) => "live".to_owned(),
+            Some(FeedState::Requested) => "subscribing".to_owned(),
+            Some(FeedState::Refused(reason)) => format!("refused: {reason}"),
+            None => "not subscribed".to_owned(),
+        };
+        let mut quotes = v_flex().child(muted(
+            format!("{} from the hub · {state}", instrument.symbol),
+            cx,
+        ));
+        let Some(tape) = tape else {
+            return quotes;
+        };
+        let best_bid = tape.book.best(Side::Buy).map(|(venue, _)| venue);
+        let best_ask = tape.book.best(Side::Sell).map(|(venue, _)| venue);
+        let quote = |venue_id: u128, side: Side, best: Option<u128>| -> AnyElement {
+            let Some(level) = tape.book.quote(venue_id, side) else {
+                return cell("—");
+            };
+            let text = format!("{} × {}", level.quantity, level.price);
+            let element = div().text_color(side_color(side, cx)).child(text);
+            if best == Some(venue_id) {
+                element
+                    .font_weight(gpui_kit::FontWeight::BOLD)
+                    .into_any_element()
+            } else {
+                element.into_any_element()
+            }
+        };
+        quotes = quotes.child(header(
+            &[("venue", 64.), ("best bid", 96.), ("best ask", 96.)],
+            cx,
+        ));
+        for info in &instrument.listings {
+            let venue_id = info.listing.venue_id;
+            quotes = quotes.child(row(vec![
+                (cell(format::venue(info.listing)), 64.),
+                (quote(venue_id, Side::Buy, best_bid), 96.),
+                (quote(venue_id, Side::Sell, best_ask), 96.),
+            ]));
+        }
+        quotes
+    }
+}
+
+/// Indices of the prints to list for an instrument, newest first.
+fn print_indices(prints: &VecDeque<TradePrint>, instrument_id: Option<u128>) -> Vec<usize> {
+    (0..prints.len())
+        .rev()
+        .filter(|&index| instrument_id.is_none_or(|id| prints[index].listing.instrument_id == id))
+        .collect()
+}
 
 impl Render for TradesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.desk.read(cx).model().prints().len();
+        let source = self.source;
+        let desk = self.desk.read(cx);
+        let instrument_id = desk.instrument().map(|instrument| instrument.instrument_id);
+        let prints = match source {
+            TradeSource::Consolidated => desk.model().tape_prints(),
+            TradeSource::Direct => desk.model().prints(),
+        };
+        let count = print_indices(prints, instrument_id).len();
         let desk = self.desk.clone();
         let columns = [
             ("received", 72.),
@@ -728,32 +978,49 @@ impl Render for TradesPanel {
             ("price", 72.),
             ("qty", 56.),
         ];
-        panel_body("tape", &self.focus)
-            .child(muted(
-                "Trades from each venue's direct feed, newest first, as they reached you; each venue's arrive after its own distance. The consolidated tape is not on BNP yet.",
+        let mut body = panel_body("tape", &self.focus).child(
+            h_flex()
+                .gap_1()
+                .child(self.source_button(TradeSource::Consolidated, cx))
+                .child(self.source_button(TradeSource::Direct, cx)),
+        );
+        body = match source {
+            TradeSource::Consolidated => body.child(self.quotes(cx)).child(muted(
+                "The tape is published at the hub, so near a venue it arrives after that venue's direct feed.",
                 cx,
-            ))
-            .child(header(&columns, cx))
-            .child(
-                uniform_list("tape-rows", count, move |range, _, cx| {
-                    let desk = desk.read(cx);
-                    let model = desk.model();
-                    let prints = model.prints();
-                    range
-                        .filter_map(|index| prints.get(prints.len().checked_sub(index + 1)?))
-                        .map(|print| {
-                            row(vec![
-                                (cell(format::clock(print.received_us)), 72.),
-                                (cell(format::venue(print.listing)), 64.),
-                                (cell(model.symbol(print.listing).unwrap_or("?").to_owned()), 64.),
-                                (cell(print.price.to_string()), 72.),
-                                (cell(print.quantity.to_string()), 56.),
-                            ])
-                        })
-                        .collect()
-                })
-                .flex_1(),
-            )
+            )),
+            TradeSource::Direct => body.child(muted(
+                "Trades from each venue's direct feed, newest first, as they reached you; each venue's arrive after its own distance.",
+                cx,
+            )),
+        };
+        body.child(header(&columns, cx)).child(
+            uniform_list("tape-rows", count, move |range, _, cx| {
+                let desk = desk.read(cx);
+                let model = desk.model();
+                let prints = match source {
+                    TradeSource::Consolidated => model.tape_prints(),
+                    TradeSource::Direct => model.prints(),
+                };
+                let indices = print_indices(prints, instrument_id);
+                range
+                    .filter_map(|index| prints.get(*indices.get(index)?))
+                    .map(|print| {
+                        row(vec![
+                            (cell(format::clock(print.received_us)), 72.),
+                            (cell(format::venue(print.listing)), 64.),
+                            (
+                                cell(model.symbol(print.listing).unwrap_or("?").to_owned()),
+                                64.,
+                            ),
+                            (cell(print.price.to_string()), 72.),
+                            (cell(print.quantity.to_string()), 56.),
+                        ])
+                    })
+                    .collect()
+            })
+            .flex_1(),
+        )
     }
 }
 
@@ -1052,6 +1319,15 @@ pub fn connection_label(desk: &Desk) -> String {
             format::duration(last),
             format::duration(min),
             format::duration(mean)
+        );
+    }
+    // What the venue measured for this connection: published, never used
+    // to order anything (ADR 0035).
+    if let Some(one_way) = model.access_delay().and_then(|delay| delay.one_way_us) {
+        let _ = write!(
+            text,
+            " · venue measures {} one way",
+            format::duration(one_way)
         );
     }
     if model.last_sequence() > 0 {

@@ -268,10 +268,19 @@ impl Desk {
     }
 
     /// The venue cancels every live order of the participant, FIX ones
-    /// included, and refuses new ones.
+    /// included, and refuses new ones until the switch is reset.
     pub fn kill_switch(&mut self, cx: &mut Context<Self>) {
         let now = self.now_us();
         let message = self.model.kill_switch(now);
+        self.send(&message);
+        cx.notify();
+    }
+
+    /// Lifts the kill switch; the venue confirms before orders are taken
+    /// again.
+    pub fn reset_kill_switch(&mut self, cx: &mut Context<Self>) {
+        let now = self.now_us();
+        let message = self.model.reset_kill_switch(now);
         self.send(&message);
         cx.notify();
     }

@@ -7,8 +7,8 @@
 use bunting_desk::{Desk, Outbox, PANELS, Workspace};
 use bunting_trading_state::SessionEvent;
 use bunting_trading_state::bunting_client::bnp_wire::{
-    ClientMessage, Level, Listing, ListingInfo, OrderType, ResumeStatus, Role, ServerMessage, Side,
-    Stamp, Welcome,
+    BookOrder, ClientMessage, EntryKind, Level, Listing, ListingInfo, OrderType, ResumeStatus,
+    Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote, Welcome,
 };
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
@@ -135,45 +135,114 @@ fn connect_with_books(fixture: &Fixture, cx: &mut TestAppContext) {
             ],
         }),
     );
-    let subscriptions: Vec<(u32, Listing)> = fixture
-        .sent
-        .take()
-        .into_iter()
-        .filter_map(|message| match message {
+    let mut subscriptions = Vec::new();
+    let mut tape = None;
+    for message in fixture.sent.take() {
+        if let ClientMessage::Subscribe {
+            request_id,
+            listing,
+            ..
+        } = message
+        {
             // Venue 0 is the instrument's consolidated tape.
-            ClientMessage::Subscribe {
-                request_id,
-                listing,
-                ..
-            } if listing.venue_id != 0 => Some((request_id, listing)),
-            _ => None,
-        })
-        .collect();
+            if listing.venue_id == 0 {
+                tape = Some(request_id);
+            } else {
+                subscriptions.push((request_id, listing));
+            }
+        }
+    }
     assert_eq!(subscriptions.len(), 2, "one direct feed per venue");
     for (request_id, listing) in subscriptions {
-        let (bid, ask) = if listing == NEAR {
-            (99, 101)
-        } else {
-            (98, 102)
-        };
         apply(
             fixture,
             cx,
-            SessionEvent::Message(ServerMessage::MarketSnapshot {
-                request_id,
-                listing,
-                next_report: 1,
-                bids: vec![Level {
-                    price: bid,
-                    quantity: 10,
-                }],
-                asks: vec![Level {
-                    price: ask,
-                    quantity: 5,
-                }],
-            }),
+            SessionEvent::Message(book_snapshot(request_id, listing)),
         );
     }
+    send_tape(fixture, cx, tape.expect("a tape subscription"));
+}
+
+/// The near venue sends price levels; the far one order by order: two
+/// offers at 102 (3 then 2) and a bid at 98.
+fn book_snapshot(request_id: u32, listing: Listing) -> ServerMessage {
+    if listing == NEAR {
+        ServerMessage::MarketSnapshot {
+            request_id,
+            listing,
+            next_report: 1,
+            bids: vec![Level {
+                price: 99,
+                quantity: 10,
+            }],
+            asks: vec![Level {
+                price: 101,
+                quantity: 5,
+            }],
+        }
+    } else {
+        let order = |side, reference, price, quantity, queue_position| BookOrder {
+            side,
+            reference,
+            price,
+            quantity,
+            broker: Some(17),
+            queue_position,
+        };
+        ServerMessage::OrderSnapshot {
+            request_id,
+            listing,
+            next_report: 1,
+            complete: true,
+            orders: vec![
+                order(Side::Sell, 1, 102, 3, 1),
+                order(Side::Sell, 2, 102, 2, 2),
+                order(Side::Buy, 3, 98, 10, 1),
+            ],
+        }
+    }
+}
+
+/// The hub's tape: each venue's best offer, then a trade on the far venue.
+fn send_tape(fixture: &Fixture, cx: &mut TestAppContext, tape: u32) {
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::TapeSnapshot {
+            request_id: tape,
+            instrument_id: 7,
+            last_report: 0,
+            quotes: vec![
+                TapeQuote {
+                    venue_id: 1,
+                    side: Side::Sell,
+                    price: 101,
+                    quantity: 5,
+                },
+                TapeQuote {
+                    venue_id: 2,
+                    side: Side::Sell,
+                    price: 102,
+                    quantity: 5,
+                },
+            ],
+        }),
+    );
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::TapeUpdate {
+            request_id: tape,
+            instrument_id: 7,
+            first_report: 1,
+            entries: vec![TapeEntry {
+                venue_id: 2,
+                kind: EntryKind::Trade,
+                price: 102,
+                quantity: 1,
+            }],
+        }),
+    );
     fixture.sent.take();
 }
 
@@ -207,13 +276,19 @@ fn each_venue_book_is_shown_on_its_own_and_an_order_goes_to_the_chosen_venue(
         window.render_frame(cx);
         assert!(window.find("venue-1").visible());
         assert!(window.find("venue-2").visible());
+        // Order by order where the venue sends it, price levels where not.
+        assert!(window.find("ask-order-2-0").visible());
+        assert!(window.find("ask-order-2-1").visible());
+        assert!(window.find("bid-order-2-0").visible());
+        assert!(window.find("bid-1-0").visible());
         // No venue is chosen for the participant: sending does nothing.
         window.click("ticket-send", cx);
     })
     .unwrap();
     assert!(fixture.sent.take().is_empty(), "no order without a venue");
-    // Picking the far venue's best ask chooses that venue and price.
-    click(&fixture, cx, "ask-2-0");
+    // Picking the second order in the far venue's offer queue chooses that
+    // venue and price.
+    click(&fixture, cx, "ask-order-2-1");
     click(&fixture, cx, "ticket-send");
     let sent = fixture.sent.take();
     let [ClientMessage::NewOrder(order)] = sent.as_slice() else {
@@ -286,12 +361,93 @@ fn the_kill_switch_is_sent_only_after_confirmation(cx: &mut TestAppContext) {
         "nothing is sent before confirming"
     );
     cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("ok").visible(), "the confirm button is shown");
         window.click("ok", cx);
     })
     .unwrap();
     let sent = fixture.sent.take();
     assert!(
         matches!(sent.as_slice(), [ClientMessage::KillSwitch { .. }]),
+        "{sent:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_books_switch_between_orders_and_levels(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    let queue = fixture.desk.read_with(cx, |desk, _| {
+        let feed = desk.model().feed(FAR).expect("far feed");
+        assert!(feed.order_by_order);
+        feed.book
+            .orders(Side::Sell)
+            .iter()
+            .map(|order| (order.position_at_price, order.quantity_ahead, order.broker))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(queue, vec![(1, 0, Some(17)), (2, 3, Some(17))]);
+    click(&fixture, cx, "books-levels");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("ask-2-0").visible(), "levels of the far venue");
+        assert!(window.try_find("ask-order-2-0").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_tape_shows_every_venue_and_its_trades(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("tape-consolidated").visible());
+    })
+    .unwrap();
+    let (best, trades) = fixture.desk.read_with(cx, |desk, _| {
+        let model = desk.model();
+        let tape = model.tape(7).expect("tape");
+        (
+            tape.book
+                .best(Side::Sell)
+                .map(|(venue, level)| (venue, level.price)),
+            model
+                .tape_prints()
+                .iter()
+                .map(|print| (print.listing, print.price))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(best, Some((1, 101)));
+    assert_eq!(trades, vec![(FAR, 102)]);
+    click(&fixture, cx, "tape-direct");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("tape-direct").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_active_kill_switch_can_be_reset(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::KillSwitchActivated {
+            stamp: Stamp {
+                sequence: 9,
+                logical_time_ns: 2_000,
+            },
+        }),
+    );
+    fixture.sent.take();
+    click(&fixture, cx, "kill-switch-reset");
+    let sent = fixture.sent.take();
+    assert!(
+        matches!(sent.as_slice(), [ClientMessage::KillSwitchReset { .. }]),
         "{sent:?}"
     );
 }

@@ -111,17 +111,26 @@ Andrew's public GitHub stars page unless marked):
    provisioning when the shared crate has them. The app stops only a child
    it started.
 6. **Layout.** A `DockArea` workspace: per-venue books in the centre (price
-   levels and, once BNP carries it, order by order), the consolidated tape
+   levels, and order by order with queue places since slice 40), the consolidated tape
    and the order ticket on the right, open orders, fills, positions and
    account at the bottom, and connection and latency in the status bar.
    Layout persists per user under a versioned key.
    Visual direction (owner, 2026-10-10: "zed and delta has very good
    ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
-   a status bar, a command palette, keyboard first) for the trading
-   screen, and the Delta portfolio app's clear account presentation
-   (*inferred*: Delta the portfolio tracker, not the `delta` diff pager)
-   for positions, P&L and account. Both are design references only; no
-   source or assets are copied.
+   a status bar, a command palette, keyboard first). *Corrected
+   2026-10-11:* the owner clarified that Delta is "delta (project from
+   zed)" (*inferred*: Zed Industries' DeltaDB), not the Delta portfolio
+   app this decision first assumed, and floated it as a shared team status
+   database; whether and how to use it is being evaluated with the RIT
+   feature-parity research, not decided here. Further owner direction
+   (2026-10-11): a visually pleasing, configurable workspace with Zed as
+   the reference (dockable, resizable panes, saved layouts); full RIT
+   feature parity as the minimum, better, lighter and faster than RIT;
+   serif fonts for titles and SF Pro for body text (SF Pro through the
+   macOS system font only, since Apple's licence covers Apple platforms;
+   an open-licensed fallback elsewhere). The redesign starts from mockup
+   images the owner approves, not from code. All references are design
+   references only; no source or assets are copied.
 7. **Realism rules for the UI** (ADR 0035):
    - every order names its venue; there is no default router and no
      "best venue" button that hides the choice;
