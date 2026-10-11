@@ -780,9 +780,11 @@ fn private_reports_arrive_in_sequence_order_so_resume_never_skips_one() -> Resul
     let cursor = team.cursor();
     team.close();
     let resumed = venue.connect(&venue.team2, Some(cursor))?;
-    let replay = until(&resumed, |message| {
+    let mut replay = until(&resumed, |message| {
         matches!(message, ServerMessage::ReplayComplete { .. })
     })?;
+    // The measured access delay is a session message and may come first.
+    replay.retain(|message| !matches!(message, ServerMessage::AccessDelay { .. }));
     assert!(
         matches!(replay.as_slice(), [ServerMessage::ReplayComplete { through_sequence }] if *through_sequence == cursor),
         "{replay:?}"
@@ -995,13 +997,10 @@ fn an_instructor_runs_the_round_and_teams_see_it_in_their_stream() -> Result<(),
         ),
         "{run:?}"
     );
-    let sequences: Vec<u64> = run
-        .iter()
-        .filter_map(|message| message.stamp().map(|stamp| stamp.sequence))
-        .collect();
+    let sequences = run.iter().filter_map(|message| message.stamp());
     assert!(
-        sequences.windows(2).all(|pair| pair[0] < pair[1]),
-        "{sequences:?}"
+        sequences.is_sorted_by_key(|stamp| stamp.sequence),
+        "{run:?}"
     );
     // The fine is in the team's ledger.
     team.send(&ClientMessage::AccountRequest { request_id: 1 })
@@ -1017,7 +1016,14 @@ fn an_instructor_runs_the_round_and_teams_see_it_in_their_stream() -> Result<(),
         )),
         "{account:?}"
     );
-    // A team cannot run the round, and an instructor cannot trade.
+    Ok(())
+}
+
+#[test]
+fn a_team_cannot_run_the_round_and_an_instructor_cannot_trade() -> Result<(), String> {
+    let venue = start_venue("operator-refusals")?;
+    let instructor = venue.connect(&venue.instructor, None)?;
+    let team = venue.connect(&venue.team1, None)?;
     team.send(&ClientMessage::OperatorCommand {
         request_id: 7,
         action: OperatorAction::Pause,

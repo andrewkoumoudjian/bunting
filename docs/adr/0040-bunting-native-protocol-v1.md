@@ -12,7 +12,9 @@
   participant with an explicit reset (decision 10), and connections hold no
   session slot until they authenticate (decision 11). Extended in slice 35:
   order-by-order and consolidated-tape feeds and the published access delay
-  (decision 12).
+  (decision 12). Extended in slice 39 by
+  [ADR 0042](0042-bnp-operators-and-run-stream.md): instructor and
+  administrator certificates and the run stream.
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
 ## Context
@@ -49,8 +51,8 @@ hold were FIX-typed. The server had no in-process TLS.
    CA and pass the configured CRLs; its SHA-256 fingerprint must be in the
    run's roster, which names the participant. Subjects and SANs carry no
    authority, so one CA can serve several runs without minting run-specific
-   names, and rotating a team's certificate is a roster edit. v1 accepts the
-   participant role only.
+   names, and rotating a team's certificate is a roster edit. v1 accepted the
+   participant role only; ADR 0042 adds instructors and administrators.
 4. **Same path as FIX.** The session's reader thread stamps *ciphertext* on
    arrival, so the team's TLS and network cost is inside `t_rx`. Orders go to
    their listing's venue, other requests to the hub, through the same
@@ -109,8 +111,9 @@ hold were FIX-typed. The server had no in-process TLS.
 - Operators run a CA and register certificate fingerprints in `bnp.roster`.
 - Shared server pieces (outbound hold, public feeds, replies) are generic
   over the message type; FIX behavior is unchanged.
-- Instructor/admin control, news and tenders stay FIX-only or Target in v1
-  (order-by-order and consolidated feeds came in slice 35).
+- Tenders stay FIX-only (order-by-order and consolidated feeds came in
+  slice 35; instructor/admin control and the run stream in slice 39,
+  ADR 0042).
 
 ## Rejected alternatives
 

@@ -1,6 +1,6 @@
 # ADR 0042: Instructor and administrator control and the run stream over BNP
 
-- Status: **Accepted** (2026-10-11), implemented in slice 36. Implements the
+- Status: **Accepted** (2026-10-11), implemented in slice 39. Implements the
   instructor/admin and run-stream parts of
   [ADR 0031](0031-proposed-bunting-native-client-protocol.md) on
   [ADR 0040](0040-bunting-native-protocol-v1.md)'s protocol.

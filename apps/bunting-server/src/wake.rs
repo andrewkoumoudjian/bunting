@@ -29,6 +29,12 @@ impl Waker {
     pub(crate) fn wake(&self) {
         let _ = self.0.try_send(SessionEvent::Wake);
     }
+
+    /// A waker no session listens to, for unit tests.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self(sync_channel(1).0)
+    }
 }
 
 /// Starts the reader thread for `stream` and returns the session's event

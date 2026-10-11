@@ -83,6 +83,10 @@ struct TapeFeed {
     instrument_id: InstrumentId,
     /// `Some` until the snapshot's reply arrives.
     pending: Option<Vec<Arc<TapeRecord>>>,
+    /// The snapshot's last report: taking it applies every record due at
+    /// the hub, and those the session has not drained yet are already in
+    /// it, so they must not follow it as updates.
+    after: u64,
     last_send_us: u64,
 }
 
@@ -171,6 +175,7 @@ impl<'a, M> PublicFeeds<'a, M> {
             request_id: request_id.to_owned(),
             instrument_id,
             pending: Some(Vec::new()),
+            after: 0,
             last_send_us: 0,
         });
         None
@@ -202,7 +207,10 @@ impl<'a, M> PublicFeeds<'a, M> {
                         }
                         buffer.push(record.clone());
                     }
-                    None => messages.push(feed.message(&record, self.encode)),
+                    None if record.first_report > feed.after => {
+                        messages.push(feed.message(&record, self.encode));
+                    }
+                    None => {}
                 }
             }
         }
@@ -274,6 +282,7 @@ impl<'a, M> PublicFeeds<'a, M> {
             .find(|feed| feed.request_id == request_id)
         {
             let buffered = feed.pending.take().unwrap_or_default();
+            feed.after = last;
             return buffered
                 .iter()
                 .filter(|record| record.first_report > last)
@@ -639,5 +648,46 @@ mod tests {
         assert_eq!(feeds.send_time("a", 50), 50);
         assert_eq!(feeds.send_time("a", 40), 50);
         assert_eq!(feeds.send_time("a", 60), 60);
+    }
+
+    #[test]
+    fn a_tape_feed_does_not_repeat_what_its_snapshot_holds() -> Result<(), String> {
+        use crate::consolidated::ConsolidatedTape;
+        let tape = ConsolidatedTape::new(0, 16, Box::new(|_| Ok(0)));
+        let ask = |ordinal: u64, price: i64| {
+            tape.hear(
+                ordinal,
+                ordinal,
+                &[PublicListingUpdate {
+                    listing_key: listing(1),
+                    trades: Vec::new(),
+                    levels: Vec::new(),
+                    best_bid: None,
+                    best_ask: Some((PriceTicks::new(price), QuantityLots::new(1))),
+                    orders: Vec::new(),
+                }],
+            );
+        };
+        let mut feeds = PublicFeeds::<u64>::new(|_, first_report, _| first_report);
+        let waker = crate::wake::Waker::detached();
+        assert_eq!(
+            feeds.subscribe_consolidated("t", InstrumentId::new(1), &tape, &waker),
+            None
+        );
+        // The snapshot applies a change this session has not drained yet.
+        ask(1, 101);
+        let (last, _) = tape.snapshot(InstrumentId::new(1), 10)?;
+        assert!(feeds.activate_after("t", 0, last).is_empty());
+        assert!(feeds.drain_tape()?.is_empty(), "already in the snapshot");
+        // The next change follows it with the next report number.
+        ask(2, 102);
+        tape.snapshot(InstrumentId::new(1), 20)?;
+        let next: Vec<u64> = feeds
+            .drain_tape()?
+            .into_iter()
+            .map(|message| message.message)
+            .collect();
+        assert_eq!(next, vec![last + 1]);
+        Ok(())
     }
 }

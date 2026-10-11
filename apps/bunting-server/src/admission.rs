@@ -156,6 +156,10 @@ pub(crate) struct AdmissionService {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum Interface {
     Fix,
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "the BNP host is native only")
+    )]
     Bnp,
 }
 

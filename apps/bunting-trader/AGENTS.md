@@ -1,7 +1,8 @@
 # bunting-trader instructions
 
-A participant app that connects to a hosted Bunting venue over the Bunting
-Native Protocol (ADR 0040). It owns command-line parsing and presentation
+A participant and operator app that connects to a hosted Bunting venue
+over the Bunting Native Protocol (ADR 0040; `operator` subcommands for
+instructor and administrator certificates, ADR 0042). It owns command-line parsing and presentation
 only; every protocol, TLS, probe, heartbeat and resume behavior lives in
 `packages/bunting-client`. It holds no market authority: it prints what
 the venue committed.
