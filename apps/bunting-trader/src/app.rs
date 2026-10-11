@@ -691,10 +691,14 @@ fn describe(message: &ServerMessage) -> String {
             client_order_id,
             price,
             remaining,
+            reference,
             ..
         } => format!(
-            "#{} resting {client_order_id}: {remaining} @ {price}",
-            stamp.sequence
+            "#{} resting {client_order_id}: {remaining} @ {price}{}",
+            stamp.sequence,
+            reference.map_or_else(String::new, |reference| format!(
+                " (feed reference {reference})"
+            ))
         ),
         ServerMessage::OrderReduced {
             stamp,

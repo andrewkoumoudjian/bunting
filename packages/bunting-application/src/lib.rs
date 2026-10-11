@@ -468,6 +468,34 @@ pub fn trade_brokers(
     (buyer, seller)
 }
 
+/// The public order-by-order reference (see [`DisplayedOrder`]) of every
+/// order a batch rested or reduced that is still resting after it, read
+/// right after the commit. A participant's reports carry their own
+/// order's reference, as OUCH's accepted message carries the order
+/// reference number ITCH publishes; an iceberg refresh shows as a new one.
+#[must_use]
+pub fn order_references(state: &RunState, events: &[EventEnvelope]) -> Vec<(OrderId, u64)> {
+    let mut references: Vec<(OrderId, u64)> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::OrderRested { order_id, .. }
+            | EventPayload::OrderReduced { order_id, .. } => Some(*order_id),
+            _ => None,
+        })
+        .filter_map(|order_id| {
+            let listing_key = state.ownership().get(&order_id)?.listing_key;
+            let order = state
+                .listings()
+                .get(&listing_key)?
+                .resting_order(order_id)?;
+            (order.visible.get() > 0).then_some((order_id, order.priority))
+        })
+        .collect();
+    references.sort_unstable();
+    references.dedup();
+    references
+}
+
 /// Every displayed order of one listing: bids then asks, each in matching
 /// priority (best price first, then time).
 ///

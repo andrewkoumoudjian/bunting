@@ -1048,3 +1048,59 @@ fn a_team_cannot_run_the_round_and_an_instructor_cannot_trade() -> Result<(), St
     })?;
     Ok(())
 }
+
+#[test]
+fn a_resting_report_names_the_orders_place_on_the_order_by_order_feed() -> Result<(), String> {
+    let venue = start_venue("own-reference")?;
+    let mut maker = venue.maker()?;
+    let team = venue.connect(&venue.team1, None)?;
+    team.send(&ClientMessage::Subscribe {
+        request_id: 7,
+        listing: LISTING,
+        flags: FeedFlags::ALL.union(FeedFlags::ORDERS),
+    })
+    .map_err(|error| error.to_string())?;
+    let (mut book, mut tape) = (FeedBook::new(7), TapeBook::new(8));
+    let mut seen = Vec::new();
+    follow(&team, &mut book, &mut tape, &mut seen, |book, _| {
+        book.is_ready()
+    })?;
+    maker.send(order("901", "buy", 5, Some(99)))?;
+    maker.wait_report("901", "0")?;
+    team.send(&limit(1, Side::Buy, 3, 99))
+        .map_err(|error| error.to_string())?;
+    // The report names the order's public reference, so the team finds
+    // its own place in the queue without guessing.
+    let mut reference = None;
+    let deadline = Instant::now() + TIMEOUT;
+    while reference.is_none_or(|reference| book.order(reference).is_none()) {
+        assert!(Instant::now() < deadline, "received {seen:?}");
+        if let Some(message) = team
+            .recv_timeout(Duration::from_millis(50))
+            .map_err(|error| error.to_string())?
+        {
+            book.apply(&message).map_err(|error| error.to_string())?;
+            if let ServerMessage::OrderRested {
+                client_order_id: 1,
+                reference: rested,
+                ..
+            } = &message
+            {
+                reference = *rested;
+            }
+            seen.push(message);
+        }
+    }
+    let place = reference
+        .and_then(|reference| book.order(reference))
+        .ok_or("no queue place")?;
+    assert_eq!(
+        (
+            place.quantity,
+            place.position_at_price,
+            place.quantity_ahead
+        ),
+        (3, 2, 5)
+    );
+    Ok(())
+}

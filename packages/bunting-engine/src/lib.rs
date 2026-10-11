@@ -838,6 +838,12 @@ impl ListingState {
     pub fn depth(&self, side: Side) -> Vec<(PriceTicks, QuantityLots)> {
         self.book.depth(side)
     }
+
+    /// One resting order of this listing.
+    #[must_use]
+    pub fn resting_order(&self, order_id: OrderId) -> Option<&BookOrder> {
+        self.book.order(order_id)
+    }
 }
 
 /// Complete authoritative engine state persisted by origin adapters.

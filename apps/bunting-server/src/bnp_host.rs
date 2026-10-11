@@ -411,7 +411,7 @@ fn handle_connection(
                 .saturating_add(latency.delay_from(batch.source)?)
                 .max(private_floor);
             private_floor = send_at;
-            for message in session_messages(origin, &identity, &actor, operator, &batch.events)? {
+            for message in session_messages(origin, &identity, &actor, operator, batch)? {
                 if message.stamp().is_some_and(|stamp| stamp.sequence > after) {
                     outbound.hold(message, send_at)?;
                 }
@@ -580,7 +580,7 @@ fn handle_connection(
             for increment in feeds.on_batch(&batch)? {
                 hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
             }
-            let messages = session_messages(origin, &identity, &actor, operator, &batch.events)?;
+            let messages = session_messages(origin, &identity, &actor, operator, &batch)?;
             if messages.is_empty() {
                 continue;
             }
@@ -610,12 +610,13 @@ fn session_messages(
     identity: &BnpIdentity,
     actor: &VerifiedActor,
     operator: bool,
-    events: &[bunting_market_events::EventEnvelope],
+    batch: &crate::distributor::Committed,
 ) -> Result<Vec<ServerMessage>, String> {
+    let events = &batch.events;
     let mut messages = if operator {
         Vec::new()
     } else {
-        identity.private_messages(events)
+        identity.private_messages(events, &batch.references)
     };
     if has_run_messages(events) {
         messages.extend(

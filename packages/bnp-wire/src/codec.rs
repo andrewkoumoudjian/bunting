@@ -342,12 +342,14 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
             order_id: r.u128()?,
             price: r.i64()?,
             remaining: r.i64()?,
+            reference: r.option(Reader::u64)?,
         },
         t::ORDER_REDUCED => ServerMessage::OrderReduced {
             stamp: r.stamp()?,
             client_order_id: r.u64()?,
             order_id: r.u128()?,
             remaining: r.i64()?,
+            reference: r.option(Reader::u64)?,
         },
         t::FILL => ServerMessage::Fill {
             stamp: r.stamp()?,
@@ -918,23 +920,27 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
             order_id,
             price,
             remaining,
+            reference,
         } => {
             w.stamp(*stamp);
             w.u64(*client_order_id);
             w.u128(*order_id);
             w.i64(*price);
             w.i64(*remaining);
+            w.option(*reference, Writer::u64);
         }
         ServerMessage::OrderReduced {
             stamp,
             client_order_id,
             order_id,
             remaining,
+            reference,
         } => {
             w.stamp(*stamp);
             w.u64(*client_order_id);
             w.u128(*order_id);
             w.i64(*remaining);
+            w.option(*reference, Writer::u64);
         }
         ServerMessage::Fill {
             stamp,

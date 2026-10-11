@@ -174,12 +174,14 @@ fn servers() -> Vec<ServerMessage> {
             order_id: 7,
             price: 101,
             remaining: 2,
+            reference: Some(41),
         },
         ServerMessage::OrderReduced {
             stamp: stamp(),
             client_order_id: 1,
             order_id: 7,
             remaining: 1,
+            reference: None,
         },
         ServerMessage::Fill {
             stamp: stamp(),

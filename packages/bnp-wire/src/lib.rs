@@ -765,18 +765,26 @@ pub enum ServerMessage {
         client_order_id: u64,
         reason: RejectReason,
     },
+    /// `reference` is the order's public reference on the venue's
+    /// order-by-order feed (`BookOrder::reference`), absent when it
+    /// displays nothing.
     OrderRested {
         stamp: Stamp,
         client_order_id: u64,
         order_id: u128,
         price: i64,
         remaining: i64,
+        reference: Option<u64>,
     },
+    /// After a fill, `reference` is the order's public reference if it is
+    /// still resting; a different value than before means it lost time
+    /// priority (an iceberg slice refreshed at the back of its level).
     OrderReduced {
         stamp: Stamp,
         client_order_id: u64,
         order_id: u128,
         remaining: i64,
+        reference: Option<u64>,
     },
     Fill {
         stamp: Stamp,

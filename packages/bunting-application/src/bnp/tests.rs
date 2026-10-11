@@ -199,8 +199,9 @@ fn committed_events_become_each_sides_private_messages() {
             .new_order(&limit(1, WireSide::Sell, 5, 100), CorrelationId::new(1))
             .unwrap(),
     );
-    let seller_messages = seller.private_messages(&resting);
-    assert!(buyer.private_messages(&resting).is_empty());
+    let references = crate::order_references(&state, &resting);
+    let seller_messages = seller.private_messages(&resting, &references);
+    assert!(buyer.private_messages(&resting, &references).is_empty());
     assert!(matches!(
         seller_messages.as_slice(),
         [
@@ -214,6 +215,7 @@ fn committed_events_become_each_sides_private_messages() {
             ServerMessage::OrderRested {
                 client_order_id: 1,
                 remaining: 5,
+                reference: Some(_),
                 ..
             }
         ]
@@ -224,8 +226,9 @@ fn committed_events_become_each_sides_private_messages() {
             .new_order(&limit(9, WireSide::Buy, 2, 100), CorrelationId::new(2))
             .unwrap(),
     );
-    let buyer_messages = buyer.private_messages(&trade);
-    let seller_messages = seller.private_messages(&trade);
+    let trade_references = crate::order_references(&state, &trade);
+    let buyer_messages = buyer.private_messages(&trade, &trade_references);
+    let seller_messages = seller.private_messages(&trade, &trade_references);
     let fill = |messages: &[ServerMessage]| {
         messages
             .iter()
@@ -261,8 +264,9 @@ fn committed_events_become_each_sides_private_messages() {
         ServerMessage::OrderReduced {
             client_order_id: 1,
             remaining: 3,
+            reference,
             ..
-        }
+        } if *reference == references.first().map(|(_, reference)| *reference)
     )));
     // Sequences are the committed events' own, so a cursor resumes exactly.
     let sequences: Vec<u64> = buyer_messages
@@ -278,7 +282,7 @@ fn committed_events_become_each_sides_private_messages() {
 
     let canceled = apply(&mut state, seller.cancel(1, CorrelationId::new(3)).unwrap());
     assert!(matches!(
-        seller.private_messages(&canceled).as_slice(),
+        seller.private_messages(&canceled, &[]).as_slice(),
         [ServerMessage::OrderCanceled {
             client_order_id: 1,
             remaining: 3,
@@ -288,13 +292,13 @@ fn committed_events_become_each_sides_private_messages() {
     ));
     let again = apply(&mut state, seller.cancel(2, CorrelationId::new(4)).unwrap());
     assert!(matches!(
-        seller.private_messages(&again).as_slice(),
+        seller.private_messages(&again, &[]).as_slice(),
         [ServerMessage::CancelRejected {
             reason: RejectReason::UnknownOrder,
             ..
         }]
     ));
-    assert!(buyer.private_messages(&again).is_empty());
+    assert!(buyer.private_messages(&again, &[]).is_empty());
 }
 
 #[test]
@@ -319,4 +323,50 @@ fn listings_and_balances_project_committed_state() {
     assert_eq!(positions[0].position, 50);
     // Unused import guard: feed flags are part of the same protocol.
     assert!(FeedFlags::ALL.contains(FeedFlags::TRADES));
+}
+
+#[test]
+fn a_refreshed_iceberg_slice_reports_its_new_public_reference() {
+    let mut state = run();
+    let buyer = BnpIdentity::new(RunId::new(1), BUYER);
+    let seller = BnpIdentity::new(RunId::new(1), SELLER);
+    let iceberg = NewOrder {
+        display_quantity: Some(2),
+        ..limit(1, WireSide::Sell, 6, 100)
+    };
+    let resting = apply(
+        &mut state,
+        seller.new_order(&iceberg, CorrelationId::new(1)).unwrap(),
+    );
+    let rested = crate::order_references(&state, &resting);
+    let first = rested.first().map(|(_, reference)| *reference);
+    assert!(first.is_some());
+    // The book's public view names the same reference.
+    let listing_key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+    let displayed = crate::displayed_orders(&state, listing_key).unwrap();
+    assert_eq!(displayed.first().map(|order| order.reference), first);
+    // Taking the whole slice refreshes it at the back of the level.
+    let trade = apply(
+        &mut state,
+        buyer
+            .new_order(&limit(9, WireSide::Buy, 2, 100), CorrelationId::new(2))
+            .unwrap(),
+    );
+    let references = crate::order_references(&state, &trade);
+    let reduced = seller
+        .private_messages(&trade, &references)
+        .into_iter()
+        .find_map(|message| match message {
+            ServerMessage::OrderReduced {
+                remaining,
+                reference,
+                ..
+            } => Some((remaining, reference)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(reduced.0, 4);
+    assert!(reduced.1.is_some() && reduced.1 != first, "{reduced:?}");
+    let displayed = crate::displayed_orders(&state, listing_key).unwrap();
+    assert_eq!(displayed.first().map(|order| order.reference), reduced.1);
 }

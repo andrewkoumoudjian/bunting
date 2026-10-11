@@ -255,12 +255,25 @@ impl BnpIdentity {
 
     /// This participant's private messages for one committed batch, in
     /// event order. Events about other participants produce nothing.
+    /// `references` are the batch's public order references
+    /// ([`crate::order_references`], read right after the commit).
     #[must_use]
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per canonical event keeps the attribution rules side by side"
     )]
-    pub fn private_messages(&self, events: &[EventEnvelope]) -> Vec<ServerMessage> {
+    pub fn private_messages(
+        &self,
+        events: &[EventEnvelope],
+        references: &[(OrderId, u64)],
+    ) -> Vec<ServerMessage> {
+        let reference = |order_id: OrderId| {
+            references
+                .binary_search_by_key(&order_id, |(id, _)| *id)
+                .ok()
+                .and_then(|index| references.get(index))
+                .map(|(_, reference)| *reference)
+        };
         let me = self.participant;
         let mine = |order_id: OrderId| unscoped(self.orders, order_id.get()) != 0;
         // OrderAccepted names only the order; its details are in the same
@@ -328,6 +341,7 @@ impl BnpIdentity {
                     order_id: order_id.get(),
                     price: price.get(),
                     remaining: remaining.get(),
+                    reference: reference(*order_id),
                 }),
                 EventPayload::OrderReduced {
                     order_id,
@@ -337,6 +351,7 @@ impl BnpIdentity {
                     client_order_id: client_order_id(*order_id),
                     order_id: order_id.get(),
                     remaining: remaining.get(),
+                    reference: reference(*order_id),
                 }),
                 EventPayload::OrderCompleted { order_id } if mine(*order_id) => {
                     messages.push(ServerMessage::OrderDone {

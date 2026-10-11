@@ -309,6 +309,12 @@ impl Book {
             .collect()
     }
 
+    /// One resting order.
+    #[must_use]
+    pub fn order(&self, order_id: OrderId) -> Option<&BookOrder> {
+        self.orders.get(&order_id)
+    }
+
     /// Resting orders on one side in matching priority, best price first.
     pub fn orders(&self, side: Side) -> impl Iterator<Item = &BookOrder> + '_ {
         let levels: Box<dyn Iterator<Item = &Level>> = match side {

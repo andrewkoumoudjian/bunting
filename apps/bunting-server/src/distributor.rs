@@ -14,11 +14,11 @@ use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
 use bunting_application::{
     DisplayedOrder, PublicDepth, PublicListingUpdate, diff_levels, diff_orders, displayed_orders,
-    project_public_event, trade_brokers,
+    order_references, project_public_event, trade_brokers,
 };
 use bunting_engine::RunState;
 use bunting_market_events::{EventEnvelope, EventPayload};
-use bunting_market_types::{CommandId, ListingKey, RunId};
+use bunting_market_types::{CommandId, ListingKey, OrderId, RunId};
 use bunting_origin_store::{
     AdmissionRecord, CommandResult, Executed, JournalInput, OriginError, OriginStore,
 };
@@ -51,6 +51,10 @@ pub(crate) struct Committed {
     /// Anonymous public trades and depth changes of each listing this
     /// commit touched, computed from the state right after it committed.
     pub(crate) public: Vec<PublicListingUpdate>,
+    /// Public order-by-order reference of each order this commit rested or
+    /// reduced that still rests, sorted by order: its owner's reports carry
+    /// it (`bunting_application::order_references`).
+    pub(crate) references: Vec<(OrderId, u64)>,
 }
 
 /// Where a committed batch was applied: the admitted destination when the
@@ -268,6 +272,7 @@ impl EventDistributor {
         committed_us: u64,
         source: Endpoint,
         public: Vec<PublicListingUpdate>,
+        references: Vec<(OrderId, u64)>,
     ) {
         if events.is_empty() {
             return;
@@ -278,6 +283,7 @@ impl EventDistributor {
             events: events.to_vec(),
             ordinal: self.published.fetch_add(1, Ordering::AcqRel),
             public,
+            references,
         });
         let Ok(mut retained) = self.retained.lock() else {
             return;
@@ -562,6 +568,12 @@ impl OriginStore for PublishingOrigin {
             let public = self
                 .public_updates(input.run_id(), &executed.events)
                 .unwrap_or_default();
+            let references = self
+                .inner
+                .read_run(input.run_id(), |state| {
+                    order_references(state, &executed.events)
+                })
+                .unwrap_or_default();
             self.tape
                 .hear(self.distributor.published(), durable_us, &public);
             self.distributor.publish(
@@ -569,6 +581,7 @@ impl OriginStore for PublishingOrigin {
                 durable_us,
                 batch_source(admission, &executed.events),
                 public,
+                references,
             );
         }
         Ok(executed)
@@ -620,10 +633,16 @@ mod tests {
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
         let first = distributor.subscribe(None)?;
-        distributor.publish(&[event(1)], 1, Endpoint::Hub, Vec::new());
+        distributor.publish(&[event(1)], 1, Endpoint::Hub, Vec::new(), Vec::new());
         let second = distributor.subscribe(None)?;
-        distributor.publish(&[event(2), event(3)], 2, Endpoint::Hub, Vec::new());
-        distributor.publish(&[], 3, Endpoint::Hub, Vec::new());
+        distributor.publish(
+            &[event(2), event(3)],
+            2,
+            Endpoint::Hub,
+            Vec::new(),
+            Vec::new(),
+        );
+        distributor.publish(&[], 3, Endpoint::Hub, Vec::new(), Vec::new());
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
@@ -644,10 +663,16 @@ mod tests {
         let slow = distributor.subscribe(None)?;
         let fast = distributor.subscribe(None)?;
         for sequence in 1..=2 {
-            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub, Vec::new());
+            distributor.publish(
+                &[event(sequence)],
+                sequence,
+                Endpoint::Hub,
+                Vec::new(),
+                Vec::new(),
+            );
         }
         assert_eq!(fast.drain()?.len(), 2);
-        distributor.publish(&[event(3)], 3, Endpoint::Hub, Vec::new());
+        distributor.publish(&[event(3)], 3, Endpoint::Hub, Vec::new(), Vec::new());
         assert!(slow.drain().is_err());
         assert_eq!(fast.drain()?.len(), 1);
         assert_eq!(distributor.subscriber_count(), 1);
@@ -707,7 +732,13 @@ mod tests {
         let (_, resume) = distributor.subscribe_resuming(None, 0, || Some(5))?;
         assert!(matches!(resume, Resume::Gap));
         for sequence in 1..=4 {
-            distributor.publish(&[event(sequence)], sequence, Endpoint::Hub, Vec::new());
+            distributor.publish(
+                &[event(sequence)],
+                sequence,
+                Endpoint::Hub,
+                Vec::new(),
+                Vec::new(),
+            );
         }
         // Batches 2..=4 are retained; a cursor at 1 replays them all.
         let (live, resume) = distributor.subscribe_resuming(None, 1, || None)?;
@@ -715,7 +746,7 @@ mod tests {
             return Err("cursor 1 is inside the window".to_owned());
         };
         assert_eq!(sequences(&batches), vec![2, 3, 4]);
-        distributor.publish(&[event(5)], 5, Endpoint::Hub, Vec::new());
+        distributor.publish(&[event(5)], 5, Endpoint::Hub, Vec::new(), Vec::new());
         assert_eq!(sequences(&live.drain()?), vec![5]);
         // Older than the window, or never published: a gap.
         assert!(matches!(

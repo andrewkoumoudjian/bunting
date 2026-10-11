@@ -2,7 +2,8 @@
 
 - Status: **Current** (slice 25; order-by-order and tape feeds and access
   delay added in slice 35; operators and the run stream in slice 41,
-  [ADR 0042](../adr/0042-bnp-operators-and-run-stream.md)). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
+  [ADR 0042](../adr/0042-bnp-operators-and-run-stream.md); own order
+  reference in reports in slice 43). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
 - Code: `packages/bnp-wire` (types and codec; the field order in
   `src/codec.rs` is this contract), `packages/bunting-application/src/bnp.rs`
   (identity and event mapping), `apps/bunting-server/src/bnp_host.rs` (venue
@@ -107,7 +108,7 @@ trades, bit 3 order by order (venue feeds only).
 | 0x49 | OperatorDone | `request_id:u32 run_sequence:u64` |
 | 0x50 | OrderAccepted | `stamp client_order_id:u64 order_id:u128 listing side:u8 quantity:i64 price:option<i64>` |
 | 0x51 | OrderRejected | `stamp client_order_id:u64 reason:u8` |
-| 0x52 | OrderRested | `stamp client_order_id:u64 order_id:u128 price:i64 remaining:i64` |
+| 0x52 | OrderRested | `stamp client_order_id:u64 order_id:u128 price:i64 remaining:i64 reference:option<u64>` |
 | 0x53 | Fill | `stamp client_order_id:u64 order_id:u128 listing side:u8 price:i64 quantity:i64 fee:i128 liquidity:u8` |
 | 0x54 | OrderDone | `stamp client_order_id:u64 order_id:u128` |
 | 0x55 | OrderCanceled | `stamp client_order_id:u64 order_id:u128 remaining:i64 reason:u8` |
@@ -115,7 +116,7 @@ trades, bit 3 order by order (venue feeds only).
 | 0x57 | PositionChanged | `stamp instrument_id:u128 delta:i64` |
 | 0x58 | BalanceChanged | `stamp delta:i128` |
 | 0x59 | KillSwitchActivated | `stamp` |
-| 0x5a | OrderReduced | `stamp client_order_id:u64 order_id:u128 remaining:i64` |
+| 0x5a | OrderReduced | `stamp client_order_id:u64 order_id:u128 remaining:i64 reference:option<u64>` |
 | 0x5b | KillSwitchReset | `stamp` |
 | 0x5c | RunStatus | `stamp status:string` (`active`, `paused`, `terminated`, …) |
 | 0x5d | ListingHalt | `stamp instrument_id:u128 halted:bool` |
@@ -200,6 +201,15 @@ units).
   sends `KillSwitchReset` (answered `KillSwitchReset`). Other participants
   are not affected. It is Bunting-added, like a broker's or venue's
   participant kill switch; FIX v1 has no equivalent message.
+- `OrderRested` and `OrderReduced` carry the order's public `reference` on
+  the venue's order-by-order feed while it rests and displays quantity (as
+  OUCH's accepted message carries the order reference number ITCH shows), read
+  right after the commit. A different reference in a later `OrderReduced`
+  means the order lost time priority: an iceberg slice was refreshed at the
+  back of its level. With an order-by-order subscription the client finds its
+  own place in the queue from it. Reports replayed on resume carry the
+  reference they had when first sent; after a venue restart there are none to
+  replay (slice 43).
 - `OrderAccepted` and `OrderDone` are sent only for orders entered over BNP;
   orders the same participant entered over FIX reach BNP as their fills,
   cancels and rests.

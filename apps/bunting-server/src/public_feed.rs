@@ -508,6 +508,7 @@ mod tests {
                 best_ask: None,
                 orders: Vec::new(),
             }],
+            references: Vec::new(),
         })
     }
 

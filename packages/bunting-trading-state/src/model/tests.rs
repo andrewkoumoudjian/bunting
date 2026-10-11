@@ -254,6 +254,7 @@ fn an_order_runs_its_lifecycle_and_times_the_venue_round_trip() -> Result<(), Ti
             order_id: 77,
             price: 100,
             remaining: 6,
+            reference: Some(3),
         },
         5_300,
     );

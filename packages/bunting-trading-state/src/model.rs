@@ -768,6 +768,7 @@ impl Model {
                 order_id,
                 price,
                 remaining,
+                reference: _,
             } => {
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     if row.status.is_live() && row.status != OrderStatus::PendingCancel {
@@ -783,6 +784,7 @@ impl Model {
                 client_order_id,
                 order_id,
                 remaining,
+                reference: _,
             } => {
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     row.remaining = remaining;
