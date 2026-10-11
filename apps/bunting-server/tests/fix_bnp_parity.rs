@@ -267,7 +267,7 @@ fn run_fix(venue: &Venue) -> Result<Vec<Duration>, String> {
     Ok(elapsed)
 }
 
-/// Receives until `done` matches; returns the time the first message came.
+/// Receives until `done` matches; returns the time the first report came.
 fn wait(client: &Client, done: impl Fn(&ServerMessage) -> bool) -> Result<Instant, String> {
     let deadline = Instant::now() + TIMEOUT;
     let mut first = None;
@@ -279,6 +279,11 @@ fn wait(client: &Client, done: impl Fn(&ServerMessage) -> bool) -> Result<Instan
             .recv_timeout(Duration::from_millis(20))
             .map_err(|error| error.to_string())?
         {
+            // Session messages (such as the published access delay) are
+            // not reports.
+            if message.stamp().is_none() {
+                continue;
+            }
             let at = *first.get_or_insert_with(Instant::now);
             if done(&message) {
                 return Ok(at);
