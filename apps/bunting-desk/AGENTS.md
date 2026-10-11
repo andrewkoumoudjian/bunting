@@ -8,6 +8,8 @@ Scope: `apps/bunting-desk/**`. Decision record: ADR 0050.
 - Realism (ADR 0035): every order names its venue (no default router); each venue's book is shown as its feed reported it, never merged; latency shown is measured, never smoothed or estimated; order entry and the kill switch go straight to the I/O thread with no UI-side delay or batching.
 - Local play spawns a loopback `bunting server <config>` child and connects over BNP. Stop only a child this app started.
 - Keep collections bounded and tables virtualized; a live feed must never grow an unbounded element tree.
+- Panes are `PaneKind`s (`src/panes.rs`): each can be opened any number of times, and its `name()` is written into saved layouts, so never change one. Workspaces and presets live in `src/layouts.rs`; bump `LAYOUT_VERSION` when a saved layout could no longer load.
+- Fonts: SF Pro only through the macOS system font (never bundle it); Inter and Source Serif 4 are bundled under the OFL with provenance in `assets/fonts/README.md`. Titles use `theme::serif`/`pane_title`, numbers `theme::tabular()`.
 - Components come from `gpui-kit` (exact pin). Write GPUI code only for market-specific composition. Adapt source only from Apache-2.0 or MIT projects and record repository, commit and path. Zed's `crates/ui`, Coop, Zorite (GPL) and Rox (AGPL) are references only.
 - This directory is its own Cargo workspace with its own `Cargo.lock` and `rust-toolchain.toml` (Rust 1.97), excluded from the root workspace. Run `tools/check_desk.sh` from the repository root; the root's seven gates do not build this app.
 - Compilation and headless window tests are not visual acceptance. Say so when reporting.

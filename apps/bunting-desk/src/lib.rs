@@ -11,8 +11,13 @@
 pub mod connect;
 pub mod desk;
 pub mod format;
+pub mod layouts;
 pub mod panels;
+pub mod panes;
+pub mod theme;
 pub mod workspace;
 
 pub use desk::{Desk, Outbox, Venue};
+pub use layouts::{LayoutStore, Preset};
+pub use panes::PaneKind;
 pub use workspace::{PANELS, Workspace};

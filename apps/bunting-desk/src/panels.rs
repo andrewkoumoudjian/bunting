@@ -4,6 +4,7 @@
 
 use crate::desk::Desk;
 use crate::format;
+use crate::theme;
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
 use bunting_trading_state::{
@@ -37,6 +38,9 @@ const ROW_HEIGHT: f32 = 22.;
 /// The boilerplate every dock panel shares.
 macro_rules! dock_panel {
     ($panel:ident, $name:literal, $title:literal) => {
+        dock_panel!($panel, $name, $title, false);
+    };
+    ($panel:ident, $name:literal, $title:literal, $follows_symbol:literal) => {
         impl BasePanel for $panel {
             fn panel_name(&self) -> &'static str {
                 $name
@@ -44,8 +48,16 @@ macro_rules! dock_panel {
         }
 
         impl Panel for $panel {
-            fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                $title
+            fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let symbol = if $follows_symbol {
+                    self.desk
+                        .read(cx)
+                        .instrument()
+                        .map(|instrument| instrument.symbol)
+                } else {
+                    None
+                };
+                theme::pane_title($title, symbol.as_deref())
             }
         }
 
@@ -92,6 +104,7 @@ fn panel_body(
         .p_2()
         .gap_2()
         .text_sm()
+        .font_features(theme::tabular())
 }
 
 fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
@@ -169,7 +182,7 @@ pub struct BooksPanel {
     _observe: Subscription,
 }
 
-dock_panel!(BooksPanel, "books", "Books");
+dock_panel!(BooksPanel, "books", "Book Trader", true);
 
 impl BooksPanel {
     pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
@@ -239,7 +252,7 @@ impl Render for BooksPanel {
         let Some(instrument) = instrument else {
             return body;
         };
-        let mut columns = h_flex().flex_1().min_h_0().gap_2().items_start();
+        let mut columns = h_flex().w_full().gap_2().items_start();
         for info in instrument.listings.iter().take(MAX_VENUE_COLUMNS) {
             columns = columns.child(self.book_column(info.listing, chosen, window, cx));
         }
@@ -251,7 +264,15 @@ impl Render for BooksPanel {
                 "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker where the venue publishes one. Click a venue to send there, or an order to put its price on the ticket."
             }
         };
-        body.child(columns).child(muted(hint, cx))
+        body.child(
+            div()
+                .id("books-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(columns),
+        )
+        .child(muted(hint, cx))
     }
 }
 
@@ -330,7 +351,7 @@ impl BooksPanel {
             .test_support()
             .flex_1()
             .min_w(px(220.))
-            .max_w(px(420.))
+            .max_w(px(640.))
             .p_2()
             .gap_1()
             .border_1()
@@ -540,7 +561,7 @@ pub struct TicketPanel {
     _observe: Subscription,
 }
 
-dock_panel!(TicketPanel, "ticket", "Order ticket");
+dock_panel!(TicketPanel, "ticket", "Order Entry", true);
 
 impl TicketPanel {
     pub fn new(desk: Entity<Desk>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -872,7 +893,7 @@ pub struct TradesPanel {
     _observe: Subscription,
 }
 
-dock_panel!(TradesPanel, "tape", "Tape");
+dock_panel!(TradesPanel, "tape", "Tape", true);
 
 impl TradesPanel {
     pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
@@ -1027,7 +1048,7 @@ impl Render for TradesPanel {
 // ---- orders --------------------------------------------------------------------
 
 reader_panel!(OrdersPanel);
-dock_panel!(OrdersPanel, "orders", "Orders");
+dock_panel!(OrdersPanel, "orders", "Blotter");
 
 impl Render for OrdersPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1152,7 +1173,7 @@ impl Render for FillsPanel {
 // ---- positions ---------------------------------------------------------------------
 
 reader_panel!(PositionsPanel);
-dock_panel!(PositionsPanel, "positions", "Positions");
+dock_panel!(PositionsPanel, "positions", "Portfolio");
 
 impl Render for PositionsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1222,7 +1243,7 @@ impl Render for PositionsPanel {
 // ---- account ---------------------------------------------------------------------------
 
 reader_panel!(AccountPanel);
-dock_panel!(AccountPanel, "account", "Account");
+dock_panel!(AccountPanel, "account", "Trader Info");
 
 impl Render for AccountPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

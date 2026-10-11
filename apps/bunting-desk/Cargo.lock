@@ -839,6 +839,8 @@ dependencies = [
  "bunting-trading-state",
  "clap",
  "gpui-kit",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

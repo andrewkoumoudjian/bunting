@@ -110,11 +110,20 @@ Andrew's public GitHub stars page unless marked):
    other venue, reusing the TUI's local-venue launcher and certificate
    provisioning when the shared crate has them. The app stops only a child
    it started.
-6. **Layout.** A `DockArea` workspace: per-venue books in the centre (price
-   levels, and order by order with queue places since slice 40), the consolidated tape
-   and the order ticket on the right, open orders, fills, positions and
-   account at the bottom, and connection and latency in the status bar.
-   Layout persists per user under a versioned key.
+6. **Layout.** A `DockArea` workspace of panes modelled on RIT's modules
+   (Book Trader, Order Entry, Tape, Blotter, Fills, Portfolio, Trader
+   Info, Notices), each openable any number of times from the sidebar,
+   then moved, split, tabbed and resized. Named workspaces start from a
+   preset (Trading, Market Making, Arbitrage); every workspace's layout is
+   saved on each change to one versioned JSON file in the user's
+   configuration directory and restored at the next start (slice 47). A
+   left sidebar (workspaces, add pane, watchlist), a top bar (workspace,
+   save and reset, connection and per-venue round trips) and a status bar
+   frame the dock. Type: SF Pro through the macOS system font, Inter
+   elsewhere, Source Serif 4 Display for titles, tabular figures for
+   numbers; Inter and Source Serif 4 are bundled under the SIL OFL 1.1
+   (`apps/bunting-desk/assets/fonts/README.md`). A dark theme is the
+   default (`apps/bunting-desk/assets/theme.json`).
    Visual direction (owner, 2026-10-10: "zed and delta has very good
    ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
    a status bar, a command palette, keyboard first). *Corrected
@@ -128,8 +137,11 @@ Andrew's public GitHub stars page unless marked):
    feature parity as the minimum, better, lighter and faster than RIT;
    serif fonts for titles and SF Pro for body text (SF Pro through the
    macOS system font only, since Apple's licence covers Apple platforms;
-   an open-licensed fallback elsewhere). The redesign starts from mockup
-   images the owner approves, not from code. All references are design
+   an open-licensed fallback elsewhere). The owner first asked for mockup
+   images, then the same day for the implementation itself; the shell
+   above is its first step, built against the RIT parity spec
+   (`/mnt/project-files/bunting/rit-parity/2026-10-11-rit-parity-desk-spec.md`
+   in the project files) and the owner's two dark-mode examples. All references are design
    references only; no source or assets are copied.
 7. **Realism rules for the UI** (ADR 0035):
    - every order names its venue; there is no default router and no

@@ -4,7 +4,8 @@
 //! write them to the venue.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use bunting_desk::{Desk, Outbox, PANELS, Workspace};
+use bunting_desk::{Desk, LayoutStore, Outbox, PANELS, Workspace};
+use gpui_kit::component::dock::PanelState;
 use bunting_trading_state::SessionEvent;
 use bunting_trading_state::bunting_client::bnp_wire::{
     BookOrder, ClientMessage, EntryKind, Level, Listing, ListingInfo, OrderType, ResumeStatus,
@@ -46,18 +47,23 @@ impl Recorder {
 
 struct Fixture {
     window: WindowHandle<Root>,
+    workspace: Entity<Workspace>,
     desk: Entity<Desk>,
     sent: Recorder,
 }
 
 fn open(cx: &mut TestAppContext) -> Fixture {
+    open_with(cx, None)
+}
+
+fn open_with(cx: &mut TestAppContext, store: Option<LayoutStore>) -> Fixture {
     cx.update(gpui_kit::init);
     let sent = Recorder::default();
     let outbox = sent.clone();
     let desk =
         cx.update(|cx| cx.new(|_| Desk::with_outbox(Box::new(outbox), "test venue".to_owned())));
     let shared = desk.clone();
-    let window = cx.update(|cx| {
+    let (window, workspace) = cx.update(|cx| {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
@@ -65,13 +71,19 @@ fn open(cx: &mut TestAppContext) -> Fixture {
             })),
             ..WindowOptions::default()
         };
-        let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| Workspace::new(shared, window, cx))
+        let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
+            bunting_desk::theme::install(cx);
+            cx.new(|cx| Workspace::new(shared, store, window, cx))
         })
         .expect("open window");
-        window.downcast::<Root>().expect("Base Root")
+        (window.downcast::<Root>().expect("Base Root"), workspace)
     });
-    Fixture { window, desk, sent }
+    Fixture {
+        window,
+        workspace,
+        desk,
+        sent,
+    }
 }
 
 fn apply(fixture: &Fixture, cx: &mut TestAppContext, event: SessionEvent) {
@@ -361,12 +373,9 @@ fn the_kill_switch_is_sent_only_after_confirmation(cx: &mut TestAppContext) {
         fixture.sent.take().is_empty(),
         "nothing is sent before confirming"
     );
-    cx.update_window(fixture.window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("ok").visible(), "the confirm button is shown");
-        window.click("ok", cx);
-    })
-    .unwrap();
+    // Let the dialog finish opening before pressing its button.
+    cx.run_until_parked();
+    click(&fixture, cx, "ok");
     let sent = fixture.sent.take();
     assert!(
         matches!(sent.as_slice(), [ClientMessage::KillSwitch { .. }]),
@@ -451,4 +460,79 @@ fn an_active_kill_switch_can_be_reset(cx: &mut TestAppContext) {
         matches!(sent.as_slice(), [ClientMessage::KillSwitchReset { .. }]),
         "{sent:?}"
     );
+}
+
+/// The panes in the shown layout, by name, in tree order.
+fn panes(fixture: &Fixture, cx: &mut TestAppContext) -> Vec<String> {
+    fn walk(state: &PanelState, names: &mut Vec<String>) {
+        if state.children.is_empty() {
+            names.push(state.panel_name.clone());
+        }
+        for child in &state.children {
+            walk(child, names);
+        }
+    }
+    fixture.workspace.read_with(cx, |workspace, cx| {
+        let state = workspace.area().read(cx).dump(cx);
+        let mut names = Vec::new();
+        walk(&state.center, &mut names);
+        names
+    })
+}
+
+#[gpui_kit::test]
+fn workspaces_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let trading = panes(&fixture, cx);
+    assert_eq!(trading.iter().filter(|name| *name == "ticket").count(), 1);
+    // The market-making preset has two tickets.
+    click(&fixture, cx, "workspace-1");
+    let market_making = panes(&fixture, cx);
+    assert_eq!(
+        market_making.iter().filter(|name| *name == "ticket").count(),
+        2
+    );
+    // Another ticket opens beside the others.
+    click(&fixture, cx, "add-ticket");
+    assert_eq!(
+        panes(&fixture, cx).iter().filter(|name| *name == "ticket").count(),
+        3
+    );
+    // Going back shows the first workspace as it was, and returning keeps
+    // the added pane.
+    click(&fixture, cx, "workspace-0");
+    assert_eq!(panes(&fixture, cx), trading);
+    click(&fixture, cx, "workspace-1");
+    assert_eq!(
+        panes(&fixture, cx).iter().filter(|name| *name == "ticket").count(),
+        3
+    );
+    // A new workspace starts from the trading preset.
+    click(&fixture, cx, "workspace-new");
+    let (names, active) = fixture
+        .workspace
+        .read_with(cx, |workspace, _| workspace.workspaces());
+    assert_eq!(names.len(), 4);
+    assert_eq!(active, 3);
+}
+
+#[gpui_kit::test]
+fn saved_workspaces_come_back(cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!(
+        "bunting-desk-workspace-test-{}",
+        std::process::id()
+    ));
+    let store = LayoutStore::at(dir.join("workspaces.json"));
+    let fixture = open_with(cx, Some(store.clone()));
+    click(&fixture, cx, "workspace-2");
+    click(&fixture, cx, "add-notices");
+    click(&fixture, cx, "save-layout");
+    let before = panes(&fixture, cx);
+    let reopened = open_with(cx, Some(store));
+    let (_, active) = reopened
+        .workspace
+        .read_with(cx, |workspace, _| workspace.workspaces());
+    assert_eq!(active, 2, "the last workspace shown");
+    assert_eq!(panes(&reopened, cx), before, "with its added pane");
+    std::fs::remove_dir_all(dir).unwrap();
 }
