@@ -169,7 +169,8 @@ that hangs or vanishes frees its session and can log on again at once.
 Log on again with your FIX sequence numbers and request a resend of what you
 missed, as with any FIX disconnect. Reports the venue had not yet sent you
 when the connection closed (still on their path), and reports for your
-orders committed while you were away, are sent on your next logon.
+orders committed while you were away, are sent on your next logon, also
+after a venue restart.
 
 Execution reports for a team's orders, including fills on resting orders
 caused by other teams or built-in agents, are delivered on that team's

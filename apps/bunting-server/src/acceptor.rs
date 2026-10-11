@@ -18,9 +18,10 @@ pub(crate) fn run(
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind FIX listener {}: {error}", config.bind))?;
     let slots = Arc::new(ConnectionSlots::new(config.max_connections));
-    let session_path = match storage_kind {
+    let origin_path = match storage_kind {
         StorageKind::File => {
-            storage_path.map(|path| PathBuf::from(path).with_extension("fix-session.json"))
+            // Each participant's session log sits beside the origin (ADR 0045).
+            storage_path.map(PathBuf::from)
         }
         StorageKind::Memory => None,
     };
@@ -41,7 +42,7 @@ pub(crate) fn run(
         let config = (*config).clone();
         let origin = origin.clone();
         let admission = admission.clone();
-        let session_path = session_path.clone();
+        let origin_path = origin_path.clone();
         let slots = slots.clone();
         std::thread::Builder::new()
             .name("bunting-fix-session".to_owned())
@@ -57,7 +58,7 @@ pub(crate) fn run(
                     &config,
                     &origin,
                     &admission,
-                    session_path.as_deref(),
+                    origin_path.as_deref(),
                 ) {
                     eprintln!("bunting-server: FIX connection closed: {error}");
                 }

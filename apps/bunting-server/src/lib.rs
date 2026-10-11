@@ -22,6 +22,7 @@ mod run_clock;
 pub mod runtime;
 mod scenario;
 mod session_host;
+mod session_store;
 pub mod storage;
 mod tcp_rtt;
 mod wake;

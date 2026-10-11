@@ -46,6 +46,13 @@ in packages. Bound every connection, request, queue, journal and recovery file.
   decisions and before submitting them; on restart, a pending action whose
   command is already journaled must resolve to its recorded events, never
   commit again.
+- FIX session state (ADR 0045) is a write-ahead log per participant
+  (`session_store.rs`): append and sync it once immediately before writing
+  frames, never after, and never rewrite whole snapshots per message.
+  Anything that changes the FIX application's state must be a recorded
+  input replayable through `map_message`/`committed_messages`. Recovery
+  readmits recorded commands not in the journal; the job must keep
+  skipping commands `find_command` already finds.
 - The origin owns the live runs; `storage.rs` appends one journal-format-3
   record per committed input (`commit_journal.rs`) before acknowledging and
   writes state-only checkpoints every `storage.checkpoint_interval` commands.

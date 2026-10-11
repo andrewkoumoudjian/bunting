@@ -199,25 +199,23 @@ log. Per-command cost no longer grows with the size of the run.
    policy and each order's journaled `anonymous` flag
    (`bunting_application::order_broker`, `trade_brokers`).
 
-10. Missed reports across a FIX reconnect (slice 34): each FIX session
-    tracks which committed batches it has written to its participant
-    (`apps/bunting-server/src/delivery.rs`): a low-water sequence below
-    which everything was written, plus the batches above it still on
-    their path. Reports leave in send-time order, not commit order (a near
-    venue's fill overtakes a far venue's earlier one), so a single
-    "highest sent" cursor would skip the overtaken report. When the
-    session closes, the cursor is left with the participant's claim
-    (`ParticipantClaim::store_cursor`); the next session resumes from the
-    distributor's retention window (`subscribe_resuming`) and sends exactly
-    the reports the last one never wrote, with no added delay. Reports it
-    did write are recovered by FIX sequence-number resend. The cursor
-    lives in memory, like the retention window: after a venue restart, or
-    beyond the window, the stream starts live.
-
-### Target
-
-- Resume over a venue restart (the cursor and retention window are in
-  memory today).
+10. Missed reports across a FIX reconnect (slice 34) and a venue restart
+    (slice 42, ADR 0045): each FIX session tracks which committed batches
+    it has applied (`seen_through`) and which applied batches' reports it
+    has not yet written (`apps/bunting-server/src/delivery.rs`). Reports
+    leave in send-time order, not commit order (a near venue's fill
+    overtakes a far venue's earlier one), so a single "highest sent"
+    cursor would skip the overtaken report. With a file origin this state,
+    the FIX session (sequences, resend journal) and the FIX application's
+    identities live in a write-ahead log per participant,
+    `<origin stem>.fix-session-<p>.log` (`session_store.rs`): a checkpoint
+    plus deltas, appended and synced once immediately before frames are
+    written. The next session, after a reconnect or a restart, sends the
+    unwritten reports at once, readmits commands recorded but not
+    journaled (the sequencer skips any already journaled), and applies
+    every batch after `seen_through` from the distributor's retention
+    window or, beyond it, from the origin journal. Reports it did write
+    are recovered by FIX sequence-number resend.
 
 ## 7. Admission and fairness
 

@@ -1,53 +1,48 @@
 use crate::admission::{
-    AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, ParticipantClaim, Reply,
-    reply_task,
+    AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, Reply, reply_task,
 };
 use crate::config::{FixConfig, RosterEntry};
-use crate::delivery::{Delivery, DeliveryCursor, bounds};
-use crate::distributor::{Committed, PublishingOrigin, Resume};
+use crate::delivery::last_sequence;
+use crate::distributor::{PublishingOrigin, Resume};
 use crate::outbound::OutboundHold;
 use crate::public_feed::{FeedMessage, PublicFeeds};
+use crate::session_store::{SessionStore, command_context};
+use crate::storage;
 use crate::wake::{SessionEvent, Waker};
 use bunting_admission_sequencer::{DelayEstimator, Endpoint};
 use bunting_api_contract::{
     ActorIdentity, ActorRole, FIX_COMPETITION_PROFILE_VERSION, UnsignedDecimalString,
 };
 use bunting_application::{
-    ApplicationService, FixApplicationRequest, FixApplicationSnapshot, FixApplicationState,
-    FixCommandContext, MarketDataRequestType, VerifiedActor,
+    ApplicationService, FixApplicationRequest, FixApplicationState, MarketDataRequestType,
+    VerifiedActor,
     competition::{account, discovery, news_tenders, risk_score},
     displayed_orders, listing_for_command, project_market,
 };
 use bunting_engine::RunState;
-use bunting_market_events::{SimulationCommand, SimulationCommandRequest, TenderDecision};
+use bunting_market_events::{
+    EventEnvelope, SimulationCommand, SimulationCommandRequest, TenderDecision,
+};
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, ListingKey, LogicalTimeNs, ParticipantId, PriceTicks,
-    QuantityLots, RunId, TenderId, VenueId,
+    CommandId, CorrelationId, ListingKey, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots,
+    RunId, TenderId, VenueId,
 };
 use bunting_origin_store::OriginStore;
 use quarcc_execution_engine::ExecutionConfig;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use simfix_mapping::{
     ApplyFinePayload, CONSOLIDATED_EXCHANGE, CompetitionRequest, PublishNewsPayload,
     RunAdvancePayload, RunReasonPayload, SnapshotOrder, TenderAction, business_reject,
     competition_report, consolidated_snapshot, market_snapshot, order_snapshot,
 };
-use simfix_session::{FixSession, SessionAction, SessionConfig, SessionSnapshot};
+use simfix_session::{ConnectionState, FixSession, SessionAction, SessionConfig};
 use simfix_wire::{Decoder, FixMessage, WireLimits};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct NativeFixSnapshot {
-    version: u16,
-    session: SessionSnapshot,
-    application: FixApplicationSnapshot,
-}
 
 #[expect(
     clippy::too_many_lines,
@@ -58,7 +53,7 @@ pub(crate) fn handle_fix_connection(
     config: &FixConfig,
     origin: &PublishingOrigin,
     admission: &AdmissionService,
-    session_path: Option<&Path>,
+    origin_path: Option<&Path>,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))
@@ -76,15 +71,12 @@ pub(crate) fn handle_fix_connection(
     };
     let (logon_bytes, logon) = read_first_message(&mut stream, wire_limits)?;
     let credential = authenticate_logon(&logon, config)?;
-    // Held until this function returns, after the last snapshot persist.
-    let claim = admission.claim_participant(
+    // Held until this function returns, after the last log write.
+    let _claim = admission.claim_participant(
         Interface::Fix,
         ParticipantId::new(credential.participant_id),
         SESSION_HANDOVER,
     )?;
-    let session_path = session_path
-        .map(|base| base.with_extension(format!("fix-session-{}.json", credential.participant_id)));
-    let session_path = session_path.as_deref();
     let session_config = SessionConfig {
         sender_comp_id: config.sender_comp_id.clone(),
         target_comp_id: credential.target_comp_id.clone(),
@@ -94,26 +86,45 @@ pub(crate) fn handle_fix_connection(
         wire_limits,
         logon_fields: Vec::new(),
     };
-    let persisted = session_path.map(load_session).transpose()?.flatten();
-    let (mut session, mut application) = persisted.map_or_else(
-        || {
-            Ok::<_, String>((
-                FixSession::try_new(session_config.clone())
-                    .map_err(|error| format!("invalid FIX session config: {error:?}"))?,
-                FixApplicationState::new(ExecutionConfig::default())
-                    .with_identity_epoch(new_identity_epoch()),
-            ))
-        },
-        |snapshot| {
-            if snapshot.version != 1 {
-                return Err("unsupported native FIX snapshot version".to_owned());
+    let fresh_application = || {
+        FixApplicationState::new(ExecutionConfig::default())
+            .with_identity_epoch(new_identity_epoch())
+    };
+    let run_id = RunId::new(config.run_id);
+    let log_path = match origin_path {
+        Some(origin_path) => {
+            // The whole-snapshot format before ADR 0045 is refused, not migrated.
+            let legacy = origin_path.with_extension(format!(
+                "fix-session.fix-session-{}.json",
+                credential.participant_id
+            ));
+            if legacy.exists() {
+                return Err(format!(
+                    "unsupported FIX session snapshot {}; remove it (ADR 0045)",
+                    legacy.display()
+                ));
             }
-            Ok((
-                FixSession::restore(session_config.clone(), snapshot.session)
-                    .map_err(|error| format!("cannot restore FIX session: {error:?}"))?,
-                FixApplicationState::restore(snapshot.application)
-                    .map_err(|error| format!("cannot restore FIX application: {error}"))?,
-            ))
+            Some(
+                origin_path
+                    .with_extension(format!("fix-session-{}.log", credential.participant_id)),
+            )
+        }
+        None => None,
+    };
+    let run_sequence = || {
+        origin
+            .read_run(run_id, |state| state.event_sequence().get())
+            .ok()
+    };
+    let (mut store, mut session, recovery) = SessionStore::open(
+        log_path.as_deref(),
+        session_config,
+        fresh_application,
+        run_sequence().unwrap_or(0),
+        |command| {
+            origin
+                .find_command(command.run_id, command.command_id)
+                .is_ok_and(|found| found.is_some())
         },
     )?;
     let timestamp = fix_timestamp();
@@ -121,20 +132,14 @@ pub(crate) fn handle_fix_connection(
     let actions = session
         .receive_bytes_at(&logon_bytes, &timestamp, millis)
         .map_err(|error| format!("FIX Logon sequencing failed: {error:?}"))?;
-    process_session_actions(actions, &mut stream, session_path, &session, &application)?;
+    process_session_actions(actions, &mut stream, &mut store, &session)?;
     let mut response = FixMessage::new("A");
     response.push(98, "0");
     response.push(108, config.heartbeat_seconds.to_string());
     response.push(1137, simfix_wire::FIX_50_SP2_APPL_VER_ID);
     response.push(10000, FIX_COMPETITION_PROFILE_VERSION);
     response.push(10004, actor_role_name(credential.role));
-    send_messages(
-        &mut session,
-        &mut stream,
-        [response],
-        session_path,
-        &application,
-    )?;
+    send_messages(&mut session, &mut stream, [response], &mut store)?;
     let actor = VerifiedActor::try_from_identity(ActorIdentity {
         actor_id: UnsignedDecimalString::new(credential.participant_id),
         role: credential.role,
@@ -147,7 +152,6 @@ pub(crate) fn handle_fix_connection(
     })
     .map_err(|error| format!("invalid configured actor: {error}"))?;
     let participant = ParticipantId::new(credential.participant_id);
-    let run_id = RunId::new(config.run_id);
     let clock = *admission.clock();
     let (events, waker) =
         crate::wake::connect(&stream, config.max_message_bytes.min(16_384), move || {
@@ -156,55 +160,33 @@ pub(crate) fn handle_fix_connection(
     let _shutdown = crate::wake::ShutdownOnDrop::new(&stream)?;
     // Subscribe before handling any message so no committed batch for this
     // participant can fall between the subscription and the first command.
-    // A participant whose previous session closed with reports unwritten,
-    // or who was away while reports committed, resumes where that session
-    // left off (`crate::delivery`); otherwise the stream starts now.
-    let run_sequence = || {
-        origin
-            .read_run(run_id, |state| state.event_sequence().get())
-            .ok()
-    };
-    let previous = claim.take_cursor();
-    let start = run_sequence().unwrap_or(0);
-    let after = previous.as_ref().map_or(start, |cursor| cursor.through);
-    let (subscription, resume) =
-        origin
-            .distributor()
-            .subscribe_resuming(Some(waker.clone()), after, run_sequence)?;
-    let (cursor, replay) = match (previous, resume) {
-        (Some(cursor), Resume::Replay(batches)) => (cursor, batches),
-        (None, Resume::Replay(batches)) => (DeliveryCursor::at(after), batches),
-        (Some(_), Resume::Gap) => {
-            eprintln!(
-                "bunting-server: FIX participant {participant} missed reports older than the retention window"
-            );
-            (DeliveryCursor::at(start), Vec::new())
+    // A restored session resumes after the last batch its log applied: the
+    // distributor's retained batches, or the origin journal when those no
+    // longer reach back (after a venue restart). See ADR 0045.
+    let (subscription, mut catch_up) = match recovery.batches_after {
+        Some(after) => {
+            let (subscription, resume) = origin.distributor().subscribe_resuming(
+                Some(waker.clone()),
+                after,
+                run_sequence,
+            )?;
+            (subscription, Some(resume))
         }
-        (None, Resume::Gap) => (DeliveryCursor::at(start), Vec::new()),
-    };
-    let mut delivery = DeliveryGuard {
-        claim: &claim,
-        delivery: Delivery::new(&cursor),
+        None => (origin.distributor().subscribe(Some(waker.clone()))?, None),
     };
     let mut latency = ConnectionLatency::new(admission, participant);
     latency.refresh_kernel(&stream);
     // ADR 0034 §2: measure the path before the first order matters.
     for _ in 0..LOGON_PROBES {
-        latency.probe(&mut session, &mut stream, session_path, &application)?;
+        latency.probe(&mut session, &mut stream, &mut store)?;
     }
     let (reply_sender, replies) = sync_channel(admission.config().max_admission_queue);
     let mut outbound = OutboundHold::new(admission.config().max_outbound_hold);
-    for batch in replay {
-        if bounds(&batch).is_some_and(|(_, last)| cursor.owes(last)) {
-            hold_reports(
-                &mut application,
-                participant,
-                &latency,
-                &mut outbound,
-                &mut delivery.delivery,
-                &batch,
-            )?;
-        }
+    // Reports the last session applied but never wrote leave now: their
+    // batches are not applied again.
+    let logon_us = admission.clock().now_us();
+    for message in recovery.owed {
+        outbound.hold(message, logon_us)?;
     }
     let mut rate_window_started = Instant::now();
     let rate_window = Duration::from_millis(config.rate_limit_window_ms);
@@ -213,6 +195,34 @@ pub(crate) fn handle_fix_connection(
     // an order to a near venue may overtake an earlier one to a far venue.
     let mut release_floors = BTreeMap::<Endpoint, u64>::new();
     let mut feeds = PublicFeeds::default();
+    // Recorded commands a venue crash kept from committing go back to the
+    // sequencer, from now; any already journaled is skipped there.
+    for mapped in recovery.readmit {
+        let reply_to = ReplyTo {
+            replies: &reply_sender,
+            waker: &waker,
+        };
+        if let Some(reason) = admit_request(
+            FixApplicationRequest::Command(mapped.command),
+            &AdmitContext {
+                origin,
+                admission,
+                actor: &actor,
+                participant,
+                run_id,
+                received_us: admission.clock().now_us(),
+                request_id: mapped.correlation_id,
+            },
+            &latency,
+            &mut release_floors,
+            &mut feeds,
+            &reply_to,
+        )? {
+            eprintln!(
+                "bunting-server: FIX participant {participant} command not readmitted: {reason}"
+            );
+        }
+    }
     loop {
         // Sleep until the next held message or probe is due, or until the
         // reader, the sequencer or the distributor wakes this session.
@@ -234,7 +244,13 @@ pub(crate) fn handle_fix_connection(
         for event in first.into_iter().chain(events.try_iter()) {
             let (received_us, bytes) = match event {
                 SessionEvent::Bytes { received_us, bytes } => (received_us, bytes),
-                SessionEvent::Closed(None) => return Ok(()),
+                // Whatever rode on no frame yet becomes durable at a clean close.
+                SessionEvent::Closed(None) => {
+                    store.persist(&session)?;
+                    #[cfg(debug_assertions)]
+                    store.verify(&session)?;
+                    return Ok(());
+                }
                 SessionEvent::Closed(Some(reason)) => return Err(reason),
                 SessionEvent::Wake => continue,
             };
@@ -243,6 +259,9 @@ pub(crate) fn handle_fix_connection(
             let actions = session
                 .receive_bytes_at(&bytes, &fix_timestamp(), epoch_millis())
                 .map_err(|error| format!("FIX session rejected bytes: {error:?}"))?;
+            // Session-level replies (resends, rejects, heartbeats) go out
+            // together after the application messages, behind one log write.
+            let mut replies = Vec::new();
             for action in actions {
                 match action {
                     SessionAction::Application(message) => {
@@ -257,6 +276,7 @@ pub(crate) fn handle_fix_connection(
                             ))
                         } else {
                             rate_messages = rate_messages.saturating_add(1);
+                            let request_id = u128::from(session.state().incoming_sequence);
                             admit_message(
                                 &message,
                                 &AdmitContext {
@@ -266,9 +286,9 @@ pub(crate) fn handle_fix_connection(
                                     participant,
                                     run_id,
                                     received_us,
-                                    request_id: u128::from(session.snapshot().incoming_sequence),
+                                    request_id,
                                 },
-                                &mut application,
+                                &mut store,
                                 &latency,
                                 &mut release_floors,
                                 &mut feeds,
@@ -287,23 +307,22 @@ pub(crate) fn handle_fix_connection(
                     }
                     SessionAction::TestResponse(id) => latency.on_response(&id),
                     SessionAction::PeerLogon(_) => {}
-                    other => process_session_actions(
-                        vec![other],
-                        &mut stream,
-                        session_path,
-                        &session,
-                        &application,
-                    )?,
+                    SessionAction::Disconnect => {
+                        replies.push(SessionAction::Disconnect);
+                        break;
+                    }
+                    other => replies.push(other),
                 }
             }
+            process_session_actions(replies, &mut stream, &mut store, &session)?;
         }
         let actions = session
             .poll(epoch_millis(), &fix_timestamp())
             .map_err(|value| format!("FIX heartbeat failure: {value:?}"))?;
-        process_session_actions(actions, &mut stream, session_path, &session, &application)?;
+        process_session_actions(actions, &mut stream, &mut store, &session)?;
         if admission.clock().now_us() >= latency.next_probe_us() {
             latency.refresh_kernel(&stream);
-            latency.probe(&mut session, &mut stream, session_path, &application)?;
+            latency.probe(&mut session, &mut stream, &mut store)?;
         }
         for reply in replies.try_iter() {
             if reply.result.is_err()
@@ -337,72 +356,92 @@ pub(crate) fn handle_fix_connection(
         for increment in feeds.drain_tape()? {
             hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
         }
-        for batch in subscription.drain()? {
+        // A restored session first applies the batches it missed, once its
+        // inbound gap is closed: commands the participant resends are
+        // mapped again before their batches arrive (ADR 0045). Until then
+        // the live batches wait on the subscription.
+        if catch_up.is_some() && inbound_complete(&session) {
+            match catch_up.take() {
+                Some(Resume::Replay(batches)) => {
+                    for batch in batches {
+                        let send_at = batch
+                            .durable_us
+                            .saturating_add(latency.delay_from(batch.source)?);
+                        hold_reports(
+                            &mut store,
+                            participant,
+                            &mut outbound,
+                            &batch.events,
+                            send_at,
+                        )?;
+                    }
+                }
+                Some(Resume::Gap) => {
+                    let origin_path = origin_path.ok_or("a FIX session log needs a file origin")?;
+                    // Due at once: their commit times went with the old process.
+                    let now_us = admission.clock().now_us();
+                    let after = store.seen_through();
+                    storage::committed_batches_after(origin_path, run_id, after, |events| {
+                        hold_reports(&mut store, participant, &mut outbound, events, now_us)
+                    })?;
+                }
+                None => {}
+            }
+        }
+        let batches = if catch_up.is_none() {
+            subscription.drain()?
+        } else {
+            Vec::new()
+        };
+        for batch in batches {
+            // Applied already by the catch-up from the origin journal.
+            if last_sequence(&batch).is_some_and(|last| last <= store.seen_through()) {
+                continue;
+            }
             // Public feeds: anonymous trades and depth changes of each
             // subscribed listing, sent from its venue (direct feed).
             for increment in feeds.on_batch(&batch)? {
                 hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
             }
+            let send_at = batch
+                .durable_us
+                .saturating_add(latency.delay_from(batch.source)?);
             hold_reports(
-                &mut application,
+                &mut store,
                 participant,
-                &latency,
                 &mut outbound,
-                &mut delivery.delivery,
-                &batch,
+                &batch.events,
+                send_at,
             )?;
         }
         let now_us = admission.clock().now_us();
         let due = outbound.take_due(now_us);
         if !due.is_empty() {
-            send_messages(&mut session, &mut stream, due, session_path, &application)?;
+            // Marked written first: the log record made durable ahead of
+            // the frames must not list them as owed (FIX resend has them).
+            store.on_written(now_us);
+            send_messages(&mut session, &mut stream, due, &mut store)?;
         }
-        delivery.delivery.on_written(now_us);
     }
 }
 
-/// Holds this participant's reports of one committed batch until they have
-/// crossed the path from where it was applied (ADR 0035), and records the
-/// batch with the session's delivery tracker.
+/// Applies one committed batch and holds this participant's reports from it
+/// until `send_at_us`, after they have crossed the path from where it was
+/// applied (ADR 0035).
 fn hold_reports(
-    application: &mut FixApplicationState,
+    store: &mut SessionStore<'_>,
     participant: ParticipantId,
-    latency: &ConnectionLatency<'_>,
     outbound: &mut OutboundHold<FixMessage>,
-    delivery: &mut Delivery,
-    batch: &Committed,
+    events: &[EventEnvelope],
+    send_at_us: u64,
 ) -> Result<(), String> {
-    let Some(bounds) = bounds(batch) else {
-        return Ok(());
-    };
-    let messages = application
-        .committed_messages(participant, &batch.events)
-        .map_err(|error| format!("FIX report mapping failed: {error}"))?;
-    if messages.is_empty() {
-        delivery.on_batch(bounds, None);
-        return Ok(());
+    for message in store
+        .committed_messages(participant, events, send_at_us)
+        .map_err(|error| format!("FIX report mapping failed: {error}"))?
+    {
+        outbound.hold(message, send_at_us)?;
     }
-    let send_at = batch
-        .durable_us
-        .saturating_add(latency.delay_from(batch.source)?);
-    for message in messages {
-        outbound.hold(message, send_at)?;
-    }
-    delivery.on_batch(bounds, Some(send_at));
     Ok(())
-}
-
-/// Leaves the session's delivery cursor for the participant's next session
-/// when this one ends, however it ends.
-struct DeliveryGuard<'a> {
-    claim: &'a ParticipantClaim<'a>,
-    delivery: Delivery,
-}
-
-impl Drop for DeliveryGuard<'_> {
-    fn drop(&mut self) {
-        self.claim.store_cursor(self.delivery.cursor());
-    }
 }
 
 /// Holds one public feed message until it has crossed the virtual path from
@@ -449,7 +488,7 @@ struct AdmitContext<'a> {
 fn admit_message<'a>(
     message: &FixMessage,
     context: &AdmitContext<'a>,
-    application: &mut FixApplicationState,
+    store: &mut SessionStore<'_>,
     latency: &ConnectionLatency<'_>,
     release_floors: &mut BTreeMap<Endpoint, u64>,
     feeds: &mut PublicFeeds<'a>,
@@ -457,20 +496,25 @@ fn admit_message<'a>(
 ) -> Result<Option<String>, String> {
     // Sequence and logical time are stamped at release (venue time); the
     // values here are placeholders the job overwrites.
-    let request = application.map_message(
+    let request = store.map_message(
         message,
-        &FixCommandContext {
-            actor: context.participant,
-            run_id: context.run_id,
-            expected_sequence: EventSequence::new(0),
-            logical_time: LogicalTimeNs::new(0),
-            correlation_id: CorrelationId::new(context.request_id),
-        },
+        &command_context(context.participant, context.run_id, context.request_id),
     );
-    let request = match request {
-        Ok(request) => request,
-        Err(error) => return Ok(Some(error.to_string())),
-    };
+    match request {
+        Ok(request) => admit_request(request, context, latency, release_floors, feeds, reply_to),
+        Err(error) => Ok(Some(error.to_string())),
+    }
+}
+
+/// Admits one mapped request without waiting for its release.
+fn admit_request<'a>(
+    request: FixApplicationRequest,
+    context: &AdmitContext<'a>,
+    latency: &ConnectionLatency<'_>,
+    release_floors: &mut BTreeMap<Endpoint, u64>,
+    feeds: &mut PublicFeeds<'a>,
+    reply_to: &ReplyTo<'_>,
+) -> Result<Option<String>, String> {
     // A subscription is registered before admission so no batch committed
     // after its snapshot is missed; an unsubscribe stops it here.
     let feed = match &request {
@@ -571,6 +615,16 @@ fn job_for(
         // the committed-event distributor; per-participant limits are
         // engine risk.
         FixApplicationRequest::Command(mut command) => Box::new(move |context| {
+            // A command resent or readmitted after a venue crash may already
+            // be journaled (ADR 0045); its batch was or will be delivered.
+            if context
+                .origin
+                .find_command(run_id, command.command_id)
+                .map_err(|error| format!("command lookup failed: {error}"))?
+                .is_some()
+            {
+                return Ok(Vec::new());
+            }
             let service = ApplicationService::new(context.origin);
             command.expected_sequence = service
                 .read(run_id, RunState::sequence)
@@ -716,17 +770,22 @@ impl<'a> ConnectionLatency<'a> {
         &mut self,
         session: &mut FixSession,
         stream: &mut TcpStream,
-        session_path: Option<&Path>,
-        application: &FixApplicationState,
+        store: &mut SessionStore<'_>,
     ) -> Result<(), String> {
         let id = self.next_probe_id;
         self.next_probe_id = self.next_probe_id.wrapping_add(1);
         let actions = session
             .probe(&format!("rtt-{id}"), &fix_timestamp(), epoch_millis())
             .map_err(|error| format!("FIX latency probe failed: {error:?}"))?;
-        // Stamp as late as possible: just before the frame is written.
+        let (frames, disconnect) = frames_of(actions)?;
+        store.persist(session)?;
+        // Stamp as late as possible: after the log write, just before the
+        // frame is written, so the venue's own disk never counts as path.
         let sent_us = self.admission.clock().now_us();
-        process_session_actions(actions, stream, session_path, session, application)?;
+        write_frames(stream, frames)?;
+        if disconnect {
+            return Err("FIX session requested disconnect".to_owned());
+        }
         self.probes.insert(id, sent_us);
         while self.probes.len() > MAX_OUTSTANDING_PROBES {
             self.probes.pop_first();
@@ -1113,56 +1172,89 @@ pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
     difference == 0 && left.len() <= 256 && right.len() <= 256
 }
 
+/// Sequences `messages` and writes them after one log write (ADR 0045).
 fn send_messages(
     session: &mut FixSession,
     stream: &mut TcpStream,
     messages: impl IntoIterator<Item = FixMessage>,
-    session_path: Option<&Path>,
-    application: &FixApplicationState,
+    store: &mut SessionStore<'_>,
 ) -> Result<(), String> {
+    let mut actions = Vec::new();
     for message in messages {
-        let actions = session
-            .send_application(message, &fix_timestamp())
-            .map_err(|error| format!("cannot sequence FIX response: {error:?}"))?;
-        process_session_actions(actions, stream, session_path, session, application)?;
+        actions.extend(
+            session
+                .send_application(message, &fix_timestamp())
+                .map_err(|error| format!("cannot sequence FIX response: {error:?}"))?,
+        );
     }
-    persist_session(session_path, session, application)
+    process_session_actions(actions, stream, store, session)
 }
 
+/// Writes the frames among `actions`, write-ahead: the session log records
+/// the state they leave behind before the first byte reaches the socket, so
+/// a crash never forgets a sequence number the participant may have seen.
+/// A session-only change with no frame (an inbound message not answered
+/// yet) is recorded with the next write instead of costing a disk sync.
 fn process_session_actions(
     actions: Vec<SessionAction>,
     stream: &mut TcpStream,
-    session_path: Option<&Path>,
+    store: &mut SessionStore<'_>,
     session: &FixSession,
-    application: &FixApplicationState,
 ) -> Result<(), String> {
-    for action in actions {
-        match action {
-            SessionAction::Send(frame) => write_frame(stream, &frame).map_err(|error| {
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) {
-                    "FIX peer stopped reading for write_timeout_ms; session closed".to_owned()
-                } else {
-                    format!("FIX socket write failed: {error}")
-                }
-            })?,
-            SessionAction::Persist(_) => persist_session(session_path, session, application)?,
-            SessionAction::Disconnect => return Err("FIX session requested disconnect".to_owned()),
-            SessionAction::Application(_) => {
-                return Err("application action must be handled by caller".to_owned());
-            }
-            SessionAction::PeerLogon(_) | SessionAction::TestResponse(_) => {}
-        }
+    let (frames, disconnect) = frames_of(actions)?;
+    if !frames.is_empty() {
+        store.persist(session)?;
+        write_frames(stream, frames)?;
+    }
+    if disconnect {
+        return Err("FIX session requested disconnect".to_owned());
     }
     Ok(())
 }
 
-/// Writes one frame within the socket's write timeout. Each blocked write
-/// call is bounded by that timeout, but a reader that drains a few bytes at
-/// a time could keep `write_all` alive for minutes, so once a frame goes
-/// out partially the rest must follow within one more timeout.
+/// The frames to send, up to a requested disconnect.
+fn frames_of(actions: Vec<SessionAction>) -> Result<(Vec<Vec<u8>>, bool), String> {
+    let mut frames = Vec::new();
+    for action in actions {
+        match action {
+            SessionAction::Send(frame) => frames.push(frame),
+            SessionAction::Disconnect => return Ok((frames, true)),
+            SessionAction::Application(_) => {
+                return Err("application action must be handled by caller".to_owned());
+            }
+            SessionAction::Persist
+            | SessionAction::PeerLogon(_)
+            | SessionAction::TestResponse(_) => {}
+        }
+    }
+    Ok((frames, false))
+}
+
+/// Whether every inbound message up to the participant's latest has been
+/// processed: no resend is outstanding and nothing waits out of order.
+fn inbound_complete(session: &FixSession) -> bool {
+    let state = session.state();
+    state.state == ConnectionState::Established
+        && state.pending_resend_begin.is_none()
+        && state.pending_inbound.is_empty()
+}
+
+fn write_frames(stream: &mut TcpStream, frames: Vec<Vec<u8>>) -> Result<(), String> {
+    for frame in frames {
+        write_frame(stream, &frame).map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                "FIX peer stopped reading for write_timeout_ms; session closed".to_owned()
+            } else {
+                format!("FIX socket write failed: {error}")
+            }
+        })?;
+    }
+    Ok(())
+}
+
 fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> std::io::Result<()> {
     let written = loop {
         match stream.write(frame) {
@@ -1199,44 +1291,6 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> std::io::Result<()> {
     };
     stream.set_write_timeout(Some(limit))?;
     result
-}
-
-fn persist_session(
-    path: Option<&Path>,
-    session: &FixSession,
-    application: &FixApplicationState,
-) -> Result<(), String> {
-    let Some(path) = path else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create FIX snapshot directory: {error}"))?;
-    }
-    let snapshot = NativeFixSnapshot {
-        version: 1,
-        session: session.snapshot(),
-        application: application.snapshot(),
-    };
-    let bytes = serde_json::to_vec(&snapshot)
-        .map_err(|error| format!("cannot encode FIX snapshot: {error}"))?;
-    let temporary = path.with_extension("tmp");
-    let mut file =
-        File::create(&temporary).map_err(|error| format!("cannot create FIX snapshot: {error}"))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| format!("cannot persist FIX snapshot: {error}"))?;
-    fs::rename(&temporary, path).map_err(|error| format!("cannot install FIX snapshot: {error}"))
-}
-
-fn load_session(path: &Path) -> Result<Option<NativeFixSnapshot>, String> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let bytes = fs::read(path).map_err(|error| format!("cannot read FIX snapshot: {error}"))?;
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| format!("invalid FIX snapshot: {error}"))
 }
 
 fn epoch_millis() -> u64 {

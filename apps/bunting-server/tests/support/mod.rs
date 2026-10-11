@@ -109,7 +109,7 @@ impl Client {
                     .map_err(|error| error.to_string())?,
                 SessionAction::Application(message) => self.received.push(message),
                 SessionAction::Disconnect => return Err("server disconnected".to_owned()),
-                SessionAction::Persist(_)
+                SessionAction::Persist
                 | SessionAction::PeerLogon(_)
                 | SessionAction::TestResponse(_) => {}
             }

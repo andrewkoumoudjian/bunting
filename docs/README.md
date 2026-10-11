@@ -57,6 +57,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0041 | BNP certificate revocation reloads live; revoked sessions are logged out (slice 29) |
 | 0040 | Bunting Native Protocol v1: fixed binary frames, TLS 1.3 mTLS with a certificate-fingerprint roster, stateless identities, resume by committed sequence, same latency path as FIX (slice 25); per-participant kill switch, ordered private stream and pre-auth limits (slice 32); order-by-order and tape feeds over BNP (slice 35) |
 | 0044 | Host: native `bunting` binary (Linux, macOS, Windows) and container image; WASIX retired (slice 27) |
+| 0045 | FIX session state as a write-ahead log beside the origin (checkpoint + deltas, one sync before each write); sequences, resend, identities and unsent reports survive `kill -9`; in-flight orders answered exactly once (slice 42) |
 | 0047 | Trading terminal as a BNP client: shared `bunting-trading-state` (pure model, session runner, local practice venue) rendered by `bunting-tui`; no embedded engine |
 | 0050 | Desktop trading app `apps/bunting-desk` on GPUI and Longbridge's `gpui-kit`, its own Cargo workspace on Rust 1.97, rendering `bunting-trading-state`: per-venue books, ticket with venue choice, trades, orders, fills, positions, account, kill switch (slices 31–32); release archives **Target** |
 

@@ -106,7 +106,7 @@ slice 27; `tools/host_parity.sh`), measured on Linux x86_64 with Wasmer
   by rewriting and fsyncing each FIX session's full snapshot (~275 KB after
   2,000 orders) on every message (`session_host.rs` `persist_session`);
   making that incremental is follow-up work and would also reduce the
-  musl penalty.
+  musl penalty. (Done in slice 42, ADR 0045: p50 1.3 ms.)
 - Termination is crash-equivalent: the server installs no signal handler and
   every acknowledged input is already journaled. Containers should run with
   `--init` (or an equivalent) so `SIGTERM` stops PID 1 promptly.

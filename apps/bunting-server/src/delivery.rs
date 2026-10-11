@@ -1,151 +1,159 @@
-//! Which committed batches a FIX session has written to its participant, so
-//! the next session of that participant sends exactly the private reports
-//! the last one never wrote: those still held on their virtual path when it
-//! closed, and those committed while no session was connected.
-//!
-//! Reports do not leave in commit order (a fill from a near venue overtakes
-//! an earlier one from a far venue, ADR 0035), so one "highest sequence
-//! sent" cursor would skip the overtaken report. The tracker keeps a
-//! low-water mark below which everything was written, plus the batches
-//! above it still unwritten.
+//! Which committed batches' reports a FIX session has applied but not yet
+//! written to its participant, so they reach the participant even when the
+//! session closes, or the venue stops, before they leave: still held on
+//! their virtual path, a near venue's later fill overtaking a far venue's
+//! earlier one (ADR 0035). The session log keeps this with the application
+//! (ADR 0045), so the next session sends exactly those reports, without
+//! applying their batches a second time, and applies every batch committed
+//! after [`Delivery::seen_through`] from the distributor or the journal.
 
 use crate::distributor::Committed;
-use std::collections::{BTreeMap, BTreeSet};
+use serde::{Deserialize, Serialize};
+use simfix_wire::FixMessage;
+use std::collections::BTreeMap;
 
-/// What a closed session left for the next one.
+/// One applied batch's reports that have not been written yet.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Unwritten {
+    /// The batch's last event sequence.
+    pub(crate) last: u64,
+    pub(crate) messages: Vec<FixMessage>,
+    /// Venue time the reports leave; a restored session sends them at once.
+    #[serde(skip)]
+    pub(crate) send_at_us: u64,
+}
+
+/// The delivery state of one participant's FIX application.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct DeliveryCursor {
-    /// Every batch whose events all lie at or below this sequence was
-    /// written (or had nothing for the participant).
-    pub(crate) through: u64,
-    /// The last event sequence the session saw.
-    pub(crate) seen_through: u64,
-    /// Last event sequence of each batch above `through` that the session
-    /// saw but had not written.
-    pub(crate) unwritten: BTreeSet<u64>,
-}
-
-impl DeliveryCursor {
-    /// A cursor for a stream that starts at the run's current sequence.
-    pub(crate) fn at(sequence: u64) -> Self {
-        Self {
-            through: sequence,
-            seen_through: sequence,
-            unwritten: BTreeSet::new(),
-        }
-    }
-
-    /// Whether a replayed batch ending at `last` still has to be sent: it
-    /// was unwritten, or the last session never saw it.
-    pub(crate) fn owes(&self, last: u64) -> bool {
-        last > self.through && (last > self.seen_through || self.unwritten.contains(&last))
-    }
-}
-
-/// The live tracker of one session.
-#[derive(Debug)]
 pub(crate) struct Delivery {
-    cursor: DeliveryCursor,
-    /// Unwritten batches by last sequence: first sequence and send time.
-    held: BTreeMap<u64, (u64, u64)>,
+    /// The last event sequence of the batches applied so far, in commit
+    /// order; every later batch is still to be applied.
+    seen_through: u64,
+    /// Applied batches whose reports are not written, by last sequence.
+    unwritten: BTreeMap<u64, Unwritten>,
 }
 
 impl Delivery {
-    /// Starts from `cursor`. Batches it still owes are passed to
-    /// [`Self::on_batch`] again by the replay; the rest stay written.
-    pub(crate) fn new(cursor: &DeliveryCursor) -> Self {
+    /// A stream that starts after event sequence `seen_through`.
+    pub(crate) const fn at(seen_through: u64) -> Self {
         Self {
-            cursor: DeliveryCursor {
-                through: cursor.through,
-                seen_through: cursor.seen_through,
-                unwritten: BTreeSet::new(),
-            },
-            held: BTreeMap::new(),
+            seen_through,
+            unwritten: BTreeMap::new(),
         }
     }
 
-    /// Records a batch spanning event sequences `first..=last` that the
-    /// session processed: `send_at_us` is when its reports leave, or `None`
-    /// when it has none for this participant.
-    pub(crate) fn on_batch(&mut self, (first, last): (u64, u64), send_at_us: Option<u64>) {
-        self.cursor.seen_through = self.cursor.seen_through.max(last);
-        if let Some(send_at) = send_at_us {
-            self.held.insert(last, (first, send_at));
+    /// Restores `unwritten` reports, due at once.
+    pub(crate) fn restore(seen_through: u64, unwritten: Vec<Unwritten>) -> Self {
+        Self {
+            seen_through,
+            unwritten: unwritten
+                .into_iter()
+                .map(|batch| (batch.last, batch))
+                .collect(),
         }
-        self.advance();
     }
 
-    /// Every report due at `now_us` was written.
+    pub(crate) const fn seen_through(&self) -> u64 {
+        self.seen_through
+    }
+
+    /// Batches up to `seen_through` were applied, including those that
+    /// left nothing to record.
+    pub(crate) fn advance_to(&mut self, seen_through: u64) {
+        self.seen_through = self.seen_through.max(seen_through);
+    }
+
+    /// Records an applied batch ending at `last` whose `messages` leave at
+    /// `send_at_us`.
+    pub(crate) fn on_batch(&mut self, last: u64, messages: &[FixMessage], send_at_us: u64) {
+        self.seen_through = self.seen_through.max(last);
+        if !messages.is_empty() {
+            self.unwritten.insert(
+                last,
+                Unwritten {
+                    last,
+                    messages: messages.to_vec(),
+                    send_at_us,
+                },
+            );
+        }
+    }
+
+    /// Every report due at `now_us` is being written.
     pub(crate) fn on_written(&mut self, now_us: u64) {
-        self.held.retain(|_, (_, send_at)| *send_at > now_us);
-        self.advance();
+        self.unwritten.retain(|_, batch| batch.send_at_us > now_us);
     }
 
-    /// The cursor the next session resumes from.
-    pub(crate) fn cursor(&self) -> DeliveryCursor {
-        DeliveryCursor {
-            through: self.cursor.through,
-            seen_through: self.cursor.seen_through,
-            unwritten: self.held.keys().copied().collect(),
-        }
+    /// The last sequences of the batches still unwritten.
+    pub(crate) fn unwritten_keys(&self) -> Vec<u64> {
+        self.unwritten.keys().copied().collect()
     }
 
-    fn advance(&mut self) {
-        let through = self
-            .held
-            .values()
-            .map(|(first, _)| first.saturating_sub(1))
-            .min()
-            .unwrap_or(self.cursor.seen_through);
-        self.cursor.through = self.cursor.through.max(through);
+    /// The unwritten reports, oldest batch first.
+    pub(crate) fn unwritten(&self) -> impl Iterator<Item = &Unwritten> {
+        self.unwritten.values()
+    }
+
+    /// Keeps only the unwritten batches in `keys` (a delta's record of what
+    /// was still unwritten when it was made durable).
+    pub(crate) fn retain(&mut self, keys: &[u64]) {
+        self.unwritten
+            .retain(|last, _| keys.binary_search(last).is_ok());
     }
 }
 
-/// The first and last event sequence of a batch.
-pub(crate) fn bounds(batch: &Committed) -> Option<(u64, u64)> {
-    Some((
-        batch.events.first()?.sequence.get(),
-        batch.events.last()?.sequence.get(),
-    ))
+/// The last event sequence of a batch.
+pub(crate) fn last_sequence(batch: &Committed) -> Option<u64> {
+    Some(batch.events.last()?.sequence.get())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_overtaken_report_is_still_owed_after_a_later_one_was_written() {
-        let mut delivery = Delivery::new(&DeliveryCursor::at(10));
-        // A far venue's fill (11..=12) leaves at 900; a near venue's later
-        // fill (13..=14) at 200; 15 has nothing for this participant.
-        delivery.on_batch((11, 12), Some(900));
-        delivery.on_batch((13, 14), Some(200));
-        delivery.on_batch((15, 15), None);
-        delivery.on_written(500);
-        let cursor = delivery.cursor();
-        assert_eq!(cursor.through, 10);
-        assert_eq!(cursor.seen_through, 15);
-        assert!(cursor.owes(12), "the overtaken far fill was never written");
-        assert!(!cursor.owes(14), "the near fill was written");
-        assert!(!cursor.owes(15), "nothing to send");
-        assert!(cursor.owes(16), "committed after the session closed");
-        // The next session replays 12 and 16 and writes both.
-        let mut next = Delivery::new(&cursor);
-        next.on_batch((11, 12), Some(1_000));
-        next.on_batch((16, 16), Some(1_000));
-        assert_eq!(next.cursor().through, 10);
-        next.on_written(1_000);
-        assert_eq!(next.cursor(), DeliveryCursor::at(16));
+    fn report(id: &str) -> Vec<FixMessage> {
+        let mut message = FixMessage::new("8");
+        message.push(11, id);
+        vec![message]
     }
 
     #[test]
-    fn the_low_water_mark_follows_the_oldest_unwritten_batch() {
-        let mut delivery = Delivery::new(&DeliveryCursor::at(0));
-        delivery.on_batch((1, 1), Some(10));
-        delivery.on_batch((2, 3), Some(20));
-        delivery.on_written(10);
-        assert_eq!(delivery.cursor().through, 1);
-        delivery.on_written(20);
-        assert_eq!(delivery.cursor(), DeliveryCursor::at(3));
+    fn an_overtaken_report_stays_unwritten_after_a_later_one_was_written() {
+        let mut delivery = Delivery::at(10);
+        // A far venue's fill (..=12) leaves at 900; a near venue's later
+        // fill (..=14) at 200; 15 has nothing for this participant.
+        delivery.on_batch(12, &report("far"), 900);
+        delivery.on_batch(14, &report("near"), 200);
+        delivery.on_batch(15, &[], 300);
+        delivery.on_written(500);
+        assert_eq!(delivery.seen_through(), 15);
+        assert_eq!(delivery.unwritten_keys(), vec![12]);
+        delivery.on_written(900);
+        assert!(delivery.unwritten_keys().is_empty());
+    }
+
+    #[test]
+    fn restored_reports_are_due_at_once_and_a_delta_trims_them() {
+        let mut delivery = Delivery::restore(
+            20,
+            vec![
+                Unwritten {
+                    last: 18,
+                    messages: report("a"),
+                    send_at_us: 0,
+                },
+                Unwritten {
+                    last: 20,
+                    messages: report("b"),
+                    send_at_us: 0,
+                },
+            ],
+        );
+        let mut trimmed = delivery.clone();
+        trimmed.retain(&[20]);
+        assert_eq!(trimmed.unwritten_keys(), vec![20]);
+        delivery.on_written(1);
+        assert!(delivery.unwritten_keys().is_empty());
     }
 }

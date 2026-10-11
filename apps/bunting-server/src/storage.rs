@@ -263,6 +263,43 @@ pub fn read_run_journal(
     Ok((genesis.ok_or(OriginError::UnknownRun)?, records))
 }
 
+/// Visits, in commit order, the events of each journal record of `run_id`
+/// whose events end after event sequence `after`, read from the journal of
+/// the durable origin at `origin_path` without the store lock: a record
+/// still being appended ends the scan (its batch is published after the
+/// append, so a subscriber registered before the scan receives it).
+/// Returns the last event sequence visited, or `after`. FIX sessions use it
+/// to deliver batches a crash kept from them (ADR 0045).
+pub(crate) fn committed_batches_after(
+    origin_path: &Path,
+    run_id: RunId,
+    after: u64,
+    mut visit: impl FnMut(&[EventEnvelope]) -> Result<(), String>,
+) -> Result<u64, String> {
+    let mut through = after;
+    let mut failure = None;
+    commit_journal::scan(&commit_journal::path_for(origin_path), false, |entry| {
+        if let JournalEntry::Command(record) = entry
+            && record.input.run_id() == run_id
+            && let Some(last) = record.events.last()
+            && last.sequence.get() > after
+        {
+            through = last.sequence.get();
+            if let Err(error) = visit(&record.events) {
+                failure = Some(error);
+                return Err(OriginError::Unavailable);
+            }
+        }
+        Ok(())
+    })
+    .map_err(|error| {
+        failure
+            .take()
+            .unwrap_or_else(|| format!("cannot read the origin journal: {error}"))
+    })?;
+    Ok(through)
+}
+
 /// Rebuilds every run from the journal, starting each from its checkpoint
 /// when one exists. Records after a checkpoint are re-executed and must
 /// reproduce the journal exactly, so every restart is a determinism check.

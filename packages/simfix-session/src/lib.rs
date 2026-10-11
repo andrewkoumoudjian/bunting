@@ -78,7 +78,9 @@ pub enum SessionAction {
     /// Reports the validated peer Logon after the session becomes established.
     PeerLogon(FixMessage),
     Application(FixMessage),
-    Persist(SessionSnapshot),
+    /// The session state changed; [`FixSession::state`] reads it. Carries
+    /// no copy, so sequencing a message costs no O(journal) clone.
+    Persist,
     Disconnect,
     /// A `Heartbeat` answered a `TestRequest`; carries the echoed `TestReqID`
     /// (tag 112) so the host can time its own probes.
@@ -168,6 +170,13 @@ impl FixSession {
     #[must_use]
     pub fn snapshot(&self) -> SessionSnapshot {
         self.snapshot.clone()
+    }
+
+    /// Borrows the live session state, so an incremental store can record
+    /// what changed without copying the resend journal.
+    #[must_use]
+    pub const fn state(&self) -> &SessionSnapshot {
+        &self.snapshot
     }
 
     /// Emits Logon for a newly established outbound TCP connection.
@@ -358,10 +367,7 @@ impl FixSession {
             && now_millis.saturating_sub(self.snapshot.last_received_millis) >= interval * 2
         {
             self.snapshot.state = ConnectionState::Disconnected;
-            return Ok(vec![
-                SessionAction::Persist(self.snapshot()),
-                SessionAction::Disconnect,
-            ]);
+            return Ok(vec![SessionAction::Persist, SessionAction::Disconnect]);
         }
         if now_millis.saturating_sub(self.snapshot.last_received_millis) >= interval
             && self.snapshot.outstanding_test_request.is_none()
@@ -416,10 +422,7 @@ impl FixSession {
         }
         self.snapshot.outgoing_sequence = next_sequence;
         self.snapshot.last_sent_millis = now_millis;
-        Ok(vec![
-            SessionAction::Send(frame),
-            SessionAction::Persist(self.snapshot()),
-        ])
+        Ok(vec![SessionAction::Send(frame), SessionAction::Persist])
     }
 
     fn encode_at(
@@ -459,18 +462,32 @@ impl FixSession {
             if self.snapshot.pending_inbound.len() >= self.config.max_pending_inbound {
                 return Err(SessionError::PendingInboundFull);
             }
+            // A ResendRequest is answered at once, even ahead of a gap: when
+            // both sides lost messages (a restart), each waits on the
+            // other's resend, so holding requests until the gap closes
+            // would stall both. Its queued copy only advances the sequence.
+            let (mut actions, queued) = if message.msg_type == "2" {
+                (
+                    self.replay_requested(&message, timestamp, now_millis)?,
+                    FixMessage::new("0"),
+                )
+            } else {
+                (Vec::new(), message)
+            };
             self.snapshot
                 .pending_inbound
                 .entry(sequence)
-                .or_insert(message);
+                .or_insert(queued);
             if self.snapshot.pending_resend_begin.is_some() {
-                return Ok(vec![SessionAction::Persist(self.snapshot())]);
+                actions.push(SessionAction::Persist);
+                return Ok(actions);
             }
             self.snapshot.pending_resend_begin = Some(self.snapshot.incoming_sequence);
             let mut resend = FixMessage::new("2");
             resend.push(7, self.snapshot.incoming_sequence.to_string());
             resend.push(16, "0");
-            return self.send_new(resend, timestamp, now_millis, true, None);
+            actions.extend(self.send_new(resend, timestamp, now_millis, true, None)?);
+            return Ok(actions);
         }
         if sequence < self.snapshot.incoming_sequence {
             return if message.value(43) == Some("Y") && message.value(122).is_some() {
@@ -490,7 +507,7 @@ impl FixSession {
         if self.snapshot.pending_inbound.is_empty() {
             self.snapshot.pending_resend_begin = None;
         }
-        actions.push(SessionAction::Persist(self.snapshot()));
+        actions.push(SessionAction::Persist);
         Ok(actions)
     }
 
@@ -599,7 +616,7 @@ impl FixSession {
             }
         }
         self.snapshot.last_sent_millis = now_millis;
-        actions.push(SessionAction::Persist(self.snapshot()));
+        actions.push(SessionAction::Persist);
         Ok(actions)
     }
 }
@@ -887,6 +904,58 @@ mod tests {
         assert_eq!(replayed[0].value(36), Some("18"));
         assert_eq!(replayed[1].value(34), Some("18"));
         assert_eq!(replayed[4].value(34), Some("21"));
+    }
+
+    #[test]
+    fn resend_request_ahead_of_a_gap_is_answered_at_once() {
+        let mut session = FixSession::try_new(config()).unwrap();
+        establish(&mut session);
+        session
+            .send_application(FixMessage::new("8"), "20260713-12:00:01.000")
+            .unwrap();
+        // Messages 2 and 3 were lost; the peer asks for everything.
+        let request = inbound_with("2", 4, &[(7, "1"), (16, "0")]);
+        let actions = session
+            .receive_bytes_at(&request, "20260713-12:00:02.000", 2_000)
+            .unwrap();
+        let sent = actions
+            .iter()
+            .filter_map(|action| match action {
+                SessionAction::Send(frame) => {
+                    Some(decode_one(frame, WireLimits::default()).unwrap())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let types = sent
+            .iter()
+            .map(|message| message.msg_type.as_str())
+            .collect::<Vec<_>>();
+        // The resend (logon and report), then our own request for the
+        // missing messages.
+        assert_eq!(types, ["A", "8", "2"]);
+        assert_eq!(sent[1].value(43), Some("Y"));
+        assert_eq!(sent[2].value(7), Some("2"));
+        // Filling the gap processes the queued request without resending.
+        let mut actions = Vec::new();
+        for sequence in 2..=3 {
+            actions.extend(
+                session
+                    .receive_bytes_at(
+                        &inbound_with("0", sequence, &[]),
+                        "20260713-12:00:03.000",
+                        3_000,
+                    )
+                    .unwrap(),
+            );
+        }
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, SessionAction::Send(_)))
+        );
+        assert_eq!(session.snapshot().incoming_sequence, 5);
+        assert_eq!(session.snapshot().pending_resend_begin, None);
     }
 
     #[test]
