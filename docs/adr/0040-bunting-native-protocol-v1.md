@@ -16,7 +16,8 @@
   [ADR 0042](0042-bnp-operators-and-run-stream.md): instructor and
   administrator certificates and the run stream. Extended in slice 44: a
   participant's resting and reduced reports carry its order's public
-  reference (decision 13).
+  reference (decision 13). Extended in slice 45 by
+  [ADR 0043](0043-bnp-tenders-and-otc.md): tenders and OTC negotiations.
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
 ## Context
@@ -122,9 +123,9 @@ hold were FIX-typed. The server had no in-process TLS.
 - Operators run a CA and register certificate fingerprints in `bnp.roster`.
 - Shared server pieces (outbound hold, public feeds, replies) are generic
   over the message type; FIX behavior is unchanged.
-- Tenders stay FIX-only (order-by-order and consolidated feeds came in
-  slice 35; instructor/admin control and the run stream in slice 41,
-  ADR 0042).
+- Order-by-order and consolidated feeds came in slice 35, instructor/admin
+  control and the run stream in slice 41 (ADR 0042), tenders and OTC
+  negotiations in slice 45 (ADR 0043).
 
 ## Rejected alternatives
 

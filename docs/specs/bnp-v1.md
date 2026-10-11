@@ -79,13 +79,18 @@ length  = 1 + len(body)            (bytes after the length field)
 | 0x11 | CancelOrder | `client_order_id:u64` |
 | 0x12 | KillSwitch | `request_id:u64` |
 | 0x13 | KillSwitchReset | `request_id:u64` |
+| 0x18 | TenderDecision | `request_id:u64 tender_id:u128 accept:bool` |
+| 0x19 | OtcPropose | `request_id:u64 negotiation_id:u64 counterparty_id:u128 instrument_id:u128 side:u8 quantity:i64 price:i64 expires_at_ns:u64` |
+| 0x1a | OtcCounter | `request_id:u64 negotiation_id:u128 quantity:i64 price:i64` |
+| 0x1b | OtcDecision | `request_id:u64 negotiation_id:u128 decision:u8` |
 | 0x20 | Subscribe | `request_id:u32 listing flags:u8` |
 | 0x21 | Unsubscribe | `request_id:u32` |
 | 0x22 | SnapshotRequest | `request_id:u32 listing depth:u16` (0 = full book) |
 | 0x30 | ListingsRequest | `request_id:u32` |
 | 0x31 | OpenOrdersRequest | `request_id:u32` |
 | 0x32 | AccountRequest | `request_id:u32` |
-| 0x38 | OperatorCommand | `request_id:u32 action:u8 …` (operator action, below) |
+| 0x33 | DealsRequest | `request_id:u32` |
+| 0x38 | OperatorCommand | `request_id:u64 action:u8 …` (operator action, below) |
 
 Enumerations: `side` 1 buy, 2 sell. `order_type` 1 limit (uses `price`),
 2 market (`price` must be 0). `tif` 0 GTC, 1 IOC, 2 FOK, 3 DAY, 4 GTD (uses
@@ -105,7 +110,8 @@ trades, bit 3 order by order (venue feeds only).
 | 0x46 | ReplayComplete | `through_sequence:u64` |
 | 0x47 | Logout | `reason:string` |
 | 0x48 | AccessDelay | `source:u8 min_rtt_us:option<u64> one_way_us:option<u64> probe_samples:u64` |
-| 0x49 | OperatorDone | `request_id:u32 run_sequence:u64` |
+| 0x49 | OperatorDone | `request_id:u64 run_sequence:u64` |
+| 0x4a | DealDone | `request_id:u64 run_sequence:u64` |
 | 0x50 | OrderAccepted | `stamp client_order_id:u64 order_id:u128 listing side:u8 quantity:i64 price:option<i64>` |
 | 0x51 | OrderRejected | `stamp client_order_id:u64 reason:u8` |
 | 0x52 | OrderRested | `stamp client_order_id:u64 order_id:u128 price:i64 remaining:i64 reference:option<u64>` |
@@ -130,6 +136,19 @@ trades, bit 3 order by order (venue feeds only).
 | 0x70 | Listings | `request_id:u32 listings:group<listing symbol:string>` |
 | 0x71 | OpenOrders | `request_id:u32 run_sequence:u64 orders:group<client_order_id:u64 order_id:u128 listing side:u8 price:i64 original:i64 remaining:i64>` |
 | 0x72 | Account | `request_id:u32 run_sequence:u64 cash:group<currency_id:u128 balance:i128 reserved:i128> positions:group<instrument_id:u128 position:i64 open_buy:i64 open_sell:i64>` |
+| 0x73 | Deals | `request_id:u32 run_sequence:u64 tenders:group<tender> negotiations:group<negotiation>` |
+| 0x74 | Tender | `stamp tender` |
+| 0x75 | Negotiation | `stamp negotiation` |
+
+A `tender` is `tender_id:u128 participant_id:u128 instrument_id:u128 side:u8
+quantity:i64 price:i64 expires_at_ns:u64 status:u8` (`side` is the
+participant's side if it accepts; status 1 open, 2 accepted, 3 declined,
+4 expired). A `negotiation` is `negotiation_id:u128 proposer_id:u128
+counterparty_id:u128 instrument_id:u128 side:u8 quantity:i64 price:i64
+expires_at_ns:u64 status:u8 awaiting:u128` (`side` is the proposer's;
+status 1 proposed, 2 countered, 3 accepted, 4 rejected, 5 broken, 6 expired;
+`awaiting` the participant whose answer is due). `OtcDecision.decision`
+1 accept, 2 reject, 3 break.
 
 Enumerations: `role` 1 participant, 3 instructor, 4 administrator (2 team
 and 5 built-in agent are reserved). `resume` 0 live, 1 replaying, 2 gap.
@@ -161,7 +180,8 @@ instrument_id:option<u128>`; 8 publish news `news_id:u128 audience:u8 …
 headline:string body:string`, where audience 0 is public, 1
 `participant_id:u128`, 2 `team_id:u128`, 3 `role:string`; 10 fine
 `participant_id:u128 currency_id:u128 amount:i128 reason:string` (minor
-units).
+units); 11 open tender `tender_id:u128 participant_id:u128
+instrument_id:u128 side:u8 quantity:i64 price:i64 expires_at_ns:u64`.
 
 ## Session
 
@@ -235,7 +255,27 @@ units).
   whose audience includes the session's actor (public, its participant,
   team or role). They are ordered with private reports, cross
   `L(hub, team)` like them, and are replayed on resume.
-- Opening tenders, OTC, cashflow and facility commands remain FIX-only.
+- Cashflow and facility commands have no BNP layout.
+
+## Tenders and OTC negotiations (ADR 0043)
+
+- A team answers a tender with `TenderDecision` and negotiates with
+  `OtcPropose`, `OtcCounter` and `OtcDecision`. Each is applied at the hub
+  through the admission sequencer (it waits `L(team, hub)`) and answered
+  `DealDone` with the committed run sequence, or `Reject` (`request_type`
+  the message type, `reference` the request ID). Request IDs are unique per
+  participant for the run; a reused one commits nothing new. Operators may
+  not send them.
+- `OtcPropose.negotiation_id` is the client's own non-zero ID; the venue's
+  negotiation ID is `namespace(run, participant) << 64 | negotiation_id` in
+  the `negotiation` domain, and every later message and update uses that
+  u128 ID.
+- Every committed change to a tender or negotiation, including expiry at
+  its deadline, is sent as `Tender` or `Negotiation` with its state at that
+  commit to the tender's participant or the negotiation's two parties and
+  to every operator session, stamped in the private stream and replayed on
+  resume. `DealsRequest` lists every visible tender and negotiation.
+- FIX carries tender decisions but no OTC messages.
 
 ## Private stream and resume
 

@@ -259,7 +259,9 @@ host.
 
 Instructors and administrators run the round over BNP with typed operator
 commands, and every session receives run status, halts and visible news in
-its private stream (slice 41, ADR 0042).
+its private stream (slice 41, ADR 0042). Teams decide tenders and negotiate
+OTC trades over BNP, with deal changes in the same stream (slice 45,
+ADR 0043).
 
 **Target (ADR 0031):** a GUI app (on `bunting-trading-state`) and bindings
 on `bunting-client`. Nothing else accepts participant
