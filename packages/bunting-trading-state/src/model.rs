@@ -491,6 +491,19 @@ impl Model {
         }
     }
 
+    /// Lifts this participant's kill switch; the venue confirms with
+    /// `KillSwitchReset`.
+    pub fn reset_kill_switch(&mut self, now_us: u64) -> ClientMessage {
+        self.notice(
+            now_us,
+            NoticeLevel::Info,
+            "kill switch reset sent".to_owned(),
+        );
+        ClientMessage::KillSwitchReset {
+            request_id: u64::from(self.request_id()),
+        }
+    }
+
     /// Reloads open orders and the account.
     pub fn refresh(&mut self, now_us: u64) -> Vec<ClientMessage> {
         let mut messages = vec![ClientMessage::OpenOrdersRequest {
@@ -768,6 +781,14 @@ impl Model {
                     now_us,
                     NoticeLevel::Warning,
                     "kill switch active: every order canceled, new orders refused".to_owned(),
+                );
+            }
+            ServerMessage::KillSwitchReset { .. } => {
+                self.kill_switch = false;
+                self.notice(
+                    now_us,
+                    NoticeLevel::Info,
+                    "kill switch reset: new orders accepted again".to_owned(),
                 );
             }
             ServerMessage::PositionChanged { .. } | ServerMessage::BalanceChanged { .. } => {

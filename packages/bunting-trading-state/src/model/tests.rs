@@ -417,4 +417,15 @@ fn the_kill_switch_is_reported_by_the_venue_not_assumed() {
     );
     assert!(model.kill_switch_active());
     assert_eq!(model.last_sequence(), 12);
+    assert!(matches!(
+        model.reset_kill_switch(3),
+        ClientMessage::KillSwitchReset { .. }
+    ));
+    assert!(model.kill_switch_active());
+    message(
+        &mut model,
+        ServerMessage::KillSwitchReset { stamp: stamp(13) },
+        4,
+    );
+    assert!(!model.kill_switch_active());
 }
