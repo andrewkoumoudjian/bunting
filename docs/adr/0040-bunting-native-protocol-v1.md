@@ -110,8 +110,8 @@ hold were FIX-typed. The server had no in-process TLS.
     time priority), as OUCH's accepted message carries the reference ITCH
     publishes, so a team can find its own queue place. A new value means the
     order lost priority (iceberg refresh). It is read from the state right
-    after the commit, like the public feed, and costs nothing to sessions
-    without an order-by-order subscription. Two existing messages gained a
+    after the commit, like the public feed, at the cost of one book lookup
+    per rested or reduced order in each commit. Two existing messages gained a
     field: BNP v1 is pre-release, and the reference client and server change
     together.
 

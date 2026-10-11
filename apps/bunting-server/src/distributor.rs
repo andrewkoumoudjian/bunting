@@ -54,6 +54,10 @@ pub(crate) struct Committed {
     /// Public order-by-order reference of each order this commit rested or
     /// reduced that still rests, sorted by order: its owner's reports carry
     /// it (`bunting_application::order_references`).
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "the BNP host is native only")
+    )]
     pub(crate) references: Vec<(OrderId, u64)>,
 }
 
