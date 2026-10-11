@@ -8,7 +8,8 @@
 //! it is decrypted (the venue measures access latency from it), sends a
 //! heartbeat when the connection is idle, and queues every other server
 //! message for [`Client::recv_timeout`]. [`FeedBook`] rebuilds a venue's
-//! book from a feed's snapshot and updates and detects gaps.
+//! book from a price-level or order-by-order feed and detects gaps;
+//! [`TapeBook`] follows an instrument's consolidated tape.
 //!
 //! The client is deliberately good and never compensating: nothing here
 //! smooths or delays timing (ADR 0035). A slow application that stops
@@ -18,8 +19,10 @@
 mod book;
 #[cfg(not(target_arch = "wasm32"))]
 mod connection;
+mod tape;
 
 pub use bnp_wire;
-pub use book::{FeedBook, FeedError};
+pub use book::{FeedBook, FeedError, QueuedOrder};
 #[cfg(not(target_arch = "wasm32"))]
 pub use connection::{Client, ClientConfig, ClientError, ClientSender, certificate_fingerprint};
+pub use tape::{TapeBook, TapeTrade};

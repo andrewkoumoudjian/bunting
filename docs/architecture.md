@@ -251,7 +251,8 @@ tag 207 required for venue. Bunting Native Protocol v1 (slice 25, ADR 0040,
 in-process TLS 1.3 with mutual authentication; identity is the client
 certificate's fingerprint in the run roster; orders, cancels, kill switch,
 private reports keyed by committed event sequence with resume from a
-retained window, direct L2 feeds, listings, open orders and account
+retained window, direct L2 and order-by-order feeds and the consolidated
+tape (slice 35), listings, open orders and account
 snapshots, probes and Ping/Pong. Same sequencer and latency path as FIX.
 Native builds only. Reference client: `packages/bunting-client` and
 `apps/bunting-trader`; the trading terminal (`apps/bunting-tui`, slice of
@@ -259,7 +260,7 @@ ADR 0047) renders `packages/bunting-trading-state` over the same client. Admin H
 host.
 
 **Target (ADR 0031):** instructor/admin control and run/news streams over
-BNP; L3 and consolidated feeds over BNP; a GUI app (on `bunting-trading-state`) and bindings
+BNP; a GUI app (on `bunting-trading-state`) and bindings
 on `bunting-client`. Nothing else accepts participant
 traffic.
 

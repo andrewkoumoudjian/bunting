@@ -2,11 +2,16 @@
 //! documented in `docs/specs/bnp-v1.md`.
 
 use crate::{
-    CancelReason, CashBalance, ClientMessage, Entry, EntryKind, FeedFlags, LENGTH_BYTES, Level,
-    Liquidity, Listing, ListingInfo, MAGIC, MAX_FRAME_BYTES, MAX_GROUP_ENTRIES, MAX_STRING_BYTES,
-    NewOrder, OpenOrder, OrderType, Position, RejectReason, ResumeStatus, Role, ServerMessage,
-    Side, Stamp, TimeInForce, Welcome, WireError, msg_type as t,
+    BookOrder, CancelReason, CashBalance, ClientMessage, DelaySource, Entry, EntryKind, FeedFlags,
+    LENGTH_BYTES, Level, Liquidity, Listing, ListingInfo, MAGIC, MAX_FRAME_BYTES,
+    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NewOrder, OpenOrder, OrderAction, OrderEntry, OrderType,
+    Position, RejectReason, ResumeStatus, Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote,
+    TimeInForce, Welcome, WireError, msg_type as t,
 };
+
+/// Kind byte of an order-by-order trade entry; order entries use their
+/// [`OrderAction`] value.
+const ORDER_ENTRY_TRADE: u8 = 0;
 
 /// Appends one framed client message to `out`.
 ///
@@ -223,6 +228,76 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
         },
         t::SERVER_LOGOUT => ServerMessage::Logout {
             reason: r.string()?,
+        },
+        t::ACCESS_DELAY => ServerMessage::AccessDelay {
+            source: DelaySource::from_wire(r.u8()?)?,
+            min_rtt_us: r.option(Reader::u64)?,
+            one_way_us: r.option(Reader::u64)?,
+            probe_samples: r.u64()?,
+        },
+        t::ORDER_SNAPSHOT => ServerMessage::OrderSnapshot {
+            request_id: r.u32()?,
+            listing: r.listing()?,
+            next_report: r.u64()?,
+            complete: r.bool()?,
+            orders: r.group(|r| {
+                Ok(BookOrder {
+                    side: Side::from_wire(r.u8()?)?,
+                    reference: r.u64()?,
+                    price: r.i64()?,
+                    quantity: r.i64()?,
+                    broker: r.option(Reader::u128)?,
+                    queue_position: r.u32()?,
+                })
+            })?,
+        },
+        t::ORDER_UPDATE => ServerMessage::OrderUpdate {
+            request_id: r.u32()?,
+            listing: r.listing()?,
+            first_report: r.u64()?,
+            entries: r.group(|r| match r.u8()? {
+                ORDER_ENTRY_TRADE => Ok(OrderEntry::Trade {
+                    price: r.i64()?,
+                    quantity: r.i64()?,
+                    resting_reference: r.option(Reader::u64)?,
+                    buyer: r.option(Reader::u128)?,
+                    seller: r.option(Reader::u128)?,
+                }),
+                action => Ok(OrderEntry::Order {
+                    action: OrderAction::from_wire(action)?,
+                    side: Side::from_wire(r.u8()?)?,
+                    reference: r.u64()?,
+                    price: r.i64()?,
+                    quantity: r.i64()?,
+                    broker: r.option(Reader::u128)?,
+                }),
+            })?,
+        },
+        t::TAPE_SNAPSHOT => ServerMessage::TapeSnapshot {
+            request_id: r.u32()?,
+            instrument_id: r.u128()?,
+            last_report: r.u64()?,
+            quotes: r.group(|r| {
+                Ok(TapeQuote {
+                    venue_id: r.u128()?,
+                    side: Side::from_wire(r.u8()?)?,
+                    price: r.i64()?,
+                    quantity: r.i64()?,
+                })
+            })?,
+        },
+        t::TAPE_UPDATE => ServerMessage::TapeUpdate {
+            request_id: r.u32()?,
+            instrument_id: r.u128()?,
+            first_report: r.u64()?,
+            entries: r.group(|r| {
+                Ok(TapeEntry {
+                    venue_id: r.u128()?,
+                    kind: EntryKind::from_wire(r.u8()?)?,
+                    price: r.i64()?,
+                    quantity: r.i64()?,
+                })
+            })?,
         },
         t::ORDER_ACCEPTED => ServerMessage::OrderAccepted {
             stamp: r.stamp()?,
@@ -517,6 +592,116 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
         }
         ServerMessage::ReplayComplete { through_sequence } => w.u64(*through_sequence),
         ServerMessage::Logout { reason } => w.string(reason)?,
+        ServerMessage::AccessDelay {
+            source,
+            min_rtt_us,
+            one_way_us,
+            probe_samples,
+        } => {
+            w.u8(source.to_wire());
+            w.option(*min_rtt_us, Writer::u64);
+            w.option(*one_way_us, Writer::u64);
+            w.u64(*probe_samples);
+        }
+        ServerMessage::OrderSnapshot {
+            request_id,
+            listing,
+            next_report,
+            complete,
+            orders,
+        } => {
+            w.u32(*request_id);
+            w.listing(*listing);
+            w.u64(*next_report);
+            w.bool(*complete);
+            w.group(orders, |w, order| {
+                w.u8(order.side.to_wire());
+                w.u64(order.reference);
+                w.i64(order.price);
+                w.i64(order.quantity);
+                w.option(order.broker, Writer::u128);
+                w.u32(order.queue_position);
+                Ok(())
+            })?;
+        }
+        ServerMessage::OrderUpdate {
+            request_id,
+            listing,
+            first_report,
+            entries,
+        } => {
+            w.u32(*request_id);
+            w.listing(*listing);
+            w.u64(*first_report);
+            w.group(entries, |w, entry| {
+                match *entry {
+                    OrderEntry::Trade {
+                        price,
+                        quantity,
+                        resting_reference,
+                        buyer,
+                        seller,
+                    } => {
+                        w.u8(ORDER_ENTRY_TRADE);
+                        w.i64(price);
+                        w.i64(quantity);
+                        w.option(resting_reference, Writer::u64);
+                        w.option(buyer, Writer::u128);
+                        w.option(seller, Writer::u128);
+                    }
+                    OrderEntry::Order {
+                        action,
+                        side,
+                        reference,
+                        price,
+                        quantity,
+                        broker,
+                    } => {
+                        w.u8(action.to_wire());
+                        w.u8(side.to_wire());
+                        w.u64(reference);
+                        w.i64(price);
+                        w.i64(quantity);
+                        w.option(broker, Writer::u128);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        ServerMessage::TapeSnapshot {
+            request_id,
+            instrument_id,
+            last_report,
+            quotes,
+        } => {
+            w.u32(*request_id);
+            w.u128(*instrument_id);
+            w.u64(*last_report);
+            w.group(quotes, |w, quote| {
+                w.u128(quote.venue_id);
+                w.u8(quote.side.to_wire());
+                w.i64(quote.price);
+                w.i64(quote.quantity);
+                Ok(())
+            })?;
+        }
+        ServerMessage::TapeUpdate {
+            request_id,
+            instrument_id,
+            first_report,
+            entries,
+        } => {
+            w.u32(*request_id);
+            w.u128(*instrument_id);
+            w.u64(*first_report);
+            w.group(entries, |w, entry| {
+                w.u128(entry.venue_id);
+                w.u8(entry.kind.to_wire());
+                w.i64(entry.price);
+                w.i64(entry.quantity);
+                Ok(())
+            })?;
+        }
         ServerMessage::OrderAccepted {
             stamp,
             client_order_id,

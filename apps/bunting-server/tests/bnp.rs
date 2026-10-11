@@ -11,10 +11,10 @@ use bunting_admission_sequencer::{
 };
 use bunting_api_contract::ActorRole;
 use bunting_client::bnp_wire::{
-    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, OrderType, RejectReason,
-    ResumeStatus, ServerMessage, Side, TimeInForce, msg_type,
+    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, OrderEntry, OrderType,
+    RejectReason, ResumeStatus, ServerMessage, Side, TimeInForce, msg_type,
 };
-use bunting_client::{Client, ClientConfig, ClientError, FeedBook};
+use bunting_client::{Client, ClientConfig, ClientError, FeedBook, TapeBook};
 use bunting_market_types::{ParticipantId, VenueId};
 use bunting_server::config::{
     AdmissionConfig, BnpConfig, BnpRosterEntry, RosterEntry, ScenarioConfig, ServerConfig,
@@ -779,6 +779,128 @@ fn private_reports_arrive_in_sequence_order_so_resume_never_skips_one() -> Resul
     assert!(
         matches!(replay.as_slice(), [ServerMessage::ReplayComplete { through_sequence }] if *through_sequence == cursor),
         "{replay:?}"
+    );
+    Ok(())
+}
+
+/// Applies every message to both books until `done` holds for them.
+fn follow(
+    client: &Client,
+    book: &mut FeedBook,
+    tape: &mut TapeBook,
+    seen: &mut Vec<ServerMessage>,
+    done: impl Fn(&FeedBook, &TapeBook) -> bool,
+) -> Result<(), String> {
+    let deadline = Instant::now() + TIMEOUT;
+    while !done(book, tape) {
+        if Instant::now() > deadline {
+            return Err(format!("timed out; received {seen:?}"));
+        }
+        if let Some(message) = client
+            .recv_timeout(Duration::from_millis(50))
+            .map_err(|error| error.to_string())?
+        {
+            book.apply(&message).map_err(|error| error.to_string())?;
+            tape.apply(&message).map_err(|error| error.to_string())?;
+            seen.push(message);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_order_by_order_feed_and_the_tape_show_queues_trades_and_venues() -> Result<(), String> {
+    let venue = start_venue("l3-tape")?;
+    let mut maker = venue.maker()?;
+    let team = venue.connect(&venue.team1, None)?;
+    // The venue publishes its measurement of this connection's delay.
+    until(&team, |message| {
+        matches!(
+            message,
+            ServerMessage::AccessDelay {
+                min_rtt_us: Some(_),
+                ..
+            }
+        )
+    })?;
+    maker.send(order("901", "sell", 5, Some(100)))?;
+    maker.wait_report("901", "0")?;
+    maker.send(order("902", "sell", 3, Some(100)))?;
+    maker.wait_report("902", "0")?;
+    let send = |message: ClientMessage| team.send(&message).map_err(|error| error.to_string());
+    send(ClientMessage::Subscribe {
+        request_id: 7,
+        listing: LISTING,
+        flags: FeedFlags::ALL.union(FeedFlags::ORDERS),
+    })?;
+    // Venue 0 names the instrument's consolidated tape.
+    send(ClientMessage::Subscribe {
+        request_id: 8,
+        listing: Listing {
+            venue_id: 0,
+            instrument_id: 1,
+        },
+        flags: FeedFlags::ALL,
+    })?;
+    let (mut book, mut tape) = (FeedBook::new(7), TapeBook::new(8));
+    let mut seen = Vec::new();
+    follow(&team, &mut book, &mut tape, &mut seen, |book, tape| {
+        book.is_ready() && tape.is_ready()
+    })?;
+    // Two offers at 100, in time priority: the second waits behind 5.
+    let queue = book.orders(Side::Sell);
+    assert_eq!(
+        queue
+            .iter()
+            .map(|order| (
+                order.quantity,
+                order.position_at_price,
+                order.quantity_ahead
+            ))
+            .collect::<Vec<_>>(),
+        vec![(5, 1, 0), (3, 2, 5)]
+    );
+    assert_eq!(
+        tape.quote(1, Side::Sell)
+            .map(|level| (level.price, level.quantity)),
+        Some((100, 8))
+    );
+    // A buy of 6 takes the first offer and 1 of the second.
+    send(limit(1, Side::Buy, 6, 100))?;
+    seen.clear();
+    follow(&team, &mut book, &mut tape, &mut seen, |book, tape| {
+        book.trades().len() == 2 && tape.trades().len() == 2
+    })?;
+    let resting: Vec<Option<u64>> = seen
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::OrderUpdate { entries, .. } => Some(entries),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|entry| match entry {
+            OrderEntry::Trade {
+                resting_reference, ..
+            } => Some(*resting_reference),
+            OrderEntry::Order { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        resting,
+        vec![Some(queue[0].reference), Some(queue[1].reference)],
+        "each trade names the resting order it executed against"
+    );
+    let left = book.orders(Side::Sell);
+    assert_eq!(left.len(), 1);
+    assert_eq!(
+        (left[0].reference, left[0].quantity, left[0].quantity_ahead),
+        (queue[1].reference, 2, 0)
+    );
+    assert!(tape.trades().iter().all(|trade| trade.venue_id == 1));
+    assert_eq!(
+        tape.quote(1, Side::Sell)
+            .map(|level| (level.price, level.quantity)),
+        Some((100, 2))
     );
     Ok(())
 }

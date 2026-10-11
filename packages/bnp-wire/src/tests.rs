@@ -186,6 +186,109 @@ fn servers() -> Vec<ServerMessage> {
             ],
             asks: Vec::new(),
         },
+        ServerMessage::AccessDelay {
+            source: DelaySource::Both,
+            min_rtt_us: Some(812),
+            one_way_us: Some(406),
+            probe_samples: 9,
+        },
+        ServerMessage::AccessDelay {
+            source: DelaySource::None,
+            min_rtt_us: None,
+            one_way_us: None,
+            probe_samples: 0,
+        },
+        ServerMessage::OrderSnapshot {
+            request_id: 4,
+            listing: listing(),
+            next_report: 1,
+            complete: true,
+            orders: vec![
+                BookOrder {
+                    side: Side::Buy,
+                    reference: 0,
+                    price: 99,
+                    quantity: 5,
+                    broker: Some(10),
+                    queue_position: 1,
+                },
+                BookOrder {
+                    side: Side::Sell,
+                    reference: u64::MAX,
+                    price: 101,
+                    quantity: 2,
+                    broker: None,
+                    queue_position: 1,
+                },
+            ],
+        },
+        ServerMessage::OrderUpdate {
+            request_id: 4,
+            listing: listing(),
+            first_report: 3,
+            entries: vec![
+                OrderEntry::Trade {
+                    price: 101,
+                    quantity: 1,
+                    resting_reference: Some(7),
+                    buyer: Some(2),
+                    seller: None,
+                },
+                OrderEntry::Trade {
+                    price: 100,
+                    quantity: 1,
+                    resting_reference: None,
+                    buyer: None,
+                    seller: Some(u128::MAX),
+                },
+                OrderEntry::Order {
+                    action: OrderAction::Change,
+                    side: Side::Sell,
+                    reference: 7,
+                    price: 101,
+                    quantity: 1,
+                    broker: Some(10),
+                },
+                OrderEntry::Order {
+                    action: OrderAction::Delete,
+                    side: Side::Buy,
+                    reference: 3,
+                    price: 99,
+                    quantity: 0,
+                    broker: None,
+                },
+            ],
+        },
+        ServerMessage::TapeSnapshot {
+            request_id: 5,
+            instrument_id: u128::MAX - 7,
+            last_report: 12,
+            quotes: vec![TapeQuote {
+                venue_id: 2,
+                side: Side::Sell,
+                price: 101,
+                quantity: 4,
+            }],
+        },
+        ServerMessage::TapeUpdate {
+            request_id: 5,
+            instrument_id: u128::MAX - 7,
+            first_report: 13,
+            entries: vec![
+                TapeEntry {
+                    venue_id: 1,
+                    kind: EntryKind::Trade,
+                    price: 100,
+                    quantity: 3,
+                },
+                TapeEntry {
+                    venue_id: 2,
+                    kind: EntryKind::Bid,
+                    price: 0,
+                    quantity: 0,
+                },
+            ],
+        },
         ServerMessage::MarketUpdate {
             request_id: 1,
             listing: listing(),
@@ -280,7 +383,7 @@ fn every_message_type_is_covered_and_directional() -> Result<(), WireError> {
     client_types.dedup();
     server_types.dedup();
     assert_eq!(client_types.len(), 15);
-    assert_eq!(server_types.len(), 24);
+    assert_eq!(server_types.len(), 29);
     for message in servers() {
         let mut frame = Vec::new();
         encode_server(&message, &mut frame)?;
@@ -372,12 +475,12 @@ fn malformed_frames_are_errors_never_skipped() -> Result<(), WireError> {
                 .iter()
                 .copied()
                 .chain([0; 32])
-                .chain([8])
+                .chain([16])
                 .collect::<Vec<_>>()
         ),
         Err(WireError::InvalidValue {
             field: "FeedFlags",
-            value: 8
+            value: 16
         })
     ));
     // A side of 3 is not a side.
@@ -467,4 +570,49 @@ fn wire_enums_cover_their_values_exactly() {
     assert_eq!(CancelReason::ALL.len(), 6);
     assert!(FeedFlags::ALL.contains(FeedFlags::OFFERS));
     assert!(!FeedFlags::BIDS.contains(FeedFlags::OFFERS));
+    assert!(!FeedFlags::ALL.contains(FeedFlags::ORDERS));
+    assert_eq!(
+        FeedFlags::from_wire(FeedFlags::ALL.union(FeedFlags::ORDERS).to_wire()),
+        Ok(FeedFlags::ALL.union(FeedFlags::ORDERS))
+    );
+    assert_eq!(OrderAction::ALL.len(), 3);
+    assert_eq!(DelaySource::ALL.len(), 4);
+}
+
+#[test]
+fn an_order_by_order_entry_has_the_documented_layout() -> Result<(), WireError> {
+    let mut frame = Vec::new();
+    encode_server(
+        &ServerMessage::OrderUpdate {
+            request_id: 1,
+            listing: Listing {
+                venue_id: 1,
+                instrument_id: 2,
+            },
+            first_report: 3,
+            entries: vec![OrderEntry::Order {
+                action: OrderAction::Add,
+                side: Side::Sell,
+                reference: 4,
+                price: 5,
+                quantity: 6,
+                broker: Some(7),
+            }],
+        },
+        &mut frame,
+    )?;
+    let mut expected = vec![msg_type::ORDER_UPDATE];
+    expected.extend(1_u32.to_le_bytes());
+    expected.extend(1_u128.to_le_bytes());
+    expected.extend(2_u128.to_le_bytes());
+    expected.extend(3_u64.to_le_bytes());
+    expected.extend(1_u16.to_le_bytes());
+    expected.extend([1, 2]);
+    expected.extend(4_u64.to_le_bytes());
+    expected.extend(5_i64.to_le_bytes());
+    expected.extend(6_i64.to_le_bytes());
+    expected.push(1);
+    expected.extend(7_u128.to_le_bytes());
+    assert_eq!(&frame[LENGTH_BYTES..], expected.as_slice());
+    Ok(())
 }

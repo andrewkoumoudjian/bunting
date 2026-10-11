@@ -1,6 +1,7 @@
 # Bunting Native Protocol, version 1
 
-- Status: **Current** (slice 25). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
+- Status: **Current** (slice 25; order-by-order and tape feeds and access
+  delay added in slice 35). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
 - Code: `packages/bnp-wire` (types and codec; the field order in
   `src/codec.rs` is this contract), `packages/bunting-application/src/bnp.rs`
   (identity and event mapping), `apps/bunting-server/src/bnp_host.rs` (venue
@@ -83,7 +84,7 @@ Enumerations: `side` 1 buy, 2 sell. `order_type` 1 limit (uses `price`),
 2 market (`price` must be 0). `tif` 0 GTC, 1 IOC, 2 FOK, 3 DAY, 4 GTD (uses
 `expires_at_ns`, otherwise 0). `anonymous` hides the participant's broker
 identifier on venues that publish them (ADR 0036, as FIX tag 10021). Feed `flags` bit 0 bids, bit 1 offers, bit 2
-trades.
+trades, bit 3 order by order (venue feeds only).
 
 ## Server messages
 
@@ -96,6 +97,7 @@ trades.
 | 0x45 | Reject | `request_type:u8 reference:u64 reason:string` |
 | 0x46 | ReplayComplete | `through_sequence:u64` |
 | 0x47 | Logout | `reason:string` |
+| 0x48 | AccessDelay | `source:u8 min_rtt_us:option<u64> one_way_us:option<u64> probe_samples:u64` |
 | 0x50 | OrderAccepted | `stamp client_order_id:u64 order_id:u128 listing side:u8 quantity:i64 price:option<i64>` |
 | 0x51 | OrderRejected | `stamp client_order_id:u64 reason:u8` |
 | 0x52 | OrderRested | `stamp client_order_id:u64 order_id:u128 price:i64 remaining:i64` |
@@ -110,6 +112,10 @@ trades.
 | 0x5b | KillSwitchReset | `stamp` |
 | 0x60 | MarketSnapshot | `request_id:u32 listing next_report:u64 bids:group<price:i64 quantity:i64> asks:group<…>` |
 | 0x61 | MarketUpdate | `request_id:u32 listing first_report:u64 entries:group<kind:u8 price:i64 quantity:i64>` |
+| 0x62 | OrderSnapshot | `request_id:u32 listing next_report:u64 complete:bool orders:group<side:u8 reference:u64 price:i64 quantity:i64 broker:option<u128> queue_position:u32>` |
+| 0x63 | OrderUpdate | `request_id:u32 listing first_report:u64 entries:group<order entry>` |
+| 0x64 | TapeSnapshot | `request_id:u32 instrument_id:u128 last_report:u64 quotes:group<venue_id:u128 side:u8 price:i64 quantity:i64>` |
+| 0x65 | TapeUpdate | `request_id:u32 instrument_id:u128 first_report:u64 entries:group<venue_id:u128 kind:u8 price:i64 quantity:i64>` |
 | 0x70 | Listings | `request_id:u32 listings:group<listing symbol:string>` |
 | 0x71 | OpenOrders | `request_id:u32 run_sequence:u64 orders:group<client_order_id:u64 order_id:u128 listing side:u8 price:i64 original:i64 remaining:i64>` |
 | 0x72 | Account | `request_id:u32 run_sequence:u64 cash:group<currency_id:u128 balance:i128 reserved:i128> positions:group<instrument_id:u128 position:i64 open_buy:i64 open_sell:i64>` |
@@ -122,6 +128,12 @@ absolute visible quantity after the change, 0 when it is gone). Reject
 (`packages/bnp-wire/src/lib.rs`, `RejectReason`); 24 is an unknown listing,
 25 a closed session and 26 a market, IOC or FOK order in a call phase
 (ADR 0037).
+An order entry starts with `kind:u8`: 0 is a trade,
+`price:i64 quantity:i64 resting_reference:option<u64> buyer:option<u128> seller:option<u128>`;
+1 add, 2 change, 3 delete are an order,
+`side:u8 reference:u64 price:i64 quantity:i64 broker:option<u128>` (quantity
+displayed after the change, 0 when deleted). `AccessDelay.source` 0 none,
+1 kernel, 2 probes, 3 both.
 Cancel `reason` 1 requested, 2 kill switch, 3 market remainder, 4 mass cancel,
 5 expired, 6 halt. The engine currently emits no `PositionChanged` or
 `BalanceChanged`; clients read positions and cash with `AccountRequest`.
@@ -202,8 +214,33 @@ and `reference` its client order ID or request ID.
   A missing number is a gap; the client unsubscribes and subscribes again.
 - `SnapshotRequest` is a one-shot snapshot with `next_report = 0`.
 - Feed messages are anonymous: no order, participant or command identity.
-- At most 32 subscriptions per session. Order-by-order (L3) and consolidated
-  tape feeds are FIX-only in v1.
+- With flag bit 3 (`ORDERS`) the feed is order by order (ADR 0036 §7): the
+  snapshot (`OrderSnapshot`) lists every displayed order, bids then asks in
+  matching priority, with its anonymous public reference, its 1-based
+  `queue_position` on its side and, on venues that publish them, its
+  owner's broker ID. A book too large for one frame arrives in consecutive
+  parts; the last has `complete` set and updates follow only after it.
+  Each commit then sends an `OrderUpdate`: trades first, each naming the
+  resting order it executed against (with broker IDs where published), then
+  orders deleted, changed (keeping reference and place) and added. A public
+  reference is the order's time priority in its book, unrelated to any
+  order ID, and new whenever the order loses priority (an iceberg refresh
+  is a delete and an add). Only displayed quantity is shown.
+- A `Subscribe` whose listing has `venue_id` 0 is the instrument's
+  consolidated tape (ADR 0036 §6). It travels to the processor at the hub;
+  `TapeSnapshot` lists each venue's best bid and offer as the processor
+  sees them, with `last_report` the last tape report included. `TapeUpdate`s
+  continue with the next report: every venue's trades and every change of a
+  venue's best bid or offer (quantity 0: the venue has none on that side),
+  each naming its venue, numbered by one per-instrument sequence shared by
+  every subscriber (FIX included). It leaves the hub and crosses `L(hub,
+  team)`, so near a venue it is slower than that venue's direct feed. The
+  tape always carries quotes and trades; `ORDERS` is refused.
+- At most 32 subscriptions per session, all kinds together.
+- `AccessDelay` is a session message (never delayed) sent when the venue's
+  measurement of this connection changes: the smallest round trip seen
+  (kernel TCP and application probes) and half of it. It is published only
+  and never orders commands (ADR 0035).
 
 ## Limits
 

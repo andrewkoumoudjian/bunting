@@ -55,6 +55,7 @@ pub mod msg_type {
     pub const REJECT: u8 = 0x45;
     pub const REPLAY_COMPLETE: u8 = 0x46;
     pub const SERVER_LOGOUT: u8 = 0x47;
+    pub const ACCESS_DELAY: u8 = 0x48;
     pub const ORDER_ACCEPTED: u8 = 0x50;
     pub const ORDER_REJECTED: u8 = 0x51;
     pub const ORDER_RESTED: u8 = 0x52;
@@ -69,6 +70,10 @@ pub mod msg_type {
     pub const KILL_SWITCH_RESET_DONE: u8 = 0x5b;
     pub const MARKET_SNAPSHOT: u8 = 0x60;
     pub const MARKET_UPDATE: u8 = 0x61;
+    pub const ORDER_SNAPSHOT: u8 = 0x62;
+    pub const ORDER_UPDATE: u8 = 0x63;
+    pub const TAPE_SNAPSHOT: u8 = 0x64;
+    pub const TAPE_UPDATE: u8 = 0x65;
     pub const LISTINGS: u8 = 0x70;
     pub const OPEN_ORDERS: u8 = 0x71;
     pub const ACCOUNT: u8 = 0x72;
@@ -217,6 +222,31 @@ wire_enum!(
 );
 
 wire_enum!(
+    /// What happened to one displayed order on an order-by-order feed.
+    OrderAction {
+        /// A new displayed order, behind every order already at its price.
+        Add = 1,
+        /// Its displayed quantity changed; it keeps its reference and place.
+        Change = 2,
+        /// It left the book (executed, canceled, or lost priority).
+        Delete = 3,
+    }
+);
+
+wire_enum!(
+    /// Where a measured access delay came from.
+    DelaySource {
+        None = 0,
+        /// The operating system's TCP round-trip minimum.
+        Kernel = 1,
+        /// Application probes.
+        Probe = 2,
+        /// Both; the smaller is used.
+        Both = 3,
+    }
+);
+
+wire_enum!(
     /// Engine reject reasons, as published in `OrderRejected` and
     /// `CancelRejected`.
     RejectReason {
@@ -276,12 +306,17 @@ impl FeedFlags {
     pub const BIDS: Self = Self(1);
     pub const OFFERS: Self = Self(2);
     pub const TRADES: Self = Self(4);
+    /// Bids, offers and trades.
     pub const ALL: Self = Self(7);
+    /// Order by order (L3): every displayed order by its public reference,
+    /// instead of price levels. Venue feeds only.
+    pub const ORDERS: Self = Self(8);
+    const KNOWN: u8 = 15;
 
     /// # Errors
     /// Returns [`WireError::InvalidValue`] for unknown bits.
     pub const fn from_wire(value: u8) -> Result<Self, WireError> {
-        if value & !Self::ALL.0 != 0 {
+        if value & !Self::KNOWN != 0 {
             return Err(WireError::InvalidValue {
                 field: "FeedFlags",
                 value: value as u64,
@@ -388,6 +423,9 @@ pub enum ClientMessage {
         request_id: u64,
     },
     /// Starts a direct venue feed: a snapshot, then every later change.
+    /// With [`FeedFlags::ORDERS`] it is order by order. A listing with
+    /// `venue_id` 0 names the instrument's consolidated tape instead, which
+    /// always carries quotes and trades.
     Subscribe {
         request_id: u32,
         listing: Listing,
@@ -476,6 +514,65 @@ pub struct Entry {
     pub quantity: i64,
 }
 
+/// One displayed order in an order-by-order snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BookOrder {
+    pub side: Side,
+    /// Anonymous public reference: the order's time priority in its book,
+    /// unrelated to any order ID, and new whenever it loses priority.
+    pub reference: u64,
+    pub price: i64,
+    /// Displayed quantity.
+    pub quantity: i64,
+    /// The owner's broker identifier on venues that publish them.
+    pub broker: Option<u128>,
+    /// 1-based place among the side's displayed orders in matching priority.
+    pub queue_position: u32,
+}
+
+/// One order-by-order change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrderEntry {
+    /// A trade against the resting order `resting_reference`; `buyer` and
+    /// `seller` are broker identifiers on venues that publish them.
+    Trade {
+        price: i64,
+        quantity: i64,
+        resting_reference: Option<u64>,
+        buyer: Option<u128>,
+        seller: Option<u128>,
+    },
+    /// A displayed order added, changed or deleted; `quantity` is the
+    /// displayed quantity after the change (0 when deleted).
+    Order {
+        action: OrderAction,
+        side: Side,
+        reference: u64,
+        price: i64,
+        quantity: i64,
+        broker: Option<u128>,
+    },
+}
+
+/// One venue's best bid or offer on the consolidated tape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TapeQuote {
+    pub venue_id: u128,
+    pub side: Side,
+    pub price: i64,
+    pub quantity: i64,
+}
+
+/// One consolidated change, naming its venue. For `Bid` and `Ask` it is the
+/// venue's new best (quantity 0: the venue has none on that side).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TapeEntry {
+    pub venue_id: u128,
+    pub kind: EntryKind,
+    pub price: i64,
+    pub quantity: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListingInfo {
     pub listing: Listing,
@@ -535,6 +632,17 @@ pub enum ServerMessage {
     },
     Logout {
         reason: String,
+    },
+    /// The venue's current measurement of this connection's access delay.
+    /// Published only; it never orders commands (ADR 0035). A session
+    /// message, never delayed.
+    AccessDelay {
+        source: DelaySource,
+        /// Smallest round trip seen, if any.
+        min_rtt_us: Option<u64>,
+        /// Half of `min_rtt_us`.
+        one_way_us: Option<u64>,
+        probe_samples: u64,
     },
     OrderAccepted {
         stamp: Stamp,
@@ -628,6 +736,42 @@ pub enum ServerMessage {
         first_report: u64,
         entries: Vec<Entry>,
     },
+    /// An order-by-order feed's starting book: every displayed order, bids
+    /// then asks, each side in matching priority. A book too large for one
+    /// frame arrives in consecutive parts; the last has `complete` set, and
+    /// updates follow only after it.
+    OrderSnapshot {
+        request_id: u32,
+        listing: Listing,
+        next_report: u64,
+        complete: bool,
+        orders: Vec<BookOrder>,
+    },
+    /// One commit's order-by-order changes: trades first, then orders.
+    /// Entries are numbered from `first_report`.
+    OrderUpdate {
+        request_id: u32,
+        listing: Listing,
+        first_report: u64,
+        entries: Vec<OrderEntry>,
+    },
+    /// The consolidated tape's view of an instrument: each venue's best bid
+    /// and offer as the processor at the hub sees them. `last_report` is the
+    /// last tape report included; updates continue with the next.
+    TapeSnapshot {
+        request_id: u32,
+        instrument_id: u128,
+        last_report: u64,
+        quotes: Vec<TapeQuote>,
+    },
+    /// Consolidated changes in the tape's per-instrument report sequence,
+    /// the same for every subscriber, numbered from `first_report`.
+    TapeUpdate {
+        request_id: u32,
+        instrument_id: u128,
+        first_report: u64,
+        entries: Vec<TapeEntry>,
+    },
     Listings {
         request_id: u32,
         listings: Vec<ListingInfo>,
@@ -657,6 +801,7 @@ impl ServerMessage {
             Self::Reject { .. } => msg_type::REJECT,
             Self::ReplayComplete { .. } => msg_type::REPLAY_COMPLETE,
             Self::Logout { .. } => msg_type::SERVER_LOGOUT,
+            Self::AccessDelay { .. } => msg_type::ACCESS_DELAY,
             Self::OrderAccepted { .. } => msg_type::ORDER_ACCEPTED,
             Self::OrderRejected { .. } => msg_type::ORDER_REJECTED,
             Self::OrderRested { .. } => msg_type::ORDER_RESTED,
@@ -671,6 +816,10 @@ impl ServerMessage {
             Self::KillSwitchReset { .. } => msg_type::KILL_SWITCH_RESET_DONE,
             Self::MarketSnapshot { .. } => msg_type::MARKET_SNAPSHOT,
             Self::MarketUpdate { .. } => msg_type::MARKET_UPDATE,
+            Self::OrderSnapshot { .. } => msg_type::ORDER_SNAPSHOT,
+            Self::OrderUpdate { .. } => msg_type::ORDER_UPDATE,
+            Self::TapeSnapshot { .. } => msg_type::TAPE_SNAPSHOT,
+            Self::TapeUpdate { .. } => msg_type::TAPE_UPDATE,
             Self::Listings { .. } => msg_type::LISTINGS,
             Self::OpenOrders { .. } => msg_type::OPEN_ORDERS,
             Self::Account { .. } => msg_type::ACCOUNT,

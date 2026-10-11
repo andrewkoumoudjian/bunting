@@ -10,7 +10,9 @@
   Amended in slice 32 after the independent review: private reports are
   delivered in committed sequence order (decision 6), the kill switch is per
   participant with an explicit reset (decision 10), and connections hold no
-  session slot until they authenticate (decision 11).
+  session slot until they authenticate (decision 11). Extended in slice 35:
+  order-by-order and consolidated-tape feeds and the published access delay
+  (decision 12).
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
 ## Context
@@ -93,6 +95,12 @@ hold were FIX-typed. The server had no in-process TLS.
     by `handshake_timeout_ms`; only then does it take one of
     `max_connections`. A session whose socket accepts nothing for three
     heartbeat intervals is closed as a slow consumer.
+12. **Every public feed (slice 35).** A `Subscribe` with `FeedFlags::ORDERS`
+    is an order-by-order feed and one naming venue 0 is the instrument's
+    consolidated tape, both with ADR 0036's semantics and served by the same
+    feed publisher, at the same times, as FIX's (`bnp_feeds.rs`). An order
+    snapshot larger than a frame is sent in parts. `AccessDelay` publishes
+    the session's measured delay, as the venue already did for operators.
 
 ## Consequences
 
@@ -101,8 +109,8 @@ hold were FIX-typed. The server had no in-process TLS.
 - Operators run a CA and register certificate fingerprints in `bnp.roster`.
 - Shared server pieces (outbound hold, public feeds, replies) are generic
   over the message type; FIX behavior is unchanged.
-- Order-by-order and consolidated feeds, instructor/admin control, news and
-  tenders stay FIX-only or Target in v1.
+- Instructor/admin control, news and tenders stay FIX-only or Target in v1
+  (order-by-order and consolidated feeds came in slice 35).
 
 ## Rejected alternatives
 
@@ -136,6 +144,9 @@ hold were FIX-typed. The server had no in-process TLS.
    do not keep registered teams out and are closed at the handshake
    deadline. Unit tests cover the unauthenticated budget and the
    slow-consumer write timeout.
+6. (Slice 35) An order-by-order feed shows queue places and trades naming
+   the resting order; the tape shows each venue's quote and trades; the
+   venue publishes the session's access delay.
 
 Unit tests cover the codec (byte-exact layouts, direction, bounds, malformed
 input), identity namespaces, event attribution and the distributor's

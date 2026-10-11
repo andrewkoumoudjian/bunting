@@ -16,32 +16,30 @@ use crate::acceptor::{ConnectionSlots, SLOT_WAIT};
 use crate::admission::{
     AdmissionService, ConnectionHealth, Inbound, Interface, JobWork, Reply, reply_task,
 };
+use crate::bnp_feeds::{
+    BnpFeeds, level_snapshot_job, order_snapshot_job, orders_per_part, tape_snapshot_job,
+};
 use crate::bnp_trust::Trust;
 use crate::config::{BnpConfig, BnpRosterEntry};
 use crate::distributor::{PublishingOrigin, Resume};
 use crate::outbound::OutboundHold;
-use crate::public_feed::{FeedMessage, PublicFeeds};
+use crate::public_feed::FeedMessage;
 use crate::wake::{SessionEvent, Waker};
 use bnp_wire::{
-    ClientMessage, Entry, EntryKind, FeedFlags, FrameDecoder, Level, Listing, PROTOCOL_VERSION,
-    ResumeStatus, Role, ServerMessage, Welcome, decode_client, encode_server,
+    ClientMessage, DelaySource, FeedFlags, FrameDecoder, PROTOCOL_VERSION, ResumeStatus, Role,
+    ServerMessage, Welcome, decode_client, encode_server,
 };
-use bunting_admission_sequencer::{DelayEstimator, Endpoint};
+use bunting_admission_sequencer::{DelayEstimator, Endpoint, RttSource};
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
-use bunting_application::bnp::{
-    BnpIdentity, account_balances, listing_key, listings, wire_listing,
-};
-use bunting_application::{
-    ApplicationService, MarketDataEntryType, VerifiedActor, listing_for_command, project_market,
-};
+use bunting_application::bnp::{BnpIdentity, account_balances, listing_key, listings};
+use bunting_application::{ApplicationService, VerifiedActor, listing_for_command};
 use bunting_engine::RunState;
-use bunting_market_events::{Command, Side};
-use bunting_market_types::{CorrelationId, ListingKey, ParticipantId, RunId};
+use bunting_market_events::Command;
+use bunting_market_types::{CorrelationId, ParticipantId, RunId};
 use bunting_origin_store::OriginStore;
 use rustls::ServerConnection;
 use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
-use simfix_mapping::MarketDataIncrement;
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
@@ -426,7 +424,7 @@ fn handle_connection(
         replies: &reply_sender,
         waker: &waker,
     };
-    let mut feeds = PublicFeeds::new(encode_increment);
+    let mut feeds = BnpFeeds::new();
     let mut state = SessionState {
         rate_window_started: Instant::now(),
         rate_messages: 0,
@@ -518,6 +516,9 @@ fn handle_connection(
         }
         if admission.clock().now_us() >= latency.next_probe_us() {
             latency.refresh_kernel(&channel.stream);
+            if let Some(update) = latency.access_delay() {
+                channel.send(&[update])?;
+            }
             latency.probe(&mut channel)?;
         }
         for reply in replies.try_iter() {
@@ -543,11 +544,17 @@ fn handle_connection(
             if let Some(feed) = reply.feed.as_deref().filter(|_| !failed) {
                 send_at = feeds.send_time(feed, send_at);
             }
+            let activated = reply
+                .feed
+                .as_ref()
+                .filter(|_| !failed)
+                .map(|_| messages.clone())
+                .unwrap_or_default();
             for message in messages {
                 outbound.hold(message, send_at)?;
             }
             if let Some(feed) = reply.feed.as_deref().filter(|_| !failed) {
-                for increment in feeds.activate_after(feed, reply.published_before, 0) {
+                for increment in feeds.activate(feed, reply.published_before, &activated) {
                     hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
                 }
             }
@@ -555,6 +562,10 @@ fn handle_connection(
         // Every committed batch, whoever caused it, maps to this
         // participant's private messages; each travels from where it was
         // applied to this team (ADR 0035).
+        // The consolidated tape leaves the processor at the hub.
+        for increment in feeds.drain_tape()? {
+            hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
+        }
         for batch in subscription.drain()? {
             for increment in feeds.on_batch(&batch)? {
                 hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
@@ -585,7 +596,7 @@ fn handle_connection(
 /// its source, never ahead of the feed's previous message.
 fn hold_feed(
     outbound: &mut OutboundHold<ServerMessage>,
-    feeds: &mut PublicFeeds<ServerMessage>,
+    feeds: &mut BnpFeeds<'_>,
     latency: &Latency<'_>,
     increment: FeedMessage<ServerMessage>,
 ) -> Result<(), String> {
@@ -594,55 +605,6 @@ fn hold_feed(
         .saturating_add(latency.delay_from(increment.source)?);
     let send_at = feeds.send_time(&increment.request_id, proposed);
     outbound.hold(increment.message, send_at)
-}
-
-/// A feed increment as a BNP `MarketUpdate`.
-///
-/// BNP v1 feeds are direct, price-level feeds of one listing, so every entry
-/// names the same listing and none is an order-by-order entry.
-fn encode_increment(
-    request_id: &str,
-    first_report: u64,
-    increments: &[(ListingKey, MarketDataIncrement)],
-) -> ServerMessage {
-    let listing = increments.first().map_or(
-        Listing {
-            venue_id: 0,
-            instrument_id: 0,
-        },
-        |(key, _)| wire_listing(*key),
-    );
-    ServerMessage::MarketUpdate {
-        request_id: request_id.parse().unwrap_or(0),
-        listing,
-        first_report,
-        entries: increments
-            .iter()
-            .filter_map(|(_, increment)| match *increment {
-                MarketDataIncrement::Trade {
-                    price, quantity, ..
-                } => Some(Entry {
-                    kind: EntryKind::Trade,
-                    price: price.get(),
-                    quantity: quantity.get(),
-                }),
-                MarketDataIncrement::Level {
-                    side,
-                    price,
-                    quantity,
-                    ..
-                } => Some(Entry {
-                    kind: match side {
-                        Side::Buy => EntryKind::Bid,
-                        Side::Sell => EntryKind::Ask,
-                    },
-                    price: price.get(),
-                    quantity: quantity.get(),
-                }),
-                MarketDataIncrement::Order { .. } => None,
-            })
-            .collect(),
-    }
 }
 
 /// The connection's TLS state and socket, owned by the session thread.
@@ -785,14 +747,14 @@ struct SessionState {
     clippy::too_many_arguments,
     reason = "the session's parts stay separately borrowed so reply and feed bookkeeping cannot alias"
 )]
-fn handle_frame(
+fn handle_frame<'a>(
     frame: &[u8],
     received_us: u64,
-    context: &SessionContext<'_>,
+    context: &SessionContext<'a>,
     channel: &mut Channel,
     state: &mut SessionState,
     latency: &mut Latency<'_>,
-    feeds: &mut PublicFeeds<ServerMessage>,
+    feeds: &mut BnpFeeds<'a>,
     outbound: &mut OutboundHold<ServerMessage>,
     reply_to: &ReplyTo<'_>,
 ) -> Result<bool, String> {
@@ -810,6 +772,9 @@ fn handle_frame(
         ClientMessage::Heartbeat => return Ok(true),
         ClientMessage::ProbeReply { probe_id } => {
             latency.on_response(*probe_id);
+            if let Some(update) = latency.access_delay() {
+                channel.send(&[update])?;
+            }
             return Ok(true);
         }
         ClientMessage::Ping { nonce } => {
@@ -895,13 +860,13 @@ const fn request_reference(message: &ClientMessage) -> u64 {
     clippy::too_many_lines,
     reason = "one arm per request type keeps each destination beside its work"
 )]
-fn admit(
+fn admit<'a>(
     message: &ClientMessage,
     received_us: u64,
-    context: &SessionContext<'_>,
+    context: &SessionContext<'a>,
     state: &mut SessionState,
     latency: &Latency<'_>,
-    feeds: &mut PublicFeeds<ServerMessage>,
+    feeds: &mut BnpFeeds<'a>,
     reply_to: &ReplyTo<'_>,
 ) -> Result<Option<String>, String> {
     let correlation = CorrelationId::new(state.next_correlation);
@@ -970,27 +935,48 @@ fn admit(
             listing,
             flags,
         } => {
-            let id = request_id.to_string();
-            let mut entry_types = Vec::new();
-            for (flag, entry) in [
-                (FeedFlags::BIDS, MarketDataEntryType::Bid),
-                (FeedFlags::OFFERS, MarketDataEntryType::Offer),
-                (FeedFlags::TRADES, MarketDataEntryType::Trade),
-            ] {
-                if flags.contains(flag) {
-                    entry_types.push(entry);
-                }
-            }
-            // Registered before admission, so no batch committed after
-            // the snapshot is missed.
-            if let Some(reason) = feeds.subscribe(&id, listing_key(*listing), &entry_types, true) {
+            // Registered before admission, so no batch or tape record
+            // applied after the snapshot is missed.
+            let tape = listing.venue_id == 0;
+            let refused = if tape && flags.contains(FeedFlags::ORDERS) {
+                Some("the consolidated tape has no order-by-order view".to_owned())
+            } else if tape {
+                feeds.subscribe_tape(
+                    *request_id,
+                    listing.instrument_id,
+                    context.origin.tape(),
+                    reply_to.waker,
+                )
+            } else {
+                feeds.subscribe_venue(*request_id, *listing, *flags, context.origin)
+            };
+            if let Some(reason) = refused {
                 return Ok(Some(reason));
             }
-            feed = Some(id);
-            (
-                Endpoint::Venue(listing_key(*listing).venue_id),
-                snapshot_job(*request_id, *listing, usize::MAX, 1, run_id, request_type),
-            )
+            feed = Some(request_id.to_string());
+            if tape {
+                // The tape is served by its processor at the hub.
+                (
+                    Endpoint::Hub,
+                    tape_snapshot_job(*request_id, listing.instrument_id),
+                )
+            } else if flags.contains(FeedFlags::ORDERS) {
+                (
+                    Endpoint::Venue(listing_key(*listing).venue_id),
+                    order_snapshot_job(
+                        *request_id,
+                        *listing,
+                        orders_per_part(context.config.max_frame_bytes),
+                        run_id,
+                        request_type,
+                    ),
+                )
+            } else {
+                (
+                    Endpoint::Venue(listing_key(*listing).venue_id),
+                    level_snapshot_job(*request_id, *listing, usize::MAX, 1, run_id, request_type),
+                )
+            }
         }
         ClientMessage::Unsubscribe { request_id } => {
             return Ok((!feeds.unsubscribe(&request_id.to_string()))
@@ -1002,7 +988,7 @@ fn admit(
             depth,
         } => (
             Endpoint::Venue(listing_key(*listing).venue_id),
-            snapshot_job(
+            level_snapshot_job(
                 *request_id,
                 *listing,
                 if *depth == 0 {
@@ -1154,44 +1140,6 @@ fn command_job(
     })
 }
 
-/// A full or depth-limited snapshot of one listing, taken at its venue.
-/// `next_report` is 1 for a feed's starting snapshot and 0 for a one-shot.
-fn snapshot_job(
-    request_id: u32,
-    listing: Listing,
-    depth: usize,
-    next_report: u64,
-    run_id: RunId,
-    request_type: u8,
-) -> JobWork<ServerMessage> {
-    Box::new(move |context| {
-        let projection = ApplicationService::new(context.origin)
-            .read(run_id, |state| project_market(state, listing_key(listing)))
-            .map_err(|error| format!("run read failed: {error}"))?;
-        let levels = |levels: &[(i64, i64)]| {
-            levels
-                .iter()
-                .take(depth)
-                .map(|&(price, quantity)| Level { price, quantity })
-                .collect()
-        };
-        Ok(vec![match projection {
-            Ok(projection) => ServerMessage::MarketSnapshot {
-                request_id,
-                listing,
-                next_report,
-                bids: levels(&projection.bids),
-                asks: levels(&projection.asks),
-            },
-            Err(_) => ServerMessage::Reject {
-                request_type,
-                reference: u64::from(request_id),
-                reason: "unknown listing".to_owned(),
-            },
-        }])
-    })
-}
-
 /// One connection's measured access latency: published, never used for
 /// ordering (ADR 0035 §2).
 struct Latency<'a> {
@@ -1202,6 +1150,8 @@ struct Latency<'a> {
     probes: BTreeMap<u64, u64>,
     next_probe_id: u64,
     next_probe_us: u64,
+    /// The measurement last sent in an `AccessDelay`.
+    published: Option<(Option<u64>, RttSource)>,
 }
 
 impl<'a> Latency<'a> {
@@ -1214,6 +1164,7 @@ impl<'a> Latency<'a> {
             probes: BTreeMap::new(),
             next_probe_id: 0,
             next_probe_us: 0,
+            published: None,
         }
     }
 
@@ -1258,6 +1209,27 @@ impl<'a> Latency<'a> {
             .saturating_add(base_us / 2)
             .saturating_add(spread(self.connection, id) % base_us);
         Ok(())
+    }
+
+    /// An `AccessDelay` when the measurement changed since the last one
+    /// sent: the published delay, never used for ordering.
+    fn access_delay(&mut self) -> Option<ServerMessage> {
+        let current = (self.estimator.min_rtt_us(), self.estimator.source());
+        if self.published == Some(current) {
+            return None;
+        }
+        self.published = Some(current);
+        Some(ServerMessage::AccessDelay {
+            source: match current.1 {
+                RttSource::None => DelaySource::None,
+                RttSource::Kernel => DelaySource::Kernel,
+                RttSource::Probe => DelaySource::Probe,
+                RttSource::Both => DelaySource::Both,
+            },
+            min_rtt_us: current.0,
+            one_way_us: self.estimator.one_way_us(),
+            probe_samples: self.estimator.probe_samples(),
+        })
     }
 
     fn on_response(&mut self, id: u64) {

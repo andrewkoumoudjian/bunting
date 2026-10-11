@@ -628,7 +628,9 @@ impl Model {
                 return self.apply_listings(listings, now_us);
             }
             ServerMessage::MarketSnapshot { request_id, .. }
-            | ServerMessage::MarketUpdate { request_id, .. } => {
+            | ServerMessage::MarketUpdate { request_id, .. }
+            | ServerMessage::OrderSnapshot { request_id, .. }
+            | ServerMessage::OrderUpdate { request_id, .. } => {
                 return self.feed_message(request_id, &message, now_us);
             }
             ServerMessage::Reject {
@@ -832,7 +834,11 @@ impl Model {
             | ServerMessage::Heartbeat
             | ServerMessage::Probe { .. }
             | ServerMessage::Pong { .. }
-            | ServerMessage::Logout { .. } => {}
+            | ServerMessage::Logout { .. }
+            // Not subscribed to by this model yet.
+            | ServerMessage::AccessDelay { .. }
+            | ServerMessage::TapeSnapshot { .. }
+            | ServerMessage::TapeUpdate { .. } => {}
         }
         Vec::new()
     }
@@ -896,7 +902,10 @@ impl Model {
             Ok(_) => {
                 feed.last_message_us = Some(now_us);
                 match message {
-                    ServerMessage::MarketSnapshot { .. } => feed.state = FeedState::Live,
+                    ServerMessage::MarketSnapshot { .. }
+                    | ServerMessage::OrderSnapshot { complete: true, .. } => {
+                        feed.state = FeedState::Live;
+                    }
                     ServerMessage::MarketUpdate { entries, .. } => {
                         feed.updates = feed.updates.saturating_add(1);
                         for entry in entries.iter().filter(|e| e.kind == EntryKind::Trade) {
