@@ -41,12 +41,17 @@ pub mod msg_type {
     pub const CANCEL_ORDER: u8 = 0x11;
     pub const KILL_SWITCH: u8 = 0x12;
     pub const KILL_SWITCH_RESET: u8 = 0x13;
+    pub const TENDER_DECISION: u8 = 0x18;
+    pub const OTC_PROPOSE: u8 = 0x19;
+    pub const OTC_COUNTER: u8 = 0x1a;
+    pub const OTC_DECISION: u8 = 0x1b;
     pub const SUBSCRIBE: u8 = 0x20;
     pub const UNSUBSCRIBE: u8 = 0x21;
     pub const SNAPSHOT_REQUEST: u8 = 0x22;
     pub const LISTINGS_REQUEST: u8 = 0x30;
     pub const OPEN_ORDERS_REQUEST: u8 = 0x31;
     pub const ACCOUNT_REQUEST: u8 = 0x32;
+    pub const DEALS_REQUEST: u8 = 0x33;
     pub const OPERATOR_COMMAND: u8 = 0x38;
 
     pub const WELCOME: u8 = 0x41;
@@ -58,6 +63,7 @@ pub mod msg_type {
     pub const SERVER_LOGOUT: u8 = 0x47;
     pub const ACCESS_DELAY: u8 = 0x48;
     pub const OPERATOR_DONE: u8 = 0x49;
+    pub const DEAL_DONE: u8 = 0x4a;
     pub const ORDER_ACCEPTED: u8 = 0x50;
     pub const ORDER_REJECTED: u8 = 0x51;
     pub const ORDER_RESTED: u8 = 0x52;
@@ -82,6 +88,9 @@ pub mod msg_type {
     pub const LISTINGS: u8 = 0x70;
     pub const OPEN_ORDERS: u8 = 0x71;
     pub const ACCOUNT: u8 = 0x72;
+    pub const DEALS: u8 = 0x73;
+    pub const TENDER: u8 = 0x74;
+    pub const NEGOTIATION: u8 = 0x75;
 }
 
 /// Why a frame could not be encoded or decoded.
@@ -346,6 +355,79 @@ pub enum OperatorAction {
         amount: i128,
         reason: String,
     },
+    /// Offers one participant a tender: it may take `quantity` on `side` at
+    /// `price` until `expires_at_ns` of run time (ADR 0043).
+    OpenTender {
+        tender_id: u128,
+        participant_id: u128,
+        instrument_id: u128,
+        side: Side,
+        quantity: i64,
+        price: i64,
+        expires_at_ns: u64,
+    },
+}
+
+wire_enum!(
+    /// A tender's state (ADR 0043).
+    TenderStatus {
+        Open = 1,
+        Accepted = 2,
+        Declined = 3,
+        Expired = 4,
+    }
+);
+
+wire_enum!(
+    /// An OTC negotiation's state (ADR 0043).
+    NegotiationStatus {
+        Proposed = 1,
+        Countered = 2,
+        Accepted = 3,
+        Rejected = 4,
+        Broken = 5,
+        Expired = 6,
+    }
+);
+
+wire_enum!(
+    /// An answer to an OTC negotiation. Only the party it awaits accepts
+    /// or rejects; either party may break an open negotiation.
+    OtcDecision {
+        Accept = 1,
+        Reject = 2,
+        Break = 3,
+    }
+);
+
+/// A tender offered to one participant: it buys or sells `quantity` at
+/// `price` on `side` if it accepts before `expires_at_ns`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TenderInfo {
+    pub tender_id: u128,
+    pub participant_id: u128,
+    pub instrument_id: u128,
+    pub side: Side,
+    pub quantity: i64,
+    pub price: i64,
+    pub expires_at_ns: u64,
+    pub status: TenderStatus,
+}
+
+/// A bilateral OTC negotiation between two participants. `side` is the
+/// proposer's; `awaiting` is the party whose answer it waits for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NegotiationInfo {
+    pub negotiation_id: u128,
+    pub proposer_id: u128,
+    pub counterparty_id: u128,
+    pub instrument_id: u128,
+    pub side: Side,
+    pub quantity: i64,
+    pub price: i64,
+    pub expires_at_ns: u64,
+    pub status: NegotiationStatus,
+    pub awaiting: u128,
 }
 
 impl OperatorAction {
@@ -363,6 +445,7 @@ impl OperatorAction {
             Self::PublishNews { .. } => 8,
             Self::Score => 9,
             Self::Fine { .. } => 10,
+            Self::OpenTender { .. } => 11,
         }
     }
 }
@@ -526,10 +609,47 @@ pub enum ClientMessage {
         request_id: u32,
     },
     /// An instructor's or administrator's command; refused for other
-    /// certificates.
+    /// certificates. `request_id` is unique for the sender for the run, as
+    /// a client order ID: a reused one is a duplicate and commits nothing.
     OperatorCommand {
-        request_id: u32,
+        request_id: u64,
         action: OperatorAction,
+    },
+    /// Accepts or declines a tender offered to this participant (ADR 0043).
+    TenderDecision {
+        request_id: u64,
+        tender_id: u128,
+        accept: bool,
+    },
+    /// Proposes an OTC trade to another participant: this participant
+    /// takes `side`. `negotiation_id` is the sender's own, unique for the
+    /// run; the venue names the negotiation in its own namespace.
+    OtcPropose {
+        request_id: u64,
+        negotiation_id: u64,
+        counterparty_id: u128,
+        instrument_id: u128,
+        side: Side,
+        quantity: i64,
+        price: i64,
+        expires_at_ns: u64,
+    },
+    /// Counters the negotiation awaiting this participant.
+    OtcCounter {
+        request_id: u64,
+        negotiation_id: u128,
+        quantity: i64,
+        price: i64,
+    },
+    OtcDecision {
+        request_id: u64,
+        negotiation_id: u128,
+        decision: OtcDecision,
+    },
+    /// This participant's tenders and negotiations (every one, for an
+    /// operator).
+    DealsRequest {
+        request_id: u32,
     },
 }
 
@@ -554,6 +674,11 @@ impl ClientMessage {
             Self::OpenOrdersRequest { .. } => msg_type::OPEN_ORDERS_REQUEST,
             Self::AccountRequest { .. } => msg_type::ACCOUNT_REQUEST,
             Self::OperatorCommand { .. } => msg_type::OPERATOR_COMMAND,
+            Self::TenderDecision { .. } => msg_type::TENDER_DECISION,
+            Self::OtcPropose { .. } => msg_type::OTC_PROPOSE,
+            Self::OtcCounter { .. } => msg_type::OTC_COUNTER,
+            Self::OtcDecision { .. } => msg_type::OTC_DECISION,
+            Self::DealsRequest { .. } => msg_type::DEALS_REQUEST,
         }
     }
 }
@@ -729,8 +854,25 @@ pub enum ServerMessage {
     },
     /// An operator command committed at `run_sequence`.
     OperatorDone {
-        request_id: u32,
+        request_id: u64,
         run_sequence: u64,
+    },
+    /// A tender decision or OTC request committed (ADR 0043).
+    DealDone {
+        request_id: u64,
+        run_sequence: u64,
+    },
+    /// A tender offered to this participant changed (every tender, for an
+    /// operator).
+    Tender {
+        stamp: Stamp,
+        tender: TenderInfo,
+    },
+    /// A negotiation this participant is party to changed (every one, for
+    /// an operator).
+    Negotiation {
+        stamp: Stamp,
+        negotiation: NegotiationInfo,
     },
     /// The run's lifecycle changed (`active`, `paused`, `terminated`, …).
     RunStatus {
@@ -901,6 +1043,12 @@ pub enum ServerMessage {
         cash: Vec<CashBalance>,
         positions: Vec<Position>,
     },
+    Deals {
+        request_id: u32,
+        run_sequence: u64,
+        tenders: Vec<TenderInfo>,
+        negotiations: Vec<NegotiationInfo>,
+    },
 }
 
 impl ServerMessage {
@@ -917,6 +1065,9 @@ impl ServerMessage {
             Self::Logout { .. } => msg_type::SERVER_LOGOUT,
             Self::AccessDelay { .. } => msg_type::ACCESS_DELAY,
             Self::OperatorDone { .. } => msg_type::OPERATOR_DONE,
+            Self::DealDone { .. } => msg_type::DEAL_DONE,
+            Self::Tender { .. } => msg_type::TENDER,
+            Self::Negotiation { .. } => msg_type::NEGOTIATION,
             Self::RunStatus { .. } => msg_type::RUN_STATUS,
             Self::ListingHalt { .. } => msg_type::LISTING_HALT,
             Self::News { .. } => msg_type::NEWS,
@@ -941,6 +1092,7 @@ impl ServerMessage {
             Self::Listings { .. } => msg_type::LISTINGS,
             Self::OpenOrders { .. } => msg_type::OPEN_ORDERS,
             Self::Account { .. } => msg_type::ACCOUNT,
+            Self::Deals { .. } => msg_type::DEALS,
         }
     }
 
@@ -962,7 +1114,9 @@ impl ServerMessage {
             | Self::KillSwitchReset { stamp }
             | Self::RunStatus { stamp, .. }
             | Self::ListingHalt { stamp, .. }
-            | Self::News { stamp, .. } => Some(*stamp),
+            | Self::News { stamp, .. }
+            | Self::Tender { stamp, .. }
+            | Self::Negotiation { stamp, .. } => Some(*stamp),
             _ => None,
         }
     }
