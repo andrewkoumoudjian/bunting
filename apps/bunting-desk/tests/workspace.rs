@@ -140,11 +140,12 @@ fn connect_with_books(fixture: &Fixture, cx: &mut TestAppContext) {
         .take()
         .into_iter()
         .filter_map(|message| match message {
+            // Venue 0 is the instrument's consolidated tape.
             ClientMessage::Subscribe {
                 request_id,
                 listing,
                 ..
-            } => Some((request_id, listing)),
+            } if listing.venue_id != 0 => Some((request_id, listing)),
             _ => None,
         })
         .collect();

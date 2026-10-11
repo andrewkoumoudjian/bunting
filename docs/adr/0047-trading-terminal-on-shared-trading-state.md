@@ -4,7 +4,7 @@
   `docs/implementation-log/` for this date. Implements the part of
   [ADR 0031](0031-proposed-bunting-native-client-protocol.md) that makes the
   Ratatui terminal "the first BNP client"; supersedes nothing else.
-  Amended 2026-10-11 (slice 36): BNP now carries order-by-order feeds, the
+  Amended 2026-10-11 (slice 39): BNP now carries order-by-order feeds, the
   consolidated tape and the venue's measured access delay (slice 35), and
   the model and terminal show them (decision 5).
 - Date: 2026-10-10
@@ -63,7 +63,7 @@ broke when the server moved to one run clock (fixed in `3f92865`).
    "as they reached you" (each venue's trades arrive after that venue's
    distance; this is not a consolidated tape); per-venue order round trip
    (send to the venue's first answer: real network plus virtual distance
-   both ways); `Ping` round trip (no virtual distance). Since slice 36:
+   both ways); `Ping` round trip (no virtual distance). Since slice 39:
    venue feeds are subscribed order by order (falling back to levels where
    a venue sends levels), with each order's queue place and broker; each
    instrument's tape is a separate "from the hub" panel; the access delay
