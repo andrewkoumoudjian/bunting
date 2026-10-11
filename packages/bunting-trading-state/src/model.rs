@@ -925,8 +925,13 @@ impl Model {
             | ServerMessage::Probe { .. }
             | ServerMessage::Pong { .. }
             | ServerMessage::Logout { .. }
-            // The run stream (ADR 0042): not shown by this model yet.
+            // The run stream (ADR 0042) and deals (ADR 0043): not shown by
+            // this model yet.
             | ServerMessage::OperatorDone { .. }
+            | ServerMessage::DealDone { .. }
+            | ServerMessage::Tender { .. }
+            | ServerMessage::Negotiation { .. }
+            | ServerMessage::Deals { .. }
             | ServerMessage::RunStatus { .. }
             | ServerMessage::ListingHalt { .. }
             | ServerMessage::News { .. } => {}

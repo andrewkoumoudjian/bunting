@@ -1140,14 +1140,24 @@ impl SimulationState {
             }
         }
         if sweep {
+            // Each expiry is an event, so the parties learn of it as it
+            // commits (ADR 0043).
             for tender in self.tenders.values_mut() {
                 if tender.status == "open" && tender.expires_at <= to {
                     tender.status = "expired".into();
+                    events.push(SimulationEvent::TenderChanged {
+                        tender_id: tender.tender_id,
+                        status: tender.status.clone(),
+                    });
                 }
             }
             for otc in self.otc.values_mut() {
                 if matches!(otc.status.as_str(), "proposed" | "countered") && otc.expires_at <= to {
                     otc.status = "expired".into();
+                    events.push(SimulationEvent::OtcChanged {
+                        negotiation_id: otc.negotiation_id,
+                        status: otc.status.clone(),
+                    });
                 }
             }
         }

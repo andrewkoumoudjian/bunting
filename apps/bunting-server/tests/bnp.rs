@@ -11,9 +11,9 @@ use bunting_admission_sequencer::{
 };
 use bunting_api_contract::ActorRole;
 use bunting_client::bnp_wire::{
-    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, NewsAudience,
-    OperatorAction, OrderEntry, OrderType, RejectReason, ResumeStatus, ServerMessage, Side,
-    TimeInForce, msg_type,
+    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NegotiationStatus, NewOrder,
+    NewsAudience, OperatorAction, OrderEntry, OrderType, OtcDecision, RejectReason, ResumeStatus,
+    ServerMessage, Side, Stamp, TenderStatus, TimeInForce, msg_type,
 };
 use bunting_client::{Client, ClientConfig, ClientError, FeedBook, TapeBook};
 use bunting_market_types::{ParticipantId, VenueId};
@@ -1101,6 +1101,200 @@ fn a_resting_report_names_the_orders_place_on_the_order_by_order_feed() -> Resul
             place.quantity_ahead
         ),
         (3, 2, 5)
+    );
+    Ok(())
+}
+
+/// Opens a tender from the instructor and waits until it is committed.
+fn open_tender(
+    instructor: &Client,
+    request_id: u64,
+    tender_id: u128,
+    side: Side,
+    quantity: i64,
+    expires_at_ns: u64,
+) -> Result<(), String> {
+    instructor
+        .send(&ClientMessage::OperatorCommand {
+            request_id,
+            action: OperatorAction::OpenTender {
+                tender_id,
+                participant_id: 1,
+                instrument_id: 1,
+                side,
+                quantity,
+                price: 100,
+                expires_at_ns,
+            },
+        })
+        .map_err(|error| error.to_string())?;
+    until(instructor, |message| {
+        matches!(message, ServerMessage::OperatorDone { request_id: done, .. } if *done == request_id)
+    })
+    .map(|_| ())
+}
+
+/// The next `Tender` update for `tender_id` with `status`.
+fn tender_update(client: &Client, tender_id: u128, status: TenderStatus) -> Result<Stamp, String> {
+    let received = until(
+        client,
+        |message| matches!(message, ServerMessage::Tender { tender, .. } if tender.tender_id == tender_id && tender.status == status),
+    )?;
+    received
+        .last()
+        .and_then(ServerMessage::stamp)
+        .ok_or_else(|| "no stamp".to_owned())
+}
+
+#[test]
+fn a_team_accepts_a_tender_over_bnp_and_an_ignored_one_expires() -> Result<(), String> {
+    let venue = start_venue("tenders")?;
+    let instructor = venue.connect(&venue.instructor, None)?;
+    let team = venue.connect(&venue.team1, None)?;
+    open_tender(&instructor, 1, 1, Side::Buy, 10, u64::MAX / 4)?;
+    let opened = tender_update(&team, 1, TenderStatus::Open)?;
+    // Run time follows venue time in this scenario: the second tender
+    // lapses a second after the first was offered.
+    open_tender(
+        &instructor,
+        2,
+        2,
+        Side::Buy,
+        5,
+        opened.logical_time_ns + 1_000_000_000,
+    )?;
+    tender_update(&team, 2, TenderStatus::Open)?;
+    team.send(&ClientMessage::TenderDecision {
+        request_id: 1,
+        tender_id: 1,
+        accept: true,
+    })
+    .map_err(|error| error.to_string())?;
+    // The acknowledgement and the stamped update may arrive in either
+    // order.
+    let received = until(&team, |message| {
+        matches!(message, ServerMessage::DealDone { request_id: 1, .. })
+    })?;
+    if !received.iter().any(|message| {
+        matches!(message, ServerMessage::Tender { tender, .. } if tender.tender_id == 1 && tender.status == TenderStatus::Accepted)
+    }) {
+        tender_update(&team, 1, TenderStatus::Accepted)?;
+    }
+    // The operator sees every tender change too.
+    tender_update(&instructor, 1, TenderStatus::Accepted)?;
+    team.send(&ClientMessage::AccountRequest { request_id: 2 })
+        .map_err(|error| error.to_string())?;
+    let account = until(&team, |message| {
+        matches!(message, ServerMessage::Account { .. })
+    })?;
+    assert!(
+        matches!(account.last(), Some(ServerMessage::Account { cash, positions, .. })
+            if positions.iter().any(|held| held.instrument_id == 1 && held.position == 10)
+                && cash.iter().any(|balance| balance.balance == 1_000_000_000 - 1_000)),
+        "{account:?}"
+    );
+    // Nobody answers the second; the venue expires it on time.
+    tender_update(&team, 2, TenderStatus::Expired)?;
+    team.send(&ClientMessage::TenderDecision {
+        request_id: 3,
+        tender_id: 2,
+        accept: true,
+    })
+    .map_err(|error| error.to_string())?;
+    until(&team, |message| {
+        matches!(message, ServerMessage::Reject { reference: 3, .. })
+    })?;
+    // A rebuild lists both with their final states.
+    team.send(&ClientMessage::DealsRequest { request_id: 4 })
+        .map_err(|error| error.to_string())?;
+    let deals = until(&team, |message| {
+        matches!(message, ServerMessage::Deals { .. })
+    })?;
+    assert!(
+        matches!(deals.last(), Some(ServerMessage::Deals { tenders, negotiations, .. })
+            if negotiations.is_empty()
+                && tenders.iter().map(|tender| tender.status).collect::<Vec<_>>()
+                    == [TenderStatus::Accepted, TenderStatus::Expired]),
+        "{deals:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_teams_negotiate_and_settle_an_otc_trade_over_bnp() -> Result<(), String> {
+    let venue = start_venue("otc")?;
+    let instructor = venue.connect(&venue.instructor, None)?;
+    let team1 = venue.connect(&venue.team1, None)?;
+    let team2 = venue.connect(&venue.team2, None)?;
+    // Team 1 takes 10 from a tender, then offers 4 of them to team 2.
+    open_tender(&instructor, 1, 1, Side::Buy, 10, u64::MAX / 4)?;
+    let send = |client: &Client, message: ClientMessage| {
+        client.send(&message).map_err(|error| error.to_string())
+    };
+    send(
+        &team1,
+        ClientMessage::TenderDecision {
+            request_id: 1,
+            tender_id: 1,
+            accept: true,
+        },
+    )?;
+    tender_update(&team1, 1, TenderStatus::Accepted)?;
+    send(
+        &team1,
+        ClientMessage::OtcPropose {
+            request_id: 2,
+            negotiation_id: 1,
+            counterparty_id: 2,
+            instrument_id: 1,
+            side: Side::Sell,
+            quantity: 4,
+            price: 103,
+            expires_at_ns: u64::MAX / 4,
+        },
+    )?;
+    let negotiation = |client: &Client, status: NegotiationStatus| {
+        until(client, |message| {
+            matches!(message, ServerMessage::Negotiation { negotiation, .. } if negotiation.status == status)
+        })
+        .and_then(|received| match received.last() {
+            Some(ServerMessage::Negotiation { negotiation, .. }) => Ok(*negotiation),
+            _ => Err("no negotiation".to_owned()),
+        })
+    };
+    // The counterparty sees the proposal in its stream, under the venue's
+    // name for it, and counters.
+    let proposed = negotiation(&team2, NegotiationStatus::Proposed)?;
+    assert_eq!((proposed.proposer_id, proposed.awaiting), (1, 2));
+    send(
+        &team2,
+        ClientMessage::OtcCounter {
+            request_id: 1,
+            negotiation_id: proposed.negotiation_id,
+            quantity: 4,
+            price: 102,
+        },
+    )?;
+    let countered = negotiation(&team1, NegotiationStatus::Countered)?;
+    assert_eq!((countered.price, countered.awaiting), (102, 1));
+    send(
+        &team1,
+        ClientMessage::OtcDecision {
+            request_id: 3,
+            negotiation_id: countered.negotiation_id,
+            decision: OtcDecision::Accept,
+        },
+    )?;
+    negotiation(&team2, NegotiationStatus::Accepted)?;
+    send(&team2, ClientMessage::AccountRequest { request_id: 2 })?;
+    let account = until(&team2, |message| {
+        matches!(message, ServerMessage::Account { .. })
+    })?;
+    assert!(
+        matches!(account.last(), Some(ServerMessage::Account { cash, positions, .. })
+            if positions.iter().any(|held| held.instrument_id == 1 && held.position == 4)
+                && cash.iter().any(|balance| balance.balance == 1_000_000_000 - 408)),
+        "{account:?}"
     );
     Ok(())
 }

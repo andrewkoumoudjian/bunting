@@ -1,8 +1,8 @@
 //! Command-line parsing and presentation over `bunting-client`.
 
 use bunting_client::bnp_wire::{
-    ClientMessage, FeedFlags, Listing, NewOrder, NewsAudience, OperatorAction, OrderType,
-    ServerMessage, Side, TimeInForce,
+    ClientMessage, FeedFlags, Listing, NegotiationInfo, NewOrder, NewsAudience, OperatorAction,
+    OrderType, OtcDecision, ServerMessage, Side, TenderInfo, TimeInForce,
 };
 use bunting_client::{Client, ClientConfig, FeedBook, certificate_fingerprint};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -86,6 +86,110 @@ enum Command {
     /// Run the round (instructor and administrator certificates only).
     #[command(subcommand)]
     Operator(Operator),
+    /// Accept or decline a tender offered to you.
+    Tender {
+        #[arg(value_enum)]
+        decision: TenderChoice,
+        tender: u128,
+    },
+    /// Negotiate an OTC trade with another participant.
+    #[command(subcommand)]
+    Otc(Otc),
+    /// List your tenders and OTC negotiations.
+    Deals,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TenderChoice {
+    Accept,
+    Decline,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Direction {
+    Buy,
+    Sell,
+}
+
+impl Direction {
+    const fn side(self) -> Side {
+        match self {
+            Self::Buy => Side::Buy,
+            Self::Sell => Side::Sell,
+        }
+    }
+}
+
+/// OTC negotiation steps (ADR 0043); each prints `DealDone` once committed.
+#[derive(Subcommand)]
+enum Otc {
+    /// Propose a trade: you take `side`; the venue names the negotiation.
+    Propose {
+        counterparty: u128,
+        instrument: u128,
+        #[arg(value_enum)]
+        side: Direction,
+        quantity: i64,
+        price: i64,
+        /// Run time (nanoseconds) after which the proposal lapses.
+        #[arg(long)]
+        expires_ns: u64,
+    },
+    /// Counter a negotiation that awaits you.
+    Counter {
+        negotiation: u128,
+        quantity: i64,
+        price: i64,
+    },
+    /// Accept a negotiation that awaits you.
+    Accept { negotiation: u128 },
+    /// Reject a negotiation that awaits you.
+    Reject { negotiation: u128 },
+    /// Withdraw from an open negotiation.
+    Break { negotiation: u128 },
+}
+
+impl Otc {
+    fn message(self, request_id: u64) -> ClientMessage {
+        let decide = |negotiation_id, decision| ClientMessage::OtcDecision {
+            request_id,
+            negotiation_id,
+            decision,
+        };
+        match self {
+            Self::Propose {
+                counterparty,
+                instrument,
+                side,
+                quantity,
+                price,
+                expires_ns,
+            } => ClientMessage::OtcPropose {
+                request_id,
+                // Unique for you for the run, like the request ID.
+                negotiation_id: request_id,
+                counterparty_id: counterparty,
+                instrument_id: instrument,
+                side: side.side(),
+                quantity,
+                price,
+                expires_at_ns: expires_ns,
+            },
+            Self::Counter {
+                negotiation,
+                quantity,
+                price,
+            } => ClientMessage::OtcCounter {
+                request_id,
+                negotiation_id: negotiation,
+                quantity,
+                price,
+            },
+            Self::Accept { negotiation } => decide(negotiation, OtcDecision::Accept),
+            Self::Reject { negotiation } => decide(negotiation, OtcDecision::Reject),
+            Self::Break { negotiation } => decide(negotiation, OtcDecision::Break),
+        }
+    }
 }
 
 /// Operator commands (ADR 0042); each prints `OperatorDone` once committed.
@@ -129,6 +233,18 @@ enum Operator {
         currency: u128,
         amount: i128,
         reason: String,
+    },
+    /// Offer a participant a tender at `price` until run time `expires_ns`.
+    OpenTender {
+        id: u128,
+        participant: u128,
+        instrument: u128,
+        #[arg(value_enum)]
+        side: Direction,
+        quantity: i64,
+        price: i64,
+        #[arg(long)]
+        expires_ns: u64,
     },
 }
 
@@ -179,6 +295,23 @@ impl Operator {
                 currency_id: currency,
                 amount,
                 reason,
+            },
+            Self::OpenTender {
+                id,
+                participant,
+                instrument,
+                side,
+                quantity,
+                price,
+                expires_ns,
+            } => OperatorAction::OpenTender {
+                tender_id: id,
+                participant_id: participant,
+                instrument_id: instrument,
+                side: side.side(),
+                quantity,
+                price,
+                expires_at_ns: expires_ns,
             },
         }
     }
@@ -353,22 +486,59 @@ fn execute(client: &Client, command: Command, ids: &mut impl FnMut() -> u64) -> 
         Command::Account => request(client, &ClientMessage::AccountRequest { request_id: 1 }),
         Command::Watch { feeds } => watch(client, &feeds),
         Command::Shell => shell(client, ids),
+        // Command request IDs are unique for the sender for the run: a
+        // reused one is a duplicate the venue does not apply again.
         Command::Operator(operator) => {
+            let request_id = ids();
             send(
                 client,
                 &ClientMessage::OperatorCommand {
-                    request_id: 1,
+                    request_id,
                     action: operator.action(),
                 },
             )?;
+            until(client, |message| match message {
+                ServerMessage::OperatorDone { request_id: id, .. }
+                | ServerMessage::Reject { reference: id, .. } => *id == request_id,
+                _ => false,
+            })
+        }
+        Command::Tender { decision, tender } => {
+            let request_id = ids();
+            deal(
+                client,
+                request_id,
+                &ClientMessage::TenderDecision {
+                    request_id,
+                    tender_id: tender,
+                    accept: matches!(decision, TenderChoice::Accept),
+                },
+            )
+        }
+        Command::Otc(otc) => {
+            let request_id = ids();
+            deal(client, request_id, &otc.message(request_id))
+        }
+        Command::Deals => {
+            send(client, &ClientMessage::DealsRequest { request_id: 1 })?;
             until(client, |message| {
                 matches!(
                     message,
-                    ServerMessage::OperatorDone { .. } | ServerMessage::Reject { .. }
+                    ServerMessage::Deals { .. } | ServerMessage::Reject { .. }
                 )
             })
         }
     }
+}
+
+/// Sends a tender decision or OTC request and prints until it commits.
+fn deal(client: &Client, request_id: u64, message: &ClientMessage) -> Result<(), String> {
+    send(client, message)?;
+    until(client, |message| match message {
+        ServerMessage::DealDone { request_id: id, .. }
+        | ServerMessage::Reject { reference: id, .. } => *id == request_id,
+        _ => false,
+    })
 }
 
 fn send(client: &Client, message: &ClientMessage) -> Result<(), String> {
@@ -819,9 +989,33 @@ fn describe(message: &ServerMessage) -> String {
             bids.len(),
             asks.len()
         ),
-        ServerMessage::OperatorDone { run_sequence, .. } => {
+        ServerMessage::OperatorDone { run_sequence, .. }
+        | ServerMessage::DealDone { run_sequence, .. } => {
             format!("committed at run sequence {run_sequence}")
         }
+        ServerMessage::Tender { stamp, tender } => {
+            format!("#{} {}", stamp.sequence, describe_tender(tender))
+        }
+        ServerMessage::Negotiation { stamp, negotiation } => {
+            format!("#{} {}", stamp.sequence, describe_negotiation(negotiation))
+        }
+        ServerMessage::Deals {
+            tenders,
+            negotiations,
+            ..
+        } if tenders.is_empty() && negotiations.is_empty() => {
+            "no tenders or negotiations".to_owned()
+        }
+        ServerMessage::Deals {
+            tenders,
+            negotiations,
+            ..
+        } => tenders
+            .iter()
+            .map(describe_tender)
+            .chain(negotiations.iter().map(describe_negotiation))
+            .collect::<Vec<_>>()
+            .join("\n"),
         ServerMessage::RunStatus { stamp, status } => {
             format!("#{} run {status}", stamp.sequence)
         }
@@ -842,4 +1036,33 @@ fn describe(message: &ServerMessage) -> String {
         } => format!("#{} news: {headline} {body}", stamp.sequence),
         other => format!("{other:?}"),
     }
+}
+
+fn describe_tender(tender: &TenderInfo) -> String {
+    format!(
+        "tender {} for participant {}: {:?} {} of {} @ {} until {} ns, {:?}",
+        tender.tender_id,
+        tender.participant_id,
+        tender.side,
+        tender.quantity,
+        tender.instrument_id,
+        tender.price,
+        tender.expires_at_ns,
+        tender.status
+    )
+}
+
+fn describe_negotiation(negotiation: &NegotiationInfo) -> String {
+    format!(
+        "otc {}: {} {:?}s {} of {} @ {} to {}, {:?}, awaiting {}",
+        negotiation.negotiation_id,
+        negotiation.proposer_id,
+        negotiation.side,
+        negotiation.quantity,
+        negotiation.instrument_id,
+        negotiation.price,
+        negotiation.counterparty_id,
+        negotiation.status,
+        negotiation.awaiting
+    )
 }

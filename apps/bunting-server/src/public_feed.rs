@@ -509,6 +509,7 @@ mod tests {
                 orders: Vec::new(),
             }],
             references: Vec::new(),
+            deals: bunting_application::competition::DealChanges::default(),
         })
     }
 

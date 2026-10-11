@@ -4,9 +4,10 @@
 use crate::{
     BookOrder, CancelReason, CashBalance, ClientMessage, DelaySource, Entry, EntryKind, FeedFlags,
     LENGTH_BYTES, Level, Liquidity, Listing, ListingInfo, MAGIC, MAX_FRAME_BYTES,
-    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NewOrder, NewsAudience, OpenOrder, OperatorAction,
-    OrderAction, OrderEntry, OrderType, Position, RejectReason, ResumeStatus, Role, ServerMessage,
-    Side, Stamp, TapeEntry, TapeQuote, TimeInForce, Welcome, WireError, msg_type as t,
+    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NegotiationInfo, NegotiationStatus, NewOrder,
+    NewsAudience, OpenOrder, OperatorAction, OrderAction, OrderEntry, OrderType, OtcDecision,
+    Position, RejectReason, ResumeStatus, Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote,
+    TenderInfo, TenderStatus, TimeInForce, Welcome, WireError, msg_type as t,
 };
 
 /// Kind byte of an order-by-order trade entry; order entries use their
@@ -184,8 +185,37 @@ pub fn decode_client(frame: &[u8]) -> Result<ClientMessage, WireError> {
             request_id: r.u32()?,
         },
         t::OPERATOR_COMMAND => ClientMessage::OperatorCommand {
-            request_id: r.u32()?,
+            request_id: r.u64()?,
             action: read_operator_action(&mut r)?,
+        },
+        t::TENDER_DECISION => ClientMessage::TenderDecision {
+            request_id: r.u64()?,
+            tender_id: r.u128()?,
+            accept: r.bool()?,
+        },
+        t::OTC_PROPOSE => ClientMessage::OtcPropose {
+            request_id: r.u64()?,
+            negotiation_id: r.u64()?,
+            counterparty_id: r.u128()?,
+            instrument_id: r.u128()?,
+            side: Side::from_wire(r.u8()?)?,
+            quantity: r.i64()?,
+            price: r.i64()?,
+            expires_at_ns: r.u64()?,
+        },
+        t::OTC_COUNTER => ClientMessage::OtcCounter {
+            request_id: r.u64()?,
+            negotiation_id: r.u128()?,
+            quantity: r.i64()?,
+            price: r.i64()?,
+        },
+        t::OTC_DECISION => ClientMessage::OtcDecision {
+            request_id: r.u64()?,
+            negotiation_id: r.u128()?,
+            decision: OtcDecision::from_wire(r.u8()?)?,
+        },
+        t::DEALS_REQUEST => ClientMessage::DealsRequest {
+            request_id: r.u32()?,
         },
         0x40..=0x7f => return Err(WireError::WrongDirection(kind)),
         other => return Err(WireError::UnknownMessageType(other)),
@@ -234,8 +264,26 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
             reason: r.string()?,
         },
         t::OPERATOR_DONE => ServerMessage::OperatorDone {
+            request_id: r.u64()?,
+            run_sequence: r.u64()?,
+        },
+        t::DEAL_DONE => ServerMessage::DealDone {
+            request_id: r.u64()?,
+            run_sequence: r.u64()?,
+        },
+        t::TENDER => ServerMessage::Tender {
+            stamp: r.stamp()?,
+            tender: read_tender(&mut r)?,
+        },
+        t::NEGOTIATION => ServerMessage::Negotiation {
+            stamp: r.stamp()?,
+            negotiation: read_negotiation(&mut r)?,
+        },
+        t::DEALS => ServerMessage::Deals {
             request_id: r.u32()?,
             run_sequence: r.u64()?,
+            tenders: r.group(read_tender)?,
+            negotiations: r.group(read_negotiation)?,
         },
         t::RUN_STATUS => ServerMessage::RunStatus {
             stamp: r.stamp()?,
@@ -506,6 +554,15 @@ fn read_operator_action(r: &mut Reader<'_>) -> Result<OperatorAction, WireError>
             amount: r.i128()?,
             reason: r.string()?,
         },
+        11 => OperatorAction::OpenTender {
+            tender_id: r.u128()?,
+            participant_id: r.u128()?,
+            instrument_id: r.u128()?,
+            side: Side::from_wire(r.u8()?)?,
+            quantity: r.i64()?,
+            price: r.i64()?,
+            expires_at_ns: r.u64()?,
+        },
         other => {
             return Err(WireError::InvalidValue {
                 field: "OperatorAction",
@@ -576,8 +633,77 @@ fn write_operator_action(w: &mut Writer<'_>, action: &OperatorAction) -> Result<
             w.i128(*amount);
             w.string(reason)?;
         }
+        OperatorAction::OpenTender {
+            tender_id,
+            participant_id,
+            instrument_id,
+            side,
+            quantity,
+            price,
+            expires_at_ns,
+        } => {
+            w.u128(*tender_id);
+            w.u128(*participant_id);
+            w.u128(*instrument_id);
+            w.u8(side.to_wire());
+            w.i64(*quantity);
+            w.i64(*price);
+            w.u64(*expires_at_ns);
+        }
     }
     Ok(())
+}
+
+fn read_tender(r: &mut Reader<'_>) -> Result<TenderInfo, WireError> {
+    Ok(TenderInfo {
+        tender_id: r.u128()?,
+        participant_id: r.u128()?,
+        instrument_id: r.u128()?,
+        side: Side::from_wire(r.u8()?)?,
+        quantity: r.i64()?,
+        price: r.i64()?,
+        expires_at_ns: r.u64()?,
+        status: TenderStatus::from_wire(r.u8()?)?,
+    })
+}
+
+fn write_tender(w: &mut Writer<'_>, tender: &TenderInfo) {
+    w.u128(tender.tender_id);
+    w.u128(tender.participant_id);
+    w.u128(tender.instrument_id);
+    w.u8(tender.side.to_wire());
+    w.i64(tender.quantity);
+    w.i64(tender.price);
+    w.u64(tender.expires_at_ns);
+    w.u8(tender.status.to_wire());
+}
+
+fn read_negotiation(r: &mut Reader<'_>) -> Result<NegotiationInfo, WireError> {
+    Ok(NegotiationInfo {
+        negotiation_id: r.u128()?,
+        proposer_id: r.u128()?,
+        counterparty_id: r.u128()?,
+        instrument_id: r.u128()?,
+        side: Side::from_wire(r.u8()?)?,
+        quantity: r.i64()?,
+        price: r.i64()?,
+        expires_at_ns: r.u64()?,
+        status: NegotiationStatus::from_wire(r.u8()?)?,
+        awaiting: r.u128()?,
+    })
+}
+
+fn write_negotiation(w: &mut Writer<'_>, negotiation: &NegotiationInfo) {
+    w.u128(negotiation.negotiation_id);
+    w.u128(negotiation.proposer_id);
+    w.u128(negotiation.counterparty_id);
+    w.u128(negotiation.instrument_id);
+    w.u8(negotiation.side.to_wire());
+    w.i64(negotiation.quantity);
+    w.i64(negotiation.price);
+    w.u64(negotiation.expires_at_ns);
+    w.u8(negotiation.status.to_wire());
+    w.u128(negotiation.awaiting);
 }
 
 fn read_new_order(r: &mut Reader<'_>) -> Result<NewOrder, WireError> {
@@ -629,6 +755,10 @@ fn read_new_order(r: &mut Reader<'_>) -> Result<NewOrder, WireError> {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per message keeps each field order beside its decoder"
+)]
 fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireError> {
     match message {
         ClientMessage::Hello {
@@ -688,10 +818,59 @@ fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireE
         ClientMessage::Unsubscribe { request_id }
         | ClientMessage::ListingsRequest { request_id }
         | ClientMessage::OpenOrdersRequest { request_id }
-        | ClientMessage::AccountRequest { request_id } => w.u32(*request_id),
+        | ClientMessage::AccountRequest { request_id }
+        | ClientMessage::DealsRequest { request_id } => w.u32(*request_id),
         ClientMessage::OperatorCommand { request_id, action } => {
-            w.u32(*request_id);
+            w.u64(*request_id);
             write_operator_action(w, action)?;
+        }
+        ClientMessage::TenderDecision {
+            request_id,
+            tender_id,
+            accept,
+        } => {
+            w.u64(*request_id);
+            w.u128(*tender_id);
+            w.bool(*accept);
+        }
+        ClientMessage::OtcPropose {
+            request_id,
+            negotiation_id,
+            counterparty_id,
+            instrument_id,
+            side,
+            quantity,
+            price,
+            expires_at_ns,
+        } => {
+            w.u64(*request_id);
+            w.u64(*negotiation_id);
+            w.u128(*counterparty_id);
+            w.u128(*instrument_id);
+            w.u8(side.to_wire());
+            w.i64(*quantity);
+            w.i64(*price);
+            w.u64(*expires_at_ns);
+        }
+        ClientMessage::OtcCounter {
+            request_id,
+            negotiation_id,
+            quantity,
+            price,
+        } => {
+            w.u64(*request_id);
+            w.u128(*negotiation_id);
+            w.i64(*quantity);
+            w.i64(*price);
+        }
+        ClientMessage::OtcDecision {
+            request_id,
+            negotiation_id,
+            decision,
+        } => {
+            w.u64(*request_id);
+            w.u128(*negotiation_id);
+            w.u8(decision.to_wire());
         }
         ClientMessage::SnapshotRequest {
             request_id,
@@ -745,9 +924,38 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
         ServerMessage::OperatorDone {
             request_id,
             run_sequence,
+        }
+        | ServerMessage::DealDone {
+            request_id,
+            run_sequence,
+        } => {
+            w.u64(*request_id);
+            w.u64(*run_sequence);
+        }
+        ServerMessage::Tender { stamp, tender } => {
+            w.stamp(*stamp);
+            write_tender(w, tender);
+        }
+        ServerMessage::Negotiation { stamp, negotiation } => {
+            w.stamp(*stamp);
+            write_negotiation(w, negotiation);
+        }
+        ServerMessage::Deals {
+            request_id,
+            run_sequence,
+            tenders,
+            negotiations,
         } => {
             w.u32(*request_id);
             w.u64(*run_sequence);
+            w.group(tenders, |w, tender| {
+                write_tender(w, tender);
+                Ok(())
+            })?;
+            w.group(negotiations, |w, negotiation| {
+                write_negotiation(w, negotiation);
+                Ok(())
+            })?;
         }
         ServerMessage::RunStatus { stamp, status } => {
             w.stamp(*stamp);

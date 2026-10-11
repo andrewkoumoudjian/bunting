@@ -4,9 +4,9 @@ use crate::{ApplicationError, VerifiedActor};
 use bunting_api_contract::ActorRole;
 use bunting_engine::{
     RunState,
-    simulation::{NewsItem, RunLifecycle, ScoreEntry, TenderState},
+    simulation::{NewsItem, OtcState, RunLifecycle, ScoreEntry, TenderState},
 };
-use bunting_market_events::NewsAudience;
+use bunting_market_events::{EventEnvelope, EventPayload, NewsAudience, SimulationEvent};
 use bunting_market_types::{
     CurrencyId, EventSequence, InstrumentId, LogicalTimeNs, MoneyMinor, ParticipantId, PriceTicks,
     QuantityLots, RunId, ScenarioId, ScenarioVersion,
@@ -250,6 +250,70 @@ pub fn risk_score(
         latest_score,
         policies: competition_policies(),
     })
+}
+
+/// The tenders and OTC negotiations one committed batch changed, as they
+/// stand right after it (ADR 0043). A command changes at most one of each,
+/// and an expiry sweep each at most once, so these are the states the
+/// batch's events describe.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DealChanges {
+    pub tenders: Vec<TenderState>,
+    pub negotiations: Vec<OtcState>,
+}
+
+impl DealChanges {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tenders.is_empty() && self.negotiations.is_empty()
+    }
+}
+
+/// Reads [`DealChanges`] for a batch's `TenderChanged` and `OtcChanged`
+/// events; empty (and without a state lookup) for any other batch.
+#[must_use]
+pub fn deal_changes(state: &RunState, events: &[EventEnvelope]) -> DealChanges {
+    let mut changes = DealChanges::default();
+    for event in events {
+        match &event.payload {
+            EventPayload::Simulation(SimulationEvent::TenderChanged { tender_id, .. }) => {
+                if let Some(tender) = state.simulation().tenders.get(tender_id) {
+                    changes.tenders.push(tender.clone());
+                }
+            }
+            EventPayload::Simulation(SimulationEvent::OtcChanged { negotiation_id, .. }) => {
+                if let Some(otc) = state.simulation().otc.get(negotiation_id) {
+                    changes.negotiations.push(otc.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    changes
+}
+
+/// Whether the actor runs the round (instructor or administrator).
+#[must_use]
+pub fn is_operator(actor: &VerifiedActor) -> bool {
+    matches!(
+        actor.identity().role,
+        ActorRole::Instructor | ActorRole::Administrator
+    )
+}
+
+/// A tender is visible to its participant and to operators.
+#[must_use]
+pub fn tender_visible(tender: &TenderState, actor: &VerifiedActor) -> bool {
+    is_operator(actor) || actor.participant_id() == Some(tender.participant_id)
+}
+
+/// A negotiation is visible to its two parties and to operators.
+#[must_use]
+pub fn negotiation_visible(otc: &OtcState, actor: &VerifiedActor) -> bool {
+    is_operator(actor)
+        || actor
+            .participant_id()
+            .is_some_and(|id| id == otc.proposer_id || id == otc.counterparty_id)
 }
 
 /// Whether a news item with this audience is visible to the actor.

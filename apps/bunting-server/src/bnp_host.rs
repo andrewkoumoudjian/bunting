@@ -32,7 +32,8 @@ use bnp_wire::{
 use bunting_admission_sequencer::{DelayEstimator, Endpoint, RttSource};
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
 use bunting_application::bnp::{
-    BnpIdentity, account_balances, has_run_messages, listing_key, listings, run_messages,
+    BnpIdentity, account_balances, deal_messages, deals, has_run_messages, listing_key, listings,
+    run_messages,
 };
 use bunting_application::{ApplicationService, VerifiedActor, listing_for_command};
 use bunting_engine::RunState;
@@ -618,6 +619,10 @@ fn session_messages(
     } else {
         identity.private_messages(events, &batch.references)
     };
+    if !batch.deals.is_empty() {
+        messages.extend(deal_messages(&batch.deals, events, actor));
+        messages.sort_by_key(|message| message.stamp().map_or(0, |stamp| stamp.sequence));
+    }
     if has_run_messages(events) {
         messages.extend(
             origin
@@ -883,14 +888,19 @@ const fn request_reference(message: &ClientMessage) -> u64 {
         ClientMessage::NewOrder(order) => order.client_order_id,
         ClientMessage::CancelOrder { client_order_id } => *client_order_id,
         ClientMessage::KillSwitch { request_id }
-        | ClientMessage::KillSwitchReset { request_id } => *request_id,
+        | ClientMessage::KillSwitchReset { request_id }
+        | ClientMessage::OperatorCommand { request_id, .. }
+        | ClientMessage::TenderDecision { request_id, .. }
+        | ClientMessage::OtcPropose { request_id, .. }
+        | ClientMessage::OtcCounter { request_id, .. }
+        | ClientMessage::OtcDecision { request_id, .. } => *request_id,
         ClientMessage::Subscribe { request_id, .. }
         | ClientMessage::Unsubscribe { request_id }
         | ClientMessage::SnapshotRequest { request_id, .. }
         | ClientMessage::ListingsRequest { request_id }
         | ClientMessage::OpenOrdersRequest { request_id }
         | ClientMessage::AccountRequest { request_id }
-        | ClientMessage::OperatorCommand { request_id, .. } => *request_id as u64,
+        | ClientMessage::DealsRequest { request_id } => *request_id as u64,
         _ => 0,
     }
 }
@@ -923,6 +933,10 @@ fn admit<'a>(
             | ClientMessage::CancelOrder { .. }
             | ClientMessage::KillSwitch { .. }
             | ClientMessage::KillSwitchReset { .. }
+            | ClientMessage::TenderDecision { .. }
+            | ClientMessage::OtcPropose { .. }
+            | ClientMessage::OtcCounter { .. }
+            | ClientMessage::OtcDecision { .. }
     );
     if trades && context.operator {
         return Ok(Some(
@@ -946,7 +960,56 @@ fn admit<'a>(
             };
             (
                 Endpoint::Hub,
-                operator_job(request, context.actor.clone(), *request_id, request_type),
+                simulation_job(
+                    request,
+                    context.actor.clone(),
+                    *request_id,
+                    request_type,
+                    Answer::Operator,
+                ),
+            )
+        }
+        ClientMessage::TenderDecision { request_id, .. }
+        | ClientMessage::OtcPropose { request_id, .. }
+        | ClientMessage::OtcCounter { request_id, .. }
+        | ClientMessage::OtcDecision { request_id, .. } => {
+            // Tenders and negotiations live at the hub, beside the run's
+            // other simulation state (ADR 0043).
+            let request = match context.identity.deal_command(message, correlation) {
+                Ok(Some(request)) => request,
+                Ok(None) => return Err("deal request without a command".to_owned()),
+                Err(error) => return Ok(Some(error.to_string())),
+            };
+            (
+                Endpoint::Hub,
+                simulation_job(
+                    request,
+                    context.actor.clone(),
+                    *request_id,
+                    request_type,
+                    Answer::Deal,
+                ),
+            )
+        }
+        ClientMessage::DealsRequest { request_id } => {
+            let request_id = *request_id;
+            let actor = context.actor.clone();
+            (
+                Endpoint::Hub,
+                Box::new(move |job| {
+                    let (run_sequence, (tenders, negotiations)) =
+                        ApplicationService::new(job.origin)
+                            .read(run_id, |state| {
+                                (state.event_sequence().get(), deals(state, &actor))
+                            })
+                            .map_err(|error| format!("run read failed: {error}"))?;
+                    Ok(vec![ServerMessage::Deals {
+                        request_id,
+                        run_sequence,
+                        tenders,
+                        negotiations,
+                    }])
+                }),
             )
         }
         ClientMessage::NewOrder(order) => {
@@ -1213,13 +1276,23 @@ fn command_job(
     })
 }
 
-/// Commits one operator command on the sequencer thread and answers with
+/// Which acknowledgement a committed simulation command gets.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// An instructor's or administrator's command (ADR 0042).
+    Operator,
+    /// A tender decision or OTC request (ADR 0043).
+    Deal,
+}
+
+/// Commits one simulation command on the sequencer thread and answers with
 /// the committed sequence, or a `Reject` naming why it was not committed.
-fn operator_job(
+fn simulation_job(
     mut request: SimulationCommandRequest,
     actor: VerifiedActor,
-    request_id: u32,
+    request_id: u64,
     request_type: u8,
+    answer: Answer,
 ) -> JobWork<ServerMessage> {
     Box::new(move |context| {
         let service = ApplicationService::new(context.origin);
@@ -1230,16 +1303,25 @@ fn operator_job(
         request.logical_time = context.run_time(run_id)?;
         Ok(vec![
             match service.execute_simulation_admitted(&actor, &request, context.admission) {
-                Ok(_) => ServerMessage::OperatorDone {
-                    request_id,
-                    run_sequence: service
+                Ok(_) => {
+                    let run_sequence = service
                         .read(run_id, |state| state.event_sequence().get())
-                        .map_err(|error| format!("run read failed: {error}"))?,
-                },
+                        .map_err(|error| format!("run read failed: {error}"))?;
+                    match answer {
+                        Answer::Operator => ServerMessage::OperatorDone {
+                            request_id,
+                            run_sequence,
+                        },
+                        Answer::Deal => ServerMessage::DealDone {
+                            request_id,
+                            run_sequence,
+                        },
+                    }
+                }
                 Err(error) => ServerMessage::Reject {
                     request_type,
-                    reference: u64::from(request_id),
-                    reason: format!("operator command not committed: {error}"),
+                    reference: request_id,
+                    reason: format!("command not committed: {error}"),
                 },
             },
         ])

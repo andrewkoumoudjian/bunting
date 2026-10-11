@@ -12,6 +12,7 @@ use crate::consolidated::ConsolidatedTape;
 use crate::storage::NativeOrigin;
 use crate::wake::Waker;
 use bunting_admission_sequencer::Endpoint;
+use bunting_application::competition::{DealChanges, deal_changes};
 use bunting_application::{
     DisplayedOrder, PublicDepth, PublicListingUpdate, diff_levels, diff_orders, displayed_orders,
     order_references, project_public_event, trade_brokers,
@@ -59,6 +60,13 @@ pub(crate) struct Committed {
         expect(dead_code, reason = "the BNP host is native only")
     )]
     pub(crate) references: Vec<(OrderId, u64)>,
+    /// Tenders and OTC negotiations this commit changed, as they stand
+    /// after it; their parties' streams carry them (ADR 0043).
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "the BNP host is native only")
+    )]
+    pub(crate) deals: DealChanges,
 }
 
 /// Where a committed batch was applied: the admitted destination when the
@@ -276,7 +284,7 @@ impl EventDistributor {
         committed_us: u64,
         source: Endpoint,
         public: Vec<PublicListingUpdate>,
-        references: Vec<(OrderId, u64)>,
+        (references, deals): (Vec<(OrderId, u64)>, DealChanges),
     ) {
         if events.is_empty() {
             return;
@@ -288,6 +296,7 @@ impl EventDistributor {
             ordinal: self.published.fetch_add(1, Ordering::AcqRel),
             public,
             references,
+            deals,
         });
         let Ok(mut retained) = self.retained.lock() else {
             return;
@@ -572,10 +581,13 @@ impl OriginStore for PublishingOrigin {
             let public = self
                 .public_updates(input.run_id(), &executed.events)
                 .unwrap_or_default();
-            let references = self
+            let private = self
                 .inner
                 .read_run(input.run_id(), |state| {
-                    order_references(state, &executed.events)
+                    (
+                        order_references(state, &executed.events),
+                        deal_changes(state, &executed.events),
+                    )
                 })
                 .unwrap_or_default();
             self.tape
@@ -585,7 +597,7 @@ impl OriginStore for PublishingOrigin {
                 durable_us,
                 batch_source(admission, &executed.events),
                 public,
-                references,
+                private,
             );
         }
         Ok(executed)
@@ -637,16 +649,22 @@ mod tests {
     fn subscribers_receive_batches_in_order_and_unsubscribe_on_drop() -> Result<(), String> {
         let distributor = EventDistributor::new(8);
         let first = distributor.subscribe(None)?;
-        distributor.publish(&[event(1)], 1, Endpoint::Hub, Vec::new(), Vec::new());
+        distributor.publish(
+            &[event(1)],
+            1,
+            Endpoint::Hub,
+            Vec::new(),
+            Default::default(),
+        );
         let second = distributor.subscribe(None)?;
         distributor.publish(
             &[event(2), event(3)],
             2,
             Endpoint::Hub,
             Vec::new(),
-            Vec::new(),
+            Default::default(),
         );
-        distributor.publish(&[], 3, Endpoint::Hub, Vec::new(), Vec::new());
+        distributor.publish(&[], 3, Endpoint::Hub, Vec::new(), Default::default());
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
@@ -672,11 +690,17 @@ mod tests {
                 sequence,
                 Endpoint::Hub,
                 Vec::new(),
-                Vec::new(),
+                Default::default(),
             );
         }
         assert_eq!(fast.drain()?.len(), 2);
-        distributor.publish(&[event(3)], 3, Endpoint::Hub, Vec::new(), Vec::new());
+        distributor.publish(
+            &[event(3)],
+            3,
+            Endpoint::Hub,
+            Vec::new(),
+            Default::default(),
+        );
         assert!(slow.drain().is_err());
         assert_eq!(fast.drain()?.len(), 1);
         assert_eq!(distributor.subscriber_count(), 1);
@@ -741,7 +765,7 @@ mod tests {
                 sequence,
                 Endpoint::Hub,
                 Vec::new(),
-                Vec::new(),
+                Default::default(),
             );
         }
         // Batches 2..=4 are retained; a cursor at 1 replays them all.
@@ -750,7 +774,13 @@ mod tests {
             return Err("cursor 1 is inside the window".to_owned());
         };
         assert_eq!(sequences(&batches), vec![2, 3, 4]);
-        distributor.publish(&[event(5)], 5, Endpoint::Hub, Vec::new(), Vec::new());
+        distributor.publish(
+            &[event(5)],
+            5,
+            Endpoint::Hub,
+            Vec::new(),
+            Default::default(),
+        );
         assert_eq!(sequences(&live.drain()?), vec![5]);
         // Older than the window, or never published: a gap.
         assert!(matches!(

@@ -11,22 +11,25 @@
 //! two participants can never collide, and committed events map back to
 //! client order IDs without any server-side session state.
 
-use crate::competition::{account, news_visible};
+use crate::competition::{DealChanges, account, negotiation_visible, news_visible, tender_visible};
 use crate::{ApplicationError, VerifiedActor};
 use bnp_wire::{
-    CancelReason as WireCancelReason, CashBalance, Liquidity, Listing, ListingInfo, NewOrder,
-    NewsAudience as WireNewsAudience, OpenOrder, OperatorAction, OrderType, Position, RejectReason,
-    ServerMessage, Side as WireSide, Stamp, TimeInForce,
+    CancelReason as WireCancelReason, CashBalance, ClientMessage, Liquidity, Listing, ListingInfo,
+    NegotiationInfo, NegotiationStatus, NewOrder, NewsAudience as WireNewsAudience, OpenOrder,
+    OperatorAction, OrderType, OtcDecision as WireOtcDecision, Position, RejectReason,
+    ServerMessage, Side as WireSide, Stamp, TenderInfo, TenderStatus, TimeInForce,
 };
+use bunting_engine::simulation::{OtcState, TenderState};
 use bunting_engine::{OwnedOrderState, RunState};
 use bunting_market_events::{
     CancelOrder, CancelReason, Command, CommandPayload, EventEnvelope, EventPayload, NewsAudience,
-    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest, SimulationEvent,
-    SubmitOrder, TimeInForcePolicy,
+    OrderKind, OtcDecision, RejectCode, Side, SimulationCommand, SimulationCommandRequest,
+    SimulationEvent, SubmitOrder, TenderDecision, TimeInForcePolicy,
 };
 use bunting_market_types::{
     CommandId, CorrelationId, CurrencyId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs,
-    MoneyMinor, NewsId, OrderId, ParticipantId, PriceTicks, QuantityLots, RunId, VenueId,
+    MoneyMinor, NegotiationId, NewsId, OrderId, ParticipantId, PriceTicks, QuantityLots, RunId,
+    TenderId, VenueId,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -70,6 +73,8 @@ pub struct BnpIdentity {
     kill_switches: u64,
     kill_switch_resets: u64,
     operator_commands: u64,
+    deal_commands: u64,
+    negotiations: u64,
 }
 
 impl BnpIdentity {
@@ -85,6 +90,8 @@ impl BnpIdentity {
             kill_switches: space(b"kill-switch"),
             kill_switch_resets: space(b"kill-switch-reset"),
             operator_commands: space(b"operator"),
+            deal_commands: space(b"deal"),
+            negotiations: space(b"negotiation"),
         }
     }
 
@@ -204,18 +211,131 @@ impl BnpIdentity {
     /// Returns [`BnpMappingError::ZeroIdentifier`] for request ID 0.
     pub fn operator_command(
         &self,
-        request_id: u32,
+        request_id: u64,
         action: &OperatorAction,
         correlation_id: CorrelationId,
     ) -> Result<SimulationCommandRequest, BnpMappingError> {
+        self.simulation_request(
+            scoped(self.operator_commands, request_id)?,
+            correlation_id,
+            simulation_command(action),
+        )
+    }
+
+    /// The canonical negotiation ID of this participant's own one: placed
+    /// in its namespace, so two teams' IDs never collide.
+    ///
+    /// # Errors
+    /// Returns [`BnpMappingError::ZeroIdentifier`] for 0.
+    pub fn negotiation_id(&self, own: u64) -> Result<NegotiationId, BnpMappingError> {
+        scoped(self.negotiations, own).map(NegotiationId::new)
+    }
+
+    /// The command for a tender decision or an OTC request (ADR 0043);
+    /// `None` for any other message. Request IDs are unique for the
+    /// participant for the run: a reused one is an idempotent duplicate.
+    ///
+    /// # Errors
+    /// Returns [`BnpMappingError::ZeroIdentifier`] for a zero request or
+    /// negotiation ID.
+    pub fn deal_command(
+        &self,
+        message: &ClientMessage,
+        correlation_id: CorrelationId,
+    ) -> Result<Option<SimulationCommandRequest>, BnpMappingError> {
+        let (request_id, payload) = match message {
+            ClientMessage::TenderDecision {
+                request_id,
+                tender_id,
+                accept,
+            } => (
+                *request_id,
+                SimulationCommand::DecideTender {
+                    tender_id: TenderId::new(*tender_id),
+                    decision: if *accept {
+                        TenderDecision::Accept
+                    } else {
+                        TenderDecision::Decline
+                    },
+                },
+            ),
+            ClientMessage::OtcPropose {
+                request_id,
+                negotiation_id,
+                counterparty_id,
+                instrument_id,
+                side: proposer_side,
+                quantity,
+                price,
+                expires_at_ns,
+            } => (
+                *request_id,
+                SimulationCommand::OpenOtc {
+                    negotiation_id: self.negotiation_id(*negotiation_id)?,
+                    counterparty_id: ParticipantId::new(*counterparty_id),
+                    instrument_id: InstrumentId::new(*instrument_id),
+                    side: side(*proposer_side),
+                    quantity: QuantityLots::new(*quantity),
+                    price: PriceTicks::new(*price),
+                    expires_at: LogicalTimeNs::new(*expires_at_ns),
+                },
+            ),
+            ClientMessage::OtcCounter {
+                request_id,
+                negotiation_id,
+                quantity,
+                price,
+            } => (
+                *request_id,
+                SimulationCommand::CounterOtc {
+                    negotiation_id: NegotiationId::new(*negotiation_id),
+                    quantity: QuantityLots::new(*quantity),
+                    price: PriceTicks::new(*price),
+                },
+            ),
+            ClientMessage::OtcDecision {
+                request_id,
+                negotiation_id,
+                decision,
+            } => (
+                *request_id,
+                SimulationCommand::DecideOtc {
+                    negotiation_id: NegotiationId::new(*negotiation_id),
+                    decision: match decision {
+                        WireOtcDecision::Accept => OtcDecision::Accept,
+                        WireOtcDecision::Reject => OtcDecision::Reject,
+                        WireOtcDecision::Break => OtcDecision::Break,
+                    },
+                },
+            ),
+            _ => return Ok(None),
+        };
+        self.simulation_request(
+            scoped(self.deal_commands, request_id)?,
+            correlation_id,
+            payload,
+        )
+        .map(Some)
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "callers chain it after fallible ID mapping"
+    )]
+    const fn simulation_request(
+        &self,
+        command_id: u128,
+        correlation_id: CorrelationId,
+        payload: SimulationCommand,
+    ) -> Result<SimulationCommandRequest, BnpMappingError> {
         Ok(SimulationCommandRequest {
             run_id: self.run_id,
-            command_id: CommandId::new(scoped(self.operator_commands, u64::from(request_id))?),
+            command_id: CommandId::new(command_id),
             correlation_id,
             logical_time: LogicalTimeNs::new(0),
             expected_sequence: EventSequence::new(0),
             actor: self.participant,
-            payload: simulation_command(action),
+            payload,
         })
     }
 
@@ -547,7 +667,147 @@ fn simulation_command(action: &OperatorAction) -> SimulationCommand {
             amount: MoneyMinor::new(amount),
             reason,
         },
+        OperatorAction::OpenTender {
+            tender_id,
+            participant_id,
+            instrument_id,
+            side: tender_side,
+            quantity,
+            price,
+            expires_at_ns,
+        } => SimulationCommand::OpenTender {
+            tender_id: TenderId::new(tender_id),
+            participant_id: ParticipantId::new(participant_id),
+            instrument_id: InstrumentId::new(instrument_id),
+            side: side(tender_side),
+            quantity: QuantityLots::new(quantity),
+            price: PriceTicks::new(price),
+            expires_at: LogicalTimeNs::new(expires_at_ns),
+        },
     }
+}
+
+/// The tender and negotiation changes of one committed batch that `actor`
+/// may see (ADR 0043), stamped with their event sequence. `changes` are
+/// the states read right after the commit
+/// ([`crate::competition::deal_changes`]).
+#[must_use]
+pub fn deal_messages(
+    changes: &DealChanges,
+    events: &[EventEnvelope],
+    actor: &VerifiedActor,
+) -> Vec<ServerMessage> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let stamp = Stamp {
+                sequence: event.sequence.get(),
+                logical_time_ns: event.logical_time.get(),
+            };
+            match &event.payload {
+                EventPayload::Simulation(SimulationEvent::TenderChanged { tender_id, status }) => {
+                    let tender = changes
+                        .tenders
+                        .iter()
+                        .find(|tender| tender.tender_id == *tender_id)
+                        .filter(|tender| tender_visible(tender, actor))?;
+                    Some(ServerMessage::Tender {
+                        stamp,
+                        tender: tender_info(tender, status)?,
+                    })
+                }
+                EventPayload::Simulation(SimulationEvent::OtcChanged {
+                    negotiation_id,
+                    status,
+                }) => {
+                    let otc = changes
+                        .negotiations
+                        .iter()
+                        .find(|otc| otc.negotiation_id == *negotiation_id)
+                        .filter(|otc| negotiation_visible(otc, actor))?;
+                    Some(ServerMessage::Negotiation {
+                        stamp,
+                        negotiation: negotiation_info(otc, status)?,
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Whether a batch holds a tender or negotiation change.
+#[must_use]
+pub fn has_deal_messages(events: &[EventEnvelope]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::Simulation(
+                SimulationEvent::TenderChanged { .. } | SimulationEvent::OtcChanged { .. }
+            )
+        )
+    })
+}
+
+/// Every tender and negotiation `actor` may see, in ID order.
+#[must_use]
+pub fn deals(state: &RunState, actor: &VerifiedActor) -> (Vec<TenderInfo>, Vec<NegotiationInfo>) {
+    let simulation = state.simulation();
+    let tenders = simulation
+        .tenders
+        .values()
+        .filter(|tender| tender_visible(tender, actor))
+        .filter_map(|tender| tender_info(tender, &tender.status))
+        .collect();
+    let negotiations = simulation
+        .otc
+        .values()
+        .filter(|otc| negotiation_visible(otc, actor))
+        .filter_map(|otc| negotiation_info(otc, &otc.status))
+        .collect();
+    (tenders, negotiations)
+}
+
+fn tender_info(tender: &TenderState, status: &str) -> Option<TenderInfo> {
+    Some(TenderInfo {
+        tender_id: tender.tender_id.get(),
+        participant_id: tender.participant_id.get(),
+        instrument_id: tender.instrument_id.get(),
+        side: wire_side(tender.side),
+        quantity: tender.quantity.get(),
+        price: tender.price.get(),
+        expires_at_ns: tender.expires_at.get(),
+        status: match status {
+            "open" => TenderStatus::Open,
+            "accepted" => TenderStatus::Accepted,
+            "declined" => TenderStatus::Declined,
+            "expired" => TenderStatus::Expired,
+            _ => return None,
+        },
+    })
+}
+
+fn negotiation_info(otc: &OtcState, status: &str) -> Option<NegotiationInfo> {
+    Some(NegotiationInfo {
+        negotiation_id: otc.negotiation_id.get(),
+        proposer_id: otc.proposer_id.get(),
+        counterparty_id: otc.counterparty_id.get(),
+        instrument_id: otc.instrument_id.get(),
+        side: wire_side(otc.side),
+        quantity: otc.quantity.get(),
+        price: otc.price.get(),
+        expires_at_ns: otc.expires_at.get(),
+        status: match status {
+            "proposed" => NegotiationStatus::Proposed,
+            "countered" => NegotiationStatus::Countered,
+            "accepted" => NegotiationStatus::Accepted,
+            "rejected" => NegotiationStatus::Rejected,
+            "broken" => NegotiationStatus::Broken,
+            "expired" => NegotiationStatus::Expired,
+            _ => return None,
+        },
+        awaiting: otc.awaiting.get(),
+    })
 }
 
 /// The run's public facts in one committed batch, as `actor` may see them

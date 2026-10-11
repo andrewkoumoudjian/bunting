@@ -156,9 +156,13 @@ pub fn authorize_simulation_command(
     if matches!(request.payload, SimulationCommand::ClockTick) {
         return Err(ApplicationError::Unauthorized);
     }
+    // A participant's own tender decisions and OTC negotiations; the engine
+    // makes the actor the proposer of an OTC trade, so opening one is a
+    // participant action too (ADR 0043).
     let participant_action = matches!(
         request.payload,
         SimulationCommand::DecideTender { .. }
+            | SimulationCommand::OpenOtc { .. }
             | SimulationCommand::CounterOtc { .. }
             | SimulationCommand::DecideOtc { .. }
     );

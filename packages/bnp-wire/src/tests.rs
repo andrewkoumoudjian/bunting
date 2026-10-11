@@ -71,18 +71,70 @@ fn clients() -> Vec<ClientMessage> {
         ClientMessage::ListingsRequest { request_id: 7 },
         ClientMessage::OpenOrdersRequest { request_id: 8 },
         ClientMessage::AccountRequest { request_id: 9 },
+        ClientMessage::TenderDecision {
+            request_id: 10,
+            tender_id: 3,
+            accept: true,
+        },
+        ClientMessage::OtcPropose {
+            request_id: 11,
+            negotiation_id: 4,
+            counterparty_id: 2,
+            instrument_id: 1,
+            side: Side::Sell,
+            quantity: 50,
+            price: 101,
+            expires_at_ns: 9_000,
+        },
+        ClientMessage::OtcCounter {
+            request_id: 12,
+            negotiation_id: u128::MAX,
+            quantity: 40,
+            price: 102,
+        },
+        ClientMessage::OtcDecision {
+            request_id: 13,
+            negotiation_id: 5,
+            decision: OtcDecision::Break,
+        },
+        ClientMessage::DealsRequest { request_id: 14 },
     ]
     .into_iter()
     .chain(
         operator_actions()
             .into_iter()
-            .enumerate()
-            .map(|(index, action)| ClientMessage::OperatorCommand {
-                request_id: u32::try_from(index).unwrap_or(u32::MAX),
-                action,
-            }),
+            .zip(100..)
+            .map(|(action, request_id)| ClientMessage::OperatorCommand { request_id, action }),
     )
     .collect()
+}
+
+fn tender() -> TenderInfo {
+    TenderInfo {
+        tender_id: 3,
+        participant_id: 2,
+        instrument_id: 1,
+        side: Side::Buy,
+        quantity: 500,
+        price: 99,
+        expires_at_ns: 7_000,
+        status: TenderStatus::Open,
+    }
+}
+
+fn negotiation() -> NegotiationInfo {
+    NegotiationInfo {
+        negotiation_id: u128::MAX - 1,
+        proposer_id: 1,
+        counterparty_id: 2,
+        instrument_id: 1,
+        side: Side::Sell,
+        quantity: 40,
+        price: 102,
+        expires_at_ns: 9_000,
+        status: NegotiationStatus::Countered,
+        awaiting: 1,
+    }
 }
 
 /// One of every operator action, including every news audience.
@@ -120,6 +172,15 @@ fn operator_actions() -> Vec<OperatorAction> {
             currency_id: 1,
             amount: -1_000,
             reason: "late".to_owned(),
+        },
+        OperatorAction::OpenTender {
+            tender_id: 3,
+            participant_id: 2,
+            instrument_id: 1,
+            side: Side::Buy,
+            quantity: 500,
+            price: 99,
+            expires_at_ns: 7_000,
         },
     ]
 }
@@ -241,6 +302,24 @@ fn servers() -> Vec<ServerMessage> {
         ServerMessage::OperatorDone {
             request_id: 3,
             run_sequence: 99,
+        },
+        ServerMessage::DealDone {
+            request_id: u64::MAX,
+            run_sequence: 100,
+        },
+        ServerMessage::Tender {
+            stamp: stamp(),
+            tender: tender(),
+        },
+        ServerMessage::Negotiation {
+            stamp: stamp(),
+            negotiation: negotiation(),
+        },
+        ServerMessage::Deals {
+            request_id: 6,
+            run_sequence: 101,
+            tenders: vec![tender()],
+            negotiations: vec![negotiation(), negotiation()],
         },
         ServerMessage::RunStatus {
             stamp: stamp(),
@@ -453,8 +532,8 @@ fn every_message_type_is_covered_and_directional() -> Result<(), WireError> {
     let mut server_types: Vec<u8> = servers().iter().map(ServerMessage::msg_type).collect();
     client_types.dedup();
     server_types.dedup();
-    assert_eq!(client_types.len(), 16);
-    assert_eq!(server_types.len(), 33);
+    assert_eq!(client_types.len(), 21);
+    assert_eq!(server_types.len(), 37);
     for message in servers() {
         let mut frame = Vec::new();
         encode_server(&message, &mut frame)?;
@@ -648,6 +727,9 @@ fn wire_enums_cover_their_values_exactly() {
     );
     assert_eq!(OrderAction::ALL.len(), 3);
     assert_eq!(DelaySource::ALL.len(), 4);
+    assert_eq!(TenderStatus::ALL.len(), 4);
+    assert_eq!(NegotiationStatus::ALL.len(), 6);
+    assert_eq!(OtcDecision::ALL.len(), 3);
 }
 
 #[test]
