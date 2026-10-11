@@ -4,6 +4,9 @@
   `docs/implementation-log/` for this date. Implements the part of
   [ADR 0031](0031-proposed-bunting-native-client-protocol.md) that makes the
   Ratatui terminal "the first BNP client"; supersedes nothing else.
+  Amended 2026-10-11 (slice 36): BNP now carries order-by-order feeds, the
+  consolidated tape and the venue's measured access delay (slice 35), and
+  the model and terminal show them (decision 5).
 - Date: 2026-10-10
 - Depends on: ADR 0031 and ADR 0040 (FIX plus BNP only; BNP v1), ADR 0035
   (latency), ADR 0036 (market data), ADR 0044 (native `bunting server`).
@@ -60,9 +63,11 @@ broke when the server moved to one run clock (fixed in `3f92865`).
    "as they reached you" (each venue's trades arrive after that venue's
    distance; this is not a consolidated tape); per-venue order round trip
    (send to the venue's first answer: real network plus virtual distance
-   both ways); `Ping` round trip (no virtual distance). Order-by-order books
-   and the consolidated tape are FIX-only in BNP v1 and appear once BNP
-   carries them.
+   both ways); `Ping` round trip (no virtual distance). Since slice 36:
+   venue feeds are subscribed order by order (falling back to levels where
+   a venue sends levels), with each order's queue place and broker; each
+   instrument's tape is a separate "from the hub" panel; the access delay
+   the venue measured is shown as the venue's measurement.
 6. **Configuration:** the same flags and environment as `bunting-trader`
    (`--server`, `--server-name`, `--ca`, `--cert`, `--key`), or a saved
    venue in `terminal.json` version 2. Version 1 files (FIX profiles) are
@@ -74,9 +79,9 @@ broke when the server moved to one run clock (fixed in `3f92865`).
   tokio or TLS stack of its own; `bunting-cli` no longer needs tokio.
 - Local practice exercises the real server, admission sequencer, latency
   map, journal and BNP host, so it cannot drift from a hosted venue.
-- Two limits observed while building it are routed to their owners: a
-  participant kill switch is run-wide in the engine and cancels nothing
-  (BNP says it cancels the participant's orders); built-in agents cannot
+- Two limits observed while building it were routed to their owners: a
+  participant kill switch was run-wide in the engine and canceled nothing
+  (fixed per participant, with reset, in slice 32); built-in agents cannot
   quote an instrument listed on two venues, so the local venue lists BNT
   (with agents) on venue 1 only and QRC (no agents) on both.
 - The Longbridge Terminal adaptation and the candlestick chart are gone;

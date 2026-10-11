@@ -5,7 +5,7 @@ Ratatui terminal in `apps/bunting-tui` and the desktop app that follows it).
 ADR 0047 records the split: this crate holds state and view-model, apps only
 render it and map input to its methods.
 
-- `model`, `ticket` and `ids` are pure and host-neutral: no I/O, no ambient
+- `model` and `ticket` are pure and host-neutral: no I/O, no ambient
   time or randomness. Callers pass the current time in microseconds; the
   model answers with the BNP requests to send. They compile for
   `wasm32-unknown-unknown`.

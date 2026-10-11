@@ -1,6 +1,8 @@
 use super::*;
 use crate::ticket::{OrderTicket, TicketKind};
-use bunting_client::bnp_wire::{Entry, Level, OpenOrder, Role, Stamp};
+use bunting_client::bnp_wire::{
+    BookOrder, Entry, Level, OpenOrder, OrderAction, Role, Stamp, TapeEntry, TapeQuote,
+};
 
 const NEAR: Listing = Listing {
     venue_id: 1,
@@ -74,12 +76,27 @@ fn connected() -> (Model, u32, u32) {
             ClientMessage::Subscribe {
                 request_id,
                 listing,
-                ..
-            } => Some((*request_id, *listing)),
+                flags,
+            } => {
+                // Venue feeds are order by order; the tape is venue 0.
+                assert_eq!(
+                    *flags,
+                    if listing.venue_id == 0 {
+                        FeedFlags::ALL
+                    } else {
+                        FeedFlags::ALL.union(FeedFlags::ORDERS)
+                    }
+                );
+                Some((*request_id, *listing))
+            }
             _ => None,
         })
         .collect();
-    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(
+        model.tape(1).map(|tape| tape.request_id),
+        ids.iter().find(|(_, l)| l.venue_id == 0).map(|(id, _)| *id)
+    );
     let near = ids.iter().find(|(_, l)| *l == NEAR).map(|(id, _)| *id);
     let far = ids.iter().find(|(_, l)| *l == FAR).map(|(id, _)| *id);
     (model, near.unwrap_or(0), far.unwrap_or(0))
@@ -167,6 +184,8 @@ fn trades_reach_the_blotter_with_their_arrival_time_and_a_gap_resubscribes() {
             price: 101,
             quantity: 4,
             received_us: 50,
+            buyer: None,
+            seller: None,
         })
     );
     // Reports 1 and 2 applied; 4 means 3 was missed.
@@ -428,4 +447,265 @@ fn the_kill_switch_is_reported_by_the_venue_not_assumed() {
         4,
     );
     assert!(!model.kill_switch_active());
+}
+
+fn book_order(side: Side, reference: u64, price: i64, quantity: i64, broker: u128) -> BookOrder {
+    BookOrder {
+        side,
+        reference,
+        price,
+        quantity,
+        broker: Some(broker),
+        queue_position: 0,
+    }
+}
+
+#[test]
+fn an_order_by_order_feed_shows_queues_and_trades_with_brokers() {
+    let (mut model, near, _) = connected();
+    message(
+        &mut model,
+        ServerMessage::OrderSnapshot {
+            request_id: near,
+            listing: NEAR,
+            next_report: 5,
+            complete: false,
+            orders: vec![
+                book_order(Side::Buy, 1, 99, 4, 7),
+                book_order(Side::Buy, 2, 99, 6, 8),
+            ],
+        },
+        2,
+    );
+    assert_eq!(
+        model.feed(NEAR).map(|f| &f.state),
+        Some(&FeedState::Requested)
+    );
+    message(
+        &mut model,
+        ServerMessage::OrderSnapshot {
+            request_id: near,
+            listing: NEAR,
+            next_report: 5,
+            complete: true,
+            orders: vec![book_order(Side::Sell, 3, 101, 5, 7)],
+        },
+        3,
+    );
+    let feed = model.feed(NEAR);
+    assert_eq!(feed.map(|f| &f.state), Some(&FeedState::Live));
+    assert_eq!(feed.map(|f| f.order_by_order), Some(true));
+    let bids = feed.map(|f| f.book.orders(Side::Buy)).unwrap_or_default();
+    assert_eq!(
+        bids.iter()
+            .map(|o| (o.reference, o.position_at_price, o.quantity_ahead))
+            .collect::<Vec<_>>(),
+        vec![(1, 1, 0), (2, 2, 4)]
+    );
+    assert_eq!(
+        feed.and_then(|f| f.book.best_bid()),
+        Some(Level {
+            price: 99,
+            quantity: 10
+        })
+    );
+    message(
+        &mut model,
+        ServerMessage::OrderUpdate {
+            request_id: near,
+            listing: NEAR,
+            first_report: 5,
+            entries: vec![
+                OrderEntry::Trade {
+                    price: 99,
+                    quantity: 4,
+                    resting_reference: Some(1),
+                    buyer: Some(7),
+                    seller: Some(9),
+                },
+                OrderEntry::Order {
+                    action: OrderAction::Delete,
+                    side: Side::Buy,
+                    reference: 1,
+                    price: 99,
+                    quantity: 0,
+                    broker: Some(7),
+                },
+            ],
+        },
+        4,
+    );
+    let print = model.prints().back().copied();
+    assert_eq!(print.map(|p| (p.buyer, p.seller)), Some((Some(7), Some(9))));
+    assert_eq!(print.map(|p| p.received_us), Some(4));
+    assert_eq!(
+        model
+            .feed(NEAR)
+            .and_then(|f| f.book.order(2))
+            .map(|o| o.position_at_price),
+        Some(1)
+    );
+}
+
+#[test]
+fn a_venue_without_order_data_falls_back_to_price_levels() {
+    let (mut model, near, _) = connected();
+    let requests = message(
+        &mut model,
+        ServerMessage::Reject {
+            request_type: msg_type::SUBSCRIBE,
+            reference: u64::from(near),
+            reason: "order-by-order data is not offered".to_owned(),
+        },
+        2,
+    );
+    assert!(matches!(
+        requests.as_slice(),
+        [ClientMessage::Subscribe {
+            listing: NEAR,
+            flags: FeedFlags::ALL,
+            ..
+        }]
+    ));
+    assert_eq!(model.feed(NEAR).map(|f| f.order_by_order), Some(false));
+    let id = model.feed(NEAR).map_or(0, |f| f.request_id);
+    message(
+        &mut model,
+        ServerMessage::Reject {
+            request_type: msg_type::SUBSCRIBE,
+            reference: u64::from(id),
+            reason: "no".to_owned(),
+        },
+        3,
+    );
+    assert_eq!(
+        model.feed(NEAR).map(|f| &f.state),
+        Some(&FeedState::Refused("no".to_owned()))
+    );
+}
+
+#[test]
+fn the_tape_names_each_venue_and_a_gap_resubscribes() {
+    let (mut model, _, _) = connected();
+    let tape = model.tape(1).map_or(0, |t| t.request_id);
+    message(
+        &mut model,
+        ServerMessage::TapeSnapshot {
+            request_id: tape,
+            instrument_id: 1,
+            last_report: 10,
+            quotes: vec![TapeQuote {
+                venue_id: 2,
+                side: Side::Sell,
+                price: 101,
+                quantity: 3,
+            }],
+        },
+        2,
+    );
+    message(
+        &mut model,
+        ServerMessage::TapeUpdate {
+            request_id: tape,
+            instrument_id: 1,
+            first_report: 11,
+            entries: vec![TapeEntry {
+                venue_id: 2,
+                kind: EntryKind::Trade,
+                price: 101,
+                quantity: 1,
+            }],
+        },
+        3,
+    );
+    assert_eq!(model.tape(1).map(|t| &t.state), Some(&FeedState::Live));
+    assert_eq!(
+        model
+            .tape(1)
+            .and_then(|t| t.book.best(Side::Sell))
+            .map(|(venue, _)| venue),
+        Some(2)
+    );
+    assert_eq!(
+        model
+            .tape_prints()
+            .back()
+            .map(|p| (p.listing, p.received_us)),
+        Some((FAR, 3))
+    );
+    assert!(model.prints().is_empty());
+    let requests = message(
+        &mut model,
+        ServerMessage::TapeUpdate {
+            request_id: tape,
+            instrument_id: 1,
+            first_report: 20,
+            entries: Vec::new(),
+        },
+        4,
+    );
+    assert!(matches!(
+        requests.as_slice(),
+        [
+            ClientMessage::Unsubscribe { .. },
+            ClientMessage::Subscribe {
+                listing: Listing {
+                    venue_id: 0,
+                    instrument_id: 1
+                },
+                ..
+            }
+        ]
+    ));
+    assert_eq!(model.tape(1).map(|t| t.gaps), Some(1));
+}
+
+#[test]
+fn the_venue_measured_access_delay_is_kept_until_reconnect() {
+    let (mut model, _, _) = connected();
+    assert!(model.access_delay().is_none());
+    message(
+        &mut model,
+        ServerMessage::AccessDelay {
+            source: DelaySource::Both,
+            min_rtt_us: Some(180),
+            one_way_us: Some(90),
+            probe_samples: 4,
+        },
+        2,
+    );
+    assert_eq!(model.access_delay().and_then(|d| d.one_way_us), Some(90));
+    model.apply(SessionEvent::Connected(welcome(ResumeStatus::Live)), 3);
+    assert!(model.access_delay().is_none());
+}
+
+#[test]
+fn subscriptions_stay_within_the_session_limit() {
+    let mut model = Model::new(1);
+    model.apply(SessionEvent::Connected(welcome(ResumeStatus::Live)), 0);
+    let listings = (1..=40_u128)
+        .map(|instrument_id| ListingInfo {
+            listing: Listing {
+                venue_id: 1,
+                instrument_id,
+            },
+            symbol: format!("I{instrument_id}"),
+        })
+        .collect();
+    let requests = message(
+        &mut model,
+        ServerMessage::Listings {
+            request_id: 1,
+            listings,
+        },
+        1,
+    );
+    assert_eq!(requests.len(), MAX_FEEDS);
+    assert!(model.tape(1).is_none());
+    assert!(
+        model
+            .notices()
+            .iter()
+            .any(|n| n.text.contains("subscriptions"))
+    );
 }

@@ -2,8 +2,9 @@
 
 A terminal trading app for Bunting venues over the Bunting Native Protocol
 (ADR 0047). It shows every venue's book for the instrument you select side
-by side, the trades as they reach you, your orders, fills and account, and
-your connection with its measured round trips. You choose the venue for
+by side (price levels, or every order with its place in the queue), the
+instrument's consolidated tape, the trades as they reach you, your orders,
+fills and account, and your connection with its measured delays. You choose the venue for
 each order; each venue sits at its own distance, so a far venue answers
 later and its book is older by the time you see it.
 
@@ -58,9 +59,10 @@ where it left off.
 | `←` `→` | venue |
 | `b` / `s` | buy / sell ticket on the selected venue |
 | `Tab`, `←` `→`, digits, `Enter` | in the ticket: field, change, edit, send |
+| `o` | books: price levels or every order with its queue place |
 | `[` `]` | select an order |
 | `c` / `C` | cancel the selected order / all your orders |
-| `K` | kill switch (asks first) |
+| `K` | kill switch (asks first); when active, reset it |
 | `r` | reload open orders and account |
 | `1`–`4` | orders, fills, account, log |
 | `?` / `q` | help / quit |
@@ -70,8 +72,13 @@ where it left off.
 - **Order rt**: time from sending an order to the venue's first answer,
   measured here: your network both ways plus the venue's distance both ways.
 - **Ping**: round trip to the venue host with no virtual distance.
-- **Trades, as they reached you**: every venue's trades in arrival order.
-  This is not a consolidated tape.
-
-Order-by-order books and the consolidated tape are FIX-only in BNP v1; the
-terminal will show them once the protocol carries them.
+- **Venue measures**: the one-way delay the venue measured for your
+  connection. It is published to you and never used to order anything.
+- **Queue** (press `o`): each displayed order's place at its price and its
+  broker, on venues that publish brokers. Your own orders are not marked
+  in this view yet; `mine` in the levels view is your resting quantity.
+- **Tape from the hub**: every venue's best bid and offer (bold: the best
+  across venues) and every venue's trades, published by the processor at
+  the hub. Near a venue it lags that venue's direct feed.
+- **Direct feeds, as they reached you**: every venue's trades in arrival
+  order, with broker identifiers where the venue publishes them.

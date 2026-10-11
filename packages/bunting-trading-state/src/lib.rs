@@ -5,9 +5,10 @@
 //! crate and only renders it:
 //!
 //! - [`Model`] is the participant's view of one venue session, rebuilt from
-//!   what the venue sent: listings, each direct feed's book, the trades the
-//!   feeds carried, orders, fills, the account, the connection and its
-//!   measured round trips. It is pure: callers pass the time and send the
+//!   what the venue sent: listings, each direct feed's order-by-order book,
+//!   each instrument's consolidated tape, the trades they carried, orders,
+//!   fills, the account, the venue's published access delay, and the
+//!   connection with its client-measured round trips. It is pure: callers pass the time and send the
 //!   requests it returns.
 //! - [`OrderTicket`] is an order before it is sent, venue included.
 //! - [`Session`] (native) keeps a `bunting_client::Client` connected and
@@ -25,9 +26,9 @@ mod session;
 
 pub use bunting_client;
 pub use model::{
-    AccountView, Connection, Feed, FeedState, FillRow, Instrument, MAX_FEEDS, MAX_FILLS,
-    MAX_NOTICES, MAX_ORDERS, MAX_PRINTS, Model, Notice, NoticeLevel, OrderRow, OrderStatus,
-    ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, TradePrint, VenueRoundTrip,
+    AccessDelay, AccountView, Connection, Feed, FeedState, FillRow, Instrument, MAX_FEEDS,
+    MAX_FILLS, MAX_NOTICES, MAX_ORDERS, MAX_PRINTS, Model, Notice, NoticeLevel, OrderRow,
+    OrderStatus, ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, Tape, TradePrint, VenueRoundTrip,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{SendError, Session};

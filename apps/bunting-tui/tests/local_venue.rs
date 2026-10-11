@@ -2,8 +2,9 @@
 //! generated certificates and configuration, served by the real server,
 //! with built-in agents quoting BNT on venue 1, and QRC listed on venue 1
 //! and on venue 2 two milliseconds away. Orders go to the venue the trader
-//! chooses and the far venue answers later; fills, cancels, the account and
-//! the kill switch come back over BNP.
+//! chooses and the far venue answers later; order-by-order books, each
+//! instrument's tape, the venue's measured access delay, fills, cancels,
+//! the account and the kill switch come back over BNP.
 
 use bunting_server::config::ServerConfig;
 use bunting_trading_state::bunting_client::bnp_wire::{CancelReason, ClientMessage, Listing, Side};
@@ -121,6 +122,20 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
             })
             && model.feed(BNT).and_then(|f| f.book.best_ask()).is_some()
     })?;
+    // Venue feeds are order by order: an agent's ask is a queued order.
+    let bnt = trader.model.feed(BNT).ok_or("BNT feed")?;
+    assert!(bnt.order_by_order, "venue feeds are order by order");
+    assert!(!bnt.book.orders(Side::Sell).is_empty(), "agents' asks");
+    trader.until("each instrument's tape", |model| {
+        [1, 2].iter().all(|&instrument| {
+            model
+                .tape(instrument)
+                .is_some_and(|t| t.state == FeedState::Live)
+        })
+    })?;
+    trader.until("the venue's access delay", |model| {
+        model.access_delay().is_some_and(|d| d.min_rtt_us.is_some())
+    })?;
 
     // A marketable IOC buy on venue 1 against an agent's ask.
     let ask = trader
@@ -162,6 +177,27 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
             .and_then(|f| f.book.best_bid())
             .is_some_and(|level| level.price == 1)
     })?;
+    // The only bid on venue 1's QRC book is first in its queue, and the
+    // tape shows a bid of 1 on both venues.
+    trader.until("the near order first in its queue", |model| {
+        model
+            .feed(QRC_NEAR)
+            .map(|f| f.book.orders(Side::Buy))
+            .is_some_and(|orders| {
+                orders
+                    .iter()
+                    .any(|o| o.price == 1 && o.position_at_price == 1 && o.quantity_ahead == 0)
+            })
+    })?;
+    trader.until("both bids on the tape", |model| {
+        model.tape(2).is_some_and(|tape| {
+            [1, 2].iter().all(|&venue| {
+                tape.book
+                    .quote(venue, Side::Buy)
+                    .is_some_and(|level| level.price == 1)
+            })
+        })
+    })?;
 
     let cancel = trader.model.cancel(resting).ok_or("cancelable")?;
     trader.send(&cancel);
@@ -185,6 +221,14 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
     // report, never from having sent it.
     assert!(!trader.model.kill_switch_active());
     trader.until("the kill switch", Model::kill_switch_active)?;
+    // It cancels this participant's resting orders.
+    trader.until("the kill switch cancel", |model| {
+        status(model, near_bid) == Some(OrderStatus::Canceled(CancelReason::KillSwitch))
+    })?;
+    let now = trader.now();
+    let reset = trader.model.reset_kill_switch(now);
+    trader.send(&reset);
+    trader.until("the kill switch reset", |model| !model.kill_switch_active())?;
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }

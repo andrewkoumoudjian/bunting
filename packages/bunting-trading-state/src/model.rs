@@ -1,7 +1,8 @@
 //! The participant's view of one venue session, rebuilt from what the venue
-//! sent: listings, every direct feed's book, the trades those feeds
-//! carried, the participant's orders and fills, the account and the
-//! connection with its measured round trips.
+//! sent: listings, every direct feed's order-by-order book, each
+//! instrument's consolidated tape, the trades those feeds carried, the
+//! participant's orders and fills, the account, the access delay the venue
+//! measured and the connection with its client-measured round trips.
 //!
 //! The model is pure. [`Model::apply`] takes one [`SessionEvent`] and the
 //! caller's clock in microseconds and returns the BNP requests that event
@@ -10,16 +11,18 @@
 //! them; nothing here performs I/O or reads a clock.
 
 use crate::ticket::{OrderTicket, TicketError};
-use bunting_client::FeedBook;
 use bunting_client::bnp_wire::{
-    CancelReason, CashBalance, ClientMessage, EntryKind, Liquidity, Listing, ListingInfo, Position,
-    RejectReason, ResumeStatus, ServerMessage, Side, Welcome, msg_type,
+    CancelReason, CashBalance, ClientMessage, DelaySource, EntryKind, FeedFlags, Liquidity,
+    Listing, ListingInfo, OrderEntry, Position, RejectReason, ResumeStatus, ServerMessage, Side,
+    Welcome, msg_type,
 };
+use bunting_client::{FeedBook, TapeBook};
 use std::collections::{BTreeMap, VecDeque};
 
-/// Direct feeds a BNP session may hold (docs/specs/bnp-v1.md).
+/// Subscriptions a BNP session may hold, direct feeds and tapes together
+/// (docs/specs/bnp-v1.md).
 pub const MAX_FEEDS: usize = 32;
-/// Trades kept in the blotter.
+/// Trades kept in each blotter (direct feeds, tape).
 pub const MAX_PRINTS: usize = 512;
 /// Orders kept; finished orders are dropped first.
 pub const MAX_ORDERS: usize = 1_024;
@@ -115,6 +118,10 @@ pub enum FeedState {
 pub struct Feed {
     pub request_id: u32,
     pub book: FeedBook,
+    /// Order by order (every displayed order and its queue place), as
+    /// requested and then as the venue's snapshot showed; false when the
+    /// venue sent price levels or refused order data.
+    pub order_by_order: bool,
     pub state: FeedState,
     /// Updates applied since the snapshot.
     pub updates: u64,
@@ -123,12 +130,45 @@ pub struct Feed {
     pub last_message_us: Option<u64>,
 }
 
-/// One trade seen on a direct feed, with the time this client received it.
+/// One instrument's consolidated tape: every venue's best bid and offer
+/// and trades as the processor at the hub publishes them. It crosses the
+/// distance from the hub, so near a venue it lags that venue's direct feed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Tape {
+    pub request_id: u32,
+    pub book: TapeBook,
+    pub state: FeedState,
+    /// Updates applied since the snapshot.
+    pub updates: u64,
+    /// Gaps detected (each one resubscribed).
+    pub gaps: u64,
+    pub last_message_us: Option<u64>,
+}
+
+/// One trade, with the time this client received it. From a direct feed
+/// `listing` is that venue's; from the tape it names the venue that traded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TradePrint {
     pub listing: Listing,
     pub price: i64,
     pub quantity: i64,
+    pub received_us: u64,
+    /// Broker identifiers, on order-by-order feeds of venues that publish
+    /// them.
+    pub buyer: Option<u128>,
+    pub seller: Option<u128>,
+}
+
+/// The venue's measurement of this connection (ADR 0035): published to the
+/// participant, never used to order commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccessDelay {
+    pub source: DelaySource,
+    /// Smallest round trip the venue has seen.
+    pub min_rtt_us: Option<u64>,
+    /// Half of it: the venue's estimate of one way.
+    pub one_way_us: Option<u64>,
+    pub probe_samples: u64,
     pub received_us: u64,
 }
 
@@ -249,7 +289,11 @@ pub struct Model {
     listings: Vec<ListingInfo>,
     feeds: BTreeMap<Listing, Feed>,
     feed_requests: BTreeMap<u32, Listing>,
+    tapes: BTreeMap<u128, Tape>,
+    tape_requests: BTreeMap<u32, u128>,
     prints: VecDeque<TradePrint>,
+    tape_prints: VecDeque<TradePrint>,
+    access_delay: Option<AccessDelay>,
     orders: VecDeque<OrderRow>,
     fills: VecDeque<FillRow>,
     account: Option<AccountView>,
@@ -276,7 +320,11 @@ impl Model {
             listings: Vec::new(),
             feeds: BTreeMap::new(),
             feed_requests: BTreeMap::new(),
+            tapes: BTreeMap::new(),
+            tape_requests: BTreeMap::new(),
             prints: VecDeque::new(),
+            tape_prints: VecDeque::new(),
+            access_delay: None,
             orders: VecDeque::new(),
             fills: VecDeque::new(),
             account: None,
@@ -362,6 +410,25 @@ impl Model {
     #[must_use]
     pub const fn prints(&self) -> &VecDeque<TradePrint> {
         &self.prints
+    }
+
+    /// One instrument's consolidated tape, if subscribed.
+    #[must_use]
+    pub fn tape(&self, instrument_id: u128) -> Option<&Tape> {
+        self.tapes.get(&instrument_id)
+    }
+
+    /// Trades from every instrument's consolidated tape, newest last, in the
+    /// order this client received them.
+    #[must_use]
+    pub const fn tape_prints(&self) -> &VecDeque<TradePrint> {
+        &self.tape_prints
+    }
+
+    /// The access delay the venue last published for this connection.
+    #[must_use]
+    pub const fn access_delay(&self) -> Option<&AccessDelay> {
+        self.access_delay.as_ref()
     }
 
     /// Orders, oldest first.
@@ -607,6 +674,9 @@ impl Model {
         // Feeds belong to a connection: subscribe again for fresh snapshots.
         self.feeds.clear();
         self.feed_requests.clear();
+        self.tapes.clear();
+        self.tape_requests.clear();
+        self.access_delay = None;
         self.account_request = None;
         let mut messages = vec![ClientMessage::ListingsRequest {
             request_id: self.request_id(),
@@ -633,11 +703,29 @@ impl Model {
             | ServerMessage::OrderUpdate { request_id, .. } => {
                 return self.feed_message(request_id, &message, now_us);
             }
+            ServerMessage::TapeSnapshot { request_id, .. }
+            | ServerMessage::TapeUpdate { request_id, .. } => {
+                return self.tape_message(request_id, &message, now_us);
+            }
+            ServerMessage::AccessDelay {
+                source,
+                min_rtt_us,
+                one_way_us,
+                probe_samples,
+            } => {
+                self.access_delay = Some(AccessDelay {
+                    source,
+                    min_rtt_us,
+                    one_way_us,
+                    probe_samples,
+                    received_us: now_us,
+                });
+            }
             ServerMessage::Reject {
                 request_type,
                 reference,
                 reason,
-            } => self.reject(request_type, reference, &reason, now_us),
+            } => return self.reject(request_type, reference, &reason, now_us),
             ServerMessage::OrderAccepted {
                 stamp,
                 client_order_id,
@@ -834,44 +922,65 @@ impl Model {
             | ServerMessage::Heartbeat
             | ServerMessage::Probe { .. }
             | ServerMessage::Pong { .. }
-            | ServerMessage::Logout { .. }
-            // Not subscribed to by this model yet.
-            | ServerMessage::AccessDelay { .. }
-            | ServerMessage::TapeSnapshot { .. }
-            | ServerMessage::TapeUpdate { .. } => {}
+            | ServerMessage::Logout { .. } => {}
         }
         Vec::new()
     }
 
+    /// Subscribes every listing's direct feed, order by order, then every
+    /// instrument's tape, within the session's subscription limit.
     fn apply_listings(&mut self, listings: Vec<ListingInfo>, now_us: u64) -> Vec<ClientMessage> {
         self.listings = listings;
         self.listings.sort_by_key(|info| info.listing);
         let mut messages = Vec::new();
         let wanted: Vec<Listing> = self.listings.iter().map(|info| info.listing).collect();
+        let mut instruments: Vec<u128> = wanted.iter().map(|l| l.instrument_id).collect();
+        instruments.dedup();
+        let mut full = false;
         for listing in wanted {
             if self.feeds.contains_key(&listing) {
                 continue;
             }
-            if self.feeds.len() == MAX_FEEDS {
-                self.notice(
-                    now_us,
-                    NoticeLevel::Warning,
-                    format!("only the first {MAX_FEEDS} listings have live books"),
-                );
+            if self.subscriptions() == MAX_FEEDS {
+                full = true;
                 break;
             }
-            messages.push(self.subscribe(listing));
+            messages.push(self.subscribe(listing, true));
+        }
+        for instrument_id in instruments {
+            if self.tapes.contains_key(&instrument_id) {
+                continue;
+            }
+            if self.subscriptions() == MAX_FEEDS {
+                full = true;
+                break;
+            }
+            messages.push(self.subscribe_tape(instrument_id));
+        }
+        if full {
+            self.notice(
+                now_us,
+                NoticeLevel::Warning,
+                format!(
+                    "the venue allows {MAX_FEEDS} subscriptions; some books or tapes are not shown"
+                ),
+            );
         }
         messages
     }
 
-    fn subscribe(&mut self, listing: Listing) -> ClientMessage {
+    fn subscriptions(&self) -> usize {
+        self.feeds.len() + self.tapes.len()
+    }
+
+    fn subscribe(&mut self, listing: Listing, order_by_order: bool) -> ClientMessage {
         let request_id = self.request_id();
         self.feeds.insert(
             listing,
             Feed {
                 request_id,
                 book: FeedBook::new(request_id),
+                order_by_order,
                 state: FeedState::Requested,
                 updates: 0,
                 gaps: 0,
@@ -882,7 +991,36 @@ impl Model {
         ClientMessage::Subscribe {
             request_id,
             listing,
-            flags: bunting_client::bnp_wire::FeedFlags::ALL,
+            flags: if order_by_order {
+                FeedFlags::ALL.union(FeedFlags::ORDERS)
+            } else {
+                FeedFlags::ALL
+            },
+        }
+    }
+
+    /// A tape is a subscription to venue 0 (docs/specs/bnp-v1.md).
+    fn subscribe_tape(&mut self, instrument_id: u128) -> ClientMessage {
+        let request_id = self.request_id();
+        self.tapes.insert(
+            instrument_id,
+            Tape {
+                request_id,
+                book: TapeBook::new(request_id),
+                state: FeedState::Requested,
+                updates: 0,
+                gaps: 0,
+                last_message_us: None,
+            },
+        );
+        self.tape_requests.insert(request_id, instrument_id);
+        ClientMessage::Subscribe {
+            request_id,
+            listing: Listing {
+                venue_id: 0,
+                instrument_id,
+            },
+            flags: FeedFlags::ALL,
         }
     }
 
@@ -902,22 +1040,54 @@ impl Model {
             Ok(_) => {
                 feed.last_message_us = Some(now_us);
                 match message {
-                    ServerMessage::MarketSnapshot { .. }
-                    | ServerMessage::OrderSnapshot { complete: true, .. } => {
+                    // What the venue sent decides the feed's kind.
+                    ServerMessage::MarketSnapshot { .. } => {
                         feed.state = FeedState::Live;
+                        feed.order_by_order = false;
+                    }
+                    ServerMessage::OrderSnapshot { complete: true, .. } => {
+                        feed.state = FeedState::Live;
+                        feed.order_by_order = true;
                     }
                     ServerMessage::MarketUpdate { entries, .. } => {
                         feed.updates = feed.updates.saturating_add(1);
                         for entry in entries.iter().filter(|e| e.kind == EntryKind::Trade) {
-                            if self.prints.len() == MAX_PRINTS {
-                                self.prints.pop_front();
+                            push_print(
+                                &mut self.prints,
+                                TradePrint {
+                                    listing,
+                                    price: entry.price,
+                                    quantity: entry.quantity,
+                                    received_us: now_us,
+                                    buyer: None,
+                                    seller: None,
+                                },
+                            );
+                        }
+                    }
+                    ServerMessage::OrderUpdate { entries, .. } => {
+                        feed.updates = feed.updates.saturating_add(1);
+                        for entry in entries {
+                            if let OrderEntry::Trade {
+                                price,
+                                quantity,
+                                buyer,
+                                seller,
+                                ..
+                            } = *entry
+                            {
+                                push_print(
+                                    &mut self.prints,
+                                    TradePrint {
+                                        listing,
+                                        price,
+                                        quantity,
+                                        received_us: now_us,
+                                        buyer,
+                                        seller,
+                                    },
+                                );
                             }
-                            self.prints.push_back(TradePrint {
-                                listing,
-                                price: entry.price,
-                                quantity: entry.quantity,
-                                received_us: now_us,
-                            });
                         }
                     }
                     _ => {}
@@ -927,6 +1097,7 @@ impl Model {
             Err(error) => {
                 // The book is stale: start the feed again from a snapshot.
                 let gaps = feed.gaps.saturating_add(1);
+                let order_by_order = feed.order_by_order;
                 self.feed_requests.remove(&request_id);
                 self.feeds.remove(&listing);
                 self.notice(
@@ -937,7 +1108,7 @@ impl Model {
                         listing.venue_id, listing.instrument_id
                     ),
                 );
-                let subscribe = self.subscribe(listing);
+                let subscribe = self.subscribe(listing, order_by_order);
                 if let Some(feed) = self.feeds.get_mut(&listing) {
                     feed.gaps = gaps;
                 }
@@ -946,7 +1117,72 @@ impl Model {
         }
     }
 
-    fn reject(&mut self, request_type: u8, reference: u64, reason: &str, now_us: u64) {
+    fn tape_message(
+        &mut self,
+        request_id: u32,
+        message: &ServerMessage,
+        now_us: u64,
+    ) -> Vec<ClientMessage> {
+        let Some(&instrument_id) = self.tape_requests.get(&request_id) else {
+            return Vec::new();
+        };
+        let Some(tape) = self.tapes.get_mut(&instrument_id) else {
+            return Vec::new();
+        };
+        match tape.book.apply(message) {
+            Ok(_) => {
+                tape.last_message_us = Some(now_us);
+                match message {
+                    ServerMessage::TapeSnapshot { .. } => tape.state = FeedState::Live,
+                    ServerMessage::TapeUpdate { entries, .. } => {
+                        tape.updates = tape.updates.saturating_add(1);
+                        for entry in entries.iter().filter(|e| e.kind == EntryKind::Trade) {
+                            push_print(
+                                &mut self.tape_prints,
+                                TradePrint {
+                                    listing: Listing {
+                                        venue_id: entry.venue_id,
+                                        instrument_id,
+                                    },
+                                    price: entry.price,
+                                    quantity: entry.quantity,
+                                    received_us: now_us,
+                                    buyer: None,
+                                    seller: None,
+                                },
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                Vec::new()
+            }
+            Err(error) => {
+                let gaps = tape.gaps.saturating_add(1);
+                self.tape_requests.remove(&request_id);
+                self.tapes.remove(&instrument_id);
+                self.notice(
+                    now_us,
+                    NoticeLevel::Warning,
+                    format!("tape for instrument {instrument_id} {error}; resubscribing"),
+                );
+                let subscribe = self.subscribe_tape(instrument_id);
+                if let Some(tape) = self.tapes.get_mut(&instrument_id) {
+                    tape.gaps = gaps;
+                }
+                vec![ClientMessage::Unsubscribe { request_id }, subscribe]
+            }
+        }
+    }
+
+    fn reject(
+        &mut self,
+        request_type: u8,
+        reference: u64,
+        reason: &str,
+        now_us: u64,
+    ) -> Vec<ClientMessage> {
+        let mut messages = Vec::new();
         match request_type {
             msg_type::NEW_ORDER => {
                 if let Some(row) = self.order_mut(reference) {
@@ -963,12 +1199,24 @@ impl Model {
                 }
             }
             msg_type::SUBSCRIBE => {
-                if let Some(listing) = u32::try_from(reference)
-                    .ok()
-                    .and_then(|id| self.feed_requests.get(&id))
-                    && let Some(feed) = self.feeds.get_mut(listing)
+                let request_id = u32::try_from(reference).ok();
+                if let Some(&listing) = request_id.and_then(|id| self.feed_requests.get(&id))
+                    && let Some(feed) = self.feeds.get_mut(&listing)
                 {
-                    feed.state = FeedState::Refused(reason.to_owned());
+                    if feed.order_by_order {
+                        // A venue may not offer order-by-order data: fall
+                        // back to its price levels.
+                        self.feed_requests.remove(&feed.request_id);
+                        self.feeds.remove(&listing);
+                        messages.push(self.subscribe(listing, false));
+                    } else {
+                        feed.state = FeedState::Refused(reason.to_owned());
+                    }
+                }
+                if let Some(&instrument_id) = request_id.and_then(|id| self.tape_requests.get(&id))
+                    && let Some(tape) = self.tapes.get_mut(&instrument_id)
+                {
+                    tape.state = FeedState::Refused(reason.to_owned());
                 }
             }
             msg_type::ACCOUNT_REQUEST => {
@@ -986,6 +1234,7 @@ impl Model {
             NoticeLevel::Warning,
             format!("{} refused: {reason}", request_name(request_type)),
         );
+        messages
     }
 
     fn open_orders(&mut self, run_sequence: u64, orders: &[bunting_client::bnp_wire::OpenOrder]) {
@@ -1138,6 +1387,13 @@ impl Model {
     }
 }
 
+fn push_print(prints: &mut VecDeque<TradePrint>, print: TradePrint) {
+    if prints.len() == MAX_PRINTS {
+        prints.pop_front();
+    }
+    prints.push_back(print);
+}
+
 /// `InsufficientCash` → `insufficient cash`.
 fn words(name: &str) -> String {
     let mut text = String::with_capacity(name.len() + 4);
@@ -1163,6 +1419,7 @@ fn request_name(request_type: u8) -> &'static str {
         msg_type::NEW_ORDER => "order",
         msg_type::CANCEL_ORDER => "cancel",
         msg_type::KILL_SWITCH => "kill switch",
+        msg_type::KILL_SWITCH_RESET => "kill switch reset",
         msg_type::SUBSCRIBE => "subscription",
         msg_type::UNSUBSCRIBE => "unsubscribe",
         msg_type::SNAPSHOT_REQUEST => "snapshot request",

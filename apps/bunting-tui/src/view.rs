@@ -2,9 +2,11 @@
 //! nothing, so it runs the same on a terminal and on a test buffer.
 
 use crate::ui::{Field, Tab, TicketForm, Ui};
+use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Liquidity, Listing, Side};
 use bunting_trading_state::{
-    Connection, FeedState, Instrument, Model, NoticeLevel, OrderStatus, TicketKind,
+    Connection, Feed, FeedState, Instrument, Model, NoticeLevel, OrderStatus, TicketKind,
+    TradePrint,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -39,22 +41,25 @@ pub fn render(frame: &mut Frame<'_>, screen: &Screen<'_>) {
     ])
     .areas(frame.area());
     frame.render_widget(Paragraph::new(header_line(screen)), header);
-    let [side, books, trades] = Layout::horizontal([
+    let [side, books, right] = Layout::horizontal([
         Constraint::Length(26),
         Constraint::Min(30),
-        Constraint::Length(36),
+        Constraint::Length(38),
     ])
     .areas(body);
+    let [tape, trades] =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(right);
     let instrument = screen.ui.instrument(screen.model);
     render_side(frame, screen, instrument.as_ref(), side);
     render_books(frame, screen, instrument.as_ref(), books);
+    render_tape(frame, screen, instrument.as_ref(), tape);
     render_trades(frame, screen, trades);
     render_tabs(frame, screen, bottom);
     frame.render_widget(Paragraph::new(footer_line(screen)).style(DIM), footer);
     if let Some(form) = &screen.ui.ticket {
         render_ticket(frame, screen, form);
     } else if screen.ui.confirm_kill {
-        render_confirm(frame);
+        render_confirm(frame, screen.model.kill_switch_active());
     } else if screen.ui.help {
         render_help(frame);
     }
@@ -83,6 +88,27 @@ fn clock(micros: u64) -> String {
 
 fn venue(listing: Listing) -> String {
     format!("V{}", listing.venue_id)
+}
+
+/// Broker identifiers of a trade, where the venue publishes them.
+fn brokers(print: &TradePrint) -> String {
+    match (print.buyer, print.seller) {
+        (None, None) => String::new(),
+        (buyer, seller) => format!("{}→{}", broker(buyer), broker(seller)),
+    }
+}
+
+fn broker(id: Option<u128>) -> String {
+    id.map_or_else(|| "?".to_owned(), |id| format!("b{id}"))
+}
+
+fn feed_state(state: Option<&FeedState>) -> &'static str {
+    match state {
+        Some(FeedState::Live) => "live",
+        Some(FeedState::Requested) => "subscribing",
+        Some(FeedState::Refused(_)) => "refused",
+        None => "not subscribed",
+    }
 }
 
 fn side_span(side: Side) -> Span<'static> {
@@ -128,6 +154,14 @@ fn header_line(screen: &Screen<'_>) -> Line<'static> {
             duration(mean)
         )));
     }
+    // What the venue measured for this connection: published, never used
+    // to order anything (ADR 0035).
+    if let Some(one_way) = model.access_delay().and_then(|delay| delay.one_way_us) {
+        spans.push(Span::raw(format!(
+            " │ venue measures {} one way",
+            duration(one_way)
+        )));
+    }
     spans.push(Span::raw(format!(" │ seq {}", model.last_sequence())));
     if model.kill_switch_active() {
         spans.push(Span::styled(" │ KILL SWITCH ACTIVE", BAD));
@@ -139,7 +173,7 @@ fn footer_line(screen: &Screen<'_>) -> &'static str {
     if screen.ui.ticket.is_some() {
         " Tab/↑↓ field · ←→/space change · digits edit · Enter send · Esc close"
     } else {
-        " b buy · s sell · ←→ venue · ↑↓ instrument · [ ] order · c cancel · C cancel all · K kill switch · r reload · 1-4 tabs · ? help · q quit"
+        " b buy · s sell · ←→ venue · ↑↓ instrument · o orders/levels · [ ] order · c cancel · C cancel all · K kill switch · r reload · 1-4 tabs · ? help · q quit"
     }
 }
 
@@ -260,14 +294,18 @@ fn render_book(
     area: Rect,
 ) {
     let feed = screen.model.feed(listing);
-    let state = match feed.map(|feed| &feed.state) {
-        Some(FeedState::Live) => "live",
-        Some(FeedState::Requested) => "subscribing",
-        Some(FeedState::Refused(_)) => "refused",
-        None => "no feed",
+    let by_order = screen.ui.order_by_order && feed.is_some_and(|feed| feed.order_by_order);
+    let view = match (screen.ui.order_by_order, by_order) {
+        (false, _) => "levels",
+        (true, true) => "orders",
+        (true, false) => "levels only",
     };
     let block = Block::bordered()
-        .title(format!(" {symbol} · Venue {} · {state} ", listing.venue_id))
+        .title(format!(
+            " {symbol} · Venue {} · {} · {view} ",
+            listing.venue_id,
+            feed_state(feed.map(|feed| &feed.state))
+        ))
         .border_style(if chosen {
             TITLE.fg(Color::Cyan)
         } else {
@@ -275,49 +313,17 @@ fn render_book(
         });
     let rows_available = usize::from(area.height.saturating_sub(4));
     let depth = (rows_available / 2).max(1);
-    let own = |price: i64, side: Side| -> i64 {
-        screen
-            .model
-            .live_orders()
-            .filter(|row| row.listing == listing && row.side == side && row.price == Some(price))
-            .map(|row| row.remaining)
-            .sum()
-    };
-    let level_row = |level: Level, side: Side| {
-        let mine = own(level.price, side);
-        let mark = if mine > 0 {
-            format!("{mine}*")
-        } else {
-            String::new()
-        };
-        match side {
-            Side::Buy => Row::new(vec![
-                Cell::from(mark),
-                Cell::from(level.quantity.to_string()).style(BID),
-                Cell::from(level.price.to_string()).style(BID),
-                Cell::from(""),
-            ]),
-            Side::Sell => Row::new(vec![
-                Cell::from(mark),
-                Cell::from(""),
-                Cell::from(level.price.to_string()).style(ASK),
-                Cell::from(level.quantity.to_string()).style(ASK),
-            ]),
-        }
-    };
     let mut rows = Vec::new();
     if let Some(feed) = feed {
-        let asks = feed.book.asks();
-        let bids = feed.book.bids();
-        let shown_asks: Vec<Level> = asks.iter().take(depth).rev().copied().collect();
-        for _ in shown_asks.len()..depth {
+        let (asks, bids) = if by_order {
+            order_rows(feed, depth)
+        } else {
+            level_rows(screen.model, feed, listing, depth)
+        };
+        for _ in asks.len()..depth {
             rows.push(Row::new(vec![Cell::from("")]));
         }
-        rows.extend(
-            shown_asks
-                .into_iter()
-                .map(|level| level_row(level, Side::Sell)),
-        );
+        rows.extend(asks);
         let spread = match (feed.book.best_bid(), feed.book.best_ask()) {
             (Some(bid), Some(ask)) => format!("spread {}", ask.price - bid.price),
             _ => "one-sided".to_owned(),
@@ -328,24 +334,201 @@ fn render_book(
             Cell::from(spread).style(DIM),
             Cell::from(""),
         ]));
-        rows.extend(
-            bids.iter()
-                .take(depth)
-                .map(|&level| level_row(level, Side::Buy)),
-        );
+        rows.extend(bids);
     }
+    let first = if by_order { "queue" } else { "mine" };
     let table = Table::new(
         rows,
         [
-            Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Fill(1),
             Constraint::Length(10),
             Constraint::Fill(1),
         ],
     )
-    .header(Row::new(vec!["mine", "bid qty", "price", "ask qty"]).style(DIM))
+    .header(Row::new(vec![first, "bid qty", "price", "ask qty"]).style(DIM))
     .block(block);
     frame.render_widget(table, area);
+}
+
+fn book_row(first: String, side: Side, price: i64, quantity: i64) -> Row<'static> {
+    match side {
+        Side::Buy => Row::new(vec![
+            Cell::from(first),
+            Cell::from(quantity.to_string()).style(BID),
+            Cell::from(price.to_string()).style(BID),
+            Cell::from(""),
+        ]),
+        Side::Sell => Row::new(vec![
+            Cell::from(first),
+            Cell::from(""),
+            Cell::from(price.to_string()).style(ASK),
+            Cell::from(quantity.to_string()).style(ASK),
+        ]),
+    }
+}
+
+/// Price levels, asks (worst shown first) then bids, with this
+/// participant's own resting quantity at each price.
+fn level_rows(
+    model: &Model,
+    feed: &Feed,
+    listing: Listing,
+    depth: usize,
+) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
+    let row = |level: Level, side: Side| {
+        let mine: i64 = model
+            .live_orders()
+            .filter(|row| {
+                row.listing == listing && row.side == side && row.price == Some(level.price)
+            })
+            .map(|row| row.remaining)
+            .sum();
+        let mark = if mine > 0 {
+            format!("{mine}*")
+        } else {
+            String::new()
+        };
+        book_row(mark, side, level.price, level.quantity)
+    };
+    let asks = feed.book.asks();
+    let asks = asks
+        .iter()
+        .take(depth)
+        .rev()
+        .map(|&level| row(level, Side::Sell))
+        .collect();
+    let bids = feed
+        .book
+        .bids()
+        .iter()
+        .take(depth)
+        .map(|&level| row(level, Side::Buy))
+        .collect();
+    (asks, bids)
+}
+
+/// Every displayed order, asks (worst shown first) then bids, each with its
+/// place in its price's queue and its broker where the venue publishes it.
+fn order_rows(feed: &Feed, depth: usize) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
+    let row = |order: &QueuedOrder| {
+        let place = order.broker.map_or_else(
+            || format!("{}", order.position_at_price),
+            |broker| format!("{} b{broker}", order.position_at_price),
+        );
+        let style = if order.position_at_price == 1 {
+            Style::new()
+        } else {
+            DIM
+        };
+        book_row(place, order.side, order.price, order.quantity).style(style)
+    };
+    let asks = feed.book.orders(Side::Sell);
+    let asks = asks.iter().take(depth).rev().map(row).collect();
+    let bids = feed
+        .book
+        .orders(Side::Buy)
+        .iter()
+        .take(depth)
+        .map(row)
+        .collect();
+    (asks, bids)
+}
+
+/// The instrument's consolidated tape: each venue's best bid and offer and
+/// every venue's trades as the processor at the hub published them.
+fn render_tape(
+    frame: &mut Frame<'_>,
+    screen: &Screen<'_>,
+    instrument: Option<&Instrument>,
+    area: Rect,
+) {
+    let tape = instrument.and_then(|i| screen.model.tape(i.instrument_id));
+    let block = Block::bordered().title(format!(
+        " Tape from the hub · {} ",
+        feed_state(tape.map(|tape| &tape.state))
+    ));
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+    let (Some(instrument), Some(tape)) = (instrument, tape) else {
+        return;
+    };
+    let best_bid = tape.book.best(Side::Buy).map(|(venue, _)| venue);
+    let best_ask = tape.book.best(Side::Sell).map(|(venue, _)| venue);
+    let quote = |venue_id: u128, side: Side, best: Option<u128>| -> Cell<'static> {
+        let Some(level) = tape.book.quote(venue_id, side) else {
+            return Cell::from("—").style(DIM);
+        };
+        let style = match side {
+            Side::Buy => BID,
+            Side::Sell => ASK,
+        };
+        let style = if best == Some(venue_id) {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        };
+        Cell::from(format!("{} × {}", level.quantity, level.price)).style(style)
+    };
+    let quotes: Vec<Row<'_>> = instrument
+        .listings
+        .iter()
+        .map(|info| {
+            let venue_id = info.listing.venue_id;
+            Row::new(vec![
+                Cell::from(venue(info.listing)),
+                quote(venue_id, Side::Buy, best_bid),
+                quote(venue_id, Side::Sell, best_ask),
+            ])
+        })
+        .collect();
+    let quote_height = u16::try_from(quotes.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
+    let [top, bottom] =
+        Layout::vertical([Constraint::Length(quote_height), Constraint::Min(0)]).areas(inside);
+    frame.render_widget(
+        Table::new(
+            quotes,
+            [
+                Constraint::Length(4),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ],
+        )
+        .header(Row::new(vec!["ven", "best bid", "best ask"]).style(DIM)),
+        top,
+    );
+    let height = usize::from(bottom.height.saturating_sub(1));
+    let rows: Vec<Row<'_>> = screen
+        .model
+        .tape_prints()
+        .iter()
+        .rev()
+        .filter(|print| print.listing.instrument_id == instrument.instrument_id)
+        .take(height)
+        .map(|print| {
+            Row::new(vec![
+                Cell::from(clock(print.received_us)).style(DIM),
+                Cell::from(venue(print.listing)),
+                Cell::from(print.price.to_string()),
+                Cell::from(print.quantity.to_string()),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(10),
+                Constraint::Length(4),
+                Constraint::Length(10),
+                Constraint::Fill(1),
+            ],
+        )
+        .header(Row::new(vec!["received", "ven", "price", "qty"]).style(DIM)),
+        bottom,
+    );
 }
 
 fn render_trades(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
@@ -362,6 +545,7 @@ fn render_trades(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
                 Cell::from(venue(print.listing)),
                 Cell::from(print.price.to_string()),
                 Cell::from(print.quantity.to_string()),
+                Cell::from(brokers(print)).style(DIM),
             ])
         })
         .collect();
@@ -370,12 +554,13 @@ fn render_trades(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
         [
             Constraint::Length(10),
             Constraint::Length(4),
-            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(5),
             Constraint::Fill(1),
         ],
     )
-    .header(Row::new(vec!["received", "ven", "price", "qty"]).style(DIM))
-    .block(Block::bordered().title(" Trades, as they reached you "));
+    .header(Row::new(vec!["received", "ven", "price", "qty", "brokers"]).style(DIM))
+    .block(Block::bordered().title(" Direct feeds, as they reached you "));
     frame.render_widget(table, area);
 }
 
@@ -716,9 +901,22 @@ fn render_ticket(frame: &mut Frame<'_>, screen: &Screen<'_>, form: &TicketForm) 
     );
 }
 
-fn render_confirm(frame: &mut Frame<'_>) {
+fn render_confirm(frame: &mut Frame<'_>, active: bool) {
     let area = centered(frame.area(), 54, 6);
     frame.render_widget(Clear, area);
+    if active {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::raw(" The kill switch is active. Accept new orders"),
+                Line::raw(" again?"),
+                Line::raw(""),
+                Line::styled(" y to reset it · any other key keeps it on", WARN),
+            ])
+            .block(Block::bordered().title(Span::styled(" Kill switch ", BAD))),
+            area,
+        );
+        return;
+    }
     frame.render_widget(
         Paragraph::new(vec![
             Line::raw(" Cancel every live order on every venue,"),
@@ -735,22 +933,25 @@ fn render_confirm(frame: &mut Frame<'_>) {
 }
 
 fn render_help(frame: &mut Frame<'_>) {
-    let area = centered(frame.area(), 70, 18);
+    let area = centered(frame.area(), 70, 21);
     frame.render_widget(Clear, area);
     let text = [
         " Each venue lists the instrument separately and sits at its own",
         " distance. An order waits that distance before the venue sees it,",
         " and its reports and the venue's feed come back the same way.",
         "",
-        " Books: one direct feed per venue (price levels). 'mine' is your",
-        " own resting quantity at that price.",
-        " Trades: every venue's trades in the order they reached you. A far",
-        " venue's trades arrive late; this is not a consolidated tape.",
+        " Books: one direct feed per venue. 'mine' is your own resting",
+        " quantity at a price; o shows every order with its queue place.",
+        " Tape: each venue's best bid and offer and all trades, published",
+        " at the hub; near a venue it lags that venue's direct feed.",
+        " Direct feeds: every venue's trades in the order they reached you.",
         " Order rt: time from sending an order to the venue's answer.",
         " Ping: round trip to the venue host without virtual distance.",
+        " Venue measures: the one-way delay the venue measured for you.",
         "",
-        " b/s order ticket · ←→ venue · ↑↓ instrument · [ ] select order",
-        " c cancel selected · C cancel all · K kill switch · r reload",
+        " b/s ticket · ←→ venue · ↑↓ instrument · o orders/levels",
+        " [ ] select order · c cancel · C cancel all · r reload",
+        " K kill switch (again to reset it)",
         " 1-4 or Tab: orders, fills, account, log · q quit",
         "",
         " any key closes this help",

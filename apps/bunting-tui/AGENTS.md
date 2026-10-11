@@ -11,6 +11,7 @@
   both testable headlessly on Ratatui's `TestBackend`.
 - Pass the session's receive instant to `Model::apply`, and send requests as
   soon as a key produces them: the terminal must add no delay (ADR 0035).
-- Label inferred or client-measured values as such (trades as they reached
-  you, order round trip, ping), and never present the direct-feed blotter as
-  a consolidated tape.
+- Label inferred or measured values as such (trades as they reached you,
+  order round trip, ping, the venue-measured access delay), and keep the
+  direct-feed blotter and the consolidated tape apart: the tape comes from
+  the hub on its own path.

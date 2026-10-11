@@ -120,8 +120,11 @@ pub struct Ui {
     /// Index into [`Ui::order_rows`].
     pub order: usize,
     pub ticket: Option<TicketForm>,
+    /// Asking to activate the kill switch, or to reset it when active.
     pub confirm_kill: bool,
     pub help: bool,
+    /// Books show every displayed order instead of price levels.
+    pub order_by_order: bool,
 }
 
 impl Ui {
@@ -158,10 +161,12 @@ impl Ui {
         }
         if self.confirm_kill {
             self.confirm_kill = false;
-            return if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                vec![Effect::Send(model.kill_switch(now_us))]
-            } else {
+            return if !matches!(key.code, KeyCode::Char('y' | 'Y')) {
                 Vec::new()
+            } else if model.kill_switch_active() {
+                vec![Effect::Send(model.reset_kill_switch(now_us))]
+            } else {
+                vec![Effect::Send(model.kill_switch(now_us))]
             };
         }
         if self.help {
@@ -209,6 +214,7 @@ impl Ui {
                 return model.cancel_all().into_iter().map(Effect::Send).collect();
             }
             KeyCode::Char('K') => self.confirm_kill = true,
+            KeyCode::Char('o') => self.order_by_order = !self.order_by_order,
             KeyCode::Char('r') => {
                 return model
                     .refresh(now_us)
