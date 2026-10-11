@@ -92,10 +92,10 @@ fn status(model: &Model, client_order_id: u64) -> Option<OrderStatus> {
         .map(|row| row.status.clone())
 }
 
-#[test]
-fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> {
-    let directory = std::env::temp_dir().join(format!("bunting-tui-local-{}", std::process::id()));
-    let prepared = local_venue::prepare(&directory).map_err(|e| e.to_string())?;
+/// Prepares the local venue in `directory`, serves it with the real server
+/// on a thread and connects a trader to it.
+fn start(directory: &std::path::Path) -> Result<Trader, String> {
+    let prepared = local_venue::prepare(directory).map_err(|e| e.to_string())?;
     let config = ServerConfig::from_file(&prepared.config_path).map_err(|e| e.to_string())?;
     let server = std::thread::spawn(move || bunting_server::runtime::run(&config));
     let deadline = Instant::now() + TIMEOUT;
@@ -108,20 +108,16 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let mut trader = Trader {
+    Ok(Trader {
         session: Session::start(prepared.client.clone()).map_err(|e| e.to_string())?,
         model: Model::new(1),
         started: Instant::now(),
-    };
-    trader.until("every listing's book and an agent's ask", |model| {
-        model.is_connected()
-            && [QRC_NEAR, QRC_FAR].iter().all(|&listing| {
-                model
-                    .feed(listing)
-                    .is_some_and(|f| f.state == FeedState::Live)
-            })
-            && model.feed(BNT).and_then(|f| f.book.best_ask()).is_some()
-    })?;
+    })
+}
+
+/// Venue feeds are order by order, each instrument has its tape, and the
+/// venue publishes the delay it measured.
+fn public_data(trader: &mut Trader) -> Result<(), String> {
     // Venue feeds are order by order: an agent's ask is a queued order.
     let bnt = trader.model.feed(BNT).ok_or("BNT feed")?;
     assert!(bnt.order_by_order, "venue feeds are order by order");
@@ -136,6 +132,23 @@ fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> 
     trader.until("the venue's access delay", |model| {
         model.access_delay().is_some_and(|d| d.min_rtt_us.is_some())
     })?;
+    Ok(())
+}
+
+#[test]
+fn the_terminal_trades_on_the_venue_it_chooses_over_bnp() -> Result<(), String> {
+    let directory = std::env::temp_dir().join(format!("bunting-tui-local-{}", std::process::id()));
+    let mut trader = start(&directory)?;
+    trader.until("every listing's book and an agent's ask", |model| {
+        model.is_connected()
+            && [QRC_NEAR, QRC_FAR].iter().all(|&listing| {
+                model
+                    .feed(listing)
+                    .is_some_and(|f| f.state == FeedState::Live)
+            })
+            && model.feed(BNT).and_then(|f| f.book.best_ask()).is_some()
+    })?;
+    public_data(&mut trader)?;
 
     // A marketable IOC buy on venue 1 against an agent's ask.
     let ask = trader

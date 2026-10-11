@@ -44,6 +44,49 @@ fn tape_quote(venue_id: u128, side: Side, price: i64, quantity: i64) -> TapeQuot
     }
 }
 
+/// Venue 0 is the tape; venue 1 sends orders, venue 2 price levels.
+fn snapshot(request_id: u32, listing: Listing) -> ServerMessage {
+    if listing.venue_id == 0 {
+        ServerMessage::TapeSnapshot {
+            request_id,
+            instrument_id: 1,
+            last_report: 0,
+            quotes: vec![
+                tape_quote(1, Side::Buy, 99, 5),
+                tape_quote(1, Side::Sell, 101, 8),
+                tape_quote(2, Side::Buy, 98, 5),
+                tape_quote(2, Side::Sell, 103, 8),
+            ],
+        }
+    } else if listing == NEAR {
+        ServerMessage::OrderSnapshot {
+            request_id,
+            listing,
+            next_report: 1,
+            complete: true,
+            orders: vec![
+                book_order(Side::Buy, 1, 99, 3, 4),
+                book_order(Side::Buy, 2, 99, 2, 5),
+                book_order(Side::Sell, 3, 101, 8, 4),
+            ],
+        }
+    } else {
+        ServerMessage::MarketSnapshot {
+            request_id,
+            listing,
+            next_report: 1,
+            bids: vec![Level {
+                price: 98,
+                quantity: 5,
+            }],
+            asks: vec![Level {
+                price: 103,
+                quantity: 8,
+            }],
+        }
+    }
+}
+
 /// A connected model with two venues' books (venue 1 order by order), one
 /// trade on venue 2's direct feed and the same trade on the tape.
 fn market() -> Model {
@@ -84,46 +127,7 @@ fn market() -> Model {
             ..
         } = request
         {
-            let message = if listing.venue_id == 0 {
-                ServerMessage::TapeSnapshot {
-                    request_id,
-                    instrument_id: 1,
-                    last_report: 0,
-                    quotes: vec![
-                        tape_quote(1, Side::Buy, 99, 5),
-                        tape_quote(1, Side::Sell, 101, 8),
-                        tape_quote(2, Side::Buy, 98, 5),
-                        tape_quote(2, Side::Sell, 103, 8),
-                    ],
-                }
-            } else if listing == NEAR {
-                ServerMessage::OrderSnapshot {
-                    request_id,
-                    listing,
-                    next_report: 1,
-                    complete: true,
-                    orders: vec![
-                        book_order(Side::Buy, 1, 99, 3, 4),
-                        book_order(Side::Buy, 2, 99, 2, 5),
-                        book_order(Side::Sell, 3, 101, 8, 4),
-                    ],
-                }
-            } else {
-                ServerMessage::MarketSnapshot {
-                    request_id,
-                    listing,
-                    next_report: 1,
-                    bids: vec![Level {
-                        price: 98,
-                        quantity: 5,
-                    }],
-                    asks: vec![Level {
-                        price: 103,
-                        quantity: 8,
-                    }],
-                }
-            };
-            model.apply(SessionEvent::Message(message), 20);
+            model.apply(SessionEvent::Message(snapshot(request_id, listing)), 20);
             if listing == FAR {
                 model.apply(
                     SessionEvent::Message(ServerMessage::MarketUpdate {
