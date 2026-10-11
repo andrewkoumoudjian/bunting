@@ -41,8 +41,7 @@ leaves that participant without a per-participant cap.
 Teams may trade over BNP ([ADR 0040](docs/adr/0040-bunting-native-protocol-v1.md),
 [wire contract](docs/specs/bnp-v1.md)) with the `bunting-trader` client or
 their own `bunting-client` program. BNP goes through the same sequencer and
-latency map as FIX. It needs a native server build; the WASIX package has no
-BNP listener.
+latency map as FIX.
 
 1. Create an event CA and issue a server certificate (with the host name
    teams connect to) and one client certificate per team. With OpenSSL:
@@ -57,6 +56,7 @@ BNP listener.
    [ca]
    basicConstraints = critical, CA:true
    keyUsage = critical, keyCertSign, cRLSign
+   subjectKeyIdentifier = hash
    [server]
    basicConstraints = CA:false
    keyUsage = critical, digitalSignature
@@ -66,6 +66,16 @@ BNP listener.
    basicConstraints = CA:false
    keyUsage = critical, digitalSignature
    extendedKeyUsage = clientAuth
+   [revocation]
+   database = index.txt
+   crlnumber = crlnumber
+   certificate = ca.pem
+   private_key = ca.key
+   default_md = sha256
+   default_crl_days = 30
+   crl_extensions = crl_ext
+   [crl_ext]
+   authorityKeyIdentifier = keyid:always
    CNF
    openssl ecparam -name prime256v1 -genkey -noout -out ca.key
    openssl req -x509 -new -key ca.key -days 30 -config ca.cnf -extensions ca -out ca.pem
@@ -78,6 +88,9 @@ BNP listener.
    openssl req -new -key team1.key -subj /CN=team1 -out team1.csr
    openssl x509 -req -in team1.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
      -days 30 -extfile ca.cnf -extensions client -out team1.pem
+   # the initial, empty revocation list:
+   touch index.txt && echo 1000 > crlnumber
+   openssl ca -config ca.cnf -name revocation -gencrl -out ca.crl
    ```
 
    Keep `ca.key` offline. Teams may instead send a CSR and keep their key.
@@ -93,7 +106,7 @@ BNP listener.
      "certificate_chain": "server.pem",
      "private_key": "server.key",
      "client_ca": "ca.pem",
-     "revocation_lists": [],
+     "revocation_lists": ["ca.crl"],
      "roster": [{ "certificate_sha256": "<64 hex digits>", "participant_id": 1 }],
      "heartbeat_ms": 1000,
      "max_connections": 1,
@@ -110,18 +123,23 @@ BNP listener.
    They check the connection with
    `bunting-trader --server venue.example.org:9881 --ca ca.pem --cert team1.pem --key team1.key account`
    (or set `BUNTING_SERVER`, `BUNTING_CA`, `BUNTING_CERT`, `BUNTING_KEY`).
-4. To revoke a certificate, issue a new CRL from the CA and replace the file
-   named in `revocation_lists` atomically (write a new file, then rename it
-   over the old one). The venue checks the file every second: the team's live
-   session is logged out and its certificate can no longer connect, with no
-   restart ([ADR 0041](docs/adr/0041-bnp-live-certificate-revocation.md)).
-   A file that does not parse is ignored and the previous list stays in
-   force. A CRL file must be listed at start-up to be watched; roster edits
-   still need a restart. Any tool that writes a PEM CRL signed by the CA
-   works; the OpenSSL commands in step 1 keep no CA index, so CAs that need
-   revocation should be run with `openssl ca` (which does), or another CA
-   tool. List an initial (empty) CRL at start-up so there is a file to
-   replace.
+4. To revoke a certificate, revoke it in the CA's index and write a new CRL
+   over the old one atomically (to a new file, then renamed):
+
+   ```bash
+   openssl ca -config ca.cnf -name revocation -revoke team2.pem
+   openssl ca -config ca.cnf -name revocation -gencrl -out ca.crl.new && mv ca.crl.new ca.crl
+   ```
+
+   The venue checks the file every second: the team's live session is logged
+   out and its certificate can no longer connect, with no restart
+   ([ADR 0041](docs/adr/0041-bnp-live-certificate-revocation.md)). A file
+   that does not parse is ignored and the previous list stays in force.
+   Lists must be v2 CRLs with a CRL number and authority key identifier (the
+   `[revocation]` section above produces them); `openssl ca -gencrl` without
+   `crl_extensions` writes a v1 CRL, which the venue refuses at start-up. A
+   CRL file must be listed at start-up to be watched; roster edits still
+   need a restart.
 
 A BNP client that reconnects with its cursor (`--resume-after`) receives the
 reports it missed while the venue still retains them (the latest 16,384

@@ -7,6 +7,10 @@
   certificate subject. ADR 0031's interface decision (FIX plus BNP only)
   stands. Its operational impact (revocation needs a restart) is amended by
   [ADR 0041](0041-bnp-live-certificate-revocation.md): CRLs reload live.
+  Amended in slice 30 after the independent review: private reports are
+  delivered in committed sequence order (decision 6), the kill switch is per
+  participant with an explicit reset (decision 10), and connections hold no
+  session slot until they authenticate (decision 11).
 - Wire contract: [`docs/specs/bnp-v1.md`](../specs/bnp-v1.md).
 
 ## Context
@@ -62,15 +66,33 @@ hold were FIX-typed. The server had no in-process TLS.
    (atomically with the live subscription), then `ReplayComplete`. Outside
    it, the session starts live with `resume = gap` and the client rebuilds
    from `OpenOrders` and `Account`, which state their committed position.
+   Reports leave in sequence order: one whose path is shorter than an
+   earlier report's waits for it, as on any single ordered connection.
+   Without that, a near venue's report could overtake a far venue's, the
+   client's cursor (its highest sequence) would pass the slower one, and a
+   resume after a disconnect would skip it.
 7. **One live session per participant per interface.** FIX and BNP keep
    separate claims.
 8. **Native only.** BNP links `rustls` and is compiled out of the
    `wasm32` server build (`cfg(not(target_arch = "wasm32"))`); the WASIX
-   package has no BNP listener.
+   package, retired by ADR 0044, never had a BNP listener.
 9. **Reference client.** `packages/bunting-client` (connection, TLS, Hello,
    probe replies, heartbeats, cursor tracking, a feed book) and
    `apps/bunting-trader` (CLI). The client answers probes and sends orders
    immediately with `TCP_NODELAY`; it is a good client, not a compensated one.
+10. **Per-participant kill switch (slice 30).** `KillSwitch` cancels every
+    live order of the sender's participant and blocks only that
+    participant's new orders until it sends `KillSwitchReset`. The engine
+    keeps the set of kill-switched participants. Slice 25 shipped the
+    engine's earlier run-wide switch, which let any one team halt the whole
+    run; no real venue gives a participant that power. FIX v1 has no kill
+    switch message.
+11. **Authenticate before a session slot (slice 30).** Until a registered
+    certificate completes TLS and sends `Hello`, a connection counts only
+    against an unauthenticated budget (256 in total, 32 per address) bounded
+    by `handshake_timeout_ms`; only then does it take one of
+    `max_connections`. A session whose socket accepts nothing for three
+    heartbeat intervals is closed as a slow consumer.
 
 ## Consequences
 
@@ -108,6 +130,12 @@ hold were FIX-typed. The server had no in-process TLS.
    outside the window gets `gap`, then `OpenOrders` rebuilds state.
 4. With a 30 ms path, a BNP order's report arrives no earlier than the round
    trip, while `Ping` returns at once.
+5. (Slice 30) A kill switch cancels and blocks only its own team until
+   reset; private reports from a near and a far venue arrive in sequence
+   order, so a resume never skips one; twelve idle unauthenticated sockets
+   do not keep registered teams out and are closed at the handshake
+   deadline. Unit tests cover the unauthenticated budget and the
+   slow-consumer write timeout.
 
 Unit tests cover the codec (byte-exact layouts, direction, bounds, malformed
 input), identity namespaces, event attribution and the distributor's

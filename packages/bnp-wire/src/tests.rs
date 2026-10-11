@@ -279,8 +279,8 @@ fn every_message_type_is_covered_and_directional() -> Result<(), WireError> {
     let mut server_types: Vec<u8> = servers().iter().map(ServerMessage::msg_type).collect();
     client_types.dedup();
     server_types.dedup();
-    assert_eq!(client_types.len(), 14);
-    assert_eq!(server_types.len(), 23);
+    assert_eq!(client_types.len(), 15);
+    assert_eq!(server_types.len(), 24);
     for message in servers() {
         let mut frame = Vec::new();
         encode_server(&message, &mut frame)?;

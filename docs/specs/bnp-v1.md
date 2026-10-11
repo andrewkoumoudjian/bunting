@@ -71,6 +71,7 @@ length  = 1 + len(body)            (bytes after the length field)
 | 0x10 | NewOrder | `client_order_id:u64 listing side:u8 quantity:i64 order_type:u8 price:i64 tif:u8 expires_at_ns:u64 post_only:bool anonymous:bool display_quantity:option<i64>` |
 | 0x11 | CancelOrder | `client_order_id:u64` |
 | 0x12 | KillSwitch | `request_id:u64` |
+| 0x13 | KillSwitchReset | `request_id:u64` |
 | 0x20 | Subscribe | `request_id:u32 listing flags:u8` |
 | 0x21 | Unsubscribe | `request_id:u32` |
 | 0x22 | SnapshotRequest | `request_id:u32 listing depth:u16` (0 = full book) |
@@ -106,6 +107,7 @@ trades.
 | 0x58 | BalanceChanged | `stamp delta:i128` |
 | 0x59 | KillSwitchActivated | `stamp` |
 | 0x5a | OrderReduced | `stamp client_order_id:u64 order_id:u128 remaining:i64` |
+| 0x5b | KillSwitchReset | `stamp` |
 | 0x60 | MarketSnapshot | `request_id:u32 listing next_report:u64 bids:group<price:i64 quantity:i64> asks:group<…>` |
 | 0x61 | MarketUpdate | `request_id:u32 listing first_report:u64 entries:group<kind:u8 price:i64 quantity:i64>` |
 | 0x70 | Listings | `request_id:u32 listings:group<listing symbol:string>` |
@@ -131,8 +133,11 @@ and `reference` its client order ID or request ID.
 ## Session
 
 1. Client connects, completes TLS 1.3 and sends `Hello` within
-   `handshake_timeout_ms`. Frames pipelined after `Hello` are processed after
-   `Welcome`.
+   `handshake_timeout_ms`; every read waits only until that deadline. Frames
+   pipelined after `Hello` are processed after `Welcome`. Until `Hello`
+   arrives from a registered certificate the connection holds no session
+   slot: it counts against an unauthenticated budget of 256 connections, at
+   most 32 per address, and connections beyond it are closed before TLS.
 2. Server answers `Welcome`, then sends `Probe`s. Clients answer each `Probe`
    with `ProbeReply` at once; the server uses the round trips only to report
    measured delay. Measured delay never orders commands.
@@ -153,19 +158,32 @@ and `reference` its client order ID or request ID.
 - The venue order ID is `namespace(run, participant) << 64 | client_order_id`,
   where the namespace is the first 8 bytes of
   `SHA-256("bunting.bnp-namespace.v1\0" ‖ domain ‖ run ‖ participant)`
-  (never zero). New orders, cancels and kill switches use separate command
-  namespaces, so no two sessions or interfaces can collide.
+  (never zero). New orders, cancels, kill switches and kill-switch resets
+  use separate command namespaces, so no two sessions or interfaces can collide.
 - `CancelOrder` names the client order ID. A cancel for an unknown or another
   participant's order yields `CancelRejected`.
+- `KillSwitch` is per participant: the venue cancels every live order of the
+  sender's participant on every venue (`OrderCanceled` reason 2), answers
+  `KillSwitchActivated`, and rejects that participant's new orders until it
+  sends `KillSwitchReset` (answered `KillSwitchReset`). Other participants
+  are not affected. It is Bunting-added, like a broker's or venue's
+  participant kill switch; FIX v1 has no equivalent message.
+- `OrderAccepted` and `OrderDone` are sent only for orders entered over BNP;
+  orders the same participant entered over FIX reach BNP as their fills,
+  cancels and rests.
 - Every order travels to its listing's venue and waits `L(team, venue)` there
   before the sequencer can commit it; kill switches and the request messages
-  (`Listings`, `OpenOrders`, `Account`) are applied at the hub. Reports leave
+  (`Listings`, `OpenOrders`, `Account`) and kill-switch resets are applied at
+  the hub. Reports leave
   the venue after commit and arrive after `L(venue, team)`.
 
 ## Private stream and resume
 
-- Every private report carries the committed event `sequence`. A client's
-  cursor is the highest sequence it processed.
+- Every private report carries the committed event `sequence`, and the
+  venue sends them in sequence order: a report whose path is shorter than an
+  earlier one's waits for it, as on one ordered connection. A client's
+  cursor is therefore the highest sequence it processed, and resuming after
+  it never skips a report.
 - `Hello.resume_after = Some(cursor)` asks for everything after the cursor.
   When the venue's retention window (the latest 16,384 committed batches)
   covers it, `Welcome.resume = replaying`, the missed reports follow in order
@@ -195,5 +213,6 @@ Server configuration (`bnp` block, `apps/bunting-server/src/config.rs`):
 per-session rate limit: excess requests get `Reject`, session messages are
 never limited, and nothing is reordered;
 `handshake_timeout_ms` 100–60,000; `max_connections` at most the roster size.
-A slow reader that falls 4,096 committed batches behind is disconnected and
-resumes with its cursor.
+A slow reader that falls 4,096 committed batches behind, or whose socket
+accepts no bytes for three heartbeat intervals, is disconnected and resumes
+with its cursor.

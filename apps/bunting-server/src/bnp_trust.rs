@@ -178,7 +178,13 @@ fn build(config: &BnpConfig) -> Result<TrustState, String> {
     let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
         .with_crls(revocations)
         .build()
-        .map_err(|error| format!("invalid BNP client verifier: {error}"))?;
+        .map_err(|error| {
+            // webpki parses only v2 CRLs carrying a CRL number; plain
+            // `openssl ca -gencrl` without crl_extensions writes v1.
+            format!(
+                "invalid BNP client verifier: {error} (revocation lists must be v2 CRLs with a CRL number and authority key identifier; see RUNBOOK.md)"
+            )
+        })?;
     let tls = TlsServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|error| format!("BNP TLS versions: {error}"))?
