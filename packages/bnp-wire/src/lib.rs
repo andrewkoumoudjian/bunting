@@ -47,6 +47,7 @@ pub mod msg_type {
     pub const LISTINGS_REQUEST: u8 = 0x30;
     pub const OPEN_ORDERS_REQUEST: u8 = 0x31;
     pub const ACCOUNT_REQUEST: u8 = 0x32;
+    pub const OPERATOR_COMMAND: u8 = 0x38;
 
     pub const WELCOME: u8 = 0x41;
     pub const SERVER_HEARTBEAT: u8 = 0x42;
@@ -56,6 +57,7 @@ pub mod msg_type {
     pub const REPLAY_COMPLETE: u8 = 0x46;
     pub const SERVER_LOGOUT: u8 = 0x47;
     pub const ACCESS_DELAY: u8 = 0x48;
+    pub const OPERATOR_DONE: u8 = 0x49;
     pub const ORDER_ACCEPTED: u8 = 0x50;
     pub const ORDER_REJECTED: u8 = 0x51;
     pub const ORDER_RESTED: u8 = 0x52;
@@ -68,6 +70,9 @@ pub mod msg_type {
     pub const KILL_SWITCH_ACTIVATED: u8 = 0x59;
     pub const ORDER_REDUCED: u8 = 0x5a;
     pub const KILL_SWITCH_RESET_DONE: u8 = 0x5b;
+    pub const RUN_STATUS: u8 = 0x5c;
+    pub const LISTING_HALT: u8 = 0x5d;
+    pub const NEWS: u8 = 0x5e;
     pub const MARKET_SNAPSHOT: u8 = 0x60;
     pub const MARKET_UPDATE: u8 = 0x61;
     pub const ORDER_SNAPSHOT: u8 = 0x62;
@@ -291,6 +296,77 @@ wire_enum!(
     }
 );
 
+/// Who a news item is for.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NewsAudience {
+    Public,
+    Participant(u128),
+    Team(u128),
+    /// Every actor with this role name (`participant`, `instructor`, …).
+    Role(String),
+}
+
+/// An instructor or administrator action (ADR 0042).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OperatorAction {
+    Start,
+    Pause,
+    Resume,
+    /// Advances the run clock by whole steps.
+    Advance {
+        steps: u32,
+    },
+    Terminate {
+        reason: String,
+    },
+    /// Halts (or resumes) every listing of an instrument.
+    Halt {
+        instrument_id: u128,
+        halted: bool,
+        reason: String,
+    },
+    /// Cancels live orders, optionally only one participant's or one
+    /// instrument's.
+    MassCancel {
+        participant_id: Option<u128>,
+        instrument_id: Option<u128>,
+    },
+    PublishNews {
+        news_id: u128,
+        audience: NewsAudience,
+        headline: String,
+        body: String,
+    },
+    /// Freezes the iteration's scores.
+    Score,
+    Fine {
+        participant_id: u128,
+        currency_id: u128,
+        /// Minor currency units.
+        amount: i128,
+        reason: String,
+    },
+}
+
+impl OperatorAction {
+    /// This action's wire byte.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            Self::Start => 1,
+            Self::Pause => 2,
+            Self::Resume => 3,
+            Self::Advance { .. } => 4,
+            Self::Terminate { .. } => 5,
+            Self::Halt { .. } => 6,
+            Self::MassCancel { .. } => 7,
+            Self::PublishNews { .. } => 8,
+            Self::Score => 9,
+            Self::Fine { .. } => 10,
+        }
+    }
+}
+
 /// One tradable listing: an instrument on one venue.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Listing {
@@ -449,6 +525,12 @@ pub enum ClientMessage {
     AccountRequest {
         request_id: u32,
     },
+    /// An instructor's or administrator's command; refused for other
+    /// certificates.
+    OperatorCommand {
+        request_id: u32,
+        action: OperatorAction,
+    },
 }
 
 impl ClientMessage {
@@ -471,6 +553,7 @@ impl ClientMessage {
             Self::ListingsRequest { .. } => msg_type::LISTINGS_REQUEST,
             Self::OpenOrdersRequest { .. } => msg_type::OPEN_ORDERS_REQUEST,
             Self::AccountRequest { .. } => msg_type::ACCOUNT_REQUEST,
+            Self::OperatorCommand { .. } => msg_type::OPERATOR_COMMAND,
         }
     }
 }
@@ -644,6 +727,29 @@ pub enum ServerMessage {
         one_way_us: Option<u64>,
         probe_samples: u64,
     },
+    /// An operator command committed at `run_sequence`.
+    OperatorDone {
+        request_id: u32,
+        run_sequence: u64,
+    },
+    /// The run's lifecycle changed (`active`, `paused`, `terminated`, …).
+    RunStatus {
+        stamp: Stamp,
+        status: String,
+    },
+    /// Every listing of an instrument was halted or resumed.
+    ListingHalt {
+        stamp: Stamp,
+        instrument_id: u128,
+        halted: bool,
+    },
+    /// A news item whose audience includes this session's actor.
+    News {
+        stamp: Stamp,
+        news_id: u128,
+        headline: String,
+        body: String,
+    },
     OrderAccepted {
         stamp: Stamp,
         client_order_id: u64,
@@ -802,6 +908,10 @@ impl ServerMessage {
             Self::ReplayComplete { .. } => msg_type::REPLAY_COMPLETE,
             Self::Logout { .. } => msg_type::SERVER_LOGOUT,
             Self::AccessDelay { .. } => msg_type::ACCESS_DELAY,
+            Self::OperatorDone { .. } => msg_type::OPERATOR_DONE,
+            Self::RunStatus { .. } => msg_type::RUN_STATUS,
+            Self::ListingHalt { .. } => msg_type::LISTING_HALT,
+            Self::News { .. } => msg_type::NEWS,
             Self::OrderAccepted { .. } => msg_type::ORDER_ACCEPTED,
             Self::OrderRejected { .. } => msg_type::ORDER_REJECTED,
             Self::OrderRested { .. } => msg_type::ORDER_RESTED,
@@ -841,7 +951,10 @@ impl ServerMessage {
             | Self::PositionChanged { stamp, .. }
             | Self::BalanceChanged { stamp, .. }
             | Self::KillSwitchActivated { stamp }
-            | Self::KillSwitchReset { stamp } => Some(*stamp),
+            | Self::KillSwitchReset { stamp }
+            | Self::RunStatus { stamp, .. }
+            | Self::ListingHalt { stamp, .. }
+            | Self::News { stamp, .. } => Some(*stamp),
             _ => None,
         }
     }

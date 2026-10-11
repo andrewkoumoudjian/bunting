@@ -151,15 +151,7 @@ fn start_venue(name: &str) -> Result<Venue, String> {
     });
     config.validate().map_err(|error| error.to_string())?;
     std::thread::spawn(move || bunting_server::runtime::run(&config));
-    let deadline = Instant::now() + TIMEOUT;
-    while TcpStream::connect(("127.0.0.1", bnp_port)).is_err()
-        || TcpStream::connect(("127.0.0.1", fix_port)).is_err()
-    {
-        if Instant::now() > deadline {
-            return Err("server did not start".to_owned());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    support::wait_listening(&[bnp_port, fix_port])?;
     Ok(Venue {
         fix_port,
         bnp_port,

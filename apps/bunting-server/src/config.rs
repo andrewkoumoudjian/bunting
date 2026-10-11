@@ -208,6 +208,8 @@ pub struct BnpConfig {
 pub struct BnpRosterEntry {
     /// Lowercase hex SHA-256 of the client certificate's DER encoding.
     pub certificate_sha256: String,
+    /// The participant; for an instructor or administrator, its actor ID
+    /// (as on the FIX roster). Unique across the roster.
     pub participant_id: u128,
     #[serde(default = "participant_role")]
     pub role: ActorRole,
@@ -631,9 +633,12 @@ fn validate_bnp(bnp: &BnpConfig) -> Result<(), ConfigError> {
                     .to_owned(),
             ));
         }
-        if entry.role != ActorRole::Participant {
+        if !matches!(
+            entry.role,
+            ActorRole::Participant | ActorRole::Instructor | ActorRole::Administrator
+        ) {
             return Err(ConfigError(
-                "bnp.roster supports the participant role only; instructor and administrator control over BNP is not built yet"
+                "bnp.roster roles are participant, instructor or administrator (ADR 0042)"
                     .to_owned(),
             ));
         }

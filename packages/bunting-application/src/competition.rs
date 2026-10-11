@@ -252,7 +252,9 @@ pub fn risk_score(
     })
 }
 
-fn news_visible(audience: &NewsAudience, actor: &VerifiedActor) -> bool {
+/// Whether a news item with this audience is visible to the actor.
+#[must_use]
+pub fn news_visible(audience: &NewsAudience, actor: &VerifiedActor) -> bool {
     match audience {
         NewsAudience::Public => true,
         NewsAudience::Participant(participant) => actor.participant_id() == Some(*participant),

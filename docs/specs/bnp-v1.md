@@ -29,8 +29,12 @@ client stack delay counts as it is (ADR 0035).
   and SANs carry no authority. An unregistered fingerprint receives `Logout`
   and the connection closes. A message can never name a participant: every
   command is attributed to the roster entry.
-- v1 rosters accept the `participant` role only. Instructor and administrator
-  control over BNP is Target.
+- A roster entry's role is `participant`, `instructor` or `administrator`
+  (ADR 0042). For an instructor or administrator, `participant_id` is the
+  operator's actor ID (unique across the roster) and `Welcome.participant_id`
+  carries it; the session names no participant, receives no participant's
+  private reports, and its `NewOrder`, `CancelOrder` and kill-switch messages
+  are refused with `Reject`.
 - One live BNP session per participant. A second connection waits briefly for
   the first to close, then is refused with `Logout`. FIX and BNP sessions of
   the same participant are independent.
@@ -79,6 +83,7 @@ length  = 1 + len(body)            (bytes after the length field)
 | 0x30 | ListingsRequest | `request_id:u32` |
 | 0x31 | OpenOrdersRequest | `request_id:u32` |
 | 0x32 | AccountRequest | `request_id:u32` |
+| 0x38 | OperatorCommand | `request_id:u32 action:u8 …` (operator action, below) |
 
 Enumerations: `side` 1 buy, 2 sell. `order_type` 1 limit (uses `price`),
 2 market (`price` must be 0). `tif` 0 GTC, 1 IOC, 2 FOK, 3 DAY, 4 GTD (uses
@@ -98,6 +103,7 @@ trades, bit 3 order by order (venue feeds only).
 | 0x46 | ReplayComplete | `through_sequence:u64` |
 | 0x47 | Logout | `reason:string` |
 | 0x48 | AccessDelay | `source:u8 min_rtt_us:option<u64> one_way_us:option<u64> probe_samples:u64` |
+| 0x49 | OperatorDone | `request_id:u32 run_sequence:u64` |
 | 0x50 | OrderAccepted | `stamp client_order_id:u64 order_id:u128 listing side:u8 quantity:i64 price:option<i64>` |
 | 0x51 | OrderRejected | `stamp client_order_id:u64 reason:u8` |
 | 0x52 | OrderRested | `stamp client_order_id:u64 order_id:u128 price:i64 remaining:i64` |
@@ -110,6 +116,9 @@ trades, bit 3 order by order (venue feeds only).
 | 0x59 | KillSwitchActivated | `stamp` |
 | 0x5a | OrderReduced | `stamp client_order_id:u64 order_id:u128 remaining:i64` |
 | 0x5b | KillSwitchReset | `stamp` |
+| 0x5c | RunStatus | `stamp status:string` (`active`, `paused`, `terminated`, …) |
+| 0x5d | ListingHalt | `stamp instrument_id:u128 halted:bool` |
+| 0x5e | News | `stamp news_id:u128 headline:string body:string` |
 | 0x60 | MarketSnapshot | `request_id:u32 listing next_report:u64 bids:group<price:i64 quantity:i64> asks:group<…>` |
 | 0x61 | MarketUpdate | `request_id:u32 listing first_report:u64 entries:group<kind:u8 price:i64 quantity:i64>` |
 | 0x62 | OrderSnapshot | `request_id:u32 listing next_report:u64 complete:bool orders:group<side:u8 reference:u64 price:i64 quantity:i64 broker:option<u128> queue_position:u32>` |
@@ -120,8 +129,8 @@ trades, bit 3 order by order (venue feeds only).
 | 0x71 | OpenOrders | `request_id:u32 run_sequence:u64 orders:group<client_order_id:u64 order_id:u128 listing side:u8 price:i64 original:i64 remaining:i64>` |
 | 0x72 | Account | `request_id:u32 run_sequence:u64 cash:group<currency_id:u128 balance:i128 reserved:i128> positions:group<instrument_id:u128 position:i64 open_buy:i64 open_sell:i64>` |
 
-Enumerations: `role` 1 participant (2 team, 3 instructor, 4 administrator,
-5 built-in agent are reserved). `resume` 0 live, 1 replaying, 2 gap.
+Enumerations: `role` 1 participant, 3 instructor, 4 administrator (2 team
+and 5 built-in agent are reserved). `resume` 0 live, 1 replaying, 2 gap.
 `liquidity` 1 maker, 2 taker. Entry `kind` 0 trade, 1 bid, 2 ask (a level's
 absolute visible quantity after the change, 0 when it is gone). Reject
 `reason` codes 1–23 mirror the engine's `RejectCode` in order
@@ -141,6 +150,16 @@ Cancel `reason` 1 requested, 2 kill switch, 3 market remainder, 4 mass cancel,
 `Reject` answers a request the venue did not admit or could not commit (rate
 limit, bad feed, commit failure). `request_type` is the request's type byte
 and `reference` its client order ID or request ID.
+
+Operator `action` codes and the fields that follow them: 1 start, 2 pause,
+3 resume, 9 score (none); 4 advance `steps:u32`; 5 terminate
+`reason:string`; 6 halt `instrument_id:u128 halted:bool reason:string`
+(`halted` false reopens); 7 mass cancel `participant_id:option<u128>
+instrument_id:option<u128>`; 8 publish news `news_id:u128 audience:u8 …
+headline:string body:string`, where audience 0 is public, 1
+`participant_id:u128`, 2 `team_id:u128`, 3 `role:string`; 10 fine
+`participant_id:u128 currency_id:u128 amount:i128 reason:string` (minor
+units).
 
 ## Session
 
@@ -188,6 +207,24 @@ and `reference` its client order ID or request ID.
   (`Listings`, `OpenOrders`, `Account`) and kill-switch resets are applied at
   the hub. Reports leave
   the venue after commit and arrive after `L(venue, team)`.
+
+## Operator commands and the run stream (ADR 0042)
+
+- `OperatorCommand` from an instructor or administrator becomes the engine's
+  simulation command, authorized exactly as FIX's `UA` operator messages, and
+  is applied at the hub through the same admission sequencer (it waits
+  `L(operator, hub)`). The answer is `OperatorDone` with the committed run
+  sequence, or `Reject` (`request_type` 0x38, `reference` the request ID)
+  when it is refused or the engine does not commit it. A participant's
+  `OperatorCommand` is refused.
+- Every session, participants and operators alike, receives the run's
+  public facts in its private stream as they commit, stamped with their
+  event sequence: `RunStatus` for lifecycle changes, `ListingHalt` when an
+  instrument is halted or reopened on every venue, and `News` for items
+  whose audience includes the session's actor (public, its participant,
+  team or role). They are ordered with private reports, cross
+  `L(hub, team)` like them, and are replayed on resume.
+- Opening tenders, OTC, cashflow and facility commands remain FIX-only.
 
 ## Private stream and resume
 

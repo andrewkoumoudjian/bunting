@@ -31,10 +31,12 @@ use bnp_wire::{
 };
 use bunting_admission_sequencer::{DelayEstimator, Endpoint, RttSource};
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
-use bunting_application::bnp::{BnpIdentity, account_balances, listing_key, listings};
+use bunting_application::bnp::{
+    BnpIdentity, account_balances, has_run_messages, listing_key, listings, run_messages,
+};
 use bunting_application::{ApplicationService, VerifiedActor, listing_for_command};
 use bunting_engine::RunState;
-use bunting_market_events::Command;
+use bunting_market_events::{Command, SimulationCommandRequest};
 use bunting_market_types::{CorrelationId, ParticipantId, RunId};
 use bunting_origin_store::OriginStore;
 use rustls::ServerConnection;
@@ -330,10 +332,13 @@ fn handle_connection(
             return Err(reason);
         }
     };
+    // An instructor or administrator acts under its roster ID and is no
+    // participant: it cannot trade and sees no participant's reports.
+    let operator = entry.role != ActorRole::Participant;
     let actor = VerifiedActor::try_from_identity(ActorIdentity {
         actor_id: UnsignedDecimalString::new(entry.participant_id),
-        role: ActorRole::Participant,
-        participant_id: Some(UnsignedDecimalString::new(entry.participant_id)),
+        role: entry.role,
+        participant_id: (!operator).then(|| UnsignedDecimalString::new(entry.participant_id)),
         team_id: None,
     })
     .map_err(|error| format!("invalid configured BNP actor: {error}"))?;
@@ -375,7 +380,11 @@ fn handle_connection(
         version: PROTOCOL_VERSION,
         run_id: config.run_id,
         participant_id: entry.participant_id,
-        role: Role::Participant,
+        role: match entry.role {
+            ActorRole::Instructor => Role::Instructor,
+            ActorRole::Administrator => Role::Administrator,
+            _ => Role::Participant,
+        },
         heartbeat_ms: config.heartbeat_ms,
         max_frame_bytes: u32::try_from(config.max_frame_bytes).unwrap_or(u32::MAX),
         resume: status,
@@ -402,7 +411,7 @@ fn handle_connection(
                 .saturating_add(latency.delay_from(batch.source)?)
                 .max(private_floor);
             private_floor = send_at;
-            for message in identity.private_messages(&batch.events) {
+            for message in session_messages(origin, &identity, &actor, operator, &batch.events)? {
                 if message.stamp().is_some_and(|stamp| stamp.sequence > after) {
                     outbound.hold(message, send_at)?;
                 }
@@ -437,6 +446,7 @@ fn handle_connection(
         admission,
         actor: &actor,
         identity: &identity,
+        operator,
         run_id,
     };
     let heartbeat = Duration::from_millis(u64::from(config.heartbeat_ms));
@@ -570,7 +580,7 @@ fn handle_connection(
             for increment in feeds.on_batch(&batch)? {
                 hold_feed(&mut outbound, &mut feeds, &latency, increment)?;
             }
-            let messages = identity.private_messages(&batch.events);
+            let messages = session_messages(origin, &identity, &actor, operator, &batch.events)?;
             if messages.is_empty() {
                 continue;
             }
@@ -590,6 +600,34 @@ fn handle_connection(
             channel.send(&[ServerMessage::Heartbeat])?;
         }
     }
+}
+
+/// One batch's stamped messages for this session, in event order: a
+/// participant's private reports and, for every session, the run's public
+/// facts it may see (ADR 0042).
+fn session_messages(
+    origin: &PublishingOrigin,
+    identity: &BnpIdentity,
+    actor: &VerifiedActor,
+    operator: bool,
+    events: &[bunting_market_events::EventEnvelope],
+) -> Result<Vec<ServerMessage>, String> {
+    let mut messages = if operator {
+        Vec::new()
+    } else {
+        identity.private_messages(events)
+    };
+    if has_run_messages(events) {
+        messages.extend(
+            origin
+                .read_run(identity.run_id(), |state| {
+                    run_messages(state, events, actor)
+                })
+                .map_err(|error| format!("run read failed: {error}"))?,
+        );
+        messages.sort_by_key(|message| message.stamp().map_or(0, |stamp| stamp.sequence));
+    }
+    Ok(messages)
 }
 
 /// Holds one public feed message until it has crossed the virtual path from
@@ -729,6 +767,8 @@ struct SessionContext<'a> {
     admission: &'a AdmissionService,
     actor: &'a VerifiedActor,
     identity: &'a BnpIdentity,
+    /// An instructor or administrator session.
+    operator: bool,
     run_id: RunId,
 }
 
@@ -848,7 +888,8 @@ const fn request_reference(message: &ClientMessage) -> u64 {
         | ClientMessage::SnapshotRequest { request_id, .. }
         | ClientMessage::ListingsRequest { request_id }
         | ClientMessage::OpenOrdersRequest { request_id }
-        | ClientMessage::AccountRequest { request_id } => *request_id as u64,
+        | ClientMessage::AccountRequest { request_id }
+        | ClientMessage::OperatorCommand { request_id, .. } => *request_id as u64,
         _ => 0,
     }
 }
@@ -875,7 +916,38 @@ fn admit<'a>(
     let reference = request_reference(message);
     let run_id = context.run_id;
     let mut feed = None;
+    let trades = matches!(
+        message,
+        ClientMessage::NewOrder(_)
+            | ClientMessage::CancelOrder { .. }
+            | ClientMessage::KillSwitch { .. }
+            | ClientMessage::KillSwitchReset { .. }
+    );
+    if trades && context.operator {
+        return Ok(Some(
+            "instructor and administrator certificates do not trade".to_owned(),
+        ));
+    }
     let (destination, work): (Endpoint, JobWork<ServerMessage>) = match message {
+        ClientMessage::OperatorCommand { request_id, action } => {
+            if !context.operator {
+                return Ok(Some(
+                    "only instructor and administrator certificates send operator commands"
+                        .to_owned(),
+                ));
+            }
+            let request = match context
+                .identity
+                .operator_command(*request_id, action, correlation)
+            {
+                Ok(request) => request,
+                Err(error) => return Ok(Some(error.to_string())),
+            };
+            (
+                Endpoint::Hub,
+                operator_job(request, context.actor.clone(), *request_id, request_type),
+            )
+        }
         ClientMessage::NewOrder(order) => {
             let command = match context.identity.new_order(order, correlation) {
                 Ok(command) => command,
@@ -1137,6 +1209,39 @@ fn command_job(
                 }],
             },
         )
+    })
+}
+
+/// Commits one operator command on the sequencer thread and answers with
+/// the committed sequence, or a `Reject` naming why it was not committed.
+fn operator_job(
+    mut request: SimulationCommandRequest,
+    actor: VerifiedActor,
+    request_id: u32,
+    request_type: u8,
+) -> JobWork<ServerMessage> {
+    Box::new(move |context| {
+        let service = ApplicationService::new(context.origin);
+        let run_id = request.run_id;
+        request.expected_sequence = service
+            .read(run_id, RunState::sequence)
+            .map_err(|error| format!("run read failed: {error}"))?;
+        request.logical_time = context.run_time(run_id)?;
+        Ok(vec![
+            match service.execute_simulation_admitted(&actor, &request, context.admission) {
+                Ok(_) => ServerMessage::OperatorDone {
+                    request_id,
+                    run_sequence: service
+                        .read(run_id, |state| state.event_sequence().get())
+                        .map_err(|error| format!("run read failed: {error}"))?,
+                },
+                Err(error) => ServerMessage::Reject {
+                    request_type,
+                    reference: u64::from(request_id),
+                    reason: format!("operator command not committed: {error}"),
+                },
+            },
+        ])
     })
 }
 

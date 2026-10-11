@@ -72,6 +72,56 @@ fn clients() -> Vec<ClientMessage> {
         ClientMessage::OpenOrdersRequest { request_id: 8 },
         ClientMessage::AccountRequest { request_id: 9 },
     ]
+    .into_iter()
+    .chain(
+        operator_actions()
+            .into_iter()
+            .enumerate()
+            .map(|(index, action)| ClientMessage::OperatorCommand {
+                request_id: u32::try_from(index).unwrap_or(u32::MAX),
+                action,
+            }),
+    )
+    .collect()
+}
+
+/// One of every operator action, including every news audience.
+fn operator_actions() -> Vec<OperatorAction> {
+    let news = |audience| OperatorAction::PublishNews {
+        news_id: 12,
+        audience,
+        headline: "Rates cut".to_owned(),
+        body: "By 25 bp — ü".to_owned(),
+    };
+    vec![
+        OperatorAction::Start,
+        OperatorAction::Pause,
+        OperatorAction::Resume,
+        OperatorAction::Advance { steps: 3 },
+        OperatorAction::Terminate {
+            reason: "round over".to_owned(),
+        },
+        OperatorAction::Halt {
+            instrument_id: 1,
+            halted: true,
+            reason: "news pending".to_owned(),
+        },
+        OperatorAction::MassCancel {
+            participant_id: Some(2),
+            instrument_id: None,
+        },
+        news(NewsAudience::Public),
+        news(NewsAudience::Participant(2)),
+        news(NewsAudience::Team(7)),
+        news(NewsAudience::Role("instructor".to_owned())),
+        OperatorAction::Score,
+        OperatorAction::Fine {
+            participant_id: 2,
+            currency_id: 1,
+            amount: -1_000,
+            reason: "late".to_owned(),
+        },
+    ]
 }
 
 #[expect(clippy::too_many_lines, reason = "one value of every server message")]
@@ -185,6 +235,25 @@ fn servers() -> Vec<ServerMessage> {
                 },
             ],
             asks: Vec::new(),
+        },
+        ServerMessage::OperatorDone {
+            request_id: 3,
+            run_sequence: 99,
+        },
+        ServerMessage::RunStatus {
+            stamp: stamp(),
+            status: "paused".to_owned(),
+        },
+        ServerMessage::ListingHalt {
+            stamp: stamp(),
+            instrument_id: 1,
+            halted: true,
+        },
+        ServerMessage::News {
+            stamp: stamp(),
+            news_id: 12,
+            headline: "Rates cut".to_owned(),
+            body: String::new(),
         },
         ServerMessage::AccessDelay {
             source: DelaySource::Both,
@@ -382,8 +451,8 @@ fn every_message_type_is_covered_and_directional() -> Result<(), WireError> {
     let mut server_types: Vec<u8> = servers().iter().map(ServerMessage::msg_type).collect();
     client_types.dedup();
     server_types.dedup();
-    assert_eq!(client_types.len(), 15);
-    assert_eq!(server_types.len(), 29);
+    assert_eq!(client_types.len(), 16);
+    assert_eq!(server_types.len(), 33);
     for message in servers() {
         let mut frame = Vec::new();
         encode_server(&message, &mut frame)?;

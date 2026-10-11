@@ -232,6 +232,20 @@ where
             .map_err(ApplicationError::from)
     }
 
+    /// [`Self::execute_simulation`] for a request ordered by the admission
+    /// sequencer, journaled with its admission record.
+    pub fn execute_simulation_admitted(
+        &self,
+        actor: &VerifiedActor,
+        request: &SimulationCommandRequest,
+        admission: &bunting_origin_store::AdmissionRecord,
+    ) -> Result<ExecutedTransaction, ApplicationError> {
+        authorize_simulation_command(actor, request)?;
+        CommandTransaction::new(self.origin)
+            .execute_simulation_admitted(request, admission)
+            .map_err(ApplicationError::from)
+    }
+
     /// Commits the venue timer's clock tick (ADR 0037) at `logical_time`
     /// if anything is due by then, and returns `None` without committing
     /// otherwise (the run is not active, or a command already applied what

@@ -11,21 +11,22 @@
 //! two participants can never collide, and committed events map back to
 //! client order IDs without any server-side session state.
 
-use crate::competition::account;
+use crate::competition::{account, news_visible};
 use crate::{ApplicationError, VerifiedActor};
 use bnp_wire::{
     CancelReason as WireCancelReason, CashBalance, Liquidity, Listing, ListingInfo, NewOrder,
-    OpenOrder, OrderType, Position, RejectReason, ServerMessage, Side as WireSide, Stamp,
-    TimeInForce,
+    NewsAudience as WireNewsAudience, OpenOrder, OperatorAction, OrderType, Position, RejectReason,
+    ServerMessage, Side as WireSide, Stamp, TimeInForce,
 };
 use bunting_engine::{OwnedOrderState, RunState};
 use bunting_market_events::{
-    CancelOrder, CancelReason, Command, CommandPayload, EventEnvelope, EventPayload, OrderKind,
-    RejectCode, Side, SubmitOrder, TimeInForcePolicy,
+    CancelOrder, CancelReason, Command, CommandPayload, EventEnvelope, EventPayload, NewsAudience,
+    OrderKind, RejectCode, Side, SimulationCommand, SimulationCommandRequest, SimulationEvent,
+    SubmitOrder, TimeInForcePolicy,
 };
 use bunting_market_types::{
-    CommandId, CorrelationId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs, OrderId,
-    ParticipantId, PriceTicks, QuantityLots, RunId, VenueId,
+    CommandId, CorrelationId, CurrencyId, EventSequence, InstrumentId, ListingKey, LogicalTimeNs,
+    MoneyMinor, NewsId, OrderId, ParticipantId, PriceTicks, QuantityLots, RunId, VenueId,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -68,6 +69,7 @@ pub struct BnpIdentity {
     cancels: u64,
     kill_switches: u64,
     kill_switch_resets: u64,
+    operator_commands: u64,
 }
 
 impl BnpIdentity {
@@ -82,7 +84,13 @@ impl BnpIdentity {
             cancels: space(b"cancel"),
             kill_switches: space(b"kill-switch"),
             kill_switch_resets: space(b"kill-switch-reset"),
+            operator_commands: space(b"operator"),
         }
+    }
+
+    #[must_use]
+    pub const fn run_id(&self) -> RunId {
+        self.run_id
     }
 
     #[must_use]
@@ -185,6 +193,30 @@ impl BnpIdentity {
             correlation_id,
             CommandPayload::ResetKillSwitch,
         ))
+    }
+
+    /// The engine request for an instructor's or administrator's command
+    /// (ADR 0042). `self` is the operator's identity: its "participant" is
+    /// the operator's actor ID. Logical time and expected sequence are set
+    /// when the sequencer releases it.
+    ///
+    /// # Errors
+    /// Returns [`BnpMappingError::ZeroIdentifier`] for request ID 0.
+    pub fn operator_command(
+        &self,
+        request_id: u32,
+        action: &OperatorAction,
+        correlation_id: CorrelationId,
+    ) -> Result<SimulationCommandRequest, BnpMappingError> {
+        Ok(SimulationCommandRequest {
+            run_id: self.run_id,
+            command_id: CommandId::new(scoped(self.operator_commands, u64::from(request_id))?),
+            correlation_id,
+            logical_time: LogicalTimeNs::new(0),
+            expected_sequence: EventSequence::new(0),
+            actor: self.participant,
+            payload: simulation_command(action),
+        })
     }
 
     fn command(
@@ -444,6 +476,133 @@ impl BnpIdentity {
             })
             .collect()
     }
+}
+
+/// The engine command for an operator action.
+fn simulation_command(action: &OperatorAction) -> SimulationCommand {
+    match action.clone() {
+        OperatorAction::Start => SimulationCommand::StartRun,
+        OperatorAction::Pause => SimulationCommand::PauseRun,
+        OperatorAction::Resume => SimulationCommand::ResumeRun,
+        OperatorAction::Advance { steps } => SimulationCommand::Advance { steps },
+        OperatorAction::Terminate { reason } => SimulationCommand::Terminate { reason },
+        OperatorAction::Halt {
+            instrument_id,
+            halted,
+            reason,
+        } => SimulationCommand::SetListingHalt {
+            instrument_id: InstrumentId::new(instrument_id),
+            halted,
+            reason,
+        },
+        OperatorAction::MassCancel {
+            participant_id,
+            instrument_id,
+        } => SimulationCommand::MassCancel {
+            participant_id: participant_id.map(ParticipantId::new),
+            instrument_id: instrument_id.map(InstrumentId::new),
+        },
+        OperatorAction::PublishNews {
+            news_id,
+            audience,
+            headline,
+            body,
+        } => SimulationCommand::PublishNews {
+            news_id: NewsId::new(news_id),
+            audience: match audience {
+                WireNewsAudience::Public => NewsAudience::Public,
+                WireNewsAudience::Participant(id) => {
+                    NewsAudience::Participant(ParticipantId::new(id))
+                }
+                WireNewsAudience::Team(id) => NewsAudience::Team(id),
+                WireNewsAudience::Role(role) => NewsAudience::Role(role),
+            },
+            headline,
+            body,
+        },
+        OperatorAction::Score => SimulationCommand::ScoreIteration,
+        OperatorAction::Fine {
+            participant_id,
+            currency_id,
+            amount,
+            reason,
+        } => SimulationCommand::ApplyFine {
+            participant_id: ParticipantId::new(participant_id),
+            currency_id: CurrencyId::new(currency_id),
+            amount: MoneyMinor::new(amount),
+            reason,
+        },
+    }
+}
+
+/// The run's public facts in one committed batch, as `actor` may see them
+/// (ADR 0042): lifecycle changes, instrument halts, and news whose audience
+/// includes the actor (its headline and body read from `state`). Stamped
+/// with their event sequence, like private reports.
+#[must_use]
+pub fn run_messages(
+    state: &RunState,
+    events: &[EventEnvelope],
+    actor: &VerifiedActor,
+) -> Vec<ServerMessage> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let stamp = Stamp {
+                sequence: event.sequence.get(),
+                logical_time_ns: event.logical_time.get(),
+            };
+            let EventPayload::Simulation(simulation) = &event.payload else {
+                return None;
+            };
+            match simulation {
+                SimulationEvent::LifecycleChanged { status } => Some(ServerMessage::RunStatus {
+                    stamp,
+                    status: status.clone(),
+                }),
+                SimulationEvent::ListingHaltChanged {
+                    instrument_id,
+                    halted,
+                } => Some(ServerMessage::ListingHalt {
+                    stamp,
+                    instrument_id: instrument_id.get(),
+                    halted: *halted,
+                }),
+                SimulationEvent::NewsPublished { news_id, audience }
+                    if news_visible(audience, actor) =>
+                {
+                    state
+                        .simulation()
+                        .news
+                        .iter()
+                        .find(|item| item.news_id == *news_id)
+                        .map(|item| ServerMessage::News {
+                            stamp,
+                            news_id: news_id.get(),
+                            headline: item.headline.clone(),
+                            body: item.body.clone(),
+                        })
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Whether a batch holds anything [`run_messages`] maps, so a session reads
+/// the run state only when it must.
+#[must_use]
+pub fn has_run_messages(events: &[EventEnvelope]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::Simulation(
+                SimulationEvent::LifecycleChanged { .. }
+                    | SimulationEvent::ListingHaltChanged { .. }
+                    | SimulationEvent::NewsPublished { .. }
+            )
+        )
+    })
 }
 
 /// Every listing of the run, with its symbol.

@@ -1,7 +1,8 @@
 //! Command-line parsing and presentation over `bunting-client`.
 
 use bunting_client::bnp_wire::{
-    ClientMessage, FeedFlags, Listing, NewOrder, OrderType, ServerMessage, Side, TimeInForce,
+    ClientMessage, FeedFlags, Listing, NewOrder, NewsAudience, OperatorAction, OrderType,
+    ServerMessage, Side, TimeInForce,
 };
 use bunting_client::{Client, ClientConfig, FeedBook, certificate_fingerprint};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -35,10 +36,10 @@ struct Connection {
     /// PEM file of the CA that issued the venue's certificate.
     #[arg(long, env = "BUNTING_CA", global = true)]
     ca: Option<PathBuf>,
-    /// PEM file of your participant certificate.
+    /// PEM file of your certificate (participant, instructor or administrator).
     #[arg(long, env = "BUNTING_CERT", global = true)]
     cert: Option<PathBuf>,
-    /// PEM file of your participant private key.
+    /// PEM file of your certificate's private key.
     #[arg(long, env = "BUNTING_KEY", global = true)]
     key: Option<PathBuf>,
     /// Resume the private stream after this sequence (from a previous session).
@@ -82,6 +83,105 @@ enum Command {
     },
     /// Read commands from standard input while printing events.
     Shell,
+    /// Run the round (instructor and administrator certificates only).
+    #[command(subcommand)]
+    Operator(Operator),
+}
+
+/// Operator commands (ADR 0042); each prints `OperatorDone` once committed.
+#[derive(Subcommand)]
+enum Operator {
+    /// Start the run.
+    Start,
+    /// Pause the run.
+    Pause,
+    /// Resume a paused run.
+    Resume,
+    /// Advance a stepped run.
+    Advance { steps: u32 },
+    /// End the run.
+    Terminate { reason: String },
+    /// Halt an instrument on every venue.
+    Halt { instrument: u128, reason: String },
+    /// Reopen a halted instrument.
+    Unhalt { instrument: u128, reason: String },
+    /// Cancel live orders, optionally one participant's or one instrument's.
+    MassCancel {
+        #[arg(long)]
+        participant: Option<u128>,
+        #[arg(long)]
+        instrument: Option<u128>,
+    },
+    /// Publish news to everyone, or to one participant with --participant.
+    News {
+        id: u128,
+        headline: String,
+        #[arg(default_value = "")]
+        body: String,
+        #[arg(long)]
+        participant: Option<u128>,
+    },
+    /// Freeze the iteration's scores.
+    Score,
+    /// Fine a participant, in the currency's minor units.
+    Fine {
+        participant: u128,
+        currency: u128,
+        amount: i128,
+        reason: String,
+    },
+}
+
+impl Operator {
+    fn action(self) -> OperatorAction {
+        match self {
+            Self::Start => OperatorAction::Start,
+            Self::Pause => OperatorAction::Pause,
+            Self::Resume => OperatorAction::Resume,
+            Self::Advance { steps } => OperatorAction::Advance { steps },
+            Self::Terminate { reason } => OperatorAction::Terminate { reason },
+            Self::Halt { instrument, reason } => OperatorAction::Halt {
+                instrument_id: instrument,
+                halted: true,
+                reason,
+            },
+            Self::Unhalt { instrument, reason } => OperatorAction::Halt {
+                instrument_id: instrument,
+                halted: false,
+                reason,
+            },
+            Self::MassCancel {
+                participant,
+                instrument,
+            } => OperatorAction::MassCancel {
+                participant_id: participant,
+                instrument_id: instrument,
+            },
+            Self::News {
+                id,
+                headline,
+                body,
+                participant,
+            } => OperatorAction::PublishNews {
+                news_id: id,
+                audience: participant.map_or(NewsAudience::Public, NewsAudience::Participant),
+                headline,
+                body,
+            },
+            Self::Score => OperatorAction::Score,
+            Self::Fine {
+                participant,
+                currency,
+                amount,
+                reason,
+            } => OperatorAction::Fine {
+                participant_id: participant,
+                currency_id: currency,
+                amount,
+                reason,
+            },
+        }
+    }
 }
 
 #[derive(Args, Clone)]
@@ -253,6 +353,21 @@ fn execute(client: &Client, command: Command, ids: &mut impl FnMut() -> u64) -> 
         Command::Account => request(client, &ClientMessage::AccountRequest { request_id: 1 }),
         Command::Watch { feeds } => watch(client, &feeds),
         Command::Shell => shell(client, ids),
+        Command::Operator(operator) => {
+            send(
+                client,
+                &ClientMessage::OperatorCommand {
+                    request_id: 1,
+                    action: operator.action(),
+                },
+            )?;
+            until(client, |message| {
+                matches!(
+                    message,
+                    ServerMessage::OperatorDone { .. } | ServerMessage::Reject { .. }
+                )
+            })
+        }
     }
 }
 
@@ -700,6 +815,27 @@ fn describe(message: &ServerMessage) -> String {
             bids.len(),
             asks.len()
         ),
+        ServerMessage::OperatorDone { run_sequence, .. } => {
+            format!("committed at run sequence {run_sequence}")
+        }
+        ServerMessage::RunStatus { stamp, status } => {
+            format!("#{} run {status}", stamp.sequence)
+        }
+        ServerMessage::ListingHalt {
+            stamp,
+            instrument_id,
+            halted,
+        } => format!(
+            "#{} instrument {instrument_id} {}",
+            stamp.sequence,
+            if *halted { "halted" } else { "reopened" }
+        ),
+        ServerMessage::News {
+            stamp,
+            headline,
+            body,
+            ..
+        } => format!("#{} news: {headline} {body}", stamp.sequence),
         other => format!("{other:?}"),
     }
 }

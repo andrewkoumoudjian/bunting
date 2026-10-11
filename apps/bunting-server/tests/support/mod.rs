@@ -298,3 +298,21 @@ pub fn wait_for_book(
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// Waits until each port accepts a connection, opening exactly one
+/// successful connection per port. Polling every port together would keep
+/// opening (and dropping) connections to a listener that is already up
+/// while a slower one starts; under load those fill the venue's
+/// unauthenticated-connection budget and a test's real handshake is refused.
+pub fn wait_listening(ports: &[u16]) -> Result<(), String> {
+    let deadline = Instant::now() + TIMEOUT;
+    for &port in ports {
+        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+            if Instant::now() > deadline {
+                return Err(format!("server did not start listening on {port}"));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(())
+}

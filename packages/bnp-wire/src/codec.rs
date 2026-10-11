@@ -4,9 +4,9 @@
 use crate::{
     BookOrder, CancelReason, CashBalance, ClientMessage, DelaySource, Entry, EntryKind, FeedFlags,
     LENGTH_BYTES, Level, Liquidity, Listing, ListingInfo, MAGIC, MAX_FRAME_BYTES,
-    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NewOrder, OpenOrder, OrderAction, OrderEntry, OrderType,
-    Position, RejectReason, ResumeStatus, Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote,
-    TimeInForce, Welcome, WireError, msg_type as t,
+    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NewOrder, NewsAudience, OpenOrder, OperatorAction,
+    OrderAction, OrderEntry, OrderType, Position, RejectReason, ResumeStatus, Role, ServerMessage,
+    Side, Stamp, TapeEntry, TapeQuote, TimeInForce, Welcome, WireError, msg_type as t,
 };
 
 /// Kind byte of an order-by-order trade entry; order entries use their
@@ -183,6 +183,10 @@ pub fn decode_client(frame: &[u8]) -> Result<ClientMessage, WireError> {
         t::ACCOUNT_REQUEST => ClientMessage::AccountRequest {
             request_id: r.u32()?,
         },
+        t::OPERATOR_COMMAND => ClientMessage::OperatorCommand {
+            request_id: r.u32()?,
+            action: read_operator_action(&mut r)?,
+        },
         0x40..=0x7f => return Err(WireError::WrongDirection(kind)),
         other => return Err(WireError::UnknownMessageType(other)),
     };
@@ -228,6 +232,25 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
         },
         t::SERVER_LOGOUT => ServerMessage::Logout {
             reason: r.string()?,
+        },
+        t::OPERATOR_DONE => ServerMessage::OperatorDone {
+            request_id: r.u32()?,
+            run_sequence: r.u64()?,
+        },
+        t::RUN_STATUS => ServerMessage::RunStatus {
+            stamp: r.stamp()?,
+            status: r.string()?,
+        },
+        t::LISTING_HALT => ServerMessage::ListingHalt {
+            stamp: r.stamp()?,
+            instrument_id: r.u128()?,
+            halted: r.bool()?,
+        },
+        t::NEWS => ServerMessage::News {
+            stamp: r.stamp()?,
+            news_id: r.u128()?,
+            headline: r.string()?,
+            body: r.string()?,
         },
         t::ACCESS_DELAY => ServerMessage::AccessDelay {
             source: DelaySource::from_wire(r.u8()?)?,
@@ -434,6 +457,127 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
     Ok(message)
 }
 
+const AUDIENCE_PUBLIC: u8 = 0;
+const AUDIENCE_PARTICIPANT: u8 = 1;
+const AUDIENCE_TEAM: u8 = 2;
+const AUDIENCE_ROLE: u8 = 3;
+
+fn read_operator_action(r: &mut Reader<'_>) -> Result<OperatorAction, WireError> {
+    Ok(match r.u8()? {
+        1 => OperatorAction::Start,
+        2 => OperatorAction::Pause,
+        3 => OperatorAction::Resume,
+        4 => OperatorAction::Advance { steps: r.u32()? },
+        5 => OperatorAction::Terminate {
+            reason: r.string()?,
+        },
+        6 => OperatorAction::Halt {
+            instrument_id: r.u128()?,
+            halted: r.bool()?,
+            reason: r.string()?,
+        },
+        7 => OperatorAction::MassCancel {
+            participant_id: r.option(Reader::u128)?,
+            instrument_id: r.option(Reader::u128)?,
+        },
+        8 => OperatorAction::PublishNews {
+            news_id: r.u128()?,
+            audience: match r.u8()? {
+                AUDIENCE_PUBLIC => NewsAudience::Public,
+                AUDIENCE_PARTICIPANT => NewsAudience::Participant(r.u128()?),
+                AUDIENCE_TEAM => NewsAudience::Team(r.u128()?),
+                AUDIENCE_ROLE => NewsAudience::Role(r.string()?),
+                other => {
+                    return Err(WireError::InvalidValue {
+                        field: "NewsAudience",
+                        value: u64::from(other),
+                    });
+                }
+            },
+            headline: r.string()?,
+            body: r.string()?,
+        },
+        9 => OperatorAction::Score,
+        10 => OperatorAction::Fine {
+            participant_id: r.u128()?,
+            currency_id: r.u128()?,
+            amount: r.i128()?,
+            reason: r.string()?,
+        },
+        other => {
+            return Err(WireError::InvalidValue {
+                field: "OperatorAction",
+                value: u64::from(other),
+            });
+        }
+    })
+}
+
+fn write_operator_action(w: &mut Writer<'_>, action: &OperatorAction) -> Result<(), WireError> {
+    w.u8(action.code());
+    match action {
+        OperatorAction::Start
+        | OperatorAction::Pause
+        | OperatorAction::Resume
+        | OperatorAction::Score => {}
+        OperatorAction::Advance { steps } => w.u32(*steps),
+        OperatorAction::Terminate { reason } => w.string(reason)?,
+        OperatorAction::Halt {
+            instrument_id,
+            halted,
+            reason,
+        } => {
+            w.u128(*instrument_id);
+            w.bool(*halted);
+            w.string(reason)?;
+        }
+        OperatorAction::MassCancel {
+            participant_id,
+            instrument_id,
+        } => {
+            w.option(*participant_id, Writer::u128);
+            w.option(*instrument_id, Writer::u128);
+        }
+        OperatorAction::PublishNews {
+            news_id,
+            audience,
+            headline,
+            body,
+        } => {
+            w.u128(*news_id);
+            match audience {
+                NewsAudience::Public => w.u8(AUDIENCE_PUBLIC),
+                NewsAudience::Participant(id) => {
+                    w.u8(AUDIENCE_PARTICIPANT);
+                    w.u128(*id);
+                }
+                NewsAudience::Team(id) => {
+                    w.u8(AUDIENCE_TEAM);
+                    w.u128(*id);
+                }
+                NewsAudience::Role(role) => {
+                    w.u8(AUDIENCE_ROLE);
+                    w.string(role)?;
+                }
+            }
+            w.string(headline)?;
+            w.string(body)?;
+        }
+        OperatorAction::Fine {
+            participant_id,
+            currency_id,
+            amount,
+            reason,
+        } => {
+            w.u128(*participant_id);
+            w.u128(*currency_id);
+            w.i128(*amount);
+            w.string(reason)?;
+        }
+    }
+    Ok(())
+}
+
 fn read_new_order(r: &mut Reader<'_>) -> Result<NewOrder, WireError> {
     let client_order_id = r.u64()?;
     let listing = r.listing()?;
@@ -543,6 +687,10 @@ fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireE
         | ClientMessage::ListingsRequest { request_id }
         | ClientMessage::OpenOrdersRequest { request_id }
         | ClientMessage::AccountRequest { request_id } => w.u32(*request_id),
+        ClientMessage::OperatorCommand { request_id, action } => {
+            w.u32(*request_id);
+            write_operator_action(w, action)?;
+        }
         ClientMessage::SnapshotRequest {
             request_id,
             listing,
@@ -592,6 +740,37 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
         }
         ServerMessage::ReplayComplete { through_sequence } => w.u64(*through_sequence),
         ServerMessage::Logout { reason } => w.string(reason)?,
+        ServerMessage::OperatorDone {
+            request_id,
+            run_sequence,
+        } => {
+            w.u32(*request_id);
+            w.u64(*run_sequence);
+        }
+        ServerMessage::RunStatus { stamp, status } => {
+            w.stamp(*stamp);
+            w.string(status)?;
+        }
+        ServerMessage::ListingHalt {
+            stamp,
+            instrument_id,
+            halted,
+        } => {
+            w.stamp(*stamp);
+            w.u128(*instrument_id);
+            w.bool(*halted);
+        }
+        ServerMessage::News {
+            stamp,
+            news_id,
+            headline,
+            body,
+        } => {
+            w.stamp(*stamp);
+            w.u128(*news_id);
+            w.string(headline)?;
+            w.string(body)?;
+        }
         ServerMessage::AccessDelay {
             source,
             min_rtt_us,

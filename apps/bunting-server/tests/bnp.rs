@@ -11,8 +11,9 @@ use bunting_admission_sequencer::{
 };
 use bunting_api_contract::ActorRole;
 use bunting_client::bnp_wire::{
-    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, OrderEntry, OrderType,
-    RejectReason, ResumeStatus, ServerMessage, Side, TimeInForce, msg_type,
+    CancelReason, ClientMessage, FeedFlags, Liquidity, Listing, NewOrder, NewsAudience,
+    OperatorAction, OrderEntry, OrderType, RejectReason, ResumeStatus, ServerMessage, Side,
+    TimeInForce, msg_type,
 };
 use bunting_client::{Client, ClientConfig, ClientError, FeedBook, TapeBook};
 use bunting_market_types::{ParticipantId, VenueId};
@@ -37,6 +38,7 @@ struct Venue {
     ca_pem: String,
     team1: Issued,
     team2: Issued,
+    instructor: Issued,
     revoked: Issued,
     unregistered: Issued,
     foreign: Issued,
@@ -93,6 +95,7 @@ fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
     let server = authority.server()?;
     let (team1, _) = authority.client("team 1")?;
     let (team2, team2_serial) = authority.client("team 2")?;
+    let (instructor, _) = authority.client("instructor")?;
     let (revoked, revoked_serial) = authority.client("revoked")?;
     let (unregistered, _) = authority.client("unregistered")?;
     let foreign = Authority::new("Somebody else's CA")?.client("foreign")?.0;
@@ -125,6 +128,12 @@ fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
             role: ActorRole::Participant,
         })
     };
+    // An instructor's ID is its actor ID; it names no participant.
+    let operator = BnpRosterEntry {
+        certificate_sha256: instructor.fingerprint()?,
+        participant_id: 50,
+        role: ActorRole::Instructor,
+    };
     config.bnp = Some(BnpConfig {
         bind: format!("127.0.0.1:{bnp_port}"),
         run_id: 1,
@@ -136,9 +145,14 @@ fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
             "ca.crl",
             &authority.revocation_list(&[revoked_serial])?,
         )?],
-        roster: vec![entry(&team1, 1)?, entry(&team2, 2)?, entry(&revoked, 10)?],
+        roster: vec![
+            entry(&team1, 1)?,
+            entry(&team2, 2)?,
+            entry(&revoked, 10)?,
+            operator,
+        ],
         heartbeat_ms: 1_000,
-        max_connections: 3,
+        max_connections: 4,
         max_frame_bytes: 65_536,
         rate_limit_window_ms: 100,
         max_messages_per_interval: 64,
@@ -146,21 +160,14 @@ fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
     });
     config.validate().map_err(|error| error.to_string())?;
     std::thread::spawn(move || bunting_server::runtime::run(&config));
-    let deadline = Instant::now() + TIMEOUT;
-    while TcpStream::connect(("127.0.0.1", bnp_port)).is_err()
-        || TcpStream::connect(("127.0.0.1", fix_port)).is_err()
-    {
-        if Instant::now() > deadline {
-            return Err("server did not start".to_owned());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    support::wait_listening(&[bnp_port, fix_port])?;
     Ok(Venue {
         fix_port,
         bnp_port,
         ca_pem: authority.ca_pem.clone(),
         team1,
         team2,
+        instructor,
         revoked,
         unregistered,
         foreign,
@@ -902,5 +909,136 @@ fn the_order_by_order_feed_and_the_tape_show_queues_trades_and_venues() -> Resul
             .map(|level| (level.price, level.quantity)),
         Some((100, 2))
     );
+    Ok(())
+}
+
+#[test]
+fn an_instructor_runs_the_round_and_teams_see_it_in_their_stream() -> Result<(), String> {
+    let venue = start_venue("operator")?;
+    let instructor = venue.connect(&venue.instructor, None)?;
+    let team = venue.connect(&venue.team1, None)?;
+    let command = |request_id, action| {
+        instructor
+            .send(&ClientMessage::OperatorCommand { request_id, action })
+            .map_err(|error| error.to_string())?;
+        until(&instructor, |message| {
+            matches!(message, ServerMessage::OperatorDone { request_id: done, .. } if *done == request_id)
+        })
+        .map(|_| ())
+    };
+    command(1, OperatorAction::Pause)?;
+    command(2, OperatorAction::Resume)?;
+    command(
+        3,
+        OperatorAction::Halt {
+            instrument_id: 1,
+            halted: true,
+            reason: "pending news".to_owned(),
+        },
+    )?;
+    command(
+        4,
+        OperatorAction::PublishNews {
+            news_id: 1,
+            audience: NewsAudience::Participant(2),
+            headline: "for team 2 only".to_owned(),
+            body: String::new(),
+        },
+    )?;
+    command(
+        5,
+        OperatorAction::PublishNews {
+            news_id: 2,
+            audience: NewsAudience::Public,
+            headline: "BNT earnings".to_owned(),
+            body: "Revenue up 4%".to_owned(),
+        },
+    )?;
+    command(
+        6,
+        OperatorAction::Fine {
+            participant_id: 1,
+            currency_id: 1,
+            amount: 250,
+            reason: "late report".to_owned(),
+        },
+    )?;
+    // The team sees each public fact in commit order, and not news meant
+    // for another team.
+    let stream = until(&team, |message| {
+        matches!(message, ServerMessage::News { news_id: 2, .. })
+    })?;
+    let run: Vec<&ServerMessage> = stream
+        .iter()
+        .filter(|message| {
+            matches!(
+                message,
+                ServerMessage::RunStatus { .. }
+                    | ServerMessage::ListingHalt { .. }
+                    | ServerMessage::News { .. }
+            )
+        })
+        .collect();
+    assert!(
+        matches!(
+            run.as_slice(),
+            [
+                ServerMessage::RunStatus { status: paused, .. },
+                ServerMessage::RunStatus { status: active, .. },
+                ServerMessage::ListingHalt {
+                    instrument_id: 1,
+                    halted: true,
+                    ..
+                },
+                ServerMessage::News { headline, body, .. },
+            ] if paused == "paused" && active == "active" && headline == "BNT earnings" && body == "Revenue up 4%"
+        ),
+        "{run:?}"
+    );
+    let sequences: Vec<u64> = run
+        .iter()
+        .filter_map(|message| message.stamp().map(|stamp| stamp.sequence))
+        .collect();
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] < pair[1]),
+        "{sequences:?}"
+    );
+    // The fine is in the team's ledger.
+    team.send(&ClientMessage::AccountRequest { request_id: 1 })
+        .map_err(|error| error.to_string())?;
+    let account = until(&team, |message| {
+        matches!(message, ServerMessage::Account { .. })
+    })?;
+    assert!(
+        account.iter().any(|message| matches!(
+            message,
+            ServerMessage::Account { cash, .. }
+                if cash.iter().any(|balance| balance.currency_id == 1 && balance.balance == 1_000_000_000 - 250)
+        )),
+        "{account:?}"
+    );
+    // A team cannot run the round, and an instructor cannot trade.
+    team.send(&ClientMessage::OperatorCommand {
+        request_id: 7,
+        action: OperatorAction::Pause,
+    })
+    .map_err(|error| error.to_string())?;
+    until(&team, |message| {
+        matches!(
+            message,
+            ServerMessage::Reject { request_type, reference: 7, .. }
+                if *request_type == msg_type::OPERATOR_COMMAND
+        )
+    })?;
+    instructor
+        .send(&limit(1, Side::Buy, 1, 90))
+        .map_err(|error| error.to_string())?;
+    until(&instructor, |message| {
+        matches!(
+            message,
+            ServerMessage::Reject { request_type, reason, .. }
+                if *request_type == msg_type::NEW_ORDER && reason.contains("do not trade")
+        )
+    })?;
     Ok(())
 }

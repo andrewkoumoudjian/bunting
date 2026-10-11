@@ -922,7 +922,12 @@ impl Model {
             | ServerMessage::Heartbeat
             | ServerMessage::Probe { .. }
             | ServerMessage::Pong { .. }
-            | ServerMessage::Logout { .. } => {}
+            | ServerMessage::Logout { .. }
+            // The run stream (ADR 0042): not shown by this model yet.
+            | ServerMessage::OperatorDone { .. }
+            | ServerMessage::RunStatus { .. }
+            | ServerMessage::ListingHalt { .. }
+            | ServerMessage::News { .. } => {}
         }
         Vec::new()
     }
