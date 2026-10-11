@@ -7,7 +7,7 @@
   certificate subject. ADR 0031's interface decision (FIX plus BNP only)
   stands. Its operational impact (revocation needs a restart) is amended by
   [ADR 0041](0041-bnp-live-certificate-revocation.md): CRLs reload live.
-  Amended in slice 30 after the independent review: private reports are
+  Amended in slice 32 after the independent review: private reports are
   delivered in committed sequence order (decision 6), the kill switch is per
   participant with an explicit reset (decision 10), and connections hold no
   session slot until they authenticate (decision 11).
@@ -80,14 +80,14 @@ hold were FIX-typed. The server had no in-process TLS.
    probe replies, heartbeats, cursor tracking, a feed book) and
    `apps/bunting-trader` (CLI). The client answers probes and sends orders
    immediately with `TCP_NODELAY`; it is a good client, not a compensated one.
-10. **Per-participant kill switch (slice 30).** `KillSwitch` cancels every
+10. **Per-participant kill switch (slice 32).** `KillSwitch` cancels every
     live order of the sender's participant and blocks only that
     participant's new orders until it sends `KillSwitchReset`. The engine
     keeps the set of kill-switched participants. Slice 25 shipped the
     engine's earlier run-wide switch, which let any one team halt the whole
     run; no real venue gives a participant that power. FIX v1 has no kill
     switch message.
-11. **Authenticate before a session slot (slice 30).** Until a registered
+11. **Authenticate before a session slot (slice 32).** Until a registered
     certificate completes TLS and sends `Hello`, a connection counts only
     against an unauthenticated budget (256 in total, 32 per address) bounded
     by `handshake_timeout_ms`; only then does it take one of
@@ -130,7 +130,7 @@ hold were FIX-typed. The server had no in-process TLS.
    outside the window gets `gap`, then `OpenOrders` rebuilds state.
 4. With a 30 ms path, a BNP order's report arrives no earlier than the round
    trip, while `Ping` returns at once.
-5. (Slice 30) A kill switch cancels and blocks only its own team until
+5. (Slice 32) A kill switch cancels and blocks only its own team until
    reset; private reports from a near and a far venue arrive in sequence
    order, so a resume never skips one; twelve idle unauthenticated sockets
    do not keep registered teams out and are closed at the handshake
