@@ -1,0 +1,51 @@
+# The desktop trading app is its own workspace (ADR 0050): GPUI needs Rust
+# 1.92 or newer and the venue workspace is pinned to 1.88. The root
+# workspace excludes this directory; `tools/check_desk.sh` runs its gates.
+[workspace]
+
+[package]
+name = "bunting-desk"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.97"
+repository = "https://github.com/andrewkoumoudjian/bunting"
+publish = false
+description = "Bunting desktop trading app: a GPUI participant client over BNP (ADR 0050)"
+
+[[bin]]
+name = "bunting-desk"
+path = "src/main.rs"
+
+[dependencies]
+# Zed's GPUI (Longbridge's gpui-pre snapshot) plus Longbridge's components,
+# exactly pinned. Upgrades are deliberate, one version at a time.
+gpui-kit = { version = "=0.7.1", default-features = false, features = ["component", "assets"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", default-features = false, features = ["component", "assets", "test-support"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+# The root workspace's lints, repeated because this is its own workspace.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+float_arithmetic = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# GPUI is slow unoptimized; optimize dependencies in dev builds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

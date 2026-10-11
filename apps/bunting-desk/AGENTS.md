@@ -1,0 +1,13 @@
+# Bunting desktop app instructions
+
+Scope: `apps/bunting-desk/**`. Decision record: ADR 0050.
+
+- This app is a participant client, never a market authority. It never links `bunting-engine`, never matches, infers fills or edits account state. Everything it shows comes from committed BNP reports and feeds.
+- It speaks BNP through `packages/bunting-client` only. No FIX feed fallback, no side channel, no REST/WebSocket/browser surface (ADR 0031).
+- It renders the shared client state crate built with the TUI. Do not grow a second model here; ask for changes to the shared crate through the coordinator.
+- Realism (ADR 0035): every order names its venue (no default router); each venue's book is shown as its feed reported it, never merged; latency shown is measured, never smoothed or estimated; order entry and the kill switch go straight to the I/O thread with no UI-side delay or batching.
+- Local play spawns a loopback `bunting server <config>` child and connects over BNP. Stop only a child this app started.
+- Keep collections bounded and tables virtualized; a live feed must never grow an unbounded element tree.
+- Components come from `gpui-kit` (exact pin). Write GPUI code only for market-specific composition. Adapt source only from Apache-2.0 or MIT projects and record repository, commit and path. Zed's `crates/ui`, Coop, Zorite (GPL) and Rox (AGPL) are references only.
+- This directory is its own Cargo workspace with its own `Cargo.lock` and `rust-toolchain.toml` (Rust 1.97), excluded from the root workspace. Run `tools/check_desk.sh` from the repository root; the root's seven gates do not build this app.
+- Compilation and headless window tests are not visual acceptance. Say so when reporting.

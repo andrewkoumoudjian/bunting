@@ -69,7 +69,7 @@ The repository root remains one Cargo workspace and owns the single `Cargo.lock`
 - `vendor/`: approved copied/patched third-party source with license, exact upstream revision, notices, and patch log.
 - `out/`: generated release bundles; ignored and never source of truth.
 
-Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, justified private Bunting crates, `apps/*` and `bindings/*`.
+Do not create a nested Cargo workspace in `bunting-rs`. The root workspace includes `packages/*`, `bunting-rs`, justified private Bunting crates, `apps/*` and `bindings/*`, except `apps/bunting-desk`: the GPUI desktop app is its own workspace with its own `Cargo.lock` and Rust 1.97 toolchain (ADR 0050), excluded from the root and checked by `tools/check_desk.sh`. Do not add other nested workspaces.
 
 ## Package discipline
 
@@ -142,6 +142,8 @@ cargo test --locked --workspace
 cargo check --locked --workspace --target wasm32-unknown-unknown
 git diff --check
 ```
+
+For changes under `apps/bunting-desk` (and, once the app depends on them, to `bunting-client` and the shared client state crate), also run `tools/check_desk.sh` (ADR 0050); it needs Rust 1.97 via rustup and, on Linux, the X11/Wayland/xkbcommon/Vulkan development packages listed in `.github/workflows/desk.yml`.
 
 For reference changes, also verify gitlink pins, licenses, manifests/features, and the audit/adoption documents.
 

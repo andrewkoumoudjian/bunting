@@ -1,0 +1,5 @@
+# GPUI (gpui-kit 0.7.1) needs Rust 1.92 or newer; ADR 0050.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

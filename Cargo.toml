@@ -62,7 +62,7 @@ default-members = [
   "apps/bunting-cli",
   "apps/bunting-trader",
 ]
-exclude = ["ref", "vendor", "out"]
+exclude = ["ref", "vendor", "out", "apps/bunting-desk"]
 
 [workspace.package]
 edition = "2024"

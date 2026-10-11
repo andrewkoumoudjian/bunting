@@ -1,0 +1,59 @@
+name: Desktop app
+
+# The desktop app is its own Cargo workspace on Rust 1.97 (ADR 0050); the
+# root workspace's gates in ci.yml do not build it. This runs its gates on
+# every release platform.
+
+on:
+  pull_request:
+    paths:
+      - "apps/bunting-desk/**"
+      - "packages/bunting-client/**"
+      - "packages/bnp-wire/**"
+      - "tools/check_desk.sh"
+      - ".github/workflows/desk.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/bunting-desk/**"
+      - "packages/bunting-client/**"
+      - "packages/bnp-wire/**"
+      - "tools/check_desk.sh"
+      - ".github/workflows/desk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desk:
+    name: Desktop app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install Linux graphics development packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libxcb1-dev libfontconfig-dev \
+            libfreetype-dev libasound2-dev libzstd-dev
+      - name: Install the app's pinned Rust toolchain
+        working-directory: apps/bunting-desk
+        run: rustup show
+      - name: Desktop app gates
+        shell: bash
+        run: tools/check_desk.sh
