@@ -140,12 +140,21 @@ Bunting has none of this (gap G9). A 2026-10-10 survey of the code found:
 Amendment (slice 36, 2026-10-11). The official close of a listing is its
 day's last trade (the closing auction prints last), else its previous
 close, else the instrument's mark; `DayClosed` carries one per listing.
-NLV and scores keep the instrument mark, the last trade on any listing:
-for a single listing that is the official close, and with several venues
-a later trade elsewhere is fresher than one venue's close, so overriding
-it would value positions at a stale price. The paced night skip also
+Superseded in part by the slice 38 amendment below: intraday NLV keeps the
+instrument mark, the last trade on any listing, but the day-end mark is
+the primary listing's close. The paced night skip also
 covers the wait before the first pre-open, and scheduled actions or
 expiries due during a night apply at the skip, in time order.
+
+Amendment (slice 38, 2026-10-11). Intraday, NLV uses the consolidated
+last sale: the last trade on any listing. At day end, once every venue has
+closed, each instrument's mark becomes the official close of its primary
+listing, as on fund NAVs, broker statements and daily P&L, and a
+`DaySettled` event freezes every participant's NLV at those marks with its
+rank. A listing is primary when the scenario flags it (`primary: true`);
+an instrument listed once needs no flag; with a calendar, an instrument on
+several venues must flag exactly one (`ScenarioError::PrimaryListing`).
+Bunting does not pick a primary by rule.
 
 ## Consequences
 

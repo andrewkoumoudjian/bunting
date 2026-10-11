@@ -330,8 +330,11 @@ the run clock passes each boundary.
 every listing's official closing price (the day's last trade on it, which
 is the closing auction print when there is one, else its previous close,
 else the instrument's mark) in a `DayClosed` event and
-`RunState::official_close`. Valuation keeps the instrument mark, its last
-trade on any listing. Positions, cash and GTC orders carry over. When every
+`RunState::official_close`. Intraday valuation uses the instrument mark,
+its last trade on any listing; once every venue has closed (slice 38),
+each mark becomes the official close of the instrument's primary listing
+and `DaySettled` freezes every participant's NLV and rank at those marks.
+Positions, cash and GTC orders carry over. When every
 venue is closed and the next boundary is a pre-open
 (`RunState::night_until`), the timer of a paced run submits one tick at
 that pre-open, so the night (and the wait before the first pre-open) takes

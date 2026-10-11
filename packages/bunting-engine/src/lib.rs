@@ -113,6 +113,11 @@ pub struct ListingDefinition {
     /// on Toronto venues. Every listing of one venue must agree.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     broker_ids: bool,
+    /// The instrument's primary listing, whose official close is the
+    /// day-end mark (ADR 0037 §4). An instrument listed once needs no flag;
+    /// with a calendar, one listed on several venues must flag exactly one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    primary: bool,
 }
 
 impl ListingDefinition {
@@ -134,7 +139,20 @@ impl ListingDefinition {
             price_bounds,
             fees: FeeSchedule::default(),
             broker_ids: false,
+            primary: false,
         })
+    }
+
+    /// Marks this listing as its instrument's primary listing.
+    #[must_use]
+    pub const fn with_primary(mut self, primary: bool) -> Self {
+        self.primary = primary;
+        self
+    }
+
+    #[must_use]
+    pub const fn primary(&self) -> bool {
+        self.primary
     }
 
     /// Sets whether the venue publishes broker identifiers on this listing.
@@ -466,6 +484,22 @@ impl ScenarioDefinition {
                 return Err(ScenarioError::InvalidListing);
             }
         }
+        // At most one primary listing per instrument; with a calendar, an
+        // instrument on several venues names one, since its close is the
+        // day-end mark.
+        for instrument_id in self.instruments.keys() {
+            let listings = self
+                .listings
+                .values()
+                .filter(|listing| listing.key.instrument_id == *instrument_id);
+            let (count, primaries) = listings
+                .fold((0_usize, 0_usize), |(count, primaries), listing| {
+                    (count + 1, primaries + usize::from(listing.primary))
+                });
+            if primaries > 1 || (self.calendar.is_some() && count > 1 && primaries == 0) {
+                return Err(ScenarioError::PrimaryListing);
+            }
+        }
         Ok(())
     }
 
@@ -648,6 +682,9 @@ pub enum ScenarioError {
     InvalidScenarioIdentity,
     InvalidSimulation,
     InvalidCalendar,
+    /// An instrument has several primary listings, or, in a run with a
+    /// calendar, is listed on several venues without one.
+    PrimaryListing,
 }
 
 /// Immutable published scenario record addressed by identity, version and hash.
@@ -1580,8 +1617,73 @@ impl RunState {
                     closes,
                 },
             ));
+            if self
+                .session_steps
+                .keys()
+                .all(|venue| self.session_phase(*venue) == SessionPhase::Closed)
+            {
+                payloads.push(EventPayload::Simulation(self.settle_day(boundary.day)?));
+            }
         }
         Ok(())
+    }
+
+    /// Ends trading day `day` once every venue has closed: each instrument's
+    /// mark becomes its primary listing's official close (the listing
+    /// flagged primary, else its only listing), as on a broker statement,
+    /// and every participant's net liquidation value at those marks is
+    /// frozen as the day's score (ADR 0037 §4).
+    fn settle_day(
+        &mut self,
+        day: u32,
+    ) -> Result<bunting_market_events::SimulationEvent, EngineError> {
+        let mut marks = Vec::new();
+        for instrument_id in self.instruments.keys().copied() {
+            let mut listings = self
+                .listings
+                .values()
+                .map(ListingState::definition)
+                .filter(|listing| listing.key.instrument_id == instrument_id);
+            let first = listings.next();
+            let primary = match (first, listings.next()) {
+                (Some(only), None) => Some(only.key),
+                _ => self
+                    .listings
+                    .values()
+                    .map(ListingState::definition)
+                    .find(|listing| listing.key.instrument_id == instrument_id && listing.primary)
+                    .map(ListingDefinition::key),
+            };
+            if let Some(price) = primary.and_then(|key| self.closes.get(&key).copied()) {
+                self.ledger.set_mark(instrument_id, price)?;
+                marks.push(bunting_market_events::InstrumentMark {
+                    instrument_id,
+                    price,
+                });
+            }
+        }
+        let mut scores = self
+            .participants
+            .keys()
+            .map(|participant_id| {
+                self.net_liquidation_value(*participant_id)
+                    .map(|net_liquidation_value| bunting_market_events::DayScore {
+                        participant_id: *participant_id,
+                        net_liquidation_value,
+                        rank: 0,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        scores.sort_by_key(|score| {
+            (
+                std::cmp::Reverse(score.net_liquidation_value),
+                score.participant_id,
+            )
+        });
+        for (index, score) in scores.iter_mut().enumerate() {
+            score.rank = u32::try_from(index + 1).map_err(|_| EngineError::SequenceOverflow)?;
+        }
+        Ok(bunting_market_events::SimulationEvent::DaySettled { day, marks, scores })
     }
 
     /// Records the official closing price of each of `venue`'s listings:
@@ -3995,6 +4097,41 @@ mod tests {
             .unwrap();
         // Instrument 1 traded at 105; instrument 2 keeps its opening mark.
         assert_eq!(day_closes(&first.events), [(0, vec![105, 100])]);
+        // The only venue closed, so the day settles at those closes, with
+        // each participant's value frozen in rank order.
+        let settled =
+            first
+                .events
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::Simulation(
+                        bunting_market_events::SimulationEvent::DaySettled { day, marks, scores },
+                    ) => Some((*day, marks.clone(), scores.clone())),
+                    _ => None,
+                })
+                .unwrap();
+        assert_eq!(settled.0, 0);
+        assert_eq!(
+            settled
+                .1
+                .iter()
+                .map(|mark| (mark.instrument_id.get(), mark.price.get()))
+                .collect::<Vec<_>>(),
+            [(1, 105), (2, 100)]
+        );
+        assert_eq!(
+            settled
+                .2
+                .iter()
+                .map(|score| (score.rank, score.net_liquidation_value))
+                .collect::<Vec<_>>(),
+            {
+                let mut values =
+                    [1, 2].map(|id| state.net_liquidation_value(ParticipantId::new(id)).unwrap());
+                values.sort_by_key(|value| std::cmp::Reverse(*value));
+                vec![(1, values[0]), (2, values[1])]
+            }
+        );
         let listing = *state.listings.keys().next().unwrap();
         assert_eq!(state.official_close(listing), Some(PriceTicks::new(105)));
         // Day 1 has no trade: its close repeats the previous one.
@@ -4011,6 +4148,120 @@ mod tests {
         let restored = EngineSnapshotEnvelope::from_json(&json).unwrap().state;
         assert_eq!(restored, state);
         assert_eq!(restored.official_close(listing), Some(PriceTicks::new(105)));
+    }
+
+    /// Instrument 1 on venues 1 and 2 (venue 1's listing primary, unless
+    /// `primary` says otherwise), instrument 2 on venue 1; venue 2 closes
+    /// later than venue 1.
+    fn dual_listed(primary: [bool; 2]) -> Result<ScenarioDefinition, ScenarioError> {
+        let bounds = PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap();
+        let session = |venue, close_ns| calendar::VenueSession {
+            venue_id: VenueId::new(venue),
+            pre_open_ns: 10_000_000,
+            open_ns: 20_000_000,
+            closing_call_ns: close_ns - 10_000_000,
+            close_ns,
+        };
+        ScenarioDefinition::new(
+            ScenarioId::new(36),
+            ScenarioVersion::new(1),
+            instruments(),
+            [
+                ListingDefinition::new(
+                    ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
+                    "ONE".into(),
+                    bounds,
+                )?
+                .with_primary(primary[0]),
+                ListingDefinition::new(
+                    ListingKey::new(VenueId::new(2), InstrumentId::new(1)),
+                    "ONE.B".into(),
+                    bounds,
+                )?
+                .with_primary(primary[1]),
+                ListingDefinition::new(
+                    ListingKey::new(VenueId::new(1), InstrumentId::new(2)),
+                    "TWO".into(),
+                    bounds,
+                )?,
+            ],
+            [participant(1), participant(2)],
+        )?
+        .with_calendar(calendar::Calendar {
+            day_ns: 100_000_000,
+            days: 1,
+            holidays: BTreeSet::new(),
+            sessions: vec![session(1, 80_000_000), session(2, 95_000_000)],
+        })
+    }
+
+    #[test]
+    fn the_day_end_mark_is_the_primary_listing_close_not_the_last_print() {
+        assert_eq!(
+            dual_listed([false, false]).unwrap_err(),
+            ScenarioError::PrimaryListing
+        );
+        assert_eq!(
+            dual_listed([true, true]).unwrap_err(),
+            ScenarioError::PrimaryListing
+        );
+        let scenario = dual_listed([true, false]).unwrap();
+        let mut state =
+            RunState::from_scenario(RunId::new(36), IterationId::new(1), &scenario).unwrap();
+        let primary = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let secondary = ListingKey::new(VenueId::new(2), InstrumentId::new(1));
+        state
+            .apply_simulation(&clock_tick(&state, 1, 20_000_000))
+            .unwrap();
+        // The primary trades at 100, then the secondary at 110 after the
+        // primary's close.
+        for (id, participant, side, price, listing) in [
+            (2, 2, Side::Sell, 100, primary),
+            (3, 1, Side::Buy, 100, primary),
+        ] {
+            let mut order = at_listing(
+                submit(&state, id, participant, id, 1, side, price, 1),
+                listing,
+            );
+            order.logical_time = LogicalTimeNs::new(30_000_000);
+            assert!(state.apply(&order).unwrap().accepted);
+        }
+        let closed = state
+            .apply_simulation(&clock_tick(&state, 4, 80_000_000))
+            .unwrap();
+        assert!(closed.events.iter().all(|event| !matches!(
+            event.payload,
+            EventPayload::Simulation(bunting_market_events::SimulationEvent::DaySettled { .. })
+        )));
+        for (id, participant, side, price) in [(5, 2, Side::Sell, 110), (6, 1, Side::Buy, 110)] {
+            let mut order = at_listing(
+                submit(&state, id, participant, id, 1, side, price, 1),
+                secondary,
+            );
+            order.logical_time = LogicalTimeNs::new(82_000_000);
+            assert!(state.apply(&order).unwrap().accepted);
+        }
+        // Intraday, the mark is the last print anywhere.
+        assert_eq!(
+            state.ledger().mark(InstrumentId::new(1)),
+            Some(PriceTicks::new(110))
+        );
+        let settled = state
+            .apply_simulation(&clock_tick(&state, 7, 95_000_000))
+            .unwrap();
+        assert!(settled.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::Simulation(bunting_market_events::SimulationEvent::DaySettled {
+                day: 0,
+                ..
+            })
+        )));
+        // At day end it is the primary listing's official close.
+        assert_eq!(state.official_close(secondary), Some(PriceTicks::new(110)));
+        assert_eq!(
+            state.ledger().mark(InstrumentId::new(1)),
+            Some(PriceTicks::new(100))
+        );
     }
 
     #[test]

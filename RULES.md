@@ -120,8 +120,11 @@ the closing auction price, else the day's last trade there, else the
 previous close. A run may last several trading days. Positions, cash and
 good-till-cancel orders carry from one day to the next; nights, weekends
 and holidays are skipped, so the next pre-open follows the close at once.
-Your net liquidation value and score use each instrument's last trade on
-any venue.
+During the day your net liquidation value uses each instrument's last
+trade on any venue. At the end of each day, once every venue has closed,
+each instrument is marked at the official close of its primary listing
+(the scenario names it), and every team's value at those marks is recorded
+as that day's score.
 
 Your order reaches the venue over your path as always, so an order sent
 just before the open or the close can arrive too late for the auction.

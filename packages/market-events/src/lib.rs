@@ -438,6 +438,31 @@ pub enum SimulationEvent {
         day: u32,
         closes: Vec<ClosingPrice>,
     },
+    /// Every venue has closed trading day `day`: each instrument's mark is
+    /// now its primary listing's official close, and every participant's
+    /// net liquidation value at those marks is frozen as the day's score
+    /// (ADR 0037 §4). Intraday, the mark is the last trade on any listing.
+    DaySettled {
+        day: u32,
+        marks: Vec<InstrumentMark>,
+        scores: Vec<DayScore>,
+    },
+}
+
+/// An instrument's day-end mark: its primary listing's official close.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InstrumentMark {
+    pub instrument_id: InstrumentId,
+    pub price: PriceTicks,
+}
+
+/// One participant's day-end net liquidation value in the reporting
+/// currency and its rank (1 is highest; ties by participant).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DayScore {
+    pub participant_id: ParticipantId,
+    pub net_liquidation_value: MoneyMinor,
+    pub rank: u32,
 }
 
 /// One listing's official closing price: its closing auction price, else
