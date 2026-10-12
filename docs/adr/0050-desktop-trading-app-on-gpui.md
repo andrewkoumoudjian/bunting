@@ -138,7 +138,13 @@ Andrew's public GitHub stars page unless marked):
    a fixed price axis (Centre or Space recentres): your bids, bid size,
    price, ask size, your asks; clicking a size sends a limit for V at that
    price, clicking your quantity cancels it. The ticket takes an iceberg's
-   shown quantity (slice 49).
+   shown quantity (slice 49). News lists headlines newest first with the
+   chosen story beside them; Tenders & OTC answers tenders and proposes,
+   counters, accepts, rejects and breaks negotiations, each applied at the
+   hub through the sequencer like any order; the Book Trader says when an
+   instrument is halted on every venue and the status bar shows the run's
+   status. The shared state keeps them as the venue last committed them,
+   bounded (slice 50).
    Visual direction (owner, 2026-10-10: "zed and delta has very good
    ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
    a status bar, a command palette, keyboard first). *Corrected

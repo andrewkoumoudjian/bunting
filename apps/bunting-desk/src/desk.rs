@@ -9,7 +9,7 @@
 //! received them, so measured times are the network's and the venue's, not
 //! this app's frame rate.
 
-use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, Side};
+use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, OtcDecision, Side};
 use bunting_trading_state::local_venue::LocalVenue;
 use bunting_trading_state::{Instrument, Model, OrderTicket, Session, SessionEvent, TicketError};
 use gpui_kit::{AsyncApp, Context, WeakEntity};
@@ -304,6 +304,68 @@ impl Desk {
     pub fn reset_kill_switch(&mut self, cx: &mut Context<Self>) {
         let now = self.now_us();
         let message = self.model.reset_kill_switch(now);
+        self.send(&message);
+        cx.notify();
+    }
+
+    /// Accepts or declines a tender offered to this participant.
+    pub fn decide_tender(&mut self, tender_id: u128, accept: bool, cx: &mut Context<Self>) {
+        let now = self.now_us();
+        let message = self.model.decide_tender(tender_id, accept, now);
+        self.send(&message);
+        cx.notify();
+    }
+
+    /// Proposes an OTC trade in which this participant takes `side`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one argument per field of the proposal"
+    )]
+    pub fn propose_otc(
+        &mut self,
+        counterparty_id: u128,
+        instrument_id: u128,
+        side: Side,
+        quantity: i64,
+        price: i64,
+        expires_at_ns: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let now = self.now_us();
+        let message = self.model.propose_otc(
+            counterparty_id,
+            instrument_id,
+            side,
+            quantity,
+            price,
+            expires_at_ns,
+            now,
+        );
+        self.send(&message);
+        cx.notify();
+    }
+
+    /// Counters the negotiation awaiting this participant.
+    pub fn counter_otc(
+        &mut self,
+        negotiation_id: u128,
+        quantity: i64,
+        price: i64,
+        cx: &mut Context<Self>,
+    ) {
+        let message = self.model.counter_otc(negotiation_id, quantity, price);
+        self.send(&message);
+        cx.notify();
+    }
+
+    /// Accepts, rejects or breaks a negotiation.
+    pub fn decide_otc(
+        &mut self,
+        negotiation_id: u128,
+        decision: OtcDecision,
+        cx: &mut Context<Self>,
+    ) {
+        let message = self.model.decide_otc(negotiation_id, decision);
         self.send(&message);
         cx.notify();
     }

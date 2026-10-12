@@ -10,7 +10,8 @@ use crate::theme;
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
 use bunting_trading_state::{
-    Connection, FeedState, NoticeLevel, OrderStatus, OrderTicket, TicketKind, TicketTif, TradePrint,
+    Connection, FeedState, Instrument, NoticeLevel, OrderStatus, OrderTicket, TicketKind,
+    TicketTif, TradePrint,
 };
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -49,6 +50,10 @@ const ORDER_SIDE_WIDTH: f32 = 268.;
 const LEVEL_COLUMNS: [(&str, f32); 3] = [("mine", 44.), ("qty", 56.), ("price", 64.)];
 /// The cells of [`LEVEL_COLUMNS`] and the gaps between them.
 const LEVEL_SIDE_WIDTH: f32 = 180.;
+/// A venue card's least width: both sides, the gap between them, padding
+/// and border (2 × side + 30).
+const ORDER_CARD_WIDTH: f32 = 566.;
+const LEVEL_CARD_WIDTH: f32 = 390.;
 /// Height of one row in the scrolling lists.
 pub(crate) const ROW_HEIGHT: f32 = 22.;
 
@@ -416,6 +421,9 @@ impl Render for BooksPanel {
         let Some(instrument) = instrument else {
             return body;
         };
+        if let Some(halted) = halted_notice(&self.desk, &instrument, cx) {
+            body = body.child(halted);
+        }
         let listings: Vec<Listing> = instrument
             .listings
             .iter()
@@ -459,6 +467,25 @@ impl Render for BooksPanel {
         )
         .child(muted(hint, cx))
     }
+}
+
+/// A line saying `instrument` is halted, while it is.
+fn halted_notice(desk: &Entity<Desk>, instrument: &Instrument, cx: &App) -> Option<AnyElement> {
+    desk.read(cx)
+        .model()
+        .is_halted(instrument.instrument_id)
+        .then(|| {
+            div()
+                .id("books-halted")
+                .test_support()
+                .text_xs()
+                .text_color(cx.theme().warning)
+                .child(format!(
+                    "{} is halted on every venue: orders wait for the reopening.",
+                    instrument.symbol
+                ))
+                .into_any_element()
+        })
 }
 
 /// Displayed quantity on `side` from the best price through `price`.
@@ -537,12 +564,18 @@ impl BooksPanel {
         let venue_id = listing.venue_id;
         let theme = cx.theme();
         let border = if selected { theme.ring } else { theme.border };
+        // Room for both sides, the gap between them and the padding, so a
+        // narrow pane scrolls sideways instead of overlapping the sides.
+        let card_width = match self.depth {
+            Depth::Orders => ORDER_CARD_WIDTH,
+            Depth::Levels => LEVEL_CARD_WIDTH,
+        };
         let mut column = v_flex()
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
             .flex_1()
             .flex_shrink_0()
-            .min_w(px(300.))
+            .min_w(px(card_width))
             .max_w(px(640.))
             .p_2()
             .gap_1()

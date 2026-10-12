@@ -10,11 +10,13 @@
 
 pub mod actions;
 pub mod connect;
+pub mod deals;
 pub mod desk;
 pub mod flash;
 pub mod format;
 pub mod ladder;
 pub mod layouts;
+pub mod news;
 pub mod one_click;
 pub mod panels;
 pub mod panes;

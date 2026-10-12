@@ -801,3 +801,124 @@ fn the_venue_reference_finds_your_order_in_its_queue() -> Result<(), TicketError
     assert!(model.queue_place(&row).is_none());
     Ok(())
 }
+
+#[test]
+fn the_run_stream_keeps_status_halts_and_news() {
+    let (mut model, _, _) = connected();
+    message(
+        &mut model,
+        ServerMessage::RunStatus {
+            stamp: stamp(20),
+            status: "paused".to_owned(),
+        },
+        2,
+    );
+    assert_eq!(model.run_status(), Some("paused"));
+    message(
+        &mut model,
+        ServerMessage::ListingHalt {
+            stamp: stamp(21),
+            instrument_id: 1,
+            halted: true,
+        },
+        3,
+    );
+    assert!(model.is_halted(1));
+    assert!(
+        model
+            .notices()
+            .iter()
+            .any(|n| n.text == "BNT halted on every venue")
+    );
+    let news = ServerMessage::News {
+        stamp: stamp(22),
+        news_id: 5,
+        headline: "Rates cut".to_owned(),
+        body: "By 25 bp.".to_owned(),
+    };
+    message(&mut model, news.clone(), 4);
+    // A replayed item is kept once.
+    message(&mut model, news, 5);
+    assert_eq!(model.news().len(), 1);
+    assert_eq!(model.news()[0].logical_time_ns, 22_000);
+    assert_eq!(model.run_time_ns(), 22_000);
+    message(
+        &mut model,
+        ServerMessage::ListingHalt {
+            stamp: stamp(23),
+            instrument_id: 1,
+            halted: false,
+        },
+        6,
+    );
+    assert!(!model.is_halted(1));
+}
+
+#[test]
+fn tenders_keep_the_latest_committed_state() -> Result<(), &'static str> {
+    use bunting_client::bnp_wire::{TenderInfo, TenderStatus};
+    let (mut model, _, _) = connected();
+    let tender = |status| TenderInfo {
+        tender_id: 9,
+        participant_id: 1,
+        instrument_id: 1,
+        side: Side::Sell,
+        quantity: 500,
+        price: 101,
+        expires_at_ns: 90_000,
+        status,
+    };
+    message(
+        &mut model,
+        ServerMessage::Tender {
+            stamp: stamp(30),
+            tender: tender(TenderStatus::Open),
+        },
+        2,
+    );
+    assert!(
+        model
+            .notices()
+            .iter()
+            .any(|n| n.text.contains("tender offered"))
+    );
+    let ClientMessage::TenderDecision {
+        request_id,
+        tender_id,
+        accept,
+    } = model.decide_tender(9, true, 3)
+    else {
+        return Err("not a tender decision");
+    };
+    assert_eq!((tender_id, accept), (9, true));
+    // Deal request IDs are run-unique like client order IDs.
+    let ClientMessage::TenderDecision {
+        request_id: next, ..
+    } = model.decide_tender(9, true, 3)
+    else {
+        return Err("not a tender decision");
+    };
+    assert!(next > request_id);
+    message(
+        &mut model,
+        ServerMessage::Tender {
+            stamp: stamp(31),
+            tender: tender(TenderStatus::Accepted),
+        },
+        4,
+    );
+    // An older listing does not undo a newer push.
+    message(
+        &mut model,
+        ServerMessage::Deals {
+            request_id: 4,
+            run_sequence: 30,
+            tenders: vec![tender(TenderStatus::Open)],
+            negotiations: Vec::new(),
+        },
+        5,
+    );
+    assert_eq!(model.tenders().len(), 1);
+    assert_eq!(model.tenders()[0].info.status, TenderStatus::Accepted);
+    Ok(())
+}

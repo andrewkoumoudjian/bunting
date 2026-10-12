@@ -26,9 +26,10 @@ mod session;
 
 pub use bunting_client;
 pub use model::{
-    AccessDelay, AccountView, Connection, Feed, FeedState, FillRow, Instrument, MAX_FEEDS,
-    MAX_FILLS, MAX_NOTICES, MAX_ORDERS, MAX_PRINTS, Model, Notice, NoticeLevel, OrderRow,
-    OrderStatus, ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, Tape, TradePrint, VenueRoundTrip,
+    AccessDelay, AccountView, Connection, Dealt, Feed, FeedState, FillRow, Instrument, MAX_DEALS,
+    MAX_FEEDS, MAX_FILLS, MAX_NEWS, MAX_NOTICES, MAX_ORDERS, MAX_PRINTS, Model, NewsItem, Notice,
+    NoticeLevel, OrderRow, OrderStatus, ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, Tape,
+    TradePrint, VenueRoundTrip,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{SendError, Session};

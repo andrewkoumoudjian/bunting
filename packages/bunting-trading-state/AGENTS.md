@@ -19,6 +19,11 @@ render it and map input to its methods.
   throwaway CA and certificates, a server configuration and the `bunting
   server` process. The app then connects to it exactly as to a hosted venue;
   there is no embedded engine and no second code path.
+- `model/run.rs` keeps the run stream (status, halts, news; ADR 0042) and
+  deals (tenders, OTC negotiations; ADR 0043) as the venue last committed
+  them, newest committed sequence wins. Deal request IDs come from the same
+  run-unique counter as client order IDs: the venue commits a reused one
+  only once.
 - This crate never holds market authority. Everything it shows is what the
   venue committed and sent; state it infers locally (pending orders, trade
   arrival times, round trips) is labelled as such.

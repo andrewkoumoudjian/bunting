@@ -19,6 +19,9 @@ use bunting_client::bnp_wire::{
 use bunting_client::{FeedBook, QueuedOrder, TapeBook};
 use std::collections::{BTreeMap, VecDeque};
 
+mod run;
+pub use run::{Dealt, MAX_DEALS, MAX_NEWS, NewsItem};
+
 /// Subscriptions a BNP session may hold, direct feeds and tapes together
 /// (docs/specs/bnp-v1.md).
 pub const MAX_FEEDS: usize = 32;
@@ -309,6 +312,7 @@ pub struct Model {
     last_sequence: u64,
     next_request_id: u32,
     next_client_order_id: u64,
+    run: run::RunState,
 }
 
 impl Model {
@@ -340,6 +344,7 @@ impl Model {
             last_sequence: 0,
             next_request_id: 1,
             next_client_order_id: first_client_order_id.max(1),
+            run: run::RunState::default(),
         }
     }
 
@@ -706,6 +711,7 @@ impl Model {
             request_id: self.request_id(),
         }];
         messages.extend(self.refresh(now_us));
+        messages.push(self.request_deals());
         messages
     }
 
@@ -968,16 +974,16 @@ impl Model {
             | ServerMessage::Probe { .. }
             | ServerMessage::Pong { .. }
             | ServerMessage::Logout { .. }
-            // The run stream (ADR 0042) and deals (ADR 0043): not shown by
-            // this model yet.
-            | ServerMessage::OperatorDone { .. }
-            | ServerMessage::DealDone { .. }
+            // Operator commands are not sent from this model.
+            | ServerMessage::OperatorDone { .. } => {}
+            // The run stream (ADR 0042) and deals (ADR 0043).
+            run @ (ServerMessage::DealDone { .. }
             | ServerMessage::Tender { .. }
             | ServerMessage::Negotiation { .. }
             | ServerMessage::Deals { .. }
             | ServerMessage::RunStatus { .. }
             | ServerMessage::ListingHalt { .. }
-            | ServerMessage::News { .. } => {}
+            | ServerMessage::News { .. }) => self.run_message(run, now_us),
         }
         Vec::new()
     }

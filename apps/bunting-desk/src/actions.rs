@@ -24,6 +24,8 @@ actions!(
         OpenPortfolio,
         OpenTraderInfo,
         OpenNotices,
+        OpenNews,
+        OpenDeals,
         CancelAll,
         /// Asks before activating the kill switch.
         KillSwitch,
@@ -65,5 +67,7 @@ pub fn open(kind: PaneKind) -> Box<dyn Action> {
         PaneKind::Portfolio => Box::new(OpenPortfolio),
         PaneKind::TraderInfo => Box::new(OpenTraderInfo),
         PaneKind::Notices => Box::new(OpenNotices),
+        PaneKind::News => Box::new(OpenNews),
+        PaneKind::Deals => Box::new(OpenDeals),
     }
 }

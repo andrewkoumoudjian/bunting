@@ -869,3 +869,145 @@ fn the_ticket_sends_an_iceberg(cx: &mut TestAppContext) {
     assert_eq!(orders[0].listing, NEAR);
     assert_eq!(orders[0].display_quantity, Some(1));
 }
+
+fn run_stream(fixture: &Fixture, cx: &mut TestAppContext) {
+    use bunting_trading_state::bunting_client::bnp_wire::{
+        NegotiationInfo, NegotiationStatus, TenderInfo, TenderStatus,
+    };
+    let stamp = |sequence| Stamp {
+        sequence,
+        logical_time_ns: 30_000_000_000,
+    };
+    for message in [
+        ServerMessage::RunStatus {
+            stamp: stamp(20),
+            status: "active".to_owned(),
+        },
+        ServerMessage::ListingHalt {
+            stamp: stamp(21),
+            instrument_id: 7,
+            halted: true,
+        },
+        ServerMessage::News {
+            stamp: stamp(22),
+            news_id: 5,
+            headline: "Rates cut".to_owned(),
+            body: "By 25 basis points.".to_owned(),
+        },
+        ServerMessage::Tender {
+            stamp: stamp(23),
+            tender: TenderInfo {
+                tender_id: 9,
+                participant_id: 42,
+                instrument_id: 7,
+                side: Side::Sell,
+                quantity: 500,
+                price: 103,
+                expires_at_ns: 60_000_000_000,
+                status: TenderStatus::Open,
+            },
+        },
+        ServerMessage::Negotiation {
+            stamp: stamp(24),
+            negotiation: NegotiationInfo {
+                negotiation_id: 77,
+                proposer_id: 8,
+                counterparty_id: 42,
+                instrument_id: 7,
+                side: Side::Buy,
+                quantity: 200,
+                price: 100,
+                expires_at_ns: 90_000_000_000,
+                status: NegotiationStatus::Proposed,
+                awaiting: 42,
+            },
+        },
+    ] {
+        apply(fixture, cx, SessionEvent::Message(message));
+    }
+}
+
+#[gpui_kit::test]
+fn news_halts_and_run_status_are_shown(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    run_stream(&fixture, cx);
+    click(&fixture, cx, "add-news");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("run-status").visible());
+        assert!(window.find("news-5").visible());
+        assert!(window.find("news-text").visible());
+    })
+    .unwrap();
+    click(&fixture, cx, "add-books");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("books-halted").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn tenders_and_otc_are_answered_from_the_deals_pane(cx: &mut TestAppContext) {
+    use bunting_trading_state::bunting_client::bnp_wire::OtcDecision;
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    run_stream(&fixture, cx);
+    click(&fixture, cx, "add-deals");
+    click(&fixture, cx, "tender-accept-9");
+    let sent = fixture.sent.take();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [ClientMessage::TenderDecision {
+                tender_id: 9,
+                accept: true,
+                ..
+            }]
+        ),
+        "{sent:?}"
+    );
+    click(&fixture, cx, "otc-accept-77");
+    let sent = fixture.sent.take();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [ClientMessage::OtcDecision {
+                negotiation_id: 77,
+                decision: OtcDecision::Accept,
+                ..
+            }]
+        ),
+        "{sent:?}"
+    );
+    // A proposal to participant 8 at 101, expiring 60 s after the latest
+    // report's run time.
+    click(&fixture, cx, "otc-counterparty");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.input("8", cx);
+    })
+    .unwrap();
+    click(&fixture, cx, "otc-price");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.input("101", cx);
+    })
+    .unwrap();
+    click(&fixture, cx, "otc-propose");
+    let sent = fixture.sent.take();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [ClientMessage::OtcPropose {
+                counterparty_id: 8,
+                instrument_id: 7,
+                side: Side::Buy,
+                quantity: 100,
+                price: 101,
+                expires_at_ns: 90_000_000_000,
+                ..
+            }]
+        ),
+        "{sent:?}"
+    );
+}

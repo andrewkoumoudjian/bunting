@@ -57,6 +57,8 @@ impl Preset {
                     pane(PaneKind::Fills),
                     pane(PaneKind::Portfolio),
                     pane(PaneKind::TraderInfo),
+                    pane(PaneKind::News),
+                    pane(PaneKind::Deals),
                     pane(PaneKind::Notices),
                 ];
                 let mut tabs = DockLayout::tabs();
@@ -87,6 +89,8 @@ impl Preset {
                 let blotter = pane(PaneKind::Blotter);
                 let fills = pane(PaneKind::Fills);
                 let tape = pane(PaneKind::Tape);
+                let news = pane(PaneKind::News);
+                let deals = pane(PaneKind::Deals);
                 let notices = pane(PaneKind::Notices);
                 DockLayout::v_split()
                     .child(
@@ -118,12 +122,14 @@ impl Preset {
                             .child(
                                 DockLayout::tabs()
                                     .panel_view(blotter, cx)
-                                    .panel_view(fills, cx),
+                                    .panel_view(fills, cx)
+                                    .panel_view(deals, cx),
                                 None,
                             )
                             .child(
                                 DockLayout::tabs()
                                     .panel_view(tape, cx)
+                                    .panel_view(news, cx)
                                     .panel_view(notices, cx),
                                 Some(px(520.)),
                             ),
@@ -138,6 +144,7 @@ impl Preset {
                     pane(PaneKind::Blotter),
                     pane(PaneKind::Fills),
                     pane(PaneKind::Portfolio),
+                    pane(PaneKind::News),
                     pane(PaneKind::Notices),
                 ];
                 let mut tabs = DockLayout::tabs();

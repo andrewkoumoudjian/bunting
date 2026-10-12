@@ -591,6 +591,18 @@ impl Workspace {
                     .child(format!("Venue {venue} {}", format::duration(trip.last_us))),
             );
         }
+        if let Some(status) = model.run_status() {
+            pill = pill.child(
+                div()
+                    .id("run-status")
+                    .test_support()
+                    .px_2()
+                    .rounded(theme.radius)
+                    .bg(theme.secondary)
+                    .text_color(theme.secondary_foreground)
+                    .child(format!("Run {status}")),
+            );
+        }
         if model.kill_switch_active() {
             pill = pill.child(
                 div()

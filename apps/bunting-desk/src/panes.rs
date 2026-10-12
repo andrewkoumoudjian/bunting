@@ -1,8 +1,10 @@
 //! Every kind of pane the workspace can open, any number of times, and the
 //! builders that bring panes back from a saved layout.
 
+use crate::deals::DealsPanel;
 use crate::desk::Desk;
 use crate::ladder::LadderPanel;
+use crate::news::NewsPanel;
 use crate::panels::{
     AccountPanel, BooksPanel, FillsPanel, NoticesPanel, OrdersPanel, PositionsPanel, TicketPanel,
     TradesPanel,
@@ -25,10 +27,12 @@ pub enum PaneKind {
     Portfolio,
     TraderInfo,
     Notices,
+    News,
+    Deals,
 }
 
 impl PaneKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::BookTrader,
         Self::LadderTrader,
         Self::OrderEntry,
@@ -38,6 +42,8 @@ impl PaneKind {
         Self::Portfolio,
         Self::TraderInfo,
         Self::Notices,
+        Self::News,
+        Self::Deals,
     ];
 
     /// The name saved layouts use, and the pane's element ID.
@@ -53,6 +59,8 @@ impl PaneKind {
             Self::Portfolio => "positions",
             Self::TraderInfo => "account",
             Self::Notices => "notices",
+            Self::News => "news",
+            Self::Deals => "deals",
         }
     }
 
@@ -68,6 +76,8 @@ impl PaneKind {
             Self::Portfolio => "Portfolio",
             Self::TraderInfo => "Trader Info",
             Self::Notices => "Notices",
+            Self::News => "News",
+            Self::Deals => "Tenders & OTC",
         }
     }
 
@@ -83,6 +93,8 @@ impl PaneKind {
             Self::Portfolio => IconName::ChartPie,
             Self::TraderInfo => IconName::CircleUser,
             Self::Notices => IconName::Bell,
+            Self::News => IconName::Info,
+            Self::Deals => IconName::Replace,
         }
     }
 
@@ -108,6 +120,8 @@ impl PaneKind {
             Self::Portfolio => panel_handle(cx.new(|cx| PositionsPanel::new(desk, cx))),
             Self::TraderInfo => panel_handle(cx.new(|cx| AccountPanel::new(desk, cx))),
             Self::Notices => panel_handle(cx.new(|cx| NoticesPanel::new(desk, cx))),
+            Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
+            Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
         }
     }
 }
