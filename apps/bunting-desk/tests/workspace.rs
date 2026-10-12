@@ -789,3 +789,83 @@ fn the_command_palette_and_keys_run_the_same_commands(cx: &mut TestAppContext) {
             .read_with(cx, |workspace, _| workspace.palette_open())
     );
 }
+
+#[gpui_kit::test]
+fn the_ladder_trades_and_cancels_on_its_own_venue(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    click(&fixture, cx, "add-ladder");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // No venue until the trader picks one.
+        assert!(window.try_find("ladder-bid-99").is_none());
+    })
+    .unwrap();
+    click(&fixture, cx, "ladder-venue-1");
+    // Centred on the near venue's mid (99 × 101): click its bid size.
+    click(&fixture, cx, "ladder-bid-99");
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].listing, NEAR);
+    assert_eq!(orders[0].side, Side::Buy);
+    assert_eq!(orders[0].order_type, OrderType::Limit { price: 99 });
+    assert_eq!(orders[0].quantity, 100);
+    let client_order_id = orders[0].client_order_id;
+    let stamp = Stamp {
+        sequence: 5,
+        logical_time_ns: 1_000,
+    };
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderAccepted {
+            stamp,
+            client_order_id,
+            order_id: 900,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 100,
+            price: Some(99),
+        }),
+    );
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp,
+            client_order_id,
+            order_id: 900,
+            price: 99,
+            remaining: 100,
+            reference: None,
+        }),
+    );
+    // Your quantity shows beside the price; clicking it cancels.
+    click(&fixture, cx, "ladder-mybid-99");
+    assert_eq!(
+        fixture.sent.take(),
+        vec![ClientMessage::CancelOrder { client_order_id }]
+    );
+    // Space recentres without sending anything.
+    click(&fixture, cx, "ladder-centre");
+    press(&fixture, cx, "space");
+    assert!(fixture.sent.take().is_empty());
+}
+
+#[gpui_kit::test]
+fn the_ticket_sends_an_iceberg(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    // Pick the near venue's bid: venue and price go on the ticket.
+    click(&fixture, cx, "bid-1-0");
+    click(&fixture, cx, "ticket-display");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.input("1", cx);
+    })
+    .unwrap();
+    click(&fixture, cx, "ticket-send");
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].listing, NEAR);
+    assert_eq!(orders[0].display_quantity, Some(1));
+}

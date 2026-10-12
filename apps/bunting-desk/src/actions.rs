@@ -16,6 +16,7 @@ actions!(
         NextWorkspace,
         PreviousWorkspace,
         OpenBookTrader,
+        OpenLadderTrader,
         OpenOrderEntry,
         OpenTape,
         OpenBlotter,
@@ -28,6 +29,8 @@ actions!(
         KillSwitch,
         ResetKillSwitch,
         Refresh,
+        /// Brings the market back to the middle of a ladder.
+        CentreLadder,
     ]
 );
 
@@ -45,6 +48,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", PreviousWorkspace, Some(CONTEXT)),
         KeyBinding::new("secondary-r", Refresh, Some(CONTEXT)),
         KeyBinding::new("f12", CancelAll, Some(CONTEXT)),
+        KeyBinding::new("space", CentreLadder, Some("Ladder && !Input")),
     ]);
 }
 
@@ -53,6 +57,7 @@ pub fn bind_keys(cx: &mut App) {
 pub fn open(kind: PaneKind) -> Box<dyn Action> {
     match kind {
         PaneKind::BookTrader => Box::new(OpenBookTrader),
+        PaneKind::LadderTrader => Box::new(OpenLadderTrader),
         PaneKind::OrderEntry => Box::new(OpenOrderEntry),
         PaneKind::Tape => Box::new(OpenTape),
         PaneKind::Blotter => Box::new(OpenBlotter),

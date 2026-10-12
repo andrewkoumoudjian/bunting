@@ -134,7 +134,11 @@ Andrew's public GitHub stars page unless marked):
    the clicked side at market, shift+right-click sweeps through the price
    with an immediate-or-cancel limit, alt+click cancels yours at a price
    (slice 48). Each one-click order goes to the venue whose book was
-   clicked.
+   clicked. The Ladder Trader shows one venue, which the trader picks, on
+   a fixed price axis (Centre or Space recentres): your bids, bid size,
+   price, ask size, your asks; clicking a size sends a limit for V at that
+   price, clicking your quantity cancels it. The ticket takes an iceberg's
+   shown quantity (slice 49).
    Visual direction (owner, 2026-10-10: "zed and delta has very good
    ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
    a status bar, a command palette, keyboard first). *Corrected

@@ -21,7 +21,8 @@ pub enum Preset {
     /// account tabs along the bottom.
     #[default]
     Trading,
-    /// Books beside two tickets and trader info, blotter and tape below.
+    /// Books and a ladder beside two tickets and trader info, blotter and
+    /// tape below.
     MarketMaking,
     /// Every venue's book beside the consolidated tape and a ticket.
     Arbitrage,
@@ -78,6 +79,7 @@ impl Preset {
             }
             Self::MarketMaking => {
                 let books = pane(PaneKind::BookTrader);
+                let ladder = pane(PaneKind::LadderTrader);
                 let first_ticket = pane(PaneKind::OrderEntry);
                 let second_ticket = pane(PaneKind::OrderEntry);
                 let info = pane(PaneKind::TraderInfo);
@@ -89,7 +91,12 @@ impl Preset {
                 DockLayout::v_split()
                     .child(
                         DockLayout::h_split()
-                            .child(DockLayout::tabs().panel_view(books, cx), None)
+                            .child(
+                                DockLayout::tabs()
+                                    .panel_view(books, cx)
+                                    .panel_view(ladder, cx),
+                                None,
+                            )
                             .child(
                                 DockLayout::tabs().panel_view(first_ticket, cx),
                                 Some(px(300.)),

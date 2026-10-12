@@ -13,6 +13,7 @@ pub mod connect;
 pub mod desk;
 pub mod flash;
 pub mod format;
+pub mod ladder;
 pub mod layouts;
 pub mod one_click;
 pub mod panels;

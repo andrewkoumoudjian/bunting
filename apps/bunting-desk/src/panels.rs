@@ -43,10 +43,14 @@ const ORDER_COLUMNS: [(&str, f32); 5] = [
     ("price", 56.),
     ("broker", 48.),
 ];
+/// The cells of [`ORDER_COLUMNS`] and the gaps between them.
+const ORDER_SIDE_WIDTH: f32 = 268.;
 /// One side of a price-level book.
 const LEVEL_COLUMNS: [(&str, f32); 3] = [("mine", 44.), ("qty", 56.), ("price", 64.)];
+/// The cells of [`LEVEL_COLUMNS`] and the gaps between them.
+const LEVEL_SIDE_WIDTH: f32 = 180.;
 /// Height of one row in the scrolling lists.
-const ROW_HEIGHT: f32 = 22.;
+pub(crate) const ROW_HEIGHT: f32 = 22.;
 
 /// The boilerplate every dock panel shares.
 macro_rules! dock_panel {
@@ -70,7 +74,7 @@ macro_rules! dock_panel {
                 } else {
                     None
                 };
-                theme::pane_title($title, symbol.as_deref())
+                $crate::theme::pane_title($title, symbol.as_deref())
             }
         }
 
@@ -83,6 +87,8 @@ macro_rules! dock_panel {
         }
     };
 }
+
+pub(crate) use dock_panel;
 
 /// A panel that only reads the desk.
 macro_rules! reader_panel {
@@ -105,7 +111,7 @@ macro_rules! reader_panel {
     };
 }
 
-fn panel_body(
+pub(crate) fn panel_body(
     id: &'static str,
     focus: &FocusHandle,
 ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
@@ -120,14 +126,14 @@ fn panel_body(
         .font_features(theme::tabular())
 }
 
-fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
+pub(crate) fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .text_xs()
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
 
-fn side_color(side: Side, cx: &App) -> Hsla {
+pub(crate) fn side_color(side: Side, cx: &App) -> Hsla {
     match side {
         Side::Buy => cx.theme().chart_bullish,
         Side::Sell => cx.theme().chart_bearish,
@@ -135,7 +141,7 @@ fn side_color(side: Side, cx: &App) -> Hsla {
 }
 
 /// One table row of fixed-width cells.
-fn row(cells: Vec<(AnyElement, f32)>) -> Div {
+pub(crate) fn row(cells: Vec<(AnyElement, f32)>) -> Div {
     let mut row = h_flex().w_full().h(px(ROW_HEIGHT)).gap_2();
     for (cell, width) in cells {
         row = row.child(
@@ -154,18 +160,18 @@ fn row_cells(cells: Vec<(AnyElement, f32)>) -> Div {
     row(cells)
 }
 
-fn cell(text: impl Into<SharedString>) -> AnyElement {
+pub(crate) fn cell(text: impl Into<SharedString>) -> AnyElement {
     div().child(text.into()).into_any_element()
 }
 
-fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
+pub(crate) fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     div()
         .text_color(color)
         .child(text.into())
         .into_any_element()
 }
 
-fn header(cells: &[(&'static str, f32)], cx: &App) -> Div {
+pub(crate) fn header(cells: &[(&'static str, f32)], cx: &App) -> Div {
     row(cells
         .iter()
         .map(|(label, width)| {
@@ -535,6 +541,7 @@ impl BooksPanel {
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
             .flex_1()
+            .flex_shrink_0()
             .min_w(px(300.))
             .max_w(px(640.))
             .p_2()
@@ -581,11 +588,16 @@ impl BooksPanel {
         column = column.child(spread);
         // Bids on the left and asks on the right, best price at the top of
         // each, as in RIT's Book Trader.
-        let sides = |bids: Vec<AnyElement>, asks: Vec<AnyElement>, head: &[(&'static str, f32)]| {
+        // Each side is wide enough for its cells, so the two never overlap;
+        // the books scroll sideways instead.
+        let sides = |bids: Vec<AnyElement>,
+                     asks: Vec<AnyElement>,
+                     head: &[(&'static str, f32)],
+                     width: f32| {
             let list = |rows: Vec<AnyElement>| {
                 v_flex()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(width))
                     .child(header(head, cx))
                     .children(rows)
             };
@@ -627,6 +639,7 @@ impl BooksPanel {
                         .map(|(index, order)| order_row(order, index, &all_asks))
                         .collect(),
                     &ORDER_COLUMNS,
+                    ORDER_SIDE_WIDTH,
                 ));
                 if hidden > 0 {
                     column = column.child(muted(format!("{hidden} more orders deeper"), cx));
@@ -663,6 +676,7 @@ impl BooksPanel {
                 .map(|(index, level)| level_row(level, Side::Sell, index, &all_asks))
                 .collect(),
             &LEVEL_COLUMNS,
+            LEVEL_SIDE_WIDTH,
         ))
     }
 
@@ -794,6 +808,8 @@ pub struct TicketPanel {
     focus: FocusHandle,
     quantity: Entity<InputState>,
     price: Entity<InputState>,
+    /// Quantity shown at a time (an iceberg); blank shows it all.
+    display: Entity<InputState>,
     side: Side,
     kind: TicketKind,
     tif: TicketTif,
@@ -826,6 +842,7 @@ impl TicketPanel {
         Self {
             quantity: cx.new(|cx| InputState::new(window, cx).default_value("1")),
             price: cx.new(|cx| InputState::new(window, cx)),
+            display: cx.new(|cx| InputState::new(window, cx).placeholder("all")),
             desk,
             focus: cx.focus_handle(),
             side: Side::Buy,
@@ -853,7 +870,12 @@ impl TicketPanel {
             tif: self.tif,
             post_only: self.post_only,
             anonymous: self.anonymous,
-            display_quantity: None,
+            display_quantity: {
+                let text = self.display.read(cx).value();
+                let text = text.trim();
+                // Blank shows the whole order; anything else the ticket checks.
+                (!text.is_empty()).then(|| text.parse::<i64>().unwrap_or(0))
+            },
         }
     }
 
@@ -986,6 +1008,17 @@ impl Render for TicketPanel {
                     ),
                 ),
         );
+        body = body.child(
+            v_flex()
+                .id("ticket-display")
+                .test_support()
+                .child(muted("Show at a time (iceberg; blank shows all)", cx))
+                .child(
+                    NumberInput::new(&self.display)
+                        .small()
+                        .disabled(self.kind == TicketKind::Market),
+                ),
+        );
         let mut tifs = h_flex().gap_1();
         for tif in TicketTif::ALL {
             tifs = tifs.child(
@@ -1108,7 +1141,7 @@ pub fn confirm_kill_switch(desk: Entity<Desk>, window: &mut Window, cx: &mut App
     });
 }
 
-trait WhenToggled {
+pub(crate) trait WhenToggled {
     fn when_toggled(self, toggled: bool) -> Self;
 }
 

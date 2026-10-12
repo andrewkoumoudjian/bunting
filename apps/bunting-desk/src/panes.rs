@@ -2,6 +2,7 @@
 //! builders that bring panes back from a saved layout.
 
 use crate::desk::Desk;
+use crate::ladder::LadderPanel;
 use crate::panels::{
     AccountPanel, BooksPanel, FillsPanel, NoticesPanel, OrdersPanel, PositionsPanel, TicketPanel,
     TradesPanel,
@@ -16,6 +17,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaneKind {
     BookTrader,
+    LadderTrader,
     OrderEntry,
     Tape,
     Blotter,
@@ -26,8 +28,9 @@ pub enum PaneKind {
 }
 
 impl PaneKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::BookTrader,
+        Self::LadderTrader,
         Self::OrderEntry,
         Self::Tape,
         Self::Blotter,
@@ -42,6 +45,7 @@ impl PaneKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::BookTrader => "books",
+            Self::LadderTrader => "ladder",
             Self::OrderEntry => "ticket",
             Self::Tape => "tape",
             Self::Blotter => "orders",
@@ -56,6 +60,7 @@ impl PaneKind {
     pub const fn title(self) -> &'static str {
         match self {
             Self::BookTrader => "Book Trader",
+            Self::LadderTrader => "Ladder Trader",
             Self::OrderEntry => "Order Entry",
             Self::Tape => "Tape",
             Self::Blotter => "Blotter",
@@ -70,6 +75,7 @@ impl PaneKind {
     pub const fn icon(self) -> IconName {
         match self {
             Self::BookTrader => IconName::BookOpen,
+            Self::LadderTrader => IconName::ChevronsUpDown,
             Self::OrderEntry => IconName::SquareTerminal,
             Self::Tape => IconName::Globe,
             Self::Blotter => IconName::Inbox,
@@ -94,6 +100,7 @@ impl PaneKind {
     ) -> Arc<dyn BasePanelView> {
         match self {
             Self::BookTrader => panel_handle(cx.new(|cx| BooksPanel::new(desk, window, cx))),
+            Self::LadderTrader => panel_handle(cx.new(|cx| LadderPanel::new(desk, window, cx))),
             Self::OrderEntry => panel_handle(cx.new(|cx| TicketPanel::new(desk, window, cx))),
             Self::Tape => panel_handle(cx.new(|cx| TradesPanel::new(desk, cx))),
             Self::Blotter => panel_handle(cx.new(|cx| OrdersPanel::new(desk, cx))),
