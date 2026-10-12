@@ -61,6 +61,7 @@ text. ADR 0033 reconciles statuses as of 2026-10-09.
 | 0045 | FIX session state as a write-ahead log beside the origin (checkpoint + deltas, one sync before each write); sequences, resend, identities and unsent reports survive `kill -9`; in-flight orders answered exactly once (slice 42) |
 | 0047 | Trading terminal as a BNP client: shared `bunting-trading-state` (pure model, session runner, local practice venue) rendered by `bunting-tui`; no embedded engine |
 | 0050 | Desktop trading app `apps/bunting-desk` on GPUI and Longbridge's `gpui-kit`, its own Cargo workspace on Rust 1.97, rendering `bunting-trading-state`: per-venue books, ticket with venue choice, trades, orders, fills, positions, account, order-by-order depth with queue places, consolidated tape, kill switch and reset (slices 31, 37, 43); release archives (slice 45); RIT-style workspace shell with saved workspaces, dark theme and fonts (slice 47); command palette, keys and the one-click Book Trader with flashes and own-order marks (slice 48); Ladder Trader and iceberg tickets (slice 49); news, halts, run status, tenders and OTC (slice 50); charts and the rest of RIT parity **Target** |
+| 0053 | **Accepted Target, not implemented:** replayable exchange publication, explicit projection errors, BNP durable catch-up, auction cost improvements, and conditional passive replication ([ADR 0053](adr/0053-replayable-exchange-publication-and-runtime.md)); preserves current writer, latency and interfaces. |
 
 Superseded or historical ADRs: 0001, 0002, 0004, 0005 and 0006 (Worker
 transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
@@ -84,6 +85,7 @@ transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
 | `specs/bunting-product-contract.md` | Target | Product boundary; interfaces per ADR 0031 |
 | `specs/bunting-fix-competition-profile.md` | Current | FIX profile; admission timing changes with ADR 0030 |
 | `specs/bnp-v1.md` | Current | Bunting Native Protocol v1 wire contract (ADR 0040, slice 25) |
+| `specs/jane-street-exchange-engine-requirements.md` | Current baseline + Target | Source-by-source Jane Street talk spec matrix with pinned implementation evidence, verification gates and link to ADR 0053 |
 | `specs/competition-policies-v1.md` | Current | Implemented competition policies |
 | `specs/rit-class-market-simulation.md` | Target | RIT-class feature requirements |
 | `specs/rit-tui-parity-matrix.md` | Target | RIT workflow parity for the app/TUI |
