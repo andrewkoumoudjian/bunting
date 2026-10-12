@@ -93,7 +93,7 @@ impl PaneKind {
         cx: &mut App,
     ) -> Arc<dyn BasePanelView> {
         match self {
-            Self::BookTrader => panel_handle(cx.new(|cx| BooksPanel::new(desk, cx))),
+            Self::BookTrader => panel_handle(cx.new(|cx| BooksPanel::new(desk, window, cx))),
             Self::OrderEntry => panel_handle(cx.new(|cx| TicketPanel::new(desk, window, cx))),
             Self::Tape => panel_handle(cx.new(|cx| TradesPanel::new(desk, cx))),
             Self::Blotter => panel_handle(cx.new(|cx| OrdersPanel::new(desk, cx))),

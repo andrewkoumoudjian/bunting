@@ -123,7 +123,18 @@ Andrew's public GitHub stars page unless marked):
    elsewhere, Source Serif 4 Display for titles, tabular figures for
    numbers; Inter and Source Serif 4 are bundled under the SIL OFL 1.1
    (`apps/bunting-desk/assets/fonts/README.md`). A dark theme is the
-   default (`apps/bunting-desk/assets/theme.json`).
+   default (`apps/bunting-desk/assets/theme.json`). Every command is a
+   GPUI action (`src/actions.rs`) bound to keys and listed in a command
+   palette (gpui-kit `Command`, ⌘/Ctrl+Shift+P or ⌘/Ctrl+K). The Book
+   Trader follows RIT: bids left and asks right, best on top; new orders
+   light green and traded ones red for 250 ms; your own orders are
+   highlighted from the venue's order-by-order reference (slice 44); and
+   one-click trading, off until switched on, with V and O: left-click a
+   bid buys V at its price + O (an ask sells at − O), right-click takes
+   the clicked side at market, shift+right-click sweeps through the price
+   with an immediate-or-cancel limit, alt+click cancels yours at a price
+   (slice 48). Each one-click order goes to the venue whose book was
+   clicked.
    Visual direction (owner, 2026-10-10: "zed and delta has very good
    ui"): Zed's quiet, dense workspace chrome (one title bar, tabbed docks,
    a status bar, a command palette, keyboard first). *Corrected

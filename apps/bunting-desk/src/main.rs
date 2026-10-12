@@ -2,7 +2,7 @@
 //! `bunting-desk`: the trading workspace in one native window.
 
 use bunting_desk::connect::{self, Options};
-use bunting_desk::{Desk, LayoutStore, Workspace, theme};
+use bunting_desk::{Desk, LayoutStore, Workspace};
 use clap::Parser as _;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
@@ -22,7 +22,7 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            theme::install(cx);
+            bunting_desk::init(cx);
             let Some(venue) = venue.take() else { return };
             let desk = cx.new(|cx| {
                 Desk::start_pump(cx);

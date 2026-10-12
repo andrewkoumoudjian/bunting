@@ -710,3 +710,94 @@ fn subscriptions_stay_within_the_session_limit() {
             .any(|n| n.text.contains("subscriptions"))
     );
 }
+
+#[test]
+fn the_venue_reference_finds_your_order_in_its_queue() -> Result<(), TicketError> {
+    let (mut model, near, _) = connected();
+    let mut ticket = OrderTicket::new(Some(NEAR), Side::Buy);
+    ticket.quantity = 5;
+    ticket.price = 99;
+    let ClientMessage::NewOrder(order) = model.place(&ticket, 2)? else {
+        return Err(TicketError::NoListing);
+    };
+    let id = order.client_order_id;
+    message(
+        &mut model,
+        ServerMessage::OrderRested {
+            stamp: stamp(11),
+            client_order_id: id,
+            order_id: 40,
+            price: 99,
+            remaining: 5,
+            reference: Some(2),
+        },
+        3,
+    );
+    // Someone else's order is ahead of it at 99.
+    message(
+        &mut model,
+        ServerMessage::OrderSnapshot {
+            request_id: near,
+            listing: NEAR,
+            next_report: 1,
+            complete: true,
+            orders: vec![
+                book_order(Side::Buy, 1, 99, 4, 7),
+                book_order(Side::Buy, 2, 99, 5, 8),
+            ],
+        },
+        4,
+    );
+    let row = model
+        .orders()
+        .back()
+        .cloned()
+        .ok_or(TicketError::NoListing)?;
+    let place = model.queue_place(&row);
+    assert_eq!(
+        place.map(|q| (q.position_at_price, q.quantity_ahead)),
+        Some((2, 4))
+    );
+    assert_eq!(
+        model.own_order(NEAR, 2).map(|o| o.client_order_id),
+        Some(id)
+    );
+    assert!(model.own_order(NEAR, 1).is_none());
+    // A new reference while resting: it went to the back of its queue.
+    message(
+        &mut model,
+        ServerMessage::OrderReduced {
+            stamp: stamp(12),
+            client_order_id: id,
+            order_id: 40,
+            remaining: 4,
+            reference: Some(9),
+        },
+        5,
+    );
+    assert!(
+        model
+            .notices()
+            .iter()
+            .any(|n| n.text.contains("back of its queue"))
+    );
+    message(
+        &mut model,
+        ServerMessage::OrderCanceled {
+            stamp: stamp(13),
+            client_order_id: id,
+            order_id: 40,
+            remaining: 4,
+            reason: CancelReason::Requested,
+        },
+        6,
+    );
+    let row = model
+        .orders()
+        .back()
+        .cloned()
+        .ok_or(TicketError::NoListing)?;
+    assert_eq!(row.reference, None);
+    assert!(model.queue_place(&row).is_none());
+    Ok(())
+}

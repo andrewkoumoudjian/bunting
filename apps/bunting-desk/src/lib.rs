@@ -8,10 +8,13 @@
 //! venue's committed reports and feeds. Local practice starts a local
 //! `bunting server` and connects to it like any hosted venue.
 
+pub mod actions;
 pub mod connect;
 pub mod desk;
+pub mod flash;
 pub mod format;
 pub mod layouts;
+pub mod one_click;
 pub mod panels;
 pub mod panes;
 pub mod theme;
@@ -21,3 +24,9 @@ pub use desk::{Desk, Outbox, Venue};
 pub use layouts::{LayoutStore, Preset};
 pub use panes::PaneKind;
 pub use workspace::{PANELS, Workspace};
+
+/// Sets the desk's look and keys. Call once, after `gpui_kit::init`.
+pub fn init(cx: &mut gpui_kit::App) {
+    theme::install(cx);
+    actions::bind_keys(cx);
+}

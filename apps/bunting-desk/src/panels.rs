@@ -3,7 +3,9 @@
 //! writes them to the venue at once.
 
 use crate::desk::Desk;
+use crate::flash::{self, Flash, Flashes};
 use crate::format;
+use crate::one_click::{self, Gesture, Intent, OneClick};
 use crate::theme;
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
@@ -18,13 +20,14 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
-    px, uniform_list,
+    AnyElement, App, AppContext as _, AsyncApp, ClickEvent, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
+    WeakEntity, Window, div, px, uniform_list,
 };
 use std::collections::VecDeque;
 use std::fmt::Write as _;
+use std::time::Instant;
 
 /// Book levels shown per side.
 const BOOK_DEPTH: usize = 12;
@@ -32,6 +35,16 @@ const BOOK_DEPTH: usize = 12;
 const ORDER_DEPTH: usize = 16;
 /// Venues shown side by side.
 const MAX_VENUE_COLUMNS: usize = 6;
+/// One side of an order-by-order book.
+const ORDER_COLUMNS: [(&str, f32); 5] = [
+    ("place", 36.),
+    ("ahead", 48.),
+    ("qty", 48.),
+    ("price", 56.),
+    ("broker", 48.),
+];
+/// One side of a price-level book.
+const LEVEL_COLUMNS: [(&str, f32); 3] = [("mine", 44.), ("qty", 56.), ("price", 64.)];
 /// Height of one row in the scrolling lists.
 const ROW_HEIGHT: f32 = 22.;
 
@@ -136,6 +149,11 @@ fn row(cells: Vec<(AnyElement, f32)>) -> Div {
     row
 }
 
+/// [`row`], for code where a book row's `row` shadows it.
+fn row_cells(cells: Vec<(AnyElement, f32)>) -> Div {
+    row(cells)
+}
+
 fn cell(text: impl Into<SharedString>) -> AnyElement {
     div().child(text.into()).into_any_element()
 }
@@ -179,18 +197,35 @@ pub struct BooksPanel {
     desk: Entity<Desk>,
     focus: FocusHandle,
     depth: Depth,
+    /// RIT's lightning toggle: off until the trader turns it on.
+    one_click: bool,
+    volume: Entity<InputState>,
+    offset: Entity<InputState>,
+    flashes: Flashes,
+    redraw_pending: bool,
+    /// Why the last one-click order or cancel did not go.
+    problem: Option<String>,
     _observe: Subscription,
 }
 
 dock_panel!(BooksPanel, "books", "Book Trader", true);
 
 impl BooksPanel {
-    pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
+    pub fn new(desk: Entity<Desk>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let defaults = OneClick::default();
         Self {
             _observe: cx.observe(&desk, |_, _, cx| cx.notify()),
             desk,
             focus: cx.focus_handle(),
             depth: Depth::Orders,
+            one_click: defaults.enabled,
+            volume: cx
+                .new(|cx| InputState::new(window, cx).default_value(defaults.volume.to_string())),
+            offset: cx
+                .new(|cx| InputState::new(window, cx).default_value(defaults.offset.to_string())),
+            flashes: Flashes::default(),
+            redraw_pending: false,
+            problem: None,
         }
     }
 
@@ -207,6 +242,123 @@ impl BooksPanel {
                 this.depth = depth;
                 cx.notify();
             }))
+    }
+
+    /// The one-click settings as entered; a field that does not parse
+    /// counts as 0, which sends nothing.
+    fn settings(&self, cx: &App) -> OneClick {
+        let number = |state: &Entity<InputState>| {
+            state
+                .read(cx)
+                .value()
+                .trim()
+                .parse::<i64>()
+                .unwrap_or(0)
+                .clamp(0, one_click::MAX_STEP)
+        };
+        OneClick {
+            enabled: self.one_click,
+            volume: number(&self.volume),
+            offset: number(&self.offset),
+        }
+    }
+
+    /// A click on a book row: an order, a cancel or a price for the ticket.
+    fn clicked(&mut self, row: one_click::Row, gesture: Gesture, cx: &mut Context<Self>) {
+        let Some(intent) = one_click::intent(self.settings(cx), row, gesture) else {
+            return;
+        };
+        self.problem = None;
+        match intent {
+            Intent::Order(ticket) => {
+                let result = self.desk.update(cx, |desk, cx| desk.place(&ticket, cx));
+                self.problem = result.err().map(|error| error.to_string());
+            }
+            Intent::Cancel {
+                listing,
+                side,
+                price,
+            } => {
+                let asked = self
+                    .desk
+                    .update(cx, |desk, cx| desk.cancel_at(listing, side, price, cx));
+                if asked == 0 {
+                    self.problem = Some(format!(
+                        "No live {} of yours at {price} on {}.",
+                        match side {
+                            Side::Buy => "bids",
+                            Side::Sell => "asks",
+                        },
+                        format::venue(listing)
+                    ));
+                }
+            }
+            Intent::Pick(price) => {
+                self.desk
+                    .update(cx, |desk, cx| desk.pick_price(row.listing, price, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Lights what changed in each shown book and redraws when the lights
+    /// go out.
+    fn observe_books(&mut self, listings: &[Listing], cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let desk = self.desk.read(cx);
+        for listing in listings {
+            if let Some(feed) = desk.model().feed(*listing) {
+                self.flashes.observe(*listing, &feed.book, now);
+            }
+        }
+        if self.redraw_pending {
+            return;
+        }
+        if let Some(wait) = self.flashes.next_change(now) {
+            self.redraw_pending = true;
+            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                cx.background_executor().timer(wait).await;
+                this.update(cx, |this, cx| {
+                    this.redraw_pending = false;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    fn one_click_bar(&self, cx: &mut Context<Self>) -> Div {
+        let mut bar = h_flex().gap_2().items_center().child(
+            Button::new("books-one-click")
+                .label("One-click")
+                .xsmall()
+                .when_toggled(self.one_click)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.one_click = !this.one_click;
+                    cx.notify();
+                })),
+        );
+        if self.one_click {
+            bar = bar
+                .child(muted("V", cx))
+                .child(
+                    div()
+                        .id("books-volume")
+                        .test_support()
+                        .w(px(92.))
+                        .child(NumberInput::new(&self.volume).xsmall()),
+                )
+                .child(muted("O", cx))
+                .child(
+                    div()
+                        .id("books-offset")
+                        .test_support()
+                        .w(px(80.))
+                        .child(NumberInput::new(&self.offset).xsmall()),
+                );
+        }
+        bar
     }
 }
 
@@ -242,37 +394,86 @@ impl Render for BooksPanel {
             );
         }
         body = body.child(
-            h_flex().justify_between().child(tabs).child(
-                h_flex()
-                    .gap_1()
-                    .child(self.depth_button(Depth::Orders, cx))
-                    .child(self.depth_button(Depth::Levels, cx)),
-            ),
+            h_flex()
+                .justify_between()
+                .flex_wrap()
+                .gap_2()
+                .child(tabs)
+                .child(self.one_click_bar(cx))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(self.depth_button(Depth::Orders, cx))
+                        .child(self.depth_button(Depth::Levels, cx)),
+                ),
         );
         let Some(instrument) = instrument else {
             return body;
         };
+        let listings: Vec<Listing> = instrument
+            .listings
+            .iter()
+            .take(MAX_VENUE_COLUMNS)
+            .map(|info| info.listing)
+            .collect();
+        self.observe_books(&listings, cx);
         let mut columns = h_flex().w_full().gap_2().items_start();
-        for info in instrument.listings.iter().take(MAX_VENUE_COLUMNS) {
-            columns = columns.child(self.book_column(info.listing, chosen, window, cx));
+        for listing in &listings {
+            columns = columns.child(self.book_column(*listing, chosen, window, cx));
         }
-        let hint = match self.depth {
-            Depth::Levels => {
-                "Click a venue to send there, or a price to put it on the ticket. ● marks your resting quantity."
-            }
-            Depth::Orders => {
-                "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker where the venue publishes one. Click a venue to send there, or an order to put its price on the ticket."
+        let hint = if self.one_click {
+            "One-click: left-click a bid to buy V at its price + O (an ask: sell at − O), right-click the asks to buy V at market (the bids: sell), shift+right-click to sweep through a price, alt+click to cancel yours."
+        } else {
+            match self.depth {
+                Depth::Levels => {
+                    "Click a venue to send there, or a price to put it on the ticket. Alt+click cancels yours at a price. ● marks your resting quantity."
+                }
+                Depth::Orders => {
+                    "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker. Yours are highlighted. Click an order to put its price on the ticket; alt+click cancels yours."
+                }
             }
         };
+        if let Some(problem) = &self.problem {
+            body = body.child(
+                div()
+                    .id("books-problem")
+                    .test_support()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(problem.clone()),
+            );
+        }
         body.child(
             div()
                 .id("books-scroll")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .overflow_scroll()
                 .child(columns),
         )
         .child(muted(hint, cx))
+    }
+}
+
+/// Displayed quantity on `side` from the best price through `price`.
+fn through(levels: &[Level], side: Side, price: i64) -> i64 {
+    levels
+        .iter()
+        .filter(|level| match side {
+            Side::Buy => level.price >= price,
+            Side::Sell => level.price <= price,
+        })
+        .map(|level| level.quantity)
+        .sum()
+}
+
+/// A row's background: lit by a flash, else marked when it is yours.
+fn row_background(flash: Option<Flash>, own: bool, cx: &App) -> Option<Hsla> {
+    let theme = cx.theme();
+    match flash {
+        Some(Flash::New) => Some(theme.chart_bullish.opacity(0.35)),
+        Some(Flash::Traded) => Some(theme.chart_bearish.opacity(0.35)),
+        None => own.then(|| theme.primary.opacity(0.22)),
     }
 }
 
@@ -318,30 +519,14 @@ impl BooksPanel {
                 .map(|order| order.remaining)
                 .sum()
         };
-        let (asks, bids, spread) = feed.map_or_else(
-            || (Vec::new(), Vec::new(), None),
-            |feed| {
-                let spread = match (feed.book.best_bid(), feed.book.best_ask()) {
-                    (Some(bid), Some(ask)) => Some(ask.price - bid.price),
-                    _ => None,
-                };
-                let asks: Vec<(Level, i64)> = feed
-                    .book
-                    .asks()
-                    .into_iter()
-                    .take(BOOK_DEPTH)
-                    .map(|level| (level, own(level.price, Side::Sell)))
-                    .collect();
-                let bids: Vec<(Level, i64)> = feed
-                    .book
-                    .bids()
-                    .into_iter()
-                    .take(BOOK_DEPTH)
-                    .map(|level| (level, own(level.price, Side::Buy)))
-                    .collect();
-                (asks, bids, spread)
-            },
+        let (all_asks, all_bids) = feed.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |feed| (feed.book.asks(), feed.book.bids()),
         );
+        let spread = match (all_bids.first(), all_asks.first()) {
+            (Some(bid), Some(ask)) => Some(ask.price - bid.price),
+            _ => None,
+        };
         let selected = chosen == Some(listing);
         let venue_id = listing.venue_id;
         let theme = cx.theme();
@@ -350,7 +535,7 @@ impl BooksPanel {
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
             .flex_1()
-            .min_w(px(220.))
+            .min_w(px(300.))
             .max_w(px(640.))
             .p_2()
             .gap_1()
@@ -392,31 +577,57 @@ impl BooksPanel {
             ),
             cx,
         );
-        let bid_color = cx.theme().chart_bullish;
-        let ask_color = cx.theme().chart_bearish;
+        let clock = Instant::now();
+        column = column.child(spread);
+        // Bids on the left and asks on the right, best price at the top of
+        // each, as in RIT's Book Trader.
+        let sides = |bids: Vec<AnyElement>, asks: Vec<AnyElement>, head: &[(&'static str, f32)]| {
+            let list = |rows: Vec<AnyElement>| {
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(header(head, cx))
+                    .children(rows)
+            };
+            h_flex()
+                .w_full()
+                .gap_3()
+                .items_start()
+                .child(list(bids))
+                .child(list(asks))
+        };
         if self.depth == Depth::Orders {
             if let Some(feed) = feed.filter(|feed| feed.order_by_order) {
+                let order_row = |order: &QueuedOrder, index: usize, levels: &[Level]| {
+                    let row = one_click::Row {
+                        listing,
+                        side: order.side,
+                        price: order.price,
+                        through: through(levels, order.side, order.price),
+                    };
+                    let flash =
+                        self.flashes
+                            .get(listing, flash::Key::Order(order.reference), clock);
+                    let mine = model.own_order(listing, order.reference).is_some();
+                    Self::order_row(row, order, index, flash, mine, cx)
+                };
                 let asks = feed.book.orders(Side::Sell);
                 let bids = feed.book.orders(Side::Buy);
-                column = column.child(header(
-                    &[
-                        ("place", 44.),
-                        ("ahead", 56.),
-                        ("qty", 56.),
-                        ("price", 64.),
-                        ("broker", 56.),
-                    ],
-                    cx,
-                ));
-                for (index, order) in asks.iter().take(ORDER_DEPTH).enumerate().rev() {
-                    column = column.child(self.order_row(listing, order, index, ask_color, window));
-                }
-                column = column.child(spread);
-                for (index, order) in bids.iter().take(ORDER_DEPTH).enumerate() {
-                    column = column.child(self.order_row(listing, order, index, bid_color, window));
-                }
                 let hidden =
                     asks.len().saturating_sub(ORDER_DEPTH) + bids.len().saturating_sub(ORDER_DEPTH);
+                column = column.child(sides(
+                    bids.iter()
+                        .take(ORDER_DEPTH)
+                        .enumerate()
+                        .map(|(index, order)| order_row(order, index, &all_bids))
+                        .collect(),
+                    asks.iter()
+                        .take(ORDER_DEPTH)
+                        .enumerate()
+                        .map(|(index, order)| order_row(order, index, &all_asks))
+                        .collect(),
+                    &ORDER_COLUMNS,
+                ));
                 if hidden > 0 {
                     column = column.child(muted(format!("{hidden} more orders deeper"), cx));
                 }
@@ -426,120 +637,153 @@ impl BooksPanel {
                 column = column.child(muted("This venue sends price levels only.", cx));
             }
         }
-        column = column.child(header(
-            &[("mine", 44.), ("bid", 64.), ("price", 72.), ("ask", 64.)],
-            cx,
-        ));
-        for (index, (level, mine)) in asks.iter().enumerate().rev() {
-            column = column.child(self.level_row(
+        let level_row = |level: &Level, side: Side, index: usize, levels: &[Level]| {
+            let row = one_click::Row {
                 listing,
-                *level,
-                *mine,
-                Side::Sell,
-                index,
-                ask_color,
-                window,
-            ));
+                side,
+                price: level.price,
+                through: through(levels, side, level.price),
+            };
+            let flash = self
+                .flashes
+                .get(listing, flash::Key::Level(side, level.price), clock);
+            Self::level_row(row, *level, own(level.price, side), index, flash, cx)
+        };
+        column.child(sides(
+            all_bids
+                .iter()
+                .take(BOOK_DEPTH)
+                .enumerate()
+                .map(|(index, level)| level_row(level, Side::Buy, index, &all_bids))
+                .collect(),
+            all_asks
+                .iter()
+                .take(BOOK_DEPTH)
+                .enumerate()
+                .map(|(index, level)| level_row(level, Side::Sell, index, &all_asks))
+                .collect(),
+            &LEVEL_COLUMNS,
+        ))
+    }
+
+    /// A book row that answers clicks: one-click orders, alt+click cancels,
+    /// or a price for the ticket.
+    fn clickable(
+        id: String,
+        row: one_click::Row,
+        background: Option<Hsla>,
+        cx: &Context<Self>,
+    ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
+        let mut element = div()
+            .id(SharedString::from(id))
+            .test_support()
+            .cursor_pointer()
+            .rounded_sm()
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                let modifiers = event.modifiers();
+                cx.stop_propagation();
+                this.clicked(
+                    row,
+                    Gesture::from_click(false, modifiers.shift, modifiers.alt),
+                    cx,
+                );
+            }))
+            .on_aux_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                if event.is_right_click() {
+                    let modifiers = event.modifiers();
+                    cx.stop_propagation();
+                    this.clicked(
+                        row,
+                        Gesture::from_click(true, modifiers.shift, modifiers.alt),
+                        cx,
+                    );
+                }
+            }));
+        if let Some(background) = background {
+            element = element.bg(background);
         }
-        column = column.child(spread);
-        for (index, (level, mine)) in bids.iter().enumerate() {
-            column = column.child(self.level_row(
-                listing,
-                *level,
-                *mine,
-                Side::Buy,
-                index,
-                bid_color,
-                window,
-            ));
-        }
-        column
+        element
     }
 
     /// One displayed order: its place at its price, the displayed quantity
-    /// ahead of it, its size, price and broker.
+    /// ahead of it, its size, price and broker. Yours are highlighted.
     fn order_row(
-        &self,
-        listing: Listing,
+        row: one_click::Row,
         order: &QueuedOrder,
         index: usize,
-        color: Hsla,
-        window: &mut Window,
-    ) -> impl IntoElement {
+        flash: Option<Flash>,
+        mine: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let side_name = match order.side {
             Side::Buy => "bid",
             Side::Sell => "ask",
         };
-        let price = order.price;
-        div()
-            .id(SharedString::from(format!(
-                "{side_name}-order-{}-{index}",
-                listing.venue_id
-            )))
-            .test_support()
-            .cursor_pointer()
-            .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
-                desk.pick_price(listing, price, cx);
-            }))
-            .child(row(vec![
-                (cell(format!("#{}", order.position_at_price)), 44.),
-                (cell(order.quantity_ahead.to_string()), 56.),
-                (colored(order.quantity.to_string(), color), 56.),
-                (colored(price.to_string(), color), 64.),
-                (
-                    cell(
-                        order
-                            .broker
-                            .map(|broker| broker.to_string())
-                            .unwrap_or_default(),
-                    ),
-                    56.,
-                ),
-            ]))
+        let color = side_color(order.side, cx);
+        let broker = if mine {
+            "you".to_owned()
+        } else {
+            order
+                .broker
+                .map(|broker| broker.to_string())
+                .unwrap_or_default()
+        };
+        Self::clickable(
+            format!("{side_name}-order-{}-{index}", row.listing.venue_id),
+            row,
+            row_background(flash, mine, cx),
+            cx,
+        )
+        .child(row_cells(
+            [
+                cell(format!("#{}", order.position_at_price)),
+                cell(order.quantity_ahead.to_string()),
+                colored(order.quantity.to_string(), color),
+                colored(order.price.to_string(), color),
+                cell(broker),
+            ]
+            .into_iter()
+            .zip(ORDER_COLUMNS.map(|(_, width)| width))
+            .collect(),
+        ))
+        .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn level_row(
-        &self,
-        listing: Listing,
+        row: one_click::Row,
         level: Level,
         mine: i64,
-        side: Side,
         index: usize,
-        color: Hsla,
-        window: &mut Window,
-    ) -> impl IntoElement {
+        flash: Option<Flash>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let mark = if mine > 0 {
             format!("● {mine}")
         } else {
             String::new()
         };
-        let quantity = level.quantity.to_string();
-        let (bid, ask) = match side {
-            Side::Buy => (colored(quantity, color), cell("")),
-            Side::Sell => (cell(""), colored(quantity, color)),
-        };
-        let side_name = match side {
+        let color = side_color(row.side, cx);
+        let side_name = match row.side {
             Side::Buy => "bid",
             Side::Sell => "ask",
         };
-        let price = level.price;
-        div()
-            .id(SharedString::from(format!(
-                "{side_name}-{}-{index}",
-                listing.venue_id
-            )))
-            .test_support()
-            .cursor_pointer()
-            .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
-                desk.pick_price(listing, price, cx);
-            }))
-            .child(row(vec![
-                (cell(mark), 44.),
-                (bid, 64.),
-                (colored(price.to_string(), color), 72.),
-                (ask, 64.),
-            ]))
+        Self::clickable(
+            format!("{side_name}-{}-{index}", row.listing.venue_id),
+            row,
+            row_background(flash, mine > 0, cx),
+            cx,
+        )
+        .child(row_cells(
+            [
+                cell(mark),
+                colored(level.quantity.to_string(), color),
+                colored(level.price.to_string(), color),
+            ]
+            .into_iter()
+            .zip(LEVEL_COLUMNS.map(|(_, width)| width))
+            .collect(),
+        ))
+        .into_any_element()
     }
 }
 
@@ -839,25 +1083,29 @@ impl Render for TicketPanel {
                         .small()
                         .danger()
                         .on_click(cx.listener(|this, _, window, cx| {
-                            let desk = this.desk.clone();
-                            window.open_alert_dialog(cx, move |alert, _, _| {
-                                let desk = desk.clone();
-                                alert
-                                    .confirm()
-                                    .title("Activate the kill switch?")
-                                    .description(
-                                        "The venue cancels every live order of yours, FIX orders included, and refuses new ones until you reset it.",
-                                    )
-                                    .ok_text("Kill switch")
-                                    .on_ok(move |_, _, cx| {
-                                        desk.update(cx, Desk::kill_switch);
-                                        true
-                                    })
-                            });
+                            confirm_kill_switch(this.desk.clone(), window, cx);
                         }))
                 }),
         )
     }
+}
+
+/// Asks before activating the kill switch.
+pub fn confirm_kill_switch(desk: Entity<Desk>, window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let desk = desk.clone();
+        alert
+            .confirm()
+            .title("Activate the kill switch?")
+            .description(
+                "The venue cancels every live order of yours, FIX orders included, and refuses new ones until you reset it.",
+            )
+            .ok_text("Kill switch")
+            .on_ok(move |_, _, cx| {
+                desk.update(cx, Desk::kill_switch);
+                true
+            })
+    });
 }
 
 trait WhenToggled {
@@ -1064,6 +1312,7 @@ impl Render for OrdersPanel {
             ("price", 72.),
             ("left", 56.),
             ("status", 150.),
+            ("queue", 96.),
             ("answer", 72.),
             ("", 64.),
         ];
@@ -1103,6 +1352,18 @@ impl Render for OrdersPanel {
                                 (cell(format::price(order.price)), 72.),
                                 (cell(order.remaining.to_string()), 56.),
                                 (cell(order.status.label()), 150.),
+                                (
+                                    cell(model.queue_place(order).map_or_else(
+                                        String::new,
+                                        |place| {
+                                            format!(
+                                                "#{} · {} ahead",
+                                                place.position_at_price, place.quantity_ahead
+                                            )
+                                        },
+                                    )),
+                                    96.,
+                                ),
                                 (
                                     cell(order.answer_us.map(format::duration).unwrap_or_default()),
                                     72.,

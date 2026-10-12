@@ -16,7 +16,7 @@ use bunting_client::bnp_wire::{
     Listing, ListingInfo, OrderEntry, Position, RejectReason, ResumeStatus, ServerMessage, Side,
     Welcome, msg_type,
 };
-use bunting_client::{FeedBook, TapeBook};
+use bunting_client::{FeedBook, QueuedOrder, TapeBook};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Subscriptions a BNP session may hold, direct feeds and tapes together
@@ -232,6 +232,10 @@ pub struct OrderRow {
     pub answer_us: Option<u64>,
     /// Highest committed sequence applied to this row.
     pub sequence: u64,
+    /// While it rests: its public reference on the venue's order-by-order
+    /// feed, as the venue reported it, which finds its place in the queue
+    /// ([`Model::queue_place`]).
+    pub reference: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -441,6 +445,25 @@ impl Model {
         self.orders.iter().filter(|order| order.status.is_live())
     }
 
+    /// A resting order's place in its venue's queue, from the venue's
+    /// reference and this client's order-by-order book. `None` without an
+    /// order-by-order feed, or when the book does not show it (yet).
+    #[must_use]
+    pub fn queue_place(&self, order: &OrderRow) -> Option<QueuedOrder> {
+        if !order.status.is_live() {
+            return None;
+        }
+        self.feeds.get(&order.listing)?.book.order(order.reference?)
+    }
+
+    /// The live order of this participant at `reference` on `listing`'s
+    /// order-by-order feed, if it is one.
+    #[must_use]
+    pub fn own_order(&self, listing: Listing, reference: u64) -> Option<&OrderRow> {
+        self.live_orders()
+            .find(|order| order.listing == listing && order.reference == Some(reference))
+    }
+
     /// Fills, oldest first.
     #[must_use]
     pub const fn fills(&self) -> &VecDeque<FillRow> {
@@ -517,6 +540,7 @@ impl Model {
             sent_us: Some(now_us),
             answer_us: None,
             sequence: 0,
+            reference: None,
         });
         Ok(ClientMessage::NewOrder(order))
     }
@@ -768,7 +792,7 @@ impl Model {
                 order_id,
                 price,
                 remaining,
-                reference: _,
+                reference,
             } => {
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     if row.status.is_live() && row.status != OrderStatus::PendingCancel {
@@ -776,6 +800,7 @@ impl Model {
                     }
                     row.price = Some(price);
                     row.remaining = remaining;
+                    row.reference = reference;
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
             }
@@ -784,11 +809,27 @@ impl Model {
                 client_order_id,
                 order_id,
                 remaining,
-                reference: _,
+                reference,
             } => {
+                let mut lost_priority = false;
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     row.remaining = remaining;
+                    // A new reference while resting: the order went to the
+                    // back of its queue (an iceberg slice refreshed).
+                    lost_priority = row.reference.is_some()
+                        && reference.is_some()
+                        && row.reference != reference;
+                    row.reference = reference;
                     row.sequence = row.sequence.max(stamp.sequence);
+                }
+                if lost_priority {
+                    self.notice(
+                        now_us,
+                        NoticeLevel::Info,
+                        format!(
+                            "order {client_order_id} refreshed and went to the back of its queue"
+                        ),
+                    );
                 }
             }
             ServerMessage::Fill {
@@ -833,6 +874,7 @@ impl Model {
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     row.status = OrderStatus::Filled;
                     row.remaining = 0;
+                    row.reference = None;
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
                 self.account_dirty = true;
@@ -847,6 +889,7 @@ impl Model {
                 if let Some(row) = self.order_by(client_order_id, order_id) {
                     row.status = OrderStatus::Canceled(reason);
                     row.remaining = remaining;
+                    row.reference = None;
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
                 self.account_dirty = true;
@@ -1373,6 +1416,7 @@ impl Model {
                 sent_us: None,
                 answer_us: None,
                 sequence: 0,
+                reference: None,
             });
             self.orders.len() - 1
         };

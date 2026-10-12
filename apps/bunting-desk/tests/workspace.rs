@@ -14,8 +14,9 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dock::PanelState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-    AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowHandle,
-    WindowOptions, base::Root, px, size,
+    AppContext as _, Bounds, Entity, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Point, TestAppContext, WindowBounds, WindowHandle, WindowOptions,
+    base::Root, px, size,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -72,7 +73,7 @@ fn open_with(cx: &mut TestAppContext, store: Option<LayoutStore>) -> Fixture {
             ..WindowOptions::default()
         };
         let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
-            bunting_desk::theme::install(cx);
+            bunting_desk::init(cx);
             cx.new(|cx| Workspace::new(shared, store, window, cx))
         })
         .expect("open window");
@@ -100,6 +101,80 @@ fn click(fixture: &Fixture, cx: &mut TestAppContext, id: &str) {
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// Clicks an element with a mouse button and modifiers held.
+fn click_with(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    id: &str,
+    button: MouseButton,
+    modifiers: Modifiers,
+) {
+    let id = id.to_owned();
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let position = window.find(id).bounds().center();
+        for event in [
+            MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers,
+            }
+            .to_platform_input(),
+            MouseDownEvent {
+                button,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            MouseUpEvent {
+                button,
+                position,
+                modifiers,
+                click_count: 1,
+            }
+            .to_platform_input(),
+        ] {
+            window.dispatch_event(event, cx);
+            window.render_frame(cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// Waits (up to two seconds) until an element stops moving, for
+/// components that animate on the wall clock.
+fn settle(fixture: &Fixture, cx: &mut TestAppContext, id: &str) {
+    let mut last = None;
+    for _ in 0..40 {
+        cx.run_until_parked();
+        let bounds = cx
+            .update_window(fixture.window.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id.to_owned()).bounds()
+            })
+            .unwrap();
+        if last == Some(bounds) {
+            return;
+        }
+        last = Some(bounds);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Presses a key in a fresh frame, then lets observers run.
+fn press(fixture: &Fixture, cx: &mut TestAppContext, key: &str) {
+    let key = key.to_owned();
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press(&key, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -373,8 +448,9 @@ fn the_kill_switch_is_sent_only_after_confirmation(cx: &mut TestAppContext) {
         fixture.sent.take().is_empty(),
         "nothing is sent before confirming"
     );
-    // Let the dialog finish opening before pressing its button.
-    cx.run_until_parked();
+    // The dialog slides in on the wall clock: press its button once it
+    // has stopped moving.
+    settle(&fixture, cx, "ok");
     click(&fixture, cx, "ok");
     let sent = fixture.sent.take();
     assert!(
@@ -544,4 +620,172 @@ fn saved_workspaces_come_back(cx: &mut TestAppContext) {
     assert_eq!(active, 2, "the last workspace shown");
     assert_eq!(panes(&reopened, cx), before, "with its added pane");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn new_orders(fixture: &Fixture) -> Vec<bunting_trading_state::bunting_client::bnp_wire::NewOrder> {
+    fixture
+        .sent
+        .take()
+        .into_iter()
+        .filter_map(|message| match message {
+            ClientMessage::NewOrder(order) => Some(order),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+fn one_click_sends_to_the_clicked_venue_at_once(cx: &mut TestAppContext) {
+    use bunting_trading_state::bunting_client::bnp_wire::TimeInForce;
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    // Off by default: a click only picks the price.
+    click(&fixture, cx, "bid-order-2-0");
+    assert!(new_orders(&fixture).is_empty());
+    click(&fixture, cx, "books-one-click");
+    // Left-click a bid: buy V (100) at its price + O (0) on that venue.
+    click(&fixture, cx, "bid-order-2-0");
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].listing, FAR);
+    assert_eq!(orders[0].side, Side::Buy);
+    assert_eq!(orders[0].quantity, 100);
+    assert_eq!(orders[0].order_type, OrderType::Limit { price: 98 });
+    // Right-click the near venue's asks: market buy.
+    click_with(
+        &fixture,
+        cx,
+        "ask-1-0",
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].listing, NEAR);
+    assert_eq!(orders[0].side, Side::Buy);
+    assert_eq!(orders[0].order_type, OrderType::Market);
+    // Shift+right-click the far venue's second offer: sweep both at 102.
+    click_with(
+        &fixture,
+        cx,
+        "ask-order-2-1",
+        MouseButton::Right,
+        Modifiers::shift(),
+    );
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].listing, FAR);
+    assert_eq!(orders[0].order_type, OrderType::Limit { price: 102 });
+    assert_eq!(orders[0].quantity, 5);
+    assert_eq!(orders[0].time_in_force, TimeInForce::Ioc);
+}
+
+#[gpui_kit::test]
+fn alt_click_cancels_your_orders_at_a_price(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    click(&fixture, cx, "books-one-click");
+    click(&fixture, cx, "bid-1-0");
+    let client_order_id = new_orders(&fixture)[0].client_order_id;
+    let stamp = Stamp {
+        sequence: 5,
+        logical_time_ns: 1_000,
+    };
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderAccepted {
+            stamp,
+            client_order_id,
+            order_id: 900,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 100,
+            price: Some(99),
+        }),
+    );
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp,
+            client_order_id,
+            order_id: 900,
+            price: 99,
+            remaining: 100,
+            reference: None,
+        }),
+    );
+    // Nothing of yours at the ask: nothing sent, and the book says so.
+    click_with(&fixture, cx, "ask-1-0", MouseButton::Left, Modifiers::alt());
+    assert!(fixture.sent.take().is_empty());
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("books-problem").visible());
+    })
+    .unwrap();
+    click_with(&fixture, cx, "bid-1-0", MouseButton::Left, Modifiers::alt());
+    assert_eq!(
+        fixture.sent.take(),
+        vec![ClientMessage::CancelOrder { client_order_id }]
+    );
+}
+
+#[gpui_kit::test]
+fn the_command_palette_and_keys_run_the_same_commands(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let fills = |cx: &mut TestAppContext| {
+        panes(&fixture, cx)
+            .iter()
+            .filter(|name| *name == "fills")
+            .count()
+    };
+    let before = fills(cx);
+    press(&fixture, cx, "secondary-shift-p");
+    assert!(
+        fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.palette_open())
+    );
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("palette").visible());
+        window.input("Open Fills", cx);
+    })
+    .unwrap();
+    press(&fixture, cx, "enter");
+    assert!(
+        !fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.palette_open())
+    );
+    assert_eq!(fills(cx), before + 1);
+    // Keys switch workspaces.
+    press(&fixture, cx, "ctrl-tab");
+    assert_eq!(
+        fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.workspaces().1),
+        1
+    );
+    press(&fixture, cx, "ctrl-shift-tab");
+    assert_eq!(
+        fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.workspaces().1),
+        0
+    );
+    // The top bar's button opens it too; escape closes it.
+    click(&fixture, cx, "open-palette");
+    assert!(
+        fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.palette_open())
+    );
+    press(&fixture, cx, "escape");
+    assert!(
+        !fixture
+            .workspace
+            .read_with(cx, |workspace, _| workspace.palette_open())
+    );
 }

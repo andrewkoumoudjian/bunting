@@ -4,22 +4,25 @@
 //! moved, split, tabbed and resized; each workspace keeps its own layout and
 //! every change is saved.
 
+use crate::actions::{self, CONTEXT};
 use crate::desk::Desk;
 use crate::format;
 use crate::layouts::{LAYOUT_VERSION, LayoutStore, MAX_WORKSPACES, Preset, Saved};
-use crate::panels::connection_label;
+use crate::panels::{confirm_kill_switch, connection_label};
 use crate::panes::{self, PaneKind};
 use crate::theme;
 use bunting_trading_state::Connection;
 use bunting_trading_state::bunting_client::bnp_wire::Side;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::dock::{DockArea, DockEvent, DockPlacement, DockSkin};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AsyncApp, Context, Div, Entity, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, TestSupportExt as _, WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, AsyncApp, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use std::time::Duration;
 
@@ -38,6 +41,8 @@ pub const PANELS: [&str; 8] = [
 /// Layout changes are written this long after the last one.
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 const SIDEBAR_WIDTH: f32 = 224.;
+/// Commands in the palette's workspace group before the workspaces.
+const FIXED_WORKSPACE_COMMANDS: usize = 5;
 
 /// The window's content.
 pub struct Workspace {
@@ -47,6 +52,9 @@ pub struct Workspace {
     active: usize,
     store: Option<LayoutStore>,
     save_pending: bool,
+    focus: FocusHandle,
+    /// The command palette while it is open.
+    palette: Option<Entity<CommandState>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -80,9 +88,12 @@ impl Workspace {
             active,
             store,
             save_pending: false,
+            focus: cx.focus_handle(),
+            palette: None,
             _subscriptions: subscriptions,
         };
         this.show(active, window, cx);
+        window.focus(&this.focus, cx);
         this
     }
 
@@ -154,6 +165,136 @@ impl Workspace {
     pub fn save_layout(&mut self, cx: &mut Context<Self>) {
         self.remember(cx);
         self.save(cx);
+    }
+
+    /// Whether the command palette is open.
+    #[must_use]
+    pub const fn palette_open(&self) -> bool {
+        self.palette.is_some()
+    }
+
+    /// Opens the command palette, or closes it if open.
+    pub fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        state.update(cx, |state, cx| state.focus(window, cx));
+        self.palette = Some(state);
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Shows the workspace `step` places along, wrapping around.
+    fn step_workspace(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.workspaces.len();
+        if count > 1 {
+            let next = if forward {
+                (self.active + 1) % count
+            } else {
+                (self.active + count - 1) % count
+            };
+            self.switch_to(next, window, cx);
+        }
+    }
+
+    /// The palette's entries: every command, with its key where it has one.
+    fn palette(&self, state: &Entity<CommandState>, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut workspaces = CommandGroup::new()
+            .label("Workspace")
+            .item(
+                CommandItem::new()
+                    .label("New workspace")
+                    .icon(IconName::Plus)
+                    .action(Box::new(actions::NewWorkspace)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Next workspace")
+                    .action(Box::new(actions::NextWorkspace)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Previous workspace")
+                    .action(Box::new(actions::PreviousWorkspace)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Save layout")
+                    .action(Box::new(actions::SaveLayout)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Reset layout to its preset")
+                    .action(Box::new(actions::ResetLayout)),
+            );
+        // Entries after the fixed ones show a workspace; confirming one
+        // switches (see `on_confirm` below).
+        for (index, saved) in self.workspaces.iter().enumerate() {
+            workspaces = workspaces.item(
+                CommandItem::new()
+                    .label(format!("Show {}", saved.name))
+                    .icon(IconName::LayoutDashboard)
+                    .checked(index == self.active)
+                    .keywords(["switch", "workspace"]),
+            );
+        }
+        let mut panes = CommandGroup::new().label("Open pane");
+        for kind in PaneKind::ALL {
+            panes = panes.item(
+                CommandItem::new()
+                    .label(format!("Open {}", kind.title()))
+                    .icon(kind.icon())
+                    .action(actions::open(kind)),
+            );
+        }
+        let trading = CommandGroup::new()
+            .label("Trading")
+            .item(
+                CommandItem::new()
+                    .label("Cancel all my orders")
+                    .action(Box::new(actions::CancelAll)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Activate the kill switch…")
+                    .action(Box::new(actions::KillSwitch)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Reset the kill switch")
+                    .action(Box::new(actions::ResetKillSwitch)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Reload orders and account")
+                    .action(Box::new(actions::Refresh)),
+            );
+        let close = cx.entity();
+        let cancel = cx.entity();
+        Command::new(state)
+            .group(workspaces)
+            .group(panes)
+            .group(trading)
+            .placeholder("Type a command")
+            .max_h(px(420.))
+            .on_confirm(move |path, window, cx| {
+                close.update(cx, |this, cx| {
+                    this.close_palette(window, cx);
+                    if path.section == 0 && path.row >= FIXED_WORKSPACE_COMMANDS {
+                        this.switch_to(path.row - FIXED_WORKSPACE_COMMANDS, window, cx);
+                    }
+                });
+            })
+            .on_cancel(move |window, cx| {
+                cancel.update(cx, |this, cx| this.close_palette(window, cx));
+            })
     }
 
     fn show(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -409,6 +550,12 @@ impl Workspace {
                     .small()
                     .on_click(cx.listener(|this, _, window, cx| this.reset_layout(window, cx))),
             )
+            .child(
+                Button::new("open-palette")
+                    .label("Commands")
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_palette(window, cx))),
+            )
             .child(div().flex_1())
             .child(self.connection_pill(cx))
     }
@@ -459,11 +606,94 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Handles every desk action: from keys, the palette or a button.
+    fn with_actions(root: Stateful<Div>, cx: &Context<Self>) -> Stateful<Div> {
+        root.on_action(cx.listener(|this, _: &actions::TogglePalette, window, cx| {
+            this.toggle_palette(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::SaveLayout, _, cx| {
+            this.save_layout(cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ResetLayout, window, cx| {
+            this.reset_layout(window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::NewWorkspace, window, cx| {
+            this.add_workspace(Preset::Trading, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::NextWorkspace, window, cx| {
+            this.step_workspace(true, window, cx);
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::PreviousWorkspace, window, cx| {
+                this.step_workspace(false, window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::OpenBookTrader, window, cx| {
+                this.add_pane(PaneKind::BookTrader, window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::OpenOrderEntry, window, cx| {
+                this.add_pane(PaneKind::OrderEntry, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::OpenTape, window, cx| {
+            this.add_pane(PaneKind::Tape, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenBlotter, window, cx| {
+            this.add_pane(PaneKind::Blotter, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenFills, window, cx| {
+            this.add_pane(PaneKind::Fills, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenPortfolio, window, cx| {
+            this.add_pane(PaneKind::Portfolio, window, cx);
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::OpenTraderInfo, window, cx| {
+                this.add_pane(PaneKind::TraderInfo, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::OpenNotices, window, cx| {
+            this.add_pane(PaneKind::Notices, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::CancelAll, _, cx| {
+            this.desk.update(cx, Desk::cancel_all);
+        }))
+        .on_action(cx.listener(|this, _: &actions::KillSwitch, window, cx| {
+            confirm_kill_switch(this.desk.clone(), window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::ResetKillSwitch, _, cx| {
+            this.desk.update(cx, Desk::reset_kill_switch);
+        }))
+        .on_action(cx.listener(|this, _: &actions::Refresh, _, cx| {
+            this.desk.update(cx, Desk::refresh);
+        }))
+    }
+}
+
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = connection_label(self.desk.read(cx));
+        let palette = self
+            .palette
+            .clone()
+            .map(|state| self.palette(&state, cx).into_any_element());
         let theme = cx.theme();
         h_flex()
+            .id("workspace")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .map(|root| Self::with_actions(root, cx))
+            .relative()
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
@@ -488,6 +718,36 @@ impl Render for Workspace {
                             .right(concat!("bunting-desk ", env!("CARGO_PKG_VERSION"))),
                     ),
             )
+            .when_some(palette, |root, palette| {
+                root.child(
+                    div()
+                        .id("palette-backdrop")
+                        .absolute()
+                        .inset_0()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_palette(window, cx);
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .absolute()
+                        .top(px(56.))
+                        .left_0()
+                        .right_0()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("palette")
+                                .test_support()
+                                .occlude()
+                                .w(px(560.))
+                                .bg(cx.theme().popover)
+                                .rounded_lg()
+                                .shadow_lg()
+                                .child(palette),
+                        ),
+                )
+            })
     }
 }
 

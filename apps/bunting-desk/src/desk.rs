@@ -9,7 +9,7 @@
 //! received them, so measured times are the network's and the venue's, not
 //! this app's frame rate.
 
-use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing};
+use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, Side};
 use bunting_trading_state::local_venue::LocalVenue;
 use bunting_trading_state::{Instrument, Model, OrderTicket, Session, SessionEvent, TicketError};
 use gpui_kit::{AsyncApp, Context, WeakEntity};
@@ -259,6 +259,29 @@ impl Desk {
             self.send(&message);
             cx.notify();
         }
+    }
+
+    /// Cancels this participant's live orders on `listing` on `side` at
+    /// `price` (alt+click in a book). Returns how many were asked.
+    pub fn cancel_at(
+        &mut self,
+        listing: Listing,
+        side: Side,
+        price: i64,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let ids: Vec<u64> = self
+            .model
+            .live_orders()
+            .filter(|order| {
+                order.listing == listing && order.side == side && order.price == Some(price)
+            })
+            .map(|order| order.client_order_id)
+            .collect();
+        for id in &ids {
+            self.cancel(*id, cx);
+        }
+        ids.len()
     }
 
     pub fn cancel_all(&mut self, cx: &mut Context<Self>) {
