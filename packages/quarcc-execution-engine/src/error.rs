@@ -22,6 +22,18 @@ pub enum ExecutionError {
     SnapshotEncoding,
 }
 
+impl ExecutionError {
+    /// A participant-side pre-trade check refused the intent: nothing was
+    /// sent and local state is unchanged, so the participant carries on.
+    #[must_use]
+    pub const fn is_pre_trade_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::OpenOrderLimit | Self::PositionLimit | Self::KillSwitchActive
+        )
+    }
+}
+
 impl fmt::Display for ExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{self:?}")

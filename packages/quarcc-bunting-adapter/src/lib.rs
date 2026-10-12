@@ -210,6 +210,15 @@ impl BuntingExecutionAdapter {
                 VenueReportKind::Cancelled | VenueReportKind::Expired => Some(QuantityLots::new(0)),
                 _ => None,
             };
+            // The venue reports nothing more for a finished order, so forget
+            // it: a session that trades for days keeps only its open orders.
+            if matches!(kind, VenueReportKind::Rejected { .. })
+                || leaves_quantity.is_some_and(|leaves| leaves.get() == 0)
+            {
+                self.owned_orders.remove(&local);
+                self.order_quantities.remove(&local);
+                self.cumulative_fills.remove(&local);
+            }
             reports.push(NormalizedVenueReport {
                 report_id: ReportId::new(event.event_id.get()),
                 source_sequence: Some(event.sequence.get()),

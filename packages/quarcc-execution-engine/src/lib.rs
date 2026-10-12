@@ -205,6 +205,33 @@ impl QuarccExecutionEngine {
         Ok(ActionId::new(id))
     }
 
+    /// Makes room for one more order by forgetting the oldest finished
+    /// (filled, canceled, rejected or expired) orders, so a long session
+    /// keeps at most `max_orders` orders. Only orders whose last report has
+    /// been applied are finished, and the open-order limit has already
+    /// left room, so there is always one to forget.
+    fn retire_terminal_orders(&mut self) -> Result<(), ExecutionError> {
+        while self.state.orders.len() >= self.state.config.max_orders {
+            let oldest = self
+                .state
+                .orders
+                .iter()
+                .find(|(_, order)| order.lifecycle.is_terminal())
+                .map(|(local, order)| (*local, order.desired.client_order_id))
+                .ok_or(ExecutionError::OpenOrderLimit)?;
+            let (local, client) = oldest;
+            if let Some(order) = self.state.orders.remove(&local)
+                && let Some(venue) = order.venue_order_id
+            {
+                self.state.venue_to_local.remove(&venue);
+            }
+            if self.state.client_to_local.get(&client) == Some(&local) {
+                self.state.client_to_local.remove(&client);
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_report(&self, report: &NormalizedVenueReport) -> Option<LocalOrderId> {
         report
             .local_order_id
@@ -459,7 +486,12 @@ impl ExecutionEngine for QuarccExecutionEngine {
         output: &mut ExecutionActionBuffer,
     ) -> Result<(), ExecutionError> {
         let intent_id = intent.intent_id();
-        if self.state.processed_intents.contains(&intent_id) {
+        if self.state.processed_intents.contains(&intent_id)
+            || self
+                .state
+                .intents_processed_through
+                .is_some_and(|through| intent_id <= through)
+        {
             return Ok(());
         }
         match intent {
@@ -486,6 +518,7 @@ impl ExecutionEngine for QuarccExecutionEngine {
                     open,
                     self.state.positions.get(&order.instrument_id),
                 )?;
+                self.retire_terminal_orders()?;
                 let local = self.next_local_id()?;
                 let action = ExecutionAction::Submit {
                     action_id: self.next_action_id()?,
@@ -632,6 +665,9 @@ impl ExecutionEngine for QuarccExecutionEngine {
             }
         }
         self.state.processed_intents.insert(intent_id);
+        if self.state.processed_intents.len() > self.state.config.max_seen_reports {
+            self.state.intents_processed_through = self.state.processed_intents.pop_first();
+        }
         Ok(())
     }
 
@@ -655,19 +691,22 @@ impl ExecutionEngine for QuarccExecutionEngine {
         report: &NormalizedVenueReport,
         output: &mut ExecutionActionBuffer,
     ) -> Result<(), ExecutionError> {
-        if self.state.seen_reports.contains(&report.report_id) {
+        if self.state.seen_reports.contains(&report.report_id)
+            || self
+                .state
+                .reports_seen_through
+                .is_some_and(|through| report.report_id <= through)
+        {
             return Ok(());
-        }
-        if self.state.seen_reports.len() >= self.state.config.max_seen_reports {
-            return Err(ExecutionError::BufferFull {
-                limit: self.state.config.max_seen_reports,
-            });
         }
         let Some(local) = self.resolve_report(report) else {
             return self.defer_report(report);
         };
         self.apply_resolved_report(local, report)?;
         self.state.seen_reports.insert(report.report_id);
+        if self.state.seen_reports.len() > self.state.config.max_seen_reports {
+            self.state.reports_seen_through = self.state.seen_reports.pop_first();
+        }
         if let Some(sequence) = report.source_sequence {
             self.state.last_venue_sequence = self.state.last_venue_sequence.max(sequence);
         }

@@ -79,9 +79,11 @@ fn a_built_in_agent_trades_through_the_sequencer_and_learns_of_team_fills() -> R
     team.send(order("701", "buy", 5, Some(102)))?;
     team.wait_report("701", "F")?;
 
-    // Short one quote, the agent centres a tick higher and widens a tick
-    // (new offers at 104), which it can only do if it learned of the fill
-    // the team caused through the committed-event feed.
-    wait_for_book(&mut team, |_, asks| asks.contains(&104))?;
+    // Short one quote, the agent centres a tick above the last trade (102)
+    // and widens a tick (100 / 106), which it can only do if it learned of
+    // the fill the team caused through the committed-event feed.
+    wait_for_book(&mut team, |bids, asks| {
+        bids.contains(&100) && asks.contains(&106)
+    })?;
     Ok(())
 }

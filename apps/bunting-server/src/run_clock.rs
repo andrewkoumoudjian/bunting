@@ -112,6 +112,24 @@ impl RunClock {
         LogicalTimeNs::new(current(&mut anchors, run_id, view, pace, venue_us).run_at(venue_us))
     }
 
+    /// The run time at venue instant `venue_us` as the sequencer would
+    /// stamp it, read without moving the mapping: for a reader that does
+    /// not commit (the built-in agents' scheduler).
+    pub(crate) fn peek(&self, run_id: RunId, view: ClockView, venue_us: u64) -> LogicalTimeNs {
+        let Some(pace) = view.pace() else {
+            return view.now;
+        };
+        let Ok(anchors) = self.anchors.lock() else {
+            return view.now;
+        };
+        match anchors.get(&run_id) {
+            Some(anchor) if anchor.pace == pace && venue_us >= anchor.venue_us => {
+                LogicalTimeNs::new(anchor.run_at(venue_us).max(view.now.get()))
+            }
+            _ => view.now,
+        }
+    }
+
     /// The venue instant at which run time reaches `at`, if run time is
     /// following venue time.
     fn venue_instant(

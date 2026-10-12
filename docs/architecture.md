@@ -295,6 +295,18 @@ takes effect exactly once. A run with agent commands but no agent
 checkpoint, or a checkpoint for another runtime configuration, refuses to
 start.
 
+Agents keep time on the run clock (slice 51): an agent wakes when run time
+reaches its next wake, and the scheduler's tick (`wall_tick_ms`) is only
+how often it looks. Each built-in limit order is good till date, two of its
+agent's wake intervals after the decision (`ORDER_LIFETIME_WAKES`), so the
+venue expires stale quotes and no agent piles orders up; market makers
+centre on the last trade, not on a book holding their own quotes. An order the
+agent's own QUARCC pre-trade checks refuse (open-order or position limit,
+kill switch) is dropped and the agent carries on; it never stops the
+runtime. QUARCC state is bounded for multi-day runs: finished orders are
+forgotten oldest first past `max_orders`, and report and intent IDs past
+`max_seen_reports` collapse into a high-water mark (IDs only grow).
+
 Archive v2 (slice 20, ADR 0025 as expanded by 0028 item 5):
 `CompetitionArchive` is a run's genesis snapshot plus every journaled command
 record in commit order (orders, cancels, agent commands, simulation

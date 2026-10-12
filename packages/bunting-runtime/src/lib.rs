@@ -22,6 +22,10 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 
 const AGENT_ID_STRIDE: u128 = 1_000_000;
+/// Orders, open or finished, a built-in agent's QUARCC state remembers.
+const AGENT_MAX_ORDERS: usize = 256;
+/// Reports and intents a built-in agent's QUARCC state remembers by ID.
+const AGENT_MAX_SEEN_REPORTS: usize = 1_024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +167,14 @@ pub trait RuntimeHost {
     /// an uninterrupted run.
     fn checkpoint(&mut self, _snapshot: &RuntimeSnapshot) -> Result<(), RuntimeError> {
         Ok(())
+    }
+
+    /// The run's time now, on the run clock (ADR 0037), for a host shared
+    /// with other participants: agents wake when run time reaches their
+    /// next wake, never ahead of it. `None` (a host whose runtime is the
+    /// only committer) wakes the next agent at once.
+    fn run_time(&self, _run_id: RunId) -> Result<Option<LogicalTimeNs>, RuntimeError> {
+        Ok(None)
     }
 }
 
@@ -336,15 +348,24 @@ impl DeterministicRuntime {
         else {
             return Ok(());
         };
-        self.logical_time = LogicalTimeNs::new(
-            next_time
-                .get()
-                .max(self.logical_time.get().saturating_add(1)),
-        );
         let mut pending = VecDeque::new();
         let elsewhere = host.take_committed()?;
         self.observe_trades(&elsewhere);
         self.dispatch(&elsewhere, &mut pending)?;
+        let now = match host.run_time(self.config.run_id)? {
+            // Nobody is due yet on the run clock: only learn what others did.
+            Some(now) if now < next_time => {
+                if !elsewhere.is_empty() {
+                    self.pending = pending;
+                    host.checkpoint(&self.snapshot())?;
+                }
+                return Ok(());
+            }
+            Some(now) => now,
+            None => next_time,
+        };
+        self.logical_time =
+            LogicalTimeNs::new(now.get().max(self.logical_time.get().saturating_add(1)));
         let observation =
             host.read_state(self.config.run_id, |state| self.observation(state))??;
         let due = self
@@ -455,7 +476,14 @@ fn scheduled_agent(
         seed: config.seed,
         max_intents_per_wake: config.max_intents_per_wake,
     });
-    let mut snapshot = ExecutionSnapshot::empty(ExecutionConfig::default());
+    // An agent's orders live two wakes, so it never has many; its reports
+    // arrive exactly once from the host. Small windows keep the snapshot
+    // the runtime checkpoints every tick small.
+    let mut snapshot = ExecutionSnapshot::empty(ExecutionConfig {
+        max_orders: AGENT_MAX_ORDERS,
+        max_seen_reports: AGENT_MAX_SEEN_REPORTS,
+        ..ExecutionConfig::default()
+    });
     snapshot.next_id = config
         .participant_id
         .get()

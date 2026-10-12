@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Bunting-native deterministic agent policies composed with mandatory QUARCC execution.
 
-use bunting_market_events::{OrderKind, Side};
+use bunting_market_events::{OrderKind, Side, TimeInForcePolicy};
 use bunting_market_types::{InstrumentId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots};
 use quarcc_execution_engine::command::ExecutionIntent;
 use quarcc_execution_engine::ids::{ClientOrderId, IntentId};
@@ -312,12 +312,20 @@ impl BuiltInPolicy {
         observation: &AgentObservation,
         output: &mut IntentBuffer,
     ) -> Result<(), AgentError> {
-        let mid = observation
-            .best_bid
-            .get()
-            .checked_add(observation.best_ask.get())
-            .ok_or(AgentError::ArithmeticOverflow)?
-            / 2;
+        // Quote around the last trade, not the book's mid: the book holds
+        // this agent's own quotes, and centering on them would ratchet the
+        // price a tick each wake while inventory skews the quotes. The book
+        // mid serves only before any trade.
+        let mid = if observation.last_trade.get() > 0 {
+            observation.last_trade.get()
+        } else {
+            observation
+                .best_bid
+                .get()
+                .checked_add(observation.best_ask.get())
+                .ok_or(AgentError::ArithmeticOverflow)?
+                / 2
+        };
         let inventory_skew = context
             .current_position
             .get()
@@ -1063,6 +1071,22 @@ pub struct ManagedAgentSnapshot<S> {
     pub execution: ExecutionSnapshot,
 }
 
+/// How many of its wake intervals a built-in agent's limit order rests
+/// before the venue expires it (GTD). Two keep a quoting agent's book
+/// covered between wakes; agents never pile up stale orders.
+pub const ORDER_LIFETIME_WAKES: u64 = 2;
+
+/// The GTD expiry of an order decided at `now` by an agent next waking at
+/// `next`: `ORDER_LIFETIME_WAKES` intervals on, and always after `now`.
+fn order_expiry(now: LogicalTimeNs, next: LogicalTimeNs) -> Result<LogicalTimeNs, AgentError> {
+    let interval = next.get().saturating_sub(now.get()).max(1);
+    interval
+        .checked_mul(ORDER_LIFETIME_WAKES)
+        .and_then(|lifetime| now.get().checked_add(lifetime))
+        .map(LogicalTimeNs::new)
+        .ok_or(AgentError::ArithmeticOverflow)
+}
+
 pub struct ManagedAgent<P: AgentPolicy> {
     policy: P,
     execution: QuarccExecutionEngine,
@@ -1086,11 +1110,37 @@ impl<P: AgentPolicy> ManagedAgent<P> {
         let limit = self.execution.snapshot().config.max_actions_per_call;
         let mut intents = IntentBuffer::with_limit(limit);
         let next = self.policy.on_wake(context, observation, &mut intents)?;
+        let expires_at = order_expiry(context.logical_time, next.logical_time)?;
         let mut actions = ExecutionActionBuffer::with_limit(limit);
-        for intent in intents.drain() {
-            self.execution.submit_intent(intent, &mut actions)?;
+        for mut intent in intents.drain() {
+            if let ExecutionIntent::Submit { order, .. } = &mut intent
+                && let OrderKind::Limit { price } = order.kind
+            {
+                order.kind = OrderKind::LimitWithPolicy {
+                    price,
+                    time_in_force: TimeInForcePolicy::Gtd { expires_at },
+                    post_only: false,
+                    display_quantity: None,
+                };
+            }
+            self.route(intent, &mut actions)?;
         }
         Ok((next, actions.into_vec()))
+    }
+
+    /// Sends one intent through QUARCC. An intent its pre-trade checks
+    /// refuse (open-order or position limit, kill switch) is dropped, as a
+    /// trader's own risk system drops it: nothing reaches the venue and the
+    /// agent carries on at its next wake. Any other failure is a bug.
+    fn route(
+        &mut self,
+        intent: ExecutionIntent,
+        actions: &mut ExecutionActionBuffer,
+    ) -> Result<(), AgentError> {
+        match self.execution.submit_intent(intent, actions) {
+            Err(error) if error.is_pre_trade_refusal() => Ok(()),
+            result => result.map_err(AgentError::from),
+        }
     }
 
     /// Applies a private report to QUARCC before allowing the policy to react.
@@ -1107,7 +1157,7 @@ impl<P: AgentPolicy> ManagedAgent<P> {
         let mut intents = IntentBuffer::with_limit(limit);
         self.policy.on_private_event(event, &mut intents)?;
         for intent in intents.drain() {
-            self.execution.submit_intent(intent, &mut actions)?;
+            self.route(intent, &mut actions)?;
         }
         Ok(actions.into_vec())
     }
@@ -1175,6 +1225,51 @@ mod tests {
                 .iter()
                 .all(|action| matches!(action, ExecutionAction::Submit { .. }))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_agent_at_its_order_limit_skips_the_order_and_carries_on() -> Result<(), AgentError> {
+        // Room for three open orders: the market maker's second wake fits
+        // one of its two quotes, its third fits none. Nothing fails.
+        let mut agent = ManagedAgent::new(
+            BuiltInPolicy::new(config(PolicyKind::StaticLiquidityProvider)),
+            QuarccExecutionEngine::new(ExecutionConfig {
+                max_orders: 3,
+                ..ExecutionConfig::default()
+            }),
+        );
+        let mut sent = Vec::new();
+        let mut now = LogicalTimeNs::new(0);
+        for _ in 0..3 {
+            let (next, actions) = agent.on_wake(
+                &AgentContext {
+                    logical_time: now,
+                    current_position: QuantityLots::new(0),
+                    remaining_parent_quantity: QuantityLots::new(0),
+                },
+                &observation(),
+            )?;
+            sent.push(actions.len());
+            // Each order rests two wakes, then the venue expires it.
+            for action in &actions {
+                let ExecutionAction::Submit { order, .. } = action else {
+                    return Err(AgentError::InvalidObservation);
+                };
+                let expiry = LogicalTimeNs::new(now.get() + 2_000);
+                assert!(matches!(
+                    order.kind,
+                    OrderKind::LimitWithPolicy {
+                        time_in_force: TimeInForcePolicy::Gtd { expires_at },
+                        post_only: false,
+                        display_quantity: None,
+                        ..
+                    } if expires_at == expiry
+                ));
+            }
+            now = next.logical_time;
+        }
+        assert_eq!(sent, [2, 1, 0]);
         Ok(())
     }
 

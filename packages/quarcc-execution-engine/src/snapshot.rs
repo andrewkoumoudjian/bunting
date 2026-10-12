@@ -16,7 +16,16 @@ pub struct ExecutionSnapshot {
     pub kill_switch_active: bool,
     pub last_venue_sequence: u64,
     pub processed_intents: BTreeSet<IntentId>,
+    /// Every intent at or below this ID counts as processed: the oldest
+    /// IDs leave `processed_intents` once it holds `max_seen_reports`.
+    /// Intent IDs only grow, so a long session's set stays bounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intents_processed_through: Option<IntentId>,
     pub seen_reports: BTreeSet<ReportId>,
+    /// Every report at or below this ID counts as seen, the same way:
+    /// report IDs follow the venue's commit order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports_seen_through: Option<ReportId>,
     pub orders: BTreeMap<LocalOrderId, ManagedOrder>,
     pub client_to_local: BTreeMap<ClientOrderId, LocalOrderId>,
     pub venue_to_local: BTreeMap<VenueOrderId, LocalOrderId>,
@@ -35,7 +44,9 @@ impl ExecutionSnapshot {
             kill_switch_active: false,
             last_venue_sequence: 0,
             processed_intents: BTreeSet::new(),
+            intents_processed_through: None,
             seen_reports: BTreeSet::new(),
+            reports_seen_through: None,
             orders: BTreeMap::new(),
             client_to_local: BTreeMap::new(),
             venue_to_local: BTreeMap::new(),

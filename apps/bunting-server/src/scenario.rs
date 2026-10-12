@@ -3,12 +3,13 @@ use crate::config::{
     DeploymentProfile, ScenarioRuntimeConfig, ServerConfig, StorageConfig, StorageKind,
 };
 use crate::distributor::{PublishingOrigin, Subscription};
+use crate::run_clock::ClockView;
 use crate::storage::persist_json;
 use bunting_admission_sequencer::{DelayEstimator, Endpoint};
 use bunting_application::{ApplicationService, VerifiedActor, listing_for_command};
 use bunting_engine::{RunState, ScenarioDefinition};
 use bunting_market_events::{Command, EventEnvelope};
-use bunting_market_types::{CommandId, ParticipantId, RunId};
+use bunting_market_types::{CommandId, LogicalTimeNs, ParticipantId, RunId};
 use bunting_origin_store::OriginStore;
 use bunting_runtime::{
     DeterministicRuntime, RuntimeConfig, RuntimeError, RuntimeHost, RuntimeSnapshot,
@@ -272,6 +273,15 @@ impl RuntimeHost for Host<'_> {
             }
         }
         Ok(events)
+    }
+
+    fn run_time(&self, run_id: RunId) -> Result<Option<LogicalTimeNs>, RuntimeError> {
+        let view = self.read_state(run_id, ClockView::of)?;
+        Ok(Some(self.admission.run_clock().peek(
+            run_id,
+            view,
+            self.admission.clock().now_us(),
+        )))
     }
 
     fn checkpoint(&mut self, snapshot: &RuntimeSnapshot) -> Result<(), RuntimeError> {

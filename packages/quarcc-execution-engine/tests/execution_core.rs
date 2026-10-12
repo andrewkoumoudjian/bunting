@@ -189,3 +189,76 @@ fn reconciliation_discovers_orders_and_uses_authoritative_positions() {
         QuantityLots::new(200)
     );
 }
+
+#[test]
+fn a_long_session_keeps_bounded_order_report_and_intent_memory() {
+    let mut engine = QuarccExecutionEngine::new(ExecutionConfig {
+        max_orders: 4,
+        max_seen_reports: 4,
+        ..ExecutionConfig::default()
+    });
+    let mut output = ExecutionActionBuffer::with_limit(16);
+    // Twenty orders, each accepted and then canceled by the venue: four
+    // times the order memory and ten times the report memory.
+    for client in 1..=20_u128 {
+        let local = submit(&mut engine, client);
+        let venue = local.get().to_string();
+        let accepted = report(client * 2, client, &venue, VenueReportKind::Accepted);
+        let canceled = report(client * 2 + 1, client, &venue, VenueReportKind::Cancelled);
+        engine.apply_venue_report(&accepted, &mut output).unwrap();
+        engine.apply_venue_report(&canceled, &mut output).unwrap();
+        // A report the window has forgotten still counts as seen.
+        engine.apply_venue_report(&accepted, &mut output).unwrap();
+        let snapshot = engine.snapshot();
+        assert!(
+            snapshot.orders.len() <= 4,
+            "{} orders",
+            snapshot.orders.len()
+        );
+        assert!(snapshot.seen_reports.len() <= 4);
+        assert!(snapshot.processed_intents.len() <= 4);
+        assert_eq!(
+            snapshot.orders.get(&local).map(|order| order.lifecycle),
+            Some(OrderLifecycle::Cancelled)
+        );
+        // A restart restores what a long session saved.
+        QuarccExecutionEngine::restore(snapshot).unwrap();
+    }
+    // An old intent replayed after its ID left the window is still a
+    // duplicate: nothing is sent again.
+    let mut replay = ExecutionActionBuffer::with_limit(16);
+    engine
+        .submit_intent(
+            ExecutionIntent::Submit {
+                intent_id: IntentId::new(1),
+                order: desired(1),
+            },
+            &mut replay,
+        )
+        .unwrap();
+    assert!(replay.as_slice().is_empty());
+}
+
+#[test]
+fn the_open_order_limit_refuses_before_anything_is_sent() {
+    let mut engine = QuarccExecutionEngine::new(ExecutionConfig {
+        max_orders: 2,
+        ..ExecutionConfig::default()
+    });
+    submit(&mut engine, 1);
+    submit(&mut engine, 2);
+    let before = engine.snapshot();
+    let mut output = ExecutionActionBuffer::with_limit(16);
+    let refused = engine
+        .submit_intent(
+            ExecutionIntent::Submit {
+                intent_id: IntentId::new(3),
+                order: desired(3),
+            },
+            &mut output,
+        )
+        .unwrap_err();
+    assert!(refused.is_pre_trade_refusal());
+    assert!(output.as_slice().is_empty());
+    assert_eq!(engine.snapshot(), before);
+}

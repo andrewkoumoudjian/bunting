@@ -40,7 +40,7 @@ fn free_port() -> Result<u16, String> {
         .map_err(|error| error.to_string())
 }
 
-/// A file-backed venue with one inventory-skewed agent ticking every 20 ms.
+/// A file-backed venue with one inventory-skewed agent waking every 100 ms.
 fn write_config(folder: &Path, port: u16) -> Result<PathBuf, String> {
     let scenario = folder.join("scenario.json");
     std::fs::write(&scenario, include_str!("../config/scenario.json"))
@@ -56,6 +56,8 @@ fn write_config(folder: &Path, port: u16) -> Result<PathBuf, String> {
     });
     let runtime = config.runtime.as_mut().ok_or("local profile has agents")?;
     runtime.wall_tick_ms = 20;
+    // Wakes every 100 ms of run time; each quote lives two wakes.
+    runtime.scheduler.agents[0].wake_interval_ns = 100_000_000;
     runtime.scheduler.agents[0].kind =
         serde_json::from_value(serde_json::json!("inventory_skewed_market_maker"))
             .map_err(|error| error.to_string())?;
@@ -116,9 +118,12 @@ fn agents_resume_after_the_venue_is_killed_mid_run() -> Result<(), String> {
     })?;
     team.send(order("801", "buy", 5, Some(102)))?;
     team.wait_report("801", "F")?;
-    // Short, the agent offers at 104; let it keep quoting, then kill the
-    // process without warning while it does.
-    wait_for_book(&mut team, |_, asks| asks.contains(&104))?;
+    // Short 5 after a trade at 102, the agent skews its quotes up a tick
+    // around the last trade and widens them: 100 bid, 106 offer. Let it
+    // keep quoting, then kill the process without warning while it does.
+    wait_for_book(&mut team, |bids, asks| {
+        bids.contains(&100) && asks.contains(&106)
+    })?;
     std::thread::sleep(Duration::from_millis(150));
     drop(team);
     server.0.kill().map_err(|error| error.to_string())?;
@@ -127,24 +132,28 @@ fn agents_resume_after_the_venue_is_killed_mid_run() -> Result<(), String> {
 
     // Same files, new process: the agent must resume (a fresh agent is
     // refused on a run it already traded in) and keep quoting short.
+    // Quotes from before the crash expire two wakes on, so the 106 offer
+    // seen once they are gone is the resumed agent's: a flat agent would
+    // offer at 104.
     let mut server = start(&config, port)?;
     let mut observer = Client::logon(port, "TEAM2", "team2", "bunting-team2-dev")?;
-    let (_, before) = book(&mut observer)?;
+    std::thread::sleep(Duration::from_millis(500));
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        std::thread::sleep(Duration::from_millis(100));
         if let Ok(Some(status)) = server.0.try_wait() {
             return Err(format!("restarted venue exited: {status}"));
         }
-        let (_, asks) = book(&mut observer)?;
-        if quantity_at(&asks, 104) > quantity_at(&before, 104) {
+        let (bids, asks) = book(&mut observer)?;
+        if quantity_at(&bids, 100) > 0 && quantity_at(&asks, 106) > 0 {
+            assert_eq!(quantity_at(&asks, 104), 0, "the agent forgot it is short");
             break;
         }
         if Instant::now() > deadline {
             return Err(format!(
-                "the resumed agent added no offers at 104: before {before:?}, now {asks:?}"
+                "the resumed agent is not quoting short: bids {bids:?}, asks {asks:?}"
             ));
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
     // Still running: nothing it resumed collided with the journal.
     std::thread::sleep(Duration::from_millis(200));
