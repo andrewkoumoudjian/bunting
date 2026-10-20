@@ -6,7 +6,6 @@ use crate::desk::Desk;
 use crate::flash::{self, Flash, Flashes};
 use crate::format;
 use crate::one_click::{self, Gesture, Intent, OneClick};
-use crate::theme;
 use crate::ui::{self, Col};
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
@@ -120,26 +119,13 @@ macro_rules! reader_panel {
     };
 }
 
+pub(crate) use ui::{cell, colored, muted};
+
 pub(crate) fn panel_body(
     id: &'static str,
     focus: &FocusHandle,
 ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
-    v_flex()
-        .id(id)
-        .test_support()
-        .track_focus(focus)
-        .size_full()
-        .p_2()
-        .gap_2()
-        .text_sm()
-        .font_features(theme::tabular())
-}
-
-pub(crate) fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(text.into())
+    ui::pane_body(id, focus)
 }
 
 pub(crate) fn side_color(side: Side, cx: &App) -> Hsla {
@@ -149,59 +135,12 @@ pub(crate) fn side_color(side: Side, cx: &App) -> Hsla {
     }
 }
 
-/// One table row of fixed-width cells.
-pub(crate) fn row(cells: Vec<(AnyElement, f32)>) -> Div {
-    let mut row = h_flex().w_full().h(px(ui::TABLE_ROW_HEIGHT)).gap_2();
-    for (cell, width) in cells {
-        row = row.child(
-            div()
-                .w(px(width))
-                .flex_shrink_0()
-                .overflow_hidden()
-                .child(cell),
-        );
-    }
-    row
-}
-
 /// A table header at the columns' minimum widths, for layouts that
 /// guarantee that much room (a book side in its minimum-width card, the
 /// tape's three quote columns in its minimum-width pane). Pane-width
 /// tables use [`ui::responsive_table`] instead.
 pub(crate) fn aligned_header(cols: &[Col], cx: &App) -> Div {
     ui::table_head(&ui::fit_fixed(cols), cx)
-}
-
-/// [`row`], for code where a book row's `row` shadows it.
-fn row_cells(cells: Vec<(AnyElement, f32)>) -> Div {
-    row(cells)
-}
-
-pub(crate) fn cell(text: impl Into<SharedString>) -> AnyElement {
-    div().child(text.into()).into_any_element()
-}
-
-pub(crate) fn colored(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
-    div()
-        .text_color(color)
-        .child(text.into())
-        .into_any_element()
-}
-
-pub(crate) fn header(cells: &[(&'static str, f32)], cx: &App) -> Div {
-    row(cells
-        .iter()
-        .map(|(label, width)| {
-            (
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(*label)
-                    .into_any_element(),
-                *width,
-            )
-        })
-        .collect())
 }
 
 /// One table row at the columns' minimum widths; see [`aligned_header`].
