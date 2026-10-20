@@ -78,6 +78,90 @@
       },
       "initial_positions": {}
     },
+    "3": {
+      "participant_id": 3,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "4": {
+      "participant_id": 4,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "5": {
+      "participant_id": 5,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "6": {
+      "participant_id": 6,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "7": {
+      "participant_id": 7,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
+    "8": {
+      "participant_id": 8,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000,
+        "max_live_orders": 256
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {}
+    },
     "10": {
       "participant_id": 10,
       "enabled": true,

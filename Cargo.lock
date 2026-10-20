@@ -431,6 +431,7 @@ version = "0.1.0"
 dependencies = [
  "bunting-client",
  "rcgen",
+ "rustix",
  "serde_json",
 ]
 
