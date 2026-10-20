@@ -24,8 +24,9 @@ shown on delta's homepage, with the side panel used for our purposes and
 the main workspace being a whole workspace where users can spawn windows,
 arrange them"; "just like RIT but a lot more modern. RIT is the legacy
 software, which we aim to highly modernize". Asked to choose, the owner
-picked **free-floating windows** over a tiled grid (2026-10-20). Pop-out
-OS windows and command naming were left to the recommendation.
+picked **free-floating windows** over a tiled grid and **in-app windows**
+over native pop-outs (2026-10-20); command naming was left to the
+recommendation.
 
 Evidence (2026-10-20):
 
@@ -182,14 +183,13 @@ desk-local change; the shared state crate is unchanged). Until it lands
 (U3), every window follows the desk's instrument, which is the same as
 one link group.
 
-### 6. Pop-out to an OS window
+### 6. Windows stay in the app (owner, 2026-10-20)
 
-A window can be popped out into its own native window (GPUI
-`open_window`) for a second monitor. It renders the same pane entity,
-stays in the screen's Windows list and is saved with the screen, display
-and bounds included. Closing the native window returns the pane to the
-canvas at its last canvas geometry. If the saved display is gone, the
-pane opens on the canvas.
+Windows float inside the app's canvas only. The owner preferred in-app
+floating windows to native pop-outs. A second monitor is served by a second
+app window showing another screen, which needs no new mechanism. Native
+pop-out (GPUI `open_window` per pane) is **deferred**: it is not part of
+U1 to U4 and is revisited only if owners ask for it.
 
 ### 7. A design system and user themes
 
@@ -250,7 +250,7 @@ acceptance (desk `AGENTS.md`).
 |---|---|
 | **U1** | Frame (title bar, sidebar sections Screens, Windows, Run), the canvas window manager (decision 2), screens v4 with templates (decision 3), `WindowFrame`; panes move from the dock unchanged |
 | **U2** | Design system and themes (decision 7): tokens, components, every pane restyled, Light theme, user themes and the picker |
-| **U3** | Command line and codes (decision 4), link groups and per-window instrument (decision 5), pop-out (decision 6), Watchlist and Inbox sections |
+| **U3** | Command line and codes (decision 4), link groups and per-window instrument (decision 5), Watchlist and Inbox sections |
 | **U4** | RIT parity beyond ADR 0050: charts (`G`) after a BNP history/reference-data ADR, Transaction Log, Assets and Converters as the run carries them |
 
 ## Consequences
@@ -271,8 +271,9 @@ acceptance (desk `AGENTS.md`).
 - **Tiled grid (Bloomberg four-panel style or the current dock).** It is
   simpler and has no overlap, but it is what the owner rejected as
   RIT-like and rigid. Tile is still one command away (decision 2).
-- **Single window only.** Students and traders use two screens. Pop-out
-  costs one `open_window` per window and keeps the canvas as home.
+- **Native pop-out windows now.** Deferred (decision 6). The owner
+  preferred in-app windows, and per-pane OS windows double the focus,
+  save and restore cases before the canvas itself is proven.
 - **Bunting-only command names.** Codes users already know from
   Bloomberg and Godel, plus RIT names, cost nothing, and new codes stay
   short and mnemonic.
