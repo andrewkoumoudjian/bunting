@@ -1,6 +1,6 @@
 # ADR 0053: Replayable exchange publication and a lean single-writer runtime
 
-- **Status: Accepted Target (2026-10-12), not implemented.** This ADR persists the architectural direction; code, tests and the implementation log are required before any Target can be called Current.
+- **Status: Accepted Target (2026-10-12), partly implemented.** This ADR persists the architectural direction; code, tests and the implementation log are required before any Target can be called Current. Current since 2026-10-20: the O(P) auction price sweep (§4, slice 52) and the first P0 step of §2: a failed post-commit public projection is a visible report-sequence gap with rebuilt caches, never a silent skip (slice 53). Journal-rebuildable versioned projections, BNP durable catch-up (§3), incremental projections, instrumentation and everything in §5 remain Target.
 - **Date:** 2026-10-12.
 - **Evidence baseline:** [`main@8e3ac2f`](https://github.com/andrewkoumoudjian/bunting/commit/8e3ac2f8901f5dab3bec57a934f1bda6b6ddd6c7).
 - **Spec-by-spec evidence:** [Jane Street exchange talk comparison](../specs/jane-street-exchange-engine-requirements.md), based on a user-provided, independently unverified automated transcript (2026-10-12, T:L1–153).
