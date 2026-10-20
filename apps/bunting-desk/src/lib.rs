@@ -9,6 +9,7 @@
 //! `bunting server` and connects to it like any hosted venue.
 
 pub mod actions;
+pub mod canvas;
 pub mod connect;
 pub mod deals;
 pub mod desk;
@@ -23,8 +24,9 @@ pub mod panes;
 pub mod theme;
 pub mod workspace;
 
+pub use canvas::Canvas;
 pub use desk::{Desk, Outbox, Venue};
-pub use layouts::{LayoutStore, Preset};
+pub use layouts::{LayoutStore, Preset, Screen};
 pub use panes::PaneKind;
 pub use workspace::{PANELS, Workspace};
 

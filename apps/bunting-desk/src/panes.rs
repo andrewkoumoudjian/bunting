@@ -1,5 +1,5 @@
-//! Every kind of pane the workspace can open, any number of times, and the
-//! builders that bring panes back from a saved layout.
+//! Every kind of pane a canvas window can hold, any number of times, and
+//! the builder that brings panes back from a saved screen (ADR 0051).
 
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
@@ -10,8 +10,8 @@ use crate::panels::{
     TradesPanel,
 };
 use gpui_kit::component::IconName;
-use gpui_kit::component::dock::{BasePanelView, panel_handle, register_panel};
-use gpui_kit::{App, AppContext as _, Entity, Global, Window};
+use gpui_kit::component::dock::{BasePanelView, panel_handle};
+use gpui_kit::{App, AppContext as _, Entity, Window};
 use std::sync::Arc;
 
 /// A kind of pane. Its [`name`](Self::name) is written into saved layouts
@@ -103,6 +103,51 @@ impl PaneKind {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
+    /// The smallest window this kind stays usable in (ADR 0051 decision 2):
+    /// resize drags and newly opened windows honour it.
+    #[must_use]
+    pub const fn min_size(self) -> (f32, f32) {
+        match self {
+            Self::BookTrader => (360., 200.),
+            Self::LadderTrader | Self::OrderEntry => (240., 260.),
+            Self::Tape => (240., 160.),
+            Self::Blotter => (360., 140.),
+            Self::Fills => (300., 140.),
+            Self::Portfolio => (260., 140.),
+            Self::TraderInfo | Self::Notices => (240., 140.),
+            Self::News => (300., 180.),
+            Self::Deals => (420., 260.),
+        }
+    }
+
+    /// The size a newly opened window of this kind gets.
+    #[must_use]
+    pub const fn default_size(self) -> (f32, f32) {
+        match self {
+            Self::BookTrader => (760., 500.),
+            Self::LadderTrader => (440., 520.),
+            Self::OrderEntry => (360., 460.),
+            Self::Tape => (420., 420.),
+            Self::Blotter => (840., 320.),
+            Self::Fills => (560., 320.),
+            Self::Portfolio => (440., 300.),
+            Self::TraderInfo => (380., 300.),
+            Self::Notices => (420., 300.),
+            Self::News => (560., 420.),
+            Self::Deals => (560., 440.),
+        }
+    }
+
+    /// Whether the pane follows the desk's instrument, so its window frame
+    /// carries the instrument chip.
+    #[must_use]
+    pub const fn follows_instrument(self) -> bool {
+        matches!(
+            self,
+            Self::BookTrader | Self::LadderTrader | Self::OrderEntry | Self::Tape
+        )
+    }
+
     /// A new pane of this kind on `desk`.
     pub fn build(
         self,
@@ -123,21 +168,5 @@ impl PaneKind {
             Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
             Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
         }
-    }
-}
-
-/// The desk restored panes attach to.
-struct DeskHandle(Entity<Desk>);
-
-impl Global for DeskHandle {}
-
-/// Lets saved layouts rebuild every kind of pane on `desk`.
-pub fn register(desk: &Entity<Desk>, cx: &mut App) {
-    cx.set_global(DeskHandle(desk.clone()));
-    for kind in PaneKind::ALL {
-        register_panel(cx, kind.name(), move |_, window, cx| {
-            let desk = cx.global::<DeskHandle>().0.clone();
-            kind.build(desk, window, cx)
-        });
     }
 }
