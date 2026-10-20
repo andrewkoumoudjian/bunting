@@ -115,6 +115,15 @@ pub struct Canvas {
     screen_name: String,
     /// The screen's template as canvas fractions, for the empty state.
     template: Vec<(PaneKind, Rect)>,
+    /// The template has not been placed yet: the canvas has not painted,
+    /// so its real size is unknown and fractions must not be placed (or
+    /// saved) against the seed size.
+    pending_template: bool,
+    /// The canvas size the current rects are laid out for. When the
+    /// painted size differs, windows reflow proportionally (a screen
+    /// saved on a desktop monitor shown on a laptop). `None` adopts the
+    /// first painted size without reflowing.
+    layout_size: Option<(f32, f32)>,
     /// Last known canvas size; seeded by the workspace, kept by paint.
     size: (f32, f32),
     /// The canvas bounds in window coordinates, recorded each paint.
@@ -134,6 +143,8 @@ impl Canvas {
             next_id: 1,
             screen_name: String::new(),
             template: Vec::new(),
+            pending_template: false,
+            layout_size: None,
             size,
             bounds: Rc::new(Cell::new(Rect::default())),
             drag: None,
@@ -146,22 +157,40 @@ impl Canvas {
         self.size
     }
 
+    /// Whether a template is waiting for the first painted bounds.
+    #[must_use]
+    pub const fn has_pending_template(&self) -> bool {
+        self.pending_template
+    }
+
+    /// The canvas size the current rects are laid out for, once known.
+    #[must_use]
+    pub const fn layout_size(&self) -> Option<(f32, f32)> {
+        self.layout_size
+    }
+
     fn canvas_rect(&self) -> Rect {
         Rect::new(0., 0., self.size.0, self.size.1)
     }
 
-    /// Shows a screen: its saved windows, or its template (`fractions` of
-    /// the canvas) when nothing is saved yet.
+    /// Shows a screen: its saved windows (laid out for `layout_size`,
+    /// reflowed when the painted canvas differs), or its template
+    /// (`fractions` of the canvas) when nothing is saved yet. A template
+    /// waits for the first painted bounds so it is never placed against
+    /// a seed size.
     pub fn set_screen(
         &mut self,
         name: String,
         fractions: &[(PaneKind, Rect)],
         saved: Option<&[SavedWindow]>,
+        layout_size: Option<(f32, f32)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.screen_name = name;
         self.template = fractions.to_vec();
+        self.layout_size = layout_size;
+        self.pending_template = false;
         self.windows.clear();
         self.closed.clear();
         self.focused = None;
@@ -184,7 +213,13 @@ impl Canvas {
                     }
                 }
             }
-            None => self.place_template(fractions, window, cx),
+            None => {
+                if self.bounds.get().w > 0. {
+                    self.place_template(fractions, window, cx);
+                } else {
+                    self.pending_template = true;
+                }
+            }
         }
         self.focused = self
             .windows
@@ -303,6 +338,8 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_template = false;
+        self.layout_size = Some(self.size);
         let canvas = self.canvas_rect();
         for &(kind, fraction) in fractions {
             let rect = geometry::place_fraction(fraction, canvas);
@@ -513,6 +550,68 @@ impl Canvas {
     fn changed(&mut self, cx: &mut Context<Self>) {
         cx.emit(CanvasEvent::Changed);
         cx.notify();
+    }
+
+    /// Adopts the painted canvas size: places a pending template against
+    /// it, or reflows laid-out windows when it differs from the size they
+    /// were laid out for (startup on another display, window resize).
+    fn settle_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let painted = self.bounds.get();
+        if painted.w <= 0. || painted.h <= 0. {
+            if self.pending_template {
+                // Ask for the frame after the first paint records bounds.
+                cx.notify();
+            }
+            return;
+        }
+        let new_size = (painted.w, painted.h);
+        self.size = new_size;
+        if self.pending_template {
+            let template = self.template.clone();
+            self.place_template(&template, window, cx);
+            return;
+        }
+        match self.layout_size {
+            None => self.layout_size = Some(new_size),
+            Some(old) if (old.0 - new_size.0).abs() > 0.5 || (old.1 - new_size.1).abs() > 0.5 => {
+                self.reflow_windows(old, new_size);
+                self.layout_size = Some(new_size);
+                self.changed(cx);
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn reflow_windows(&mut self, from: (f32, f32), to: (f32, f32)) {
+        if self.windows.is_empty() {
+            return;
+        }
+        // A maximised window stays maximised; its floating rect reflows.
+        let rects: Vec<Rect> = self
+            .windows
+            .iter()
+            .map(|win| {
+                if win.maximised {
+                    win.restore.unwrap_or(win.rect)
+                } else {
+                    win.rect
+                }
+            })
+            .collect();
+        let mins: Vec<(f32, f32)> = self.windows.iter().map(|win| win.kind.min_size()).collect();
+        let flowed = geometry::reflow(
+            &rects,
+            Rect::new(0., 0., from.0, from.1),
+            Rect::new(0., 0., to.0, to.1),
+            &mins,
+        );
+        for (win, rect) in self.windows.iter_mut().zip(flowed) {
+            if win.maximised {
+                win.restore = Some(rect);
+            } else {
+                win.rect = rect;
+            }
+        }
     }
 
     /// The rect a window renders at: the whole canvas when maximised, else
@@ -863,16 +962,13 @@ impl Canvas {
 
 impl Render for Canvas {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let painted = self.bounds.get();
-        if painted.w > 0. && painted.h > 0. {
-            self.size = (painted.w, painted.h);
-        }
+        self.settle_size(window, cx);
         let (background, guide_color) = {
             let theme = cx.theme();
             (theme.background, theme.drag_border)
         };
         let bounds = self.bounds.clone();
-        let empty = self.windows.is_empty();
+        let empty = self.windows.is_empty() && !self.pending_template;
         let mut root = div()
             .id("canvas")
             .test_support()

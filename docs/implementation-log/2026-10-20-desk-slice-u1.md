@@ -108,3 +108,26 @@ which the root workspace excludes (ADR 0050).
 - Visual review against a running build is the coordinator's: title
   strip centring, chip and button geometry, template feel at laptop
   size, and guide colour are the items to eyeball.
+
+## Visual fixes after live review (same day)
+
+- Templates now wait for the first painted canvas bounds before being
+  placed, and a screen is never saved from a pending (unpainted)
+  placement; previously the seed size froze the template short of the
+  real canvas edges. Covered by a test whose canvas seed is
+  deliberately wrong: after paint the Trading template's rightmost
+  edge lands at canvas width minus the gutter.
+- Screens remember the canvas size their rects were laid out for
+  (`canvas_w`/`canvas_h` in the v4 file, defaulting to the current
+  canvas when missing). When the painted size differs — startup on
+  another display or a window resize — `geometry::reflow` scales every
+  window proportionally inside the gutter-inset canvas, enforces
+  minimum sizes, keeps windows inside, and records the new size;
+  maximised windows stay maximised with their floating rect reflowed.
+  Unit-tested 1600×940 → 1040×660 and back within a pixel.
+- The active Screens row's rename/delete actions now live inside the
+  row (hover-revealed, press does not switch screens), so its
+  highlight spans the full sidebar width like every other row.
+
+Gate after these fixes: `tools/check_desk.sh` green (26 library, 22
+workspace tests).

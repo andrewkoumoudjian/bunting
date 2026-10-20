@@ -102,6 +102,13 @@ pub struct Screen {
     pub preset: Preset,
     /// `None` until the screen is first shown (its template applies).
     pub windows: Option<Vec<SavedWindow>>,
+    /// The canvas size the saved rects were laid out for, so a screen
+    /// can be reflowed when shown on a different-sized canvas. Missing
+    /// (files saved before this was recorded) means the current canvas.
+    #[serde(default)]
+    pub canvas_w: Option<f32>,
+    #[serde(default)]
+    pub canvas_h: Option<f32>,
 }
 
 impl Screen {
@@ -111,6 +118,17 @@ impl Screen {
             name: name.into(),
             preset,
             windows: None,
+            canvas_w: None,
+            canvas_h: None,
+        }
+    }
+
+    /// The recorded layout canvas size, when both halves were saved.
+    #[must_use]
+    pub fn canvas_size(&self) -> Option<(f32, f32)> {
+        match (self.canvas_w, self.canvas_h) {
+            (Some(w), Some(h)) if w > 0. && h > 0. => Some((w, h)),
+            _ => None,
         }
     }
 
@@ -340,6 +358,45 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_trading_template_reflows_between_desktop_and_laptop() {
+        use crate::canvas::geometry::{GUTTER, reflow};
+        let desktop = Rect::new(0., 0., 1600., 940.);
+        let laptop = Rect::new(0., 0., 1040., 660.);
+        let placed = Preset::Trading.template(desktop);
+        let rects: Vec<Rect> = placed.iter().map(|(_, rect)| *rect).collect();
+        let mins: Vec<(f32, f32)> = placed.iter().map(|(kind, _)| kind.min_size()).collect();
+        let flowed = reflow(&rects, desktop, laptop, &mins);
+        let inner = laptop.inset(GUTTER);
+        for (index, rect) in flowed.iter().enumerate() {
+            assert!(
+                rect.x >= inner.x - 0.01
+                    && rect.y >= inner.y - 0.01
+                    && rect.right() <= inner.right() + 0.01
+                    && rect.bottom() <= inner.bottom() + 0.01,
+                "inside the gutter-inset laptop canvas: {rect:?}"
+            );
+            for other in &flowed[index + 1..] {
+                assert!(!rect.overlaps(*other), "no overlap after reflow");
+            }
+        }
+        let rightmost = flowed
+            .iter()
+            .map(|rect| rect.right())
+            .fold(f32::MIN, f32::max);
+        assert!((rightmost - inner.right()).abs() < 0.01);
+        let back = reflow(&flowed, laptop, desktop, &mins);
+        for (after, before) in back.iter().zip(&rects) {
+            assert!(
+                (after.x - before.x).abs() < 1.
+                    && (after.y - before.y).abs() < 1.
+                    && (after.w - before.w).abs() < 1.
+                    && (after.h - before.h).abs() < 1.,
+                "round trip restores within a pixel: {after:?} vs {before:?}"
+            );
         }
     }
 

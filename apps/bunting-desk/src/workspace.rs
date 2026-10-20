@@ -405,16 +405,35 @@ impl Workspace {
         let name = screen.name.clone();
         let preset = screen.preset;
         let saved = screen.windows.clone();
+        let layout_size = screen.canvas_size();
         self.canvas.update(cx, |canvas, cx| {
-            canvas.set_screen(name, &preset.fractions(), saved.as_deref(), window, cx);
+            canvas.set_screen(
+                name,
+                &preset.fractions(),
+                saved.as_deref(),
+                layout_size,
+                window,
+                cx,
+            );
         });
     }
 
-    /// Copies the shown canvas into its screen.
+    /// Copies the shown canvas into its screen. A screen whose template
+    /// has not been placed yet (no painted bounds) keeps `windows: None`
+    /// rather than saving an empty or seed-sized layout.
     fn remember(&mut self, cx: &App) {
-        let windows = self.canvas.read(cx).dump();
+        let canvas = self.canvas.read(cx);
+        if canvas.has_pending_template() {
+            return;
+        }
+        let windows = canvas.dump();
+        let layout_size = canvas.layout_size();
         if let Some(screen) = self.screens.get_mut(self.active) {
             screen.windows = Some(windows);
+            if let Some((w, h)) = layout_size {
+                screen.canvas_w = Some(w);
+                screen.canvas_h = Some(h);
+            }
         }
     }
 
@@ -543,60 +562,61 @@ impl Workspace {
                 continue;
             }
             let active = index == self.active;
-            list =
-                list.child(
+            // The rename/delete actions live inside the row so its
+            // highlight spans the full sidebar width like every other row;
+            // they show on row hover and their press must not also
+            // trigger the row's switch.
+            list = list.child(
+                sidebar_row(
+                    SharedString::from(format!("workspace-{index}")),
+                    IconName::LayoutDashboard,
+                    screen.name.clone(),
+                    active,
+                    false,
+                    None,
+                    cx,
+                )
+                .group("screen-row")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.switch_to(index, window, cx);
+                }))
+                .child(
                     h_flex()
-                        .group("screen-row")
-                        .gap_1()
+                        .id(SharedString::from(format!("workspace-actions-{index}")))
                         .items_center()
-                        .pr_1()
+                        .gap(px(2.))
+                        .opacity(0.)
+                        .group_hover("screen-row", |style| style.opacity(1.))
+                        .on_mouse_down(
+                            gpui_kit::MouseButton::Left,
+                            cx.listener(|_, _: &gpui_kit::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                            }),
+                        )
                         .child(
-                            sidebar_row(
-                                SharedString::from(format!("workspace-{index}")),
-                                IconName::LayoutDashboard,
-                                screen.name.clone(),
-                                active,
-                                false,
-                                None,
-                                cx,
-                            )
-                            .flex_1()
+                            Button::new(SharedString::from(format!(
+                                "workspace-rename-open-{index}"
+                            )))
+                            .icon(CatalogIcon::Pencil)
+                            .ghost()
+                            .xsmall()
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
-                                    this.switch_to(index, window, cx);
+                                    this.begin_rename(index, window, cx);
                                 },
                             )),
                         )
                         .child(
-                            h_flex()
-                                .items_center()
-                                .gap(px(2.))
-                                .opacity(0.)
-                                .group_hover("screen-row", |style| style.opacity(1.))
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "workspace-rename-open-{index}"
-                                    )))
-                                    .icon(CatalogIcon::Pencil)
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.begin_rename(index, window, cx);
-                                    })),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "workspace-delete-{index}"
-                                    )))
-                                    .icon(CatalogIcon::Trash)
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.confirm_delete(index, window, cx);
-                                    })),
-                                ),
+                            Button::new(SharedString::from(format!("workspace-delete-{index}")))
+                                .icon(CatalogIcon::Trash)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_delete(index, window, cx);
+                                })),
                         ),
-                );
+                ),
+            );
         }
         list
     }

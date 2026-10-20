@@ -1213,3 +1213,136 @@ fn switching_screens_and_back_restores_the_geometry(cx: &mut TestAppContext) {
     click(&fixture, cx, "workspace-0");
     assert_eq!(saved_windows(&fixture, cx), before);
 }
+
+// ---- deferred templates and reflow ----------------------------------------
+
+/// A window holding only a canvas, so its painted size is exact.
+struct CanvasHost {
+    canvas: Entity<bunting_desk::Canvas>,
+}
+
+impl gpui_kit::Render for CanvasHost {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement as _, Styled as _};
+        gpui_kit::div().size_full().child(self.canvas.clone())
+    }
+}
+
+/// Opens a 1600x940 canvas whose seed size is deliberately wrong, shows a
+/// screen on it, and paints until it settles.
+fn open_canvas(
+    cx: &mut TestAppContext,
+    saved: Option<&[bunting_desk::canvas::SavedWindow]>,
+    layout_size: Option<(f32, f32)>,
+) -> (WindowHandle<Root>, Entity<bunting_desk::Canvas>) {
+    cx.update(gpui_kit::init);
+    let desk = cx.update(|cx| {
+        cx.new(|_| Desk::with_outbox(Box::new(Recorder::default()), "test venue".to_owned()))
+    });
+    let canvas = cx.update(|cx| cx.new(|_| bunting_desk::Canvas::new(desk, (320., 240.))));
+    let shown = canvas.clone();
+    let window = cx.update(|cx| {
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(px(1600.), px(940.)),
+            })),
+            ..WindowOptions::default()
+        };
+        let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
+            bunting_desk::init(cx);
+            shown.update(cx, |canvas, cx| {
+                canvas.set_screen(
+                    "Trading".to_owned(),
+                    &bunting_desk::Preset::Trading.fractions(),
+                    saved,
+                    layout_size,
+                    window,
+                    cx,
+                );
+            });
+            cx.new(|_| CanvasHost {
+                canvas: shown.clone(),
+            })
+        })
+        .expect("open window");
+        window.downcast::<Root>().expect("Base Root")
+    });
+    // First paint records the real bounds; the next frame settles.
+    for _ in 0..3 {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    (window, canvas)
+}
+
+#[gpui_kit::test]
+#[allow(clippy::float_arithmetic, reason = "expected edges in logical pixels")]
+fn a_template_waits_for_the_first_painted_bounds(cx: &mut TestAppContext) {
+    let (_, canvas) = open_canvas(cx, None, None);
+    let saved = canvas.read_with(cx, |canvas, _| canvas.dump());
+    assert_eq!(saved.len(), 7, "the Trading template's windows");
+    let rightmost = saved
+        .iter()
+        .map(|each| each.rect.right())
+        .fold(f32::MIN, f32::max);
+    let bottom = saved
+        .iter()
+        .map(|each| each.rect.bottom())
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (rightmost - (1600. - 6.)).abs() < 0.01,
+        "rightmost edge at the gutter: {rightmost}"
+    );
+    assert!(
+        (bottom - (940. - 6.)).abs() < 0.01,
+        "bottom edge at the gutter: {bottom}"
+    );
+}
+
+#[gpui_kit::test]
+#[allow(clippy::float_arithmetic, reason = "expected edges in logical pixels")]
+fn a_screen_from_a_larger_canvas_reflows_to_this_one(cx: &mut TestAppContext) {
+    use bunting_desk::canvas::SavedWindow;
+    use bunting_desk::canvas::geometry::Rect;
+    // Windows laid out on a 2560x1440 canvas, shown on 1600x940.
+    let saved = vec![
+        SavedWindow {
+            kind: "books".to_owned(),
+            rect: Rect::new(6., 6., 1200., 700.),
+            z: 0,
+            minimised: false,
+            maximised: false,
+        },
+        SavedWindow {
+            kind: "tape".to_owned(),
+            rect: Rect::new(1212., 6., 1342., 700.),
+            z: 1,
+            minimised: false,
+            maximised: false,
+        },
+    ];
+    let (_, canvas) = open_canvas(cx, Some(&saved), Some((2560., 1440.)));
+    let flowed = canvas.read_with(cx, |canvas, _| canvas.dump());
+    let tape = flowed
+        .iter()
+        .find(|each| each.kind == "tape")
+        .expect("tape kept");
+    assert!(
+        (tape.rect.right() - (1600. - 6.)).abs() < 1.,
+        "tape reflowed onto the smaller canvas: {:?}",
+        tape.rect
+    );
+    assert_eq!(
+        canvas.read_with(cx, |canvas, _| canvas.layout_size()),
+        Some((1600., 940.)),
+        "the new layout size is recorded"
+    );
+}

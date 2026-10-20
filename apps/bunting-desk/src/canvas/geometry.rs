@@ -306,6 +306,50 @@ pub fn place_fraction(fraction: Rect, canvas: Rect) -> Rect {
     .inset(GUTTER / 2.)
 }
 
+/// Reflows windows laid out for canvas `from` onto canvas `to`, scaling
+/// positions and sizes proportionally inside the gutter-inset canvases,
+/// then enforcing each window's minimum size and keeping it fully inside
+/// the new inset canvas when it fits. `mins` is parallel to `rects`.
+/// Maximised windows are the caller's to skip (they fill any canvas).
+#[must_use]
+pub fn reflow(rects: &[Rect], from: Rect, to: Rect, mins: &[(f32, f32)]) -> Vec<Rect> {
+    let from_in = from.inset(GUTTER);
+    let to_in = to.inset(GUTTER);
+    if from_in.w <= 0. || from_in.h <= 0. || to_in.w <= 0. || to_in.h <= 0. {
+        return rects.to_vec();
+    }
+    let scale_x = to_in.w / from_in.w;
+    let scale_y = to_in.h / from_in.h;
+    rects
+        .iter()
+        .zip(mins.iter().copied().chain(std::iter::repeat((0., 0.))))
+        .map(|(rect, min)| {
+            let scaled = Rect::new(
+                to_in.x + (rect.x - from_in.x) * scale_x,
+                to_in.y + (rect.y - from_in.y) * scale_y,
+                rect.w * scale_x,
+                rect.h * scale_y,
+            );
+            let grown = enforce_min(scaled, min);
+            let x = if grown.w <= to_in.w {
+                grown
+                    .x
+                    .clamp(to_in.x, (to_in.right() - grown.w).max(to_in.x))
+            } else {
+                to_in.x
+            };
+            let y = if grown.h <= to_in.h {
+                grown
+                    .y
+                    .clamp(to_in.y, (to_in.bottom() - grown.h).max(to_in.y))
+            } else {
+                to_in.y
+            };
+            Rect { x, y, ..grown }
+        })
+        .collect()
+}
+
 /// Keeps at least `min` of size, growing right and down from the corner.
 #[must_use]
 pub fn enforce_min(rect: Rect, min: (f32, f32)) -> Rect {
@@ -605,6 +649,45 @@ mod tests {
         assert!(close(right.x - left.right(), GUTTER));
         assert!(close(right.right(), CANVAS.right() - GUTTER));
         assert!(close(left.y, GUTTER) && close(left.bottom(), CANVAS.bottom() - GUTTER));
+    }
+
+    #[test]
+    fn reflow_scales_inside_the_gutter_and_round_trips() {
+        let big = Rect::new(0., 0., 1600., 940.);
+        let small = Rect::new(0., 0., 1040., 660.);
+        let rects = [
+            place_fraction(Rect::new(0., 0., 0.52, 0.54), big),
+            place_fraction(Rect::new(0.76, 0., 0.24, 0.54), big),
+            place_fraction(Rect::new(0.70, 0.77, 0.30, 0.23), big),
+        ];
+        let mins = [(360., 200.), (240., 160.), (240., 140.)];
+        let flowed = reflow(&rects, big, small, &mins);
+        let inner = small.inset(GUTTER);
+        for (index, rect) in flowed.iter().enumerate() {
+            assert!(rect.x >= inner.x - 0.01 && rect.y >= inner.y - 0.01);
+            assert!(
+                rect.right() <= inner.right() + 0.01,
+                "{rect:?} in {inner:?}"
+            );
+            assert!(rect.bottom() <= inner.bottom() + 0.01);
+            assert!(rect.w >= mins[index].0 - 0.01 && rect.h >= mins[index].1 - 0.01);
+            for other in &flowed[index + 1..] {
+                assert!(!rect.overlaps(*other));
+            }
+        }
+        // Edge windows stay on the inset edge.
+        assert!(close(flowed[1].right(), inner.right()));
+        assert!(close(flowed[2].bottom(), inner.bottom()));
+        // And back, within a pixel.
+        let back = reflow(&flowed, small, big, &mins);
+        for (after, before) in back.iter().zip(&rects) {
+            assert!((after.x - before.x).abs() < 1., "{after:?} vs {before:?}");
+            assert!((after.y - before.y).abs() < 1.);
+            assert!((after.w - before.w).abs() < 1.);
+            assert!((after.h - before.h).abs() < 1.);
+        }
+        // A same-size reflow is the identity.
+        assert_eq!(reflow(&rects, big, big, &mins), rects.to_vec());
     }
 
     #[test]
