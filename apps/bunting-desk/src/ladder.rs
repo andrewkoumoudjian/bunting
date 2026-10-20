@@ -11,13 +11,14 @@
 use crate::actions::CentreLadder;
 use crate::desk::Desk;
 use crate::format;
-use crate::panels::{WhenToggled as _, cell, dock_panel, header, muted, panel_body, row};
+use crate::panels::{WhenToggled as _, dock_panel};
+use crate::ui::{self, Col};
 use bunting_trading_state::bunting_client::bnp_wire::{Listing, Side};
 use bunting_trading_state::{OrderTicket, TicketKind};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{InputState, NumberInput};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
@@ -31,12 +32,14 @@ pub const HALF_SPAN: i64 = 12;
 /// The key context the ladder sets.
 pub const CONTEXT: &str = "Ladder";
 
-const COLUMNS: [(&str, f32); 5] = [
-    ("mine", 56.),
-    ("bid", 64.),
-    ("price", 72.),
-    ("ask", 64.),
-    ("mine", 56.),
+/// Bid sizes right-align toward the price axis and ask sizes left-align
+/// away from it, so size grows toward the market on both sides.
+const COLUMNS: [Col; 5] = [
+    Col::center("mine", 56.).priority(0),
+    Col::right("bid", 64.).priority(2),
+    Col::center("price", 72.).priority(2),
+    Col::left("ask", 64.).priority(2),
+    Col::center("mine", 56.).priority(0),
 ];
 
 pub struct LadderPanel {
@@ -158,18 +161,25 @@ impl LadderPanel {
         id: String,
         text: String,
         color: Option<gpui_kit::Hsla>,
+        align: ui::Align,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let mut element = div()
+        let hover_bg = cx.theme().secondary;
+        let element = div()
             .id(SharedString::from(id))
             .test_support()
             .w_full()
             .cursor_pointer()
             .rounded_sm()
-            .hover(|style| style.bg(gpui_kit::hsla(0., 0., 1., 0.06)))
-            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
-            .child(text);
+            .hover(move |style| style.bg(hover_bg))
+            .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)));
+        let mut element = match align {
+            ui::Align::Left => element.text_left(),
+            ui::Align::Right => element.text_right(),
+            ui::Align::Center => element.text_center(),
+        }
+        .child(text);
         if let Some(color) = color {
             element = element.text_color(color);
         }
@@ -184,40 +194,51 @@ impl Render for LadderPanel {
     )]
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focus = self.focus.clone();
-        let mut body = panel_body("ladder", &self.focus)
+        let mut body = ui::pane_body("ladder", &self.focus)
             .key_context(CONTEXT)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 window.focus(&focus, cx);
             })
             .on_action(cx.listener(|this, _: &CentreLadder, _, cx| this.centre(cx)));
         if self.desk.read(cx).instrument().is_none() {
-            return body.child("No listings yet");
+            return body.child(ui::empty_state(
+                "ladder-empty",
+                IconName::ChevronsUpDown,
+                "No listings yet",
+                None,
+                cx,
+            ));
         }
         let venues = self.venue_buttons(cx);
         body = body.child(
-            h_flex()
-                .gap_2()
-                .items_center()
+            ui::toolbar()
+                .w_full()
                 .flex_wrap()
                 .child(venues)
-                .child(muted("V", cx))
+                .child(ui::muted("V", cx))
                 .child(
                     div()
                         .id("ladder-volume")
                         .test_support()
-                        .w(px(92.))
+                        .w(px(76.))
                         .child(NumberInput::new(&self.volume).xsmall()),
                 )
                 .child(
                     Button::new("ladder-centre")
                         .label("Centre")
                         .xsmall()
+                        .tooltip(
+                            "Click a bid size to buy V there, an ask size to sell V there; click ● to cancel yours. Space recentres",
+                        )
                         .on_click(cx.listener(|this, _, _, cx| this.centre(cx))),
                 ),
         );
         let Some(listing) = self.listing(cx) else {
-            return body.child(muted(
-                "Choose the venue this ladder shows and trades on. Each venue's book is its own.",
+            return body.child(ui::empty_state(
+                "ladder-no-venue",
+                IconName::ChevronsUpDown,
+                "Choose the venue this ladder shows and trades on",
+                None,
                 cx,
             ));
         };
@@ -225,7 +246,13 @@ impl Render for LadderPanel {
             self.centre = self.market(listing, cx);
         }
         let Some(centre) = self.centre else {
-            return body.child(muted("No prices on this venue yet.", cx));
+            return body.child(ui::empty_state(
+                "ladder-no-prices",
+                IconName::ChevronsUpDown,
+                "No prices on this venue yet",
+                None,
+                cx,
+            ));
         };
         let desk = self.desk.read(cx);
         let model = desk.model();
@@ -259,23 +286,30 @@ impl Render for LadderPanel {
                 + model.unreported_position(listing.instrument_id)
         });
         let theme = cx.theme();
-        let (bid_color, ask_color) = (theme.chart_bullish, theme.chart_bearish);
         let (accent, quote_bg) = (theme.primary, theme.secondary);
-        body = body.child(muted(
-            format!(
-                "{} · position {} · last {}",
-                format::venue(listing),
-                position.map_or_else(|| "–".to_owned(), |position| position.to_string()),
-                last.map_or_else(|| "–".to_owned(), |price| price.to_string()),
-            ),
-            cx,
-        ));
-        let mut rows = v_flex()
-            .id("ladder-rows")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .child(header(&COLUMNS, cx));
+        let position_color = match position {
+            Some(value) if value > 0 => theme.chart_bullish,
+            Some(value) if value < 0 => theme.chart_bearish,
+            _ => theme.foreground,
+        };
+        body = body.child(
+            h_flex()
+                .gap_4()
+                .items_start()
+                .child(ui::stat("Venue", format::venue(listing), cx))
+                .child(ui::stat_colored(
+                    "Position",
+                    position.map_or_else(|| "–".to_owned(), |value| value.to_string()),
+                    position_color,
+                    cx,
+                ))
+                .child(ui::stat(
+                    "Last",
+                    last.map_or_else(|| "–".to_owned(), |price| price.to_string()),
+                    cx,
+                )),
+        );
+        let mut rows: Vec<(i64, bool, Vec<AnyElement>)> = Vec::new();
         for price in (centre - HALF_SPAN..=centre + HALF_SPAN).rev() {
             let my_bid = mine.get(&(Side::Buy, price)).copied().unwrap_or(0);
             let my_ask = mine.get(&(Side::Sell, price)).copied().unwrap_or(0);
@@ -291,14 +325,16 @@ impl Render for LadderPanel {
                         format!("ladder-{name}-{price}"),
                         format!("● {quantity}"),
                         Some(accent),
+                        ui::Align::Center,
                         move |this, cx| this.cancel(side, price, cx),
                         cx,
                     )
                 } else {
-                    cell("")
+                    ui::cell("")
                 }
             };
-            let size_cell = |side: Side, size: Option<i64>, color| {
+            // Quantities are not coloured; the columns say which side.
+            let size_cell = |side: Side, size: Option<i64>| {
                 let name = match side {
                     Side::Buy => "bid",
                     Side::Sell => "ask",
@@ -306,7 +342,11 @@ impl Render for LadderPanel {
                 Self::cell_button(
                     format!("ladder-{name}-{price}"),
                     size.map(|size| size.to_string()).unwrap_or_default(),
-                    Some(color),
+                    None,
+                    match side {
+                        Side::Buy => ui::Align::Right,
+                        Side::Sell => ui::Align::Left,
+                    },
                     move |this, cx| this.trade(side, price, cx),
                     cx,
                 )
@@ -318,29 +358,43 @@ impl Render for LadderPanel {
                     .text_color(accent);
             }
             let quoted = Some(price) == best_bid || Some(price) == best_ask;
-            let mut line = div().id(SharedString::from(format!("ladder-row-{price}")));
-            if quoted {
-                line = line.bg(quote_bg);
-            }
-            rows = rows.child(line.child(row(vec![
-                (mine_cell(Side::Buy, my_bid), 56.),
-                (size_cell(Side::Buy, bid, bid_color), 64.),
-                (price_cell.into_any_element(), 72.),
-                (size_cell(Side::Sell, ask, ask_color), 64.),
-                (mine_cell(Side::Sell, my_ask), 56.),
-            ])));
+            rows.push((
+                price,
+                quoted,
+                vec![
+                    mine_cell(Side::Buy, my_bid),
+                    size_cell(Side::Buy, bid),
+                    price_cell.into_any_element(),
+                    size_cell(Side::Sell, ask),
+                    mine_cell(Side::Sell, my_ask),
+                ],
+            ));
         }
         if let Some(problem) = &self.problem {
             body = body.child(
                 div()
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
         }
-        body.child(rows).child(muted(
-            "Click a bid size to buy V there, an ask size to sell V there; click ● to cancel yours. Space or Centre recentres.",
-            cx,
-        ))
+        body.child(ui::responsive_table(&COLUMNS, move |fitted, _, cx| {
+            let mut scroll = v_flex()
+                .id("ladder-rows")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll();
+            for (price, quoted, cells) in rows {
+                let mut line = div().id(SharedString::from(format!("ladder-row-{price}")));
+                if quoted {
+                    line = line.bg(quote_bg);
+                }
+                scroll = scroll.child(line.child(ui::table_row(fitted, cells)));
+            }
+            v_flex()
+                .size_full()
+                .child(ui::table_head(fitted, cx))
+                .child(scroll)
+        }))
     }
 }

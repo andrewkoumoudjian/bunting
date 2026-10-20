@@ -8,22 +8,43 @@
 
 use crate::desk::Desk;
 use crate::format;
-use crate::panels::{
-    WhenToggled as _, cell, colored, dock_panel, header, muted, panel_body, row, side_color,
-};
+use crate::panels::{dock_panel, side_color};
+use crate::ui::{self, Col, cell, colored, muted};
 use bunting_trading_state::Connection;
 use bunting_trading_state::bunting_client::bnp_wire::{
     NegotiationInfo, NegotiationStatus, OtcDecision, Side, TenderInfo, TenderStatus,
 };
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{InputState, NumberInput};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
+    px,
 };
+
+const TENDER_COLUMNS: [Col; 7] = [
+    Col::left("symbol", 64.).priority(2),
+    Col::left("side", 48.).priority(2),
+    Col::right("qty", 64.).priority(2),
+    Col::right("price", 64.).priority(2),
+    Col::left("expires", 168.).priority(0),
+    Col::left("status", 80.),
+    Col::left("", 160.).priority(2),
+];
+
+const OTC_COLUMNS: [Col; 8] = [
+    Col::left("with", 56.),
+    Col::left("symbol", 64.).priority(2),
+    Col::left("you", 48.).priority(2),
+    Col::right("qty", 64.).priority(2),
+    Col::right("price", 64.).priority(2),
+    Col::left("expires", 168.).priority(0),
+    Col::left("status", 150.),
+    Col::left("", 232.).priority(2),
+];
 
 /// Finished tenders and negotiations listed under the open ones.
 const FINISHED_SHOWN: usize = 20;
@@ -38,6 +59,9 @@ pub struct DealsPanel {
     expires_in: Entity<InputState>,
     side: Side,
     problem: Option<String>,
+    /// The pane width last measured by the body's width probe, so the
+    /// scrolling tables fit their columns to it.
+    width: std::rc::Rc<std::cell::Cell<f32>>,
     _observe: Subscription,
 }
 
@@ -99,6 +123,7 @@ impl DealsPanel {
             expires_in: cx.new(|cx| InputState::new(window, cx).default_value("60")),
             side: Side::Buy,
             problem: None,
+            width: std::rc::Rc::new(std::cell::Cell::new(0.)),
         }
     }
 
@@ -171,7 +196,7 @@ impl DealsPanel {
         cx.notify();
     }
 
-    fn tender_row(&self, tender: &TenderInfo, cx: &mut Context<Self>) -> Div {
+    fn tender_row(&self, tender: &TenderInfo, fitted: &[ui::Fit], cx: &mut Context<Self>) -> Div {
         let id = tender.tender_id;
         let actions: AnyElement = if tender.status == TenderStatus::Open {
             h_flex()
@@ -199,21 +224,27 @@ impl DealsPanel {
         } else {
             cell("")
         };
-        row(vec![
-            (cell(self.symbol(tender.instrument_id, cx)), 64.),
-            (
+        ui::table_row(
+            fitted,
+            vec![
+                cell(self.symbol(tender.instrument_id, cx)),
                 colored(format::side(tender.side), side_color(tender.side, cx)),
-                48.,
-            ),
-            (cell(tender.quantity.to_string()), 64.),
-            (cell(tender.price.to_string()), 64.),
-            (cell(self.expiry(tender.expires_at_ns, cx)), 160.),
-            (cell(tender_status(tender.status)), 72.),
-            (actions, 150.),
-        ])
+                cell(tender.quantity.to_string()),
+                cell(tender.price.to_string()),
+                cell(self.expiry(tender.expires_at_ns, cx)),
+                cell(tender_status(tender.status)),
+                actions,
+            ],
+        )
     }
 
-    fn negotiation_row(&self, info: &NegotiationInfo, me: u128, cx: &mut Context<Self>) -> Div {
+    fn negotiation_row(
+        &self,
+        info: &NegotiationInfo,
+        me: u128,
+        fitted: &[ui::Fit],
+        cx: &mut Context<Self>,
+    ) -> Div {
         let id = info.negotiation_id;
         let other = if info.proposer_id == me {
             info.counterparty_id
@@ -273,31 +304,34 @@ impl DealsPanel {
         } else {
             negotiation_status(info.status).to_owned()
         };
-        row(vec![
-            (cell(format!("P{other}")), 56.),
-            (cell(self.symbol(info.instrument_id, cx)), 64.),
-            (colored(format::side(side), side_color(side, cx)), 48.),
-            (cell(info.quantity.to_string()), 64.),
-            (cell(info.price.to_string()), 64.),
-            (cell(self.expiry(info.expires_at_ns, cx)), 160.),
-            (cell(status), 150.),
-            (actions.into_any_element(), 220.),
-        ])
+        ui::table_row(
+            fitted,
+            vec![
+                cell(format!("P{other}")),
+                cell(self.symbol(info.instrument_id, cx)),
+                colored(format::side(side), side_color(side, cx)),
+                cell(info.quantity.to_string()),
+                cell(info.price.to_string()),
+                cell(self.expiry(info.expires_at_ns, cx)),
+                cell(status),
+                actions.into_any_element(),
+            ],
+        )
     }
 
     fn proposal_form(&self, cx: &mut Context<Self>) -> Div {
         let field =
             |label: &'static str, id: &'static str, state: &Entity<InputState>, cx: &App| {
-                v_flex()
-                    .gap_1()
-                    .w(gpui_kit::px(110.))
-                    .child(muted(label, cx))
-                    .child(
-                        div()
-                            .id(id)
-                            .test_support()
-                            .child(NumberInput::new(state).small()),
-                    )
+                ui::field(
+                    label,
+                    div()
+                        .id(id)
+                        .test_support()
+                        .child(NumberInput::new(state).small())
+                        .into_any_element(),
+                    cx,
+                )
+                .w(px(110.))
             };
         let symbol = self
             .desk
@@ -305,7 +339,6 @@ impl DealsPanel {
             .instrument()
             .map(|instrument| instrument.symbol)
             .unwrap_or_default();
-        let side = self.side;
         h_flex()
             .gap_2()
             .items_end()
@@ -316,30 +349,23 @@ impl DealsPanel {
                 &self.counterparty,
                 cx,
             ))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new("otc-buy")
-                            .label("Buy")
-                            .small()
-                            .when_toggled(side == Side::Buy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side = Side::Buy;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("otc-sell")
-                            .label("Sell")
-                            .small()
-                            .when_toggled(side == Side::Sell)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.side = Side::Sell;
-                                cx.notify();
-                            })),
-                    ),
-            )
+            .child(ui::field(
+                "Side",
+                ButtonGroup::new("otc-side")
+                    .small()
+                    .child(ui::segment("otc-buy", "Buy", self.side == Side::Buy))
+                    .child(ui::segment("otc-sell", "Sell", self.side == Side::Sell))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.side = if clicks.contains(&0) {
+                            Side::Buy
+                        } else {
+                            Side::Sell
+                        };
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                cx,
+            ))
             .child(field("Quantity", "otc-quantity", &self.quantity, cx))
             .child(field("Price", "otc-price", &self.price, cx))
             .child(field("Expires in (s)", "otc-expires", &self.expires_in, cx))
@@ -348,13 +374,12 @@ impl DealsPanel {
                     .label(format!("Propose {symbol}"))
                     .small()
                     .primary()
+                    .tooltip(
+                        "You take the side chosen, at the quantity and price entered; Counter on a negotiation uses the same fields",
+                    )
                     .on_click(cx.listener(|this, _, _, cx| this.propose(cx))),
             )
     }
-}
-
-fn section(title: &'static str) -> Div {
-    div().pt_2().font_weight(FontWeight::SEMIBOLD).child(title)
 }
 
 impl Render for DealsPanel {
@@ -372,74 +397,55 @@ impl Render for DealsPanel {
         tenders.sort_by_key(|tender| tender.status != TenderStatus::Open);
         negotiations.reverse();
         negotiations.sort_by_key(|info| !negotiation_open(info.status));
-        let mut body = panel_body("deals", &self.focus)
+        // The body scrolls, so a probe measures its width (one frame
+        // behind on a resize) and both tables fit their columns to it.
+        // The probe is a body child, so it measures the content width
+        // inside the pane padding; 0 until the first frame.
+        let available = self.width.get();
+        let tender_fit = ui::fit(&TENDER_COLUMNS, available);
+        let otc_fit = ui::fit(&OTC_COLUMNS, available);
+        let mut body = ui::pane_body("deals", &self.focus)
             .overflow_y_scroll()
+            .child(ui::width_probe(cx.entity().downgrade(), self.width.clone()))
             .child(muted(as_of, cx))
-            .child(section("Tenders"));
+            .child(ui::section_label("Tenders", cx));
         if tenders.is_empty() {
-            body = body.child(muted("No tenders offered to you.", cx));
+            body = body.child(muted("No tenders offered to you", cx));
         } else {
-            body = body.child(header(
-                &[
-                    ("symbol", 64.),
-                    ("side", 48.),
-                    ("qty", 64.),
-                    ("price", 64.),
-                    ("expires", 160.),
-                    ("status", 72.),
-                    ("", 150.),
-                ],
-                cx,
-            ));
+            body = body.child(ui::table_head(&tender_fit, cx));
             let open = tenders
                 .iter()
                 .filter(|tender| tender.status == TenderStatus::Open)
                 .count();
             for tender in tenders.iter().take(open + FINISHED_SHOWN) {
-                let line = self.tender_row(tender, cx);
+                let line = self.tender_row(tender, &tender_fit, cx);
                 body = body.child(line);
             }
         }
-        body = body.child(section("OTC negotiations"));
+        body = body.child(ui::section_label("OTC negotiations", cx));
         let me = self.me(cx);
         match me {
             Some(me) if !negotiations.is_empty() => {
-                body = body.child(header(
-                    &[
-                        ("with", 56.),
-                        ("symbol", 64.),
-                        ("you", 48.),
-                        ("qty", 64.),
-                        ("price", 64.),
-                        ("expires", 160.),
-                        ("status", 150.),
-                        ("", 220.),
-                    ],
-                    cx,
-                ));
+                body = body.child(ui::table_head(&otc_fit, cx));
                 let open = negotiations
                     .iter()
                     .filter(|info| negotiation_open(info.status))
                     .count();
                 for info in negotiations.iter().take(open + FINISHED_SHOWN) {
-                    let line = self.negotiation_row(info, me, cx);
+                    let line = self.negotiation_row(info, me, &otc_fit, cx);
                     body = body.child(line);
                 }
             }
-            _ => body = body.child(muted("No negotiations.", cx)),
+            _ => body = body.child(muted("No negotiations", cx)),
         }
         body = body
-            .child(section("Propose an OTC trade"))
-            .child(muted(
-                "You take the side chosen, at the quantity and price entered; Counter on a negotiation uses the same fields. The venue applies each request through its sequencer.",
-                cx,
-            ))
+            .child(ui::section_label("Propose an OTC trade", cx))
             .child(self.proposal_form(cx));
         if let Some(problem) = &self.problem {
             body = body.child(
                 div()
                     .id("otc-problem")
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
