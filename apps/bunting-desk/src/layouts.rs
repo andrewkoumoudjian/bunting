@@ -22,7 +22,7 @@ pub enum Preset {
     /// info below, each its own window.
     #[default]
     Trading,
-    /// Books and a ladder beside two tickets, account panes and the logs.
+    /// Books and a ladder beside a ticket, the logs and account panes.
     MarketMaking,
     /// Every venue's book beside the consolidated tape and a ticket.
     Arbitrage,
@@ -48,37 +48,33 @@ impl Preset {
         let at = |x: f32, y: f32, w: f32, h: f32| Rect::new(x, y, w, h);
         match self {
             Self::Trading => vec![
-                (PaneKind::BookTrader, at(0., 0., 0.54, 0.60)),
-                (PaneKind::OrderEntry, at(0.54, 0., 0.23, 0.60)),
-                (PaneKind::Tape, at(0.77, 0., 0.23, 0.60)),
-                (PaneKind::Blotter, at(0., 0.60, 0.54, 0.40)),
-                (PaneKind::Fills, at(0.54, 0.60, 0.23, 0.40)),
-                (PaneKind::Portfolio, at(0.77, 0.60, 0.23, 0.20)),
-                (PaneKind::TraderInfo, at(0.77, 0.80, 0.23, 0.20)),
+                (PaneKind::BookTrader, at(0., 0., 0.52, 0.54)),
+                (PaneKind::OrderEntry, at(0.52, 0., 0.24, 0.54)),
+                (PaneKind::Tape, at(0.76, 0., 0.24, 0.54)),
+                (PaneKind::Blotter, at(0., 0.54, 0.40, 0.46)),
+                (PaneKind::Fills, at(0.40, 0.54, 0.30, 0.46)),
+                (PaneKind::Portfolio, at(0.70, 0.54, 0.30, 0.23)),
+                (PaneKind::TraderInfo, at(0.70, 0.77, 0.30, 0.23)),
             ],
             Self::MarketMaking => vec![
-                (PaneKind::BookTrader, at(0., 0., 0.34, 0.55)),
-                (PaneKind::LadderTrader, at(0.34, 0., 0.18, 0.55)),
-                (PaneKind::OrderEntry, at(0.52, 0., 0.16, 0.55)),
-                (PaneKind::OrderEntry, at(0.68, 0., 0.16, 0.55)),
-                (PaneKind::TraderInfo, at(0.84, 0., 0.16, 0.28)),
-                (PaneKind::Portfolio, at(0.84, 0.28, 0.16, 0.27)),
-                (PaneKind::Blotter, at(0., 0.55, 0.30, 0.45)),
-                (PaneKind::Fills, at(0.30, 0.55, 0.18, 0.45)),
-                (PaneKind::Deals, at(0.48, 0.55, 0.18, 0.45)),
-                (PaneKind::Tape, at(0.66, 0.55, 0.17, 0.45)),
-                (PaneKind::News, at(0.83, 0.55, 0.17, 0.23)),
-                (PaneKind::Notices, at(0.83, 0.78, 0.17, 0.22)),
+                (PaneKind::BookTrader, at(0., 0., 0.52, 0.50)),
+                (PaneKind::LadderTrader, at(0.52, 0., 0.24, 0.50)),
+                (PaneKind::OrderEntry, at(0.76, 0., 0.24, 0.50)),
+                (PaneKind::Blotter, at(0., 0.50, 0.50, 0.24)),
+                (PaneKind::Fills, at(0.50, 0.50, 0.50, 0.24)),
+                (PaneKind::Tape, at(0., 0.74, 0.40, 0.26)),
+                (PaneKind::Portfolio, at(0.40, 0.74, 0.30, 0.26)),
+                (PaneKind::TraderInfo, at(0.70, 0.74, 0.30, 0.26)),
             ],
             Self::Arbitrage => vec![
-                (PaneKind::BookTrader, at(0., 0., 0.50, 0.60)),
-                (PaneKind::Tape, at(0.50, 0., 0.25, 0.60)),
-                (PaneKind::OrderEntry, at(0.75, 0., 0.25, 0.60)),
+                (PaneKind::BookTrader, at(0., 0., 0.40, 0.60)),
                 (PaneKind::Blotter, at(0., 0.60, 0.40, 0.40)),
-                (PaneKind::Fills, at(0.40, 0.60, 0.20, 0.40)),
-                (PaneKind::Portfolio, at(0.60, 0.60, 0.20, 0.40)),
-                (PaneKind::News, at(0.80, 0.60, 0.20, 0.20)),
-                (PaneKind::Notices, at(0.80, 0.80, 0.20, 0.20)),
+                (PaneKind::Tape, at(0.40, 0., 0.30, 0.38)),
+                (PaneKind::Fills, at(0.40, 0.38, 0.30, 0.32)),
+                (PaneKind::Portfolio, at(0.40, 0.70, 0.30, 0.30)),
+                (PaneKind::OrderEntry, at(0.70, 0., 0.30, 0.44)),
+                (PaneKind::News, at(0.70, 0.44, 0.30, 0.30)),
+                (PaneKind::Notices, at(0.70, 0.74, 0.30, 0.26)),
             ],
         }
     }
@@ -313,19 +309,35 @@ mod tests {
 
     #[test]
     fn templates_never_overlap_and_stay_on_the_canvas() {
-        let canvas = Rect::new(0., 0., 1600., 1000.);
-        for preset in Preset::ALL {
-            let rects: Vec<Rect> = preset
-                .template(canvas)
-                .into_iter()
-                .map(|(_, rect)| rect)
-                .collect();
-            for (index, rect) in rects.iter().enumerate() {
-                assert!(rect.x >= 0. && rect.y >= 0., "{preset:?}");
-                assert!(rect.right() <= canvas.right() + 0.01, "{preset:?}");
-                assert!(rect.bottom() <= canvas.bottom() + 0.01, "{preset:?}");
-                for other in &rects[index + 1..] {
-                    assert!(!rect.overlaps(*other), "{preset:?} overlaps");
+        // The owner's laptop canvas (1280x720 logical minus frame) and a
+        // large desktop canvas.
+        for canvas in [
+            Rect::new(0., 0., 1040., 660.),
+            Rect::new(0., 0., 1680., 960.),
+        ] {
+            for preset in Preset::ALL {
+                let placed = preset.template(canvas);
+                for (index, (kind, rect)) in placed.iter().enumerate() {
+                    assert!(rect.x >= 0. && rect.y >= 0., "{preset:?}");
+                    assert!(rect.right() <= canvas.right() + 0.01, "{preset:?}");
+                    assert!(rect.bottom() <= canvas.bottom() + 0.01, "{preset:?}");
+                    let (min_w, min_h) = kind.min_size();
+                    assert!(
+                        rect.w >= min_w - 0.01 && rect.h >= min_h - 0.01,
+                        "{preset:?} {kind:?} is {rect:?}, below its minimum {min_w}x{min_h} on {canvas:?}"
+                    );
+                    for (_, other) in &placed[index + 1..] {
+                        assert!(!rect.overlaps(*other), "{preset:?} overlaps");
+                        // Neighbours keep at least the gutter: separated
+                        // horizontally or vertically by it.
+                        let gap_x = (other.x - rect.right()).max(rect.x - other.right());
+                        let gap_y = (other.y - rect.bottom()).max(rect.y - other.bottom());
+                        assert!(
+                            gap_x >= crate::canvas::geometry::GUTTER - 0.01
+                                || gap_y >= crate::canvas::geometry::GUTTER - 0.01,
+                            "{preset:?} neighbours closer than the gutter: {rect:?} {other:?}"
+                        );
+                    }
                 }
             }
         }

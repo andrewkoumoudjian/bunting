@@ -108,17 +108,15 @@ impl PaneKind {
     #[must_use]
     pub const fn min_size(self) -> (f32, f32) {
         match self {
-            Self::BookTrader => (520., 320.),
-            Self::LadderTrader => (360., 320.),
-            Self::OrderEntry => (300., 320.),
-            Self::Tape => (320., 240.),
-            Self::Blotter => (560., 220.),
-            Self::Fills => (480., 220.),
-            Self::Portfolio => (360., 220.),
-            Self::TraderInfo => (300., 220.),
-            Self::Notices => (300., 200.),
-            Self::News => (420., 260.),
-            Self::Deals => (420., 300.),
+            Self::BookTrader => (360., 200.),
+            Self::LadderTrader | Self::OrderEntry => (240., 260.),
+            Self::Tape => (240., 160.),
+            Self::Blotter => (360., 140.),
+            Self::Fills => (300., 140.),
+            Self::Portfolio => (260., 140.),
+            Self::TraderInfo | Self::Notices => (240., 140.),
+            Self::News => (300., 180.),
+            Self::Deals => (420., 260.),
         }
     }
 

@@ -25,9 +25,12 @@ pub fn window_frame(
     cx: &mut Context<Canvas>,
 ) -> impl IntoElement {
     let theme = cx.theme();
+    // One foreground for every state in gpui-kit 0.7.1's custom variant,
+    // so it matches the ghost buttons beside it (secondary foreground)
+    // and stays legible on the danger hover ground.
     let close_style = ButtonCustomVariant::new(cx)
         .color(theme.transparent)
-        .foreground(theme.muted_foreground)
+        .foreground(theme.secondary_foreground)
         .hover(theme.danger)
         .active(theme.danger_active);
     h_flex()
@@ -63,7 +66,7 @@ pub fn window_frame(
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.foreground)
-                        .overflow_hidden()
+                        .truncate()
                         .child(kind.title()),
                 )
                 .when_some(instrument, |row, symbol| {
@@ -114,7 +117,9 @@ pub fn window_frame(
                         .xsmall()
                         .w(px(20.))
                         .h(px(20.))
-                        .on_click(cx.listener(move |this, _, _, cx| this.close_window(id, cx))),
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_window(id, window, cx);
+                        })),
                 ),
         )
 }

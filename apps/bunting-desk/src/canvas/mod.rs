@@ -44,8 +44,6 @@ pub const TITLE_HEIGHT: f32 = 28.;
 const SNAP_THRESHOLD: f32 = 8.;
 /// Cascade offset between newly opened windows.
 const CASCADE_STEP: f32 = 28.;
-/// Gap between tiled windows.
-const TILE_GAP: f32 = GUTTER;
 /// Closed windows kept for reopen.
 const MAX_CLOSED: usize = 16;
 
@@ -117,7 +115,6 @@ pub struct Canvas {
     screen_name: String,
     /// The screen's template as canvas fractions, for the empty state.
     template: Vec<(PaneKind, Rect)>,
-    template_name: String,
     /// Last known canvas size; seeded by the workspace, kept by paint.
     size: (f32, f32),
     /// The canvas bounds in window coordinates, recorded each paint.
@@ -137,7 +134,6 @@ impl Canvas {
             next_id: 1,
             screen_name: String::new(),
             template: Vec::new(),
-            template_name: String::new(),
             size,
             bounds: Rc::new(Cell::new(Rect::default())),
             drag: None,
@@ -145,7 +141,6 @@ impl Canvas {
         }
     }
 
-    /// The last known canvas size.
     #[must_use]
     pub const fn size(&self) -> (f32, f32) {
         self.size
@@ -160,14 +155,12 @@ impl Canvas {
     pub fn set_screen(
         &mut self,
         name: String,
-        template_name: String,
         fractions: &[(PaneKind, Rect)],
         saved: Option<&[SavedWindow]>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.screen_name = name;
-        self.template_name = template_name;
         self.template = fractions.to_vec();
         self.windows.clear();
         self.closed.clear();
@@ -320,14 +313,16 @@ impl Canvas {
     }
 
     /// Closes the focused window.
-    pub fn close_focused(&mut self, cx: &mut Context<Self>) {
+    pub fn close_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.focused {
-            self.close_window(id, cx);
+            self.close_window(id, window, cx);
         }
     }
 
-    /// Closes a window, keeping it on the bounded reopen stack.
-    pub fn close_window(&mut self, id: u64, cx: &mut Context<Self>) {
+    /// Closes a window, keeping it on the bounded reopen stack. When the
+    /// focused window goes, keyboard focus moves to the next window so
+    /// key commands keep working.
+    pub fn close_window(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.windows.iter().position(|win| win.id == id) else {
             return;
         };
@@ -350,6 +345,10 @@ impl Canvas {
                 .rev()
                 .find(|win| !win.minimised)
                 .map(|win| win.id);
+            if let Some(next) = self.focused.and_then(|next| self.window(next)) {
+                let handle = next.view.focus_handle(cx);
+                window.focus(&handle, cx);
+            }
         }
         self.changed(cx);
     }
@@ -375,7 +374,7 @@ impl Canvas {
             .filter(|win| !win.minimised)
             .map(|win| win.id)
             .collect();
-        let rects = geometry::tile(visible.len(), self.canvas_rect(), TILE_GAP);
+        let rects = geometry::tile(visible.len(), self.canvas_rect(), GUTTER);
         for (id, rect) in visible.into_iter().zip(rects) {
             if let Some(win) = self.window_mut(id) {
                 win.rect = rect;
@@ -661,7 +660,6 @@ impl Canvas {
 
     fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let template_name = self.template_name.clone();
         v_flex()
             .id("canvas-empty")
             .test_support()
@@ -699,12 +697,29 @@ impl Canvas {
                             })),
                     )
                     .child(
-                        Button::new("canvas-apply-template")
-                            .label(format!("{template_name} template"))
+                        Button::new("canvas-trading-template")
+                            .label("Trading template")
                             .small()
                             .outline()
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.apply_template(window, cx);
+                                this.place_fractions(
+                                    &crate::layouts::Preset::Trading.fractions(),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("canvas-market-making-template")
+                            .label("Market Making template")
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.place_fractions(
+                                    &crate::layouts::Preset::MarketMaking.fractions(),
+                                    window,
+                                    cx,
+                                );
                             })),
                     ),
             )
@@ -782,6 +797,9 @@ impl Canvas {
             .id(SharedString::from(format!("window-{id}")))
             .test_support()
             .group("canvas-window")
+            // A window blocks the mouse for everything behind it, grips of
+            // background windows included.
+            .occlude()
             .absolute()
             .left(px(rect.x))
             .top(px(rect.y))
@@ -800,6 +818,14 @@ impl Canvas {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.window_mouse_down(id, cx)),
+            )
+            // Drag continues while the pointer is over this window; the
+            // canvas root's handlers cover the gaps between windows
+            // (occlusion keeps each from seeing through the other).
+            .on_mouse_move(cx.listener(|this, event, _, cx| this.drag_move(event, cx)))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.drag_end(cx)),
             )
             .child(frame::window_frame(
                 id,
@@ -841,9 +867,9 @@ impl Render for Canvas {
         if painted.w > 0. && painted.h > 0. {
             self.size = (painted.w, painted.h);
         }
-        let (background, ring) = {
+        let (background, guide_color) = {
             let theme = cx.theme();
-            (theme.background, theme.ring)
+            (theme.background, theme.drag_border)
         };
         let bounds = self.bounds.clone();
         let empty = self.windows.is_empty();
@@ -894,7 +920,7 @@ impl Render for Canvas {
                     .top_0()
                     .bottom_0()
                     .w(px(1.))
-                    .bg(ring)
+                    .bg(guide_color)
                     .into_any_element(),
                 Guide::Horizontal(y) => div()
                     .absolute()
@@ -902,7 +928,7 @@ impl Render for Canvas {
                     .left_0()
                     .right_0()
                     .h(px(1.))
-                    .bg(ring)
+                    .bg(guide_color)
                     .into_any_element(),
             });
         }

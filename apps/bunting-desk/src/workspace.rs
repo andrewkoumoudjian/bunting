@@ -16,16 +16,17 @@ use bunting_trading_state::Connection;
 use gpui_kit::assets::IconName as CatalogIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, Context, Div, Entity, FocusHandle, Focusable,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription,
     TestSupportExt as _, WeakEntity, Window, div, prelude::*, px,
 };
 use std::time::Duration;
@@ -50,10 +51,6 @@ const STATUS_BAR_HEIGHT: f32 = 24.;
 const FIXED_SCREEN_COMMANDS: usize = 6;
 
 /// The window's content.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "the frame's toggles are independent: save pending, sidebar, and two menus"
-)]
 pub struct Workspace {
     desk: Entity<Desk>,
     canvas: Entity<Canvas>,
@@ -63,12 +60,8 @@ pub struct Workspace {
     save_pending: bool,
     focus: FocusHandle,
     sidebar_visible: bool,
-    /// The Windows section's "+" menu of pane kinds is open.
-    add_menu_open: bool,
-    /// The Screens section's template choices are open.
-    templates_open: bool,
-    /// The screen being renamed inline, and its field.
-    renaming: Option<(usize, Entity<InputState>)>,
+    /// The screen being renamed inline, its field and its subscription.
+    renaming: Option<(usize, Entity<InputState>, Subscription)>,
     /// The command palette while it is open.
     palette: Option<Entity<CommandState>>,
     _subscriptions: Vec<Subscription>,
@@ -117,8 +110,6 @@ impl Workspace {
             save_pending: false,
             focus: cx.focus_handle(),
             sidebar_visible: true,
-            add_menu_open: false,
-            templates_open: false,
             renaming: None,
             palette: None,
             _subscriptions: subscriptions,
@@ -172,7 +163,6 @@ impl Workspace {
         self.remember(cx);
         let name = self.fresh_name(preset.name());
         self.screens.push(Screen::new(name, preset));
-        self.templates_open = false;
         self.show(self.screens.len() - 1, window, cx);
         self.save(cx);
         cx.notify();
@@ -205,7 +195,6 @@ impl Workspace {
 
     /// Opens another window of `kind`, cascaded from the focused one.
     pub fn add_pane(&mut self, kind: PaneKind, window: &mut Window, cx: &mut Context<Self>) {
-        self.add_menu_open = false;
         self.canvas.update(cx, |canvas, cx| {
             canvas.open(kind, window, cx);
         });
@@ -417,14 +406,7 @@ impl Workspace {
         let preset = screen.preset;
         let saved = screen.windows.clone();
         self.canvas.update(cx, |canvas, cx| {
-            canvas.set_screen(
-                name,
-                preset.name().to_owned(),
-                &preset.fractions(),
-                saved.as_deref(),
-                window,
-                cx,
-            );
+            canvas.set_screen(name, &preset.fractions(), saved.as_deref(), window, cx);
         });
     }
 
@@ -483,10 +465,25 @@ impl Workspace {
                         .icon(IconName::Plus)
                         .ghost()
                         .xsmall()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.templates_open = !this.templates_open;
-                            cx.notify();
-                        })),
+                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, {
+                            let workspace = cx.entity();
+                            move |menu, _, _| {
+                                let mut menu = menu;
+                                for preset in Preset::ALL {
+                                    let workspace = workspace.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(preset.name())
+                                            .icon(IconName::Frame)
+                                            .on_click(move |_, window, cx| {
+                                                workspace.update(cx, |this, cx| {
+                                                    this.add_screen(preset, window, cx);
+                                                });
+                                            }),
+                                    );
+                                }
+                                menu
+                            }
+                        }),
                 ),
             )
             .child(self.screens_section(cx))
@@ -496,10 +493,17 @@ impl Workspace {
                         .icon(IconName::Plus)
                         .ghost()
                         .xsmall()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.add_menu_open = !this.add_menu_open;
-                            cx.notify();
-                        })),
+                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, |menu, _, _| {
+                            let mut menu = menu;
+                            for kind in PaneKind::ALL {
+                                menu = menu.menu_with_icon(
+                                    kind.title(),
+                                    kind.icon(),
+                                    actions::open(kind),
+                                );
+                            }
+                            menu
+                        }),
                 ),
             )
             .child(self.windows_section(cx))
@@ -510,7 +514,7 @@ impl Workspace {
     fn screens_section(&self, cx: &mut Context<Self>) -> Div {
         let mut list = v_flex().gap_px();
         for (index, screen) in self.screens.iter().enumerate() {
-            if let Some((renaming, state)) = &self.renaming
+            if let Some((renaming, state, _)) = &self.renaming
                 && *renaming == index
             {
                 list = list.child(
@@ -520,7 +524,13 @@ impl Workspace {
                         .gap_1()
                         .items_center()
                         .px_1()
-                        .child(div().flex_1().child(Input::new(state).small()))
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if event.keystroke.key == "escape" {
+                                this.cancel_rename(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(div().flex_1().min_w_0().child(Input::new(state).small()))
                         .child(
                             Button::new(SharedString::from(format!(
                                 "workspace-rename-save-{index}"
@@ -547,6 +557,7 @@ impl Workspace {
                                 screen.name.clone(),
                                 active,
                                 false,
+                                None,
                                 cx,
                             )
                             .flex_1()
@@ -560,7 +571,7 @@ impl Workspace {
                             h_flex()
                                 .items_center()
                                 .gap(px(2.))
-                                .opacity(if active { 1. } else { 0. })
+                                .opacity(0.)
                                 .group_hover("screen-row", |style| style.opacity(1.))
                                 .child(
                                     Button::new(SharedString::from(format!(
@@ -587,23 +598,6 @@ impl Workspace {
                         ),
                 );
         }
-        if self.templates_open {
-            for preset in Preset::ALL {
-                list = list.child(
-                    sidebar_row(
-                        SharedString::from(format!("template-{}", preset_key(preset))),
-                        IconName::Frame,
-                        preset.name(),
-                        false,
-                        false,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.add_screen(preset, window, cx);
-                    })),
-                );
-            }
-        }
         list
     }
 
@@ -611,11 +605,7 @@ impl Workspace {
         let mut list = v_flex().gap_px();
         for info in self.canvas.read(cx).window_list() {
             let id = info.id;
-            let label = if info.minimised {
-                format!("{} (minimised)", info.kind.title())
-            } else {
-                info.kind.title().to_owned()
-            };
+            let label = info.kind.title().to_owned();
             list = list.child(
                 sidebar_row(
                     SharedString::from(format!("screen-window-{id}")),
@@ -623,6 +613,7 @@ impl Workspace {
                     label,
                     info.focused,
                     info.minimised,
+                    info.minimised.then_some(IconName::Minus),
                     cx,
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -632,23 +623,6 @@ impl Workspace {
                     cx.notify();
                 })),
             );
-        }
-        if self.add_menu_open {
-            for kind in PaneKind::ALL {
-                list = list.child(
-                    sidebar_row(
-                        SharedString::from(format!("add-{}", kind.name())),
-                        kind.icon(),
-                        kind.title(),
-                        false,
-                        false,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.add_pane(kind, window, cx);
-                    })),
-                );
-            }
         }
         list
     }
@@ -712,12 +686,25 @@ impl Workspace {
         let name = screen.name.clone();
         let state = cx.new(|cx| InputState::new(window, cx).default_value(name));
         state.update(cx, |state, cx| state.focus(window, cx));
-        self.renaming = Some((index, state));
+        // Enter and focus loss commit; Escape cancels (the row's key
+        // handler, which clears `renaming` before any later blur).
+        let subscription = cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.finish_rename(cx);
+            }
+        });
+        self.renaming = Some((index, state, subscription));
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.renaming = None;
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
     fn finish_rename(&mut self, cx: &mut Context<Self>) {
-        let Some((index, state)) = self.renaming.take() else {
+        let Some((index, state, _)) = self.renaming.take() else {
             return;
         };
         let name = state.read(cx).value().trim().to_owned();
@@ -776,17 +763,24 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.title_bar_border)
             .child(
-                Button::new("toggle-sidebar")
-                    .icon(IconName::PanelLeft)
-                    .ghost()
-                    .xsmall()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.sidebar_visible = !this.sidebar_visible;
-                        cx.notify();
-                    })),
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .justify_start()
+                    .gap_2()
+                    .child(
+                        Button::new("toggle-sidebar")
+                            .icon(IconName::PanelLeft)
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_visible = !this.sidebar_visible;
+                                cx.notify();
+                            })),
+                    )
+                    .child(theme::serif(name).text_size(px(15.)).truncate()),
             )
-            .child(theme::serif(name).text_size(px(15.)))
-            .child(div().flex_1())
             .child(
                 // A field that opens the command palette; the real command
                 // line with codes is U3 (ADR 0051 decision 4).
@@ -815,8 +809,14 @@ impl Workspace {
                     }))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_palette(window, cx))),
             )
-            .child(div().flex_1())
-            .child(self.connection_pill(cx))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .justify_end()
+                    .child(self.connection_pill(cx)),
+            )
     }
 
     /// Connection state and each venue's measured order round trip.
@@ -839,8 +839,14 @@ impl Workspace {
             .gap_2()
             .text_xs()
             .font_features(theme::tabular())
-            .child(div().size(px(8.)).rounded_full().bg(color))
-            .child(div().text_color(theme.foreground).child(text));
+            .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(color))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.foreground)
+                    .child(text),
+            );
         for (venue, trip) in model.venue_round_trips() {
             pill = pill.child(
                 div()
@@ -872,14 +878,6 @@ impl Workspace {
             );
         }
         pill.into_any_element()
-    }
-}
-
-fn preset_key(preset: Preset) -> &'static str {
-    match preset {
-        Preset::Trading => "trading",
-        Preset::MarketMaking => "market-making",
-        Preset::Arbitrage => "arbitrage",
     }
 }
 
@@ -920,8 +918,9 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &actions::CascadeWindows, _, cx| {
             this.canvas.update(cx, Canvas::cascade_windows);
         }))
-        .on_action(cx.listener(|this, _: &actions::CloseWindow, _, cx| {
-            this.canvas.update(cx, Canvas::close_focused);
+        .on_action(cx.listener(|this, _: &actions::CloseWindow, window, cx| {
+            this.canvas
+                .update(cx, |canvas, cx| canvas.close_focused(window, cx));
         }))
         .on_action(
             cx.listener(|this, _: &actions::ReopenClosedWindow, window, cx| {
@@ -1106,6 +1105,7 @@ fn sidebar_row(
     label: impl Into<SharedString>,
     active: bool,
     muted: bool,
+    trailing: Option<IconName>,
     cx: &App,
 ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
     let theme = cx.theme();
@@ -1132,5 +1132,8 @@ fn sidebar_row(
         })
         .hover(|row| row.bg(theme.sidebar_accent))
         .child(Icon::new(icon).small().text_color(theme.muted_foreground))
-        .child(div().overflow_hidden().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .when_some(trailing, |row, icon| {
+            row.child(Icon::new(icon).small().text_color(theme.muted_foreground))
+        })
 }

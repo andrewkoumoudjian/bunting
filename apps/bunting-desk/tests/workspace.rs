@@ -11,7 +11,6 @@ use bunting_trading_state::bunting_client::bnp_wire::{
     Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote, Welcome,
 };
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::dock::PanelState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AppContext as _, Bounds, Entity, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
@@ -68,7 +67,7 @@ fn open_with(cx: &mut TestAppContext, store: Option<LayoutStore>) -> Fixture {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
-                size: size(px(1600.), px(1000.)),
+                size: size(px(2560.), px(1440.)),
             })),
             ..WindowOptions::default()
         };
@@ -93,6 +92,54 @@ fn apply(fixture: &Fixture, cx: &mut TestAppContext, event: SessionEvent) {
         desk.apply(event, at);
         cx.notify();
     });
+}
+
+/// Clicks a menu item by its label, with real mouse events at its bounds.
+/// Menu items carry no caller-chosen IDs, so they are found through the
+/// observed elements' roles and labels.
+fn click_menu_item(fixture: &Fixture, cx: &mut TestAppContext, label: &str) {
+    let label = label.to_owned();
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let item = gpui_kit::base::test_support::snapshots(window)
+            .into_iter()
+            .find(|snap| {
+                snap.role() == Some(gpui_kit::Role::MenuItem) && snap.label() == Some(&*label)
+            })
+            .unwrap_or_else(|| panic!("menu item {label} is not shown"));
+        let at = item.bounds().center();
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: at,
+                modifiers: gpui_kit::Modifiers::none(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: at,
+                modifiers: gpui_kit::Modifiers::none(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// Opens another window of the named kind from the sidebar's "+" menu.
+fn add_pane(fixture: &Fixture, cx: &mut TestAppContext, kind: &str) {
+    let title = bunting_desk::panes::PaneKind::from_name(kind)
+        .expect("a pane kind")
+        .title();
+    click(fixture, cx, "windows-add");
+    click_menu_item(fixture, cx, title);
 }
 
 /// Clicks an element in a fresh frame, then lets observers run.
@@ -334,15 +381,16 @@ fn send_tape(fixture: &Fixture, cx: &mut TestAppContext, tape: u32) {
 }
 
 #[gpui_kit::test]
-fn every_panel_is_laid_out_and_the_first_tab_of_each_group_is_visible(cx: &mut TestAppContext) {
+fn every_trading_template_pane_is_a_visible_window(cx: &mut TestAppContext) {
     let fixture = open(cx);
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
-        for visible in ["books", "ticket", "tape", "orders"] {
+        for visible in PANELS {
             assert!(window.find(visible).visible(), "{visible} is visible");
         }
-        assert_eq!(PANELS.len(), 8);
+        assert_eq!(PANELS.len(), 7);
         assert!(window.find("connection").visible());
+        assert!(window.find("canvas").visible());
     })
     .unwrap();
     assert!(
@@ -538,47 +586,59 @@ fn an_active_kill_switch_can_be_reset(cx: &mut TestAppContext) {
     );
 }
 
-/// The panes in the shown layout, by name, in tree order.
+/// The panes on the shown screen, by name, back to front.
 fn panes(fixture: &Fixture, cx: &mut TestAppContext) -> Vec<String> {
-    fn walk(state: &PanelState, names: &mut Vec<String>) {
-        if state.children.is_empty() {
-            names.push(state.panel_name.clone());
-        }
-        for child in &state.children {
-            walk(child, names);
-        }
-    }
     fixture.workspace.read_with(cx, |workspace, cx| {
-        let state = workspace.area().read(cx).dump(cx);
-        let mut names = Vec::new();
-        walk(&state.center, &mut names);
-        names
+        workspace
+            .canvas()
+            .read(cx)
+            .dump()
+            .into_iter()
+            .map(|saved| saved.kind)
+            .collect()
     })
 }
 
+/// The shown screen's saved windows (kind and geometry), back to front.
+fn saved_windows(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+) -> Vec<bunting_desk::canvas::SavedWindow> {
+    fixture
+        .workspace
+        .read_with(cx, |workspace, cx| workspace.canvas().read(cx).dump())
+}
+
 #[gpui_kit::test]
-fn workspaces_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
+fn screens_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
     let fixture = open(cx);
     let trading = panes(&fixture, cx);
     assert_eq!(trading.iter().filter(|name| *name == "ticket").count(), 1);
-    // The market-making preset has two tickets.
+    // The market-making template has a ladder instead.
     click(&fixture, cx, "workspace-1");
     let market_making = panes(&fixture, cx);
     assert_eq!(
         market_making
             .iter()
+            .filter(|name| *name == "ladder")
+            .count(),
+        1
+    );
+    assert_eq!(
+        market_making
+            .iter()
             .filter(|name| *name == "ticket")
             .count(),
-        2
+        1
     );
     // Another ticket opens beside the others.
-    click(&fixture, cx, "add-ticket");
+    add_pane(&fixture, cx, "ticket");
     assert_eq!(
         panes(&fixture, cx)
             .iter()
             .filter(|name| *name == "ticket")
             .count(),
-        3
+        2
     );
     // Going back shows the first workspace as it was, and returning keeps
     // the added pane.
@@ -590,19 +650,20 @@ fn workspaces_switch_and_panes_open_more_than_once(cx: &mut TestAppContext) {
             .iter()
             .filter(|name| *name == "ticket")
             .count(),
-        3
+        2
     );
-    // A new workspace starts from the trading preset.
+    // A new screen starts from a chosen template.
     click(&fixture, cx, "workspace-new");
+    click_menu_item(&fixture, cx, "Trading");
     let (names, active) = fixture
         .workspace
-        .read_with(cx, |workspace, _| workspace.workspaces());
+        .read_with(cx, |workspace, _| workspace.screens());
     assert_eq!(names.len(), 4);
     assert_eq!(active, 3);
 }
 
 #[gpui_kit::test]
-fn saved_workspaces_come_back(cx: &mut TestAppContext) {
+fn saved_screens_come_back_with_their_geometry(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!(
         "bunting-desk-workspace-test-{}",
         std::process::id()
@@ -610,15 +671,23 @@ fn saved_workspaces_come_back(cx: &mut TestAppContext) {
     let store = LayoutStore::at(dir.join("workspaces.json"));
     let fixture = open_with(cx, Some(store.clone()));
     click(&fixture, cx, "workspace-2");
-    click(&fixture, cx, "add-notices");
-    click(&fixture, cx, "save-layout");
-    let before = panes(&fixture, cx);
+    add_pane(&fixture, cx, "notices");
+    press(&fixture, cx, "secondary-s");
+    let before = saved_windows(&fixture, cx);
+    assert!(
+        dir.join("workspaces.json").exists(),
+        "a v4 file was written"
+    );
     let reopened = open_with(cx, Some(store));
     let (_, active) = reopened
         .workspace
-        .read_with(cx, |workspace, _| workspace.workspaces());
-    assert_eq!(active, 2, "the last workspace shown");
-    assert_eq!(panes(&reopened, cx), before, "with its added pane");
+        .read_with(cx, |workspace, _| workspace.screens());
+    assert_eq!(active, 2, "the last screen shown");
+    assert_eq!(
+        saved_windows(&reopened, cx),
+        before,
+        "the same windows at the same geometry"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -765,14 +834,14 @@ fn the_command_palette_and_keys_run_the_same_commands(cx: &mut TestAppContext) {
     assert_eq!(
         fixture
             .workspace
-            .read_with(cx, |workspace, _| workspace.workspaces().1),
+            .read_with(cx, |workspace, _| workspace.screens().1),
         1
     );
     press(&fixture, cx, "ctrl-shift-tab");
     assert_eq!(
         fixture
             .workspace
-            .read_with(cx, |workspace, _| workspace.workspaces().1),
+            .read_with(cx, |workspace, _| workspace.screens().1),
         0
     );
     // The top bar's button opens it too; escape closes it.
@@ -794,7 +863,7 @@ fn the_command_palette_and_keys_run_the_same_commands(cx: &mut TestAppContext) {
 fn the_ladder_trades_and_cancels_on_its_own_venue(cx: &mut TestAppContext) {
     let fixture = open(cx);
     connect_with_books(&fixture, cx);
-    click(&fixture, cx, "add-ladder");
+    add_pane(&fixture, cx, "ladder");
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
         // No venue until the trader picks one.
@@ -932,17 +1001,13 @@ fn news_halts_and_run_status_are_shown(cx: &mut TestAppContext) {
     let fixture = open(cx);
     connect_with_books(&fixture, cx);
     run_stream(&fixture, cx);
-    click(&fixture, cx, "add-news");
+    add_pane(&fixture, cx, "news");
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("run-status").visible());
         assert!(window.find("news-5").visible());
         assert!(window.find("news-text").visible());
-    })
-    .unwrap();
-    click(&fixture, cx, "add-books");
-    cx.update_window(fixture.window.into(), |_, window, cx| {
-        window.render_frame(cx);
+        // The template's Book Trader window shows the halt.
         assert!(window.find("books-halted").visible());
     })
     .unwrap();
@@ -954,7 +1019,10 @@ fn tenders_and_otc_are_answered_from_the_deals_pane(cx: &mut TestAppContext) {
     let fixture = open(cx);
     connect_with_books(&fixture, cx);
     run_stream(&fixture, cx);
-    click(&fixture, cx, "add-deals");
+    add_pane(&fixture, cx, "deals");
+    // Maximise it so every action column is on screen.
+    let deals = window_id(&fixture, cx, "deals");
+    click(&fixture, cx, &format!("win-max-{deals}"));
     click(&fixture, cx, "tender-accept-9");
     let sent = fixture.sent.take();
     assert!(
@@ -1010,4 +1078,138 @@ fn tenders_and_otc_are_answered_from_the_deals_pane(cx: &mut TestAppContext) {
         ),
         "{sent:?}"
     );
+}
+
+// ---- canvas windows (ADR 0051) -------------------------------------------
+
+/// The id of the frontmost window of the named kind.
+fn window_id(fixture: &Fixture, cx: &mut TestAppContext, kind: &str) -> u64 {
+    fixture
+        .workspace
+        .read_with(cx, |workspace, cx| {
+            workspace
+                .canvas()
+                .read(cx)
+                .window_list()
+                .into_iter()
+                .find(|info| info.kind.name() == kind)
+                .map(|info| info.id)
+        })
+        .expect("a window of that kind")
+}
+
+/// The saved rect of the named kind's window.
+fn window_rect(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    kind: &str,
+) -> bunting_desk::canvas::geometry::Rect {
+    saved_windows(fixture, cx)
+        .into_iter()
+        .find(|saved| saved.kind == kind)
+        .expect("a window of that kind")
+        .rect
+}
+
+/// Drags an element's centre by a delta, with real mouse events.
+fn drag_by(fixture: &Fixture, cx: &mut TestAppContext, id: &str, dx: f32, dy: f32) {
+    let id = id.to_owned();
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let from = window.find(id).bounds().center();
+        let to = gpui_kit::point(from.x + px(dx), from.y + px(dy));
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "expected drag deltas in logical pixels"
+)]
+fn a_window_moves_by_its_title_and_resizes_from_its_corner(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let tape = window_id(&fixture, cx, "tape");
+    let before = window_rect(&fixture, cx, "tape");
+    drag_by(&fixture, cx, &format!("win-title-{tape}"), -300., 150.);
+    let moved = window_rect(&fixture, cx, "tape");
+    assert!(
+        (moved.x - (before.x - 300.)).abs() < 1.,
+        "x moved: {before:?} -> {moved:?}"
+    );
+    assert!(
+        (moved.y - (before.y + 150.)).abs() < 1.,
+        "y moved: {before:?} -> {moved:?}"
+    );
+    assert_eq!((moved.w, moved.h), (before.w, before.h), "size kept");
+
+    let books = window_id(&fixture, cx, "books");
+    let before = window_rect(&fixture, cx, "books");
+    drag_by(
+        &fixture,
+        cx,
+        &format!("win-grip-{books}-bottom-right"),
+        100.,
+        80.,
+    );
+    let resized = window_rect(&fixture, cx, "books");
+    assert!(
+        (resized.w - (before.w + 100.)).abs() < 1.,
+        "width grew: {before:?} -> {resized:?}"
+    );
+    assert!(
+        (resized.h - (before.h + 80.)).abs() < 1.,
+        "height grew: {before:?} -> {resized:?}"
+    );
+    assert_eq!((resized.x, resized.y), (before.x, before.y), "corner kept");
+}
+
+#[gpui_kit::test]
+fn a_closed_window_reopens_with_its_geometry(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let tape = window_id(&fixture, cx, "tape");
+    let before = window_rect(&fixture, cx, "tape");
+    // Focus it first so its frame actions are showing, then close it.
+    click(&fixture, cx, &format!("win-title-{tape}"));
+    click(&fixture, cx, &format!("win-close-{tape}"));
+    assert!(!panes(&fixture, cx).contains(&"tape".to_owned()));
+    press(&fixture, cx, "secondary-shift-t");
+    assert!(panes(&fixture, cx).contains(&"tape".to_owned()));
+    assert_eq!(window_rect(&fixture, cx, "tape"), before);
+}
+
+#[gpui_kit::test]
+fn tile_arranges_the_windows_in_a_grid(cx: &mut TestAppContext) {
+    use bunting_desk::canvas::geometry::{GUTTER, Rect};
+    let fixture = open(cx);
+    // One frame so the canvas knows its painted size.
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+    press(&fixture, cx, "secondary-alt-t");
+    let (size, saved) = fixture.workspace.read_with(cx, |workspace, cx| {
+        let canvas = workspace.canvas().read(cx);
+        (canvas.size(), canvas.dump())
+    });
+    let expected = bunting_desk::canvas::geometry::tile(
+        saved.len(),
+        Rect::new(0., 0., size.0, size.1),
+        GUTTER,
+    );
+    let actual: Vec<Rect> = saved.into_iter().map(|each| each.rect).collect();
+    assert_eq!(actual, expected);
+}
+
+#[gpui_kit::test]
+fn switching_screens_and_back_restores_the_geometry(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let tape = window_id(&fixture, cx, "tape");
+    drag_by(&fixture, cx, &format!("win-title-{tape}"), -200., 100.);
+    let before = saved_windows(&fixture, cx);
+    click(&fixture, cx, "workspace-1");
+    click(&fixture, cx, "workspace-0");
+    assert_eq!(saved_windows(&fixture, cx), before);
 }
