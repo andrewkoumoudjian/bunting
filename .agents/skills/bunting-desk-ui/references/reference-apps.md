@@ -13,7 +13,7 @@ Study these for patterns. **Licence decides what may be copied.**
 | App | Licence | What to study |
 |---|---|---|
 | **gpui-kit** (Longbridge), <https://github.com/longbridge/gpui-kit> | Apache-2.0 (may adapt) | `crates/story` (the component gallery: every component in every state, idiomatic composition), `examples/dock`, `examples/sidebar`, `examples/system_monitor` (live charts at frame rate), `examples/dialog_overlay`, `examples/focus_trap`, `themes/` (JSON theme format). The pinned 0.7.1 source in `~/.cargo/registry` is authoritative for APIs. |
-| **Zed**, <https://github.com/zed-industries/zed> | GPL-3.0-or-later (`crates/ui`, `workspace`, `title_bar`). Read-only **until the owner confirms relicensing `apps/bunting-desk` to GPL-3.0-or-later** (asked 2026-10-20). After that, components may be ported with provenance; `gpui` itself is Apache-2.0. | Density and chrome: see the table below. |
+| **Zed**, <https://github.com/zed-industries/zed> | GPL-3.0-or-later (`crates/ui`, `workspace`, `title_bar`). Read-only: the owner declined relicensing the desk to GPL (2026-10-20). Take design values (sizes, structure, states) and write Bunting code on gpui-kit; never copy or line-by-line rewrite Zed source. `gpui` itself is Apache-2.0. | Density and chrome: see the table below. |
 | **Longbridge Pro** (desktop trading app built on gpui-component) | proprietary | The closest product analogue: dense, real-time market screens in GPUI. Visual reference only. |
 
 What to look at in Zed:
