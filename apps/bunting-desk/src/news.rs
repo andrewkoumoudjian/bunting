@@ -114,6 +114,7 @@ impl Render for NewsPanel {
                                                     .child(item.headline.clone())
                                                     .into_any_element(),
                                             ],
+                                            cx,
                                         ))
                                 })
                                 .collect()
@@ -139,7 +140,7 @@ impl Render for NewsPanel {
                     .border_color(cx.theme().border)
                     .child(
                         div()
-                            .text_size(px(ui::VALUE_SIZE))
+                            .text_size(ui::rem(ui::VALUE_SIZE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(item.headline),
                     )
@@ -149,7 +150,7 @@ impl Render for NewsPanel {
                     ))
                     .child(
                         div()
-                            .text_size(px(ui::VALUE_SIZE))
+                            .text_size(ui::rem(ui::VALUE_SIZE))
                             .line_height(gpui_kit::relative(1.5))
                             .child(item.body),
                     ),

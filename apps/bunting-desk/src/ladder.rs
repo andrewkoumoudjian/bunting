@@ -211,7 +211,7 @@ impl Render for LadderPanel {
         }
         let venues = self.venue_buttons(cx);
         body = body.child(
-            ui::toolbar()
+            ui::toolbar(cx)
                 .w_full()
                 .flex_wrap()
                 .child(venues)
@@ -373,7 +373,7 @@ impl Render for LadderPanel {
         if let Some(problem) = &self.problem {
             body = body.child(
                 div()
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
@@ -389,7 +389,7 @@ impl Render for LadderPanel {
                 if quoted {
                     line = line.bg(quote_bg);
                 }
-                scroll = scroll.child(line.child(ui::table_row(fitted, cells)));
+                scroll = scroll.child(line.child(ui::table_row(fitted, cells, cx)));
             }
             v_flex()
                 .size_full()

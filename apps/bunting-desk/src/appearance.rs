@@ -587,11 +587,18 @@ fn reapply(cx: &mut App) {
 /// `gpui_kit::init` and [`theme::install`]. Nothing here is fatal: a
 /// bad file or an unwritable folder is logged and the defaults stand.
 pub fn install(cx: &mut App) {
-    let store = AppearanceStore::default_location();
+    install_in(&desk_config_dir(), cx);
+}
+
+/// [`install`] with `appearance.json` and `themes/` in `config_dir`
+/// instead of the user's configuration directory, so tests never read
+/// or write the developer's real settings.
+pub fn install_in(config_dir: &Path, cx: &mut App) {
+    let store = AppearanceStore::at(config_dir.join("appearance.json"));
     let appearance = store.load();
     cx.set_global(AppearanceSettings { appearance, store });
 
-    let dir = themes_dir();
+    let dir = config_dir.join("themes");
     if let Err(error) = ensure_themes_dir(&dir) {
         eprintln!(
             "bunting-desk: user themes folder not ready: {}: {error}",

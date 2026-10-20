@@ -816,13 +816,13 @@ impl Canvas {
             .gap_3()
             .child(
                 theme::serif(self.screen_name.clone())
-                    .text_size(px(22.))
+                    .text_size(crate::ui::rem(22.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme.foreground),
             )
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(crate::ui::rem(13.))
                     .text_color(theme.muted_foreground)
                     .child(format!(
                         "Open a window with {}, or start from a template",

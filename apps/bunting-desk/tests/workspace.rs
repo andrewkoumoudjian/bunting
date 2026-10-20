@@ -52,6 +52,19 @@ struct Fixture {
     sent: Recorder,
 }
 
+/// A private configuration directory for one test window, so the desk's
+/// appearance settings and user themes never touch the real ones.
+fn isolated_config() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "bunting-desk-test-config-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("test config dir");
+    dir
+}
+
 fn open(cx: &mut TestAppContext) -> Fixture {
     open_with(cx, None)
 }
@@ -72,7 +85,7 @@ fn open_with(cx: &mut TestAppContext, store: Option<LayoutStore>) -> Fixture {
             ..WindowOptions::default()
         };
         let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
-            bunting_desk::init(cx);
+            bunting_desk::init_in(&isolated_config(), cx);
             cx.new(|cx| Workspace::new(shared, store, window, cx))
         })
         .expect("open window");
@@ -1254,7 +1267,7 @@ fn open_canvas(
             ..WindowOptions::default()
         };
         let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-            bunting_desk::init(cx);
+            bunting_desk::init_in(&isolated_config(), cx);
             shown.update(cx, |canvas, cx| {
                 canvas.set_screen(
                     "Trading".to_owned(),
@@ -1428,5 +1441,49 @@ fn shrinking_below_minimums_and_growing_back_restores_the_base(cx: &mut TestAppC
             && (back.size.width.as_f32() - before.size.width.as_f32()).abs() < 1.
             && (back.size.height.as_f32() - before.size.height.as_f32()).abs() < 1.,
         "growing back restores the base within a pixel: {back:?} vs {before:?}"
+    );
+}
+
+/// The rendered height of the element `id`, in a fresh frame.
+#[allow(clippy::float_arithmetic, reason = "comparing measured f32 pixels")]
+fn height(fixture: &Fixture, cx: &mut TestAppContext, id: &str) -> f32 {
+    cx.run_until_parked();
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        f32::from(window.find(id.to_owned()).bounds().size.height)
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+#[allow(clippy::float_arithmetic, reason = "comparing measured f32 pixels")]
+fn the_ui_font_size_and_density_resize_the_desk(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    // At the default 13 px font and density: the 36 px title bar and the
+    // 28 px sidebar rows of the spec.
+    let bar = height(&fixture, cx, "top-bar");
+    let row = height(&fixture, cx, "workspace-0");
+    assert!((bar - 36.).abs() < 0.5, "title bar {bar}");
+    assert!((row - 28.).abs() < 0.5, "sidebar row {row}");
+
+    // Two steps up to 15 px scale every rem-sized surface by 15/13.
+    press(&fixture, cx, "secondary-=");
+    press(&fixture, cx, "secondary-=");
+    let bigger = height(&fixture, cx, "top-bar");
+    assert!(
+        (bigger - 36. * 15. / 13.).abs() < 0.5,
+        "title bar at 15 px: {bigger}"
+    );
+
+    // Back to 13 px, then the next density (comfortable) makes rows 32 px.
+    press(&fixture, cx, "secondary-0");
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(bunting_desk::actions::CycleDensity), cx);
+    })
+    .unwrap();
+    let comfortable = height(&fixture, cx, "workspace-0");
+    assert!(
+        (comfortable - 32.).abs() < 0.5,
+        "sidebar row when comfortable: {comfortable}"
     );
 }

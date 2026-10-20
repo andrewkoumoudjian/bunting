@@ -39,3 +39,11 @@ pub fn init(cx: &mut gpui_kit::App) {
     appearance::install(cx);
     actions::bind_keys(cx);
 }
+
+/// [`init`] with the appearance settings and user themes kept in
+/// `config_dir`, for tests: they must not read or write the real ones.
+pub fn init_in(config_dir: &std::path::Path, cx: &mut gpui_kit::App) {
+    theme::install(cx);
+    appearance::install_in(config_dir, cx);
+    actions::bind_keys(cx);
+}

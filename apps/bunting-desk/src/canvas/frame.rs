@@ -6,7 +6,7 @@
 //! The actions show only while the window is hovered or focused (rendered
 //! at opacity 0 otherwise, so layout never shifts).
 
-use super::{Canvas, TITLE_HEIGHT};
+use super::Canvas;
 use crate::panes::PaneKind;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
@@ -36,7 +36,9 @@ pub fn window_frame(
     h_flex()
         .id(SharedString::from(format!("win-frame-{id}")))
         .test_support()
-        .h(px(TITLE_HEIGHT))
+        .h(crate::ui::rem_px(
+            crate::appearance::metrics(cx).title_strip_height,
+        ))
         .flex_shrink_0()
         .w_full()
         .items_center()
@@ -63,7 +65,7 @@ pub fn window_frame(
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(crate::ui::rem(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.foreground)
                         .truncate()
@@ -77,7 +79,7 @@ pub fn window_frame(
                             .px(px(6.))
                             .rounded(px(4.))
                             .bg(theme.muted)
-                            .text_size(px(11.))
+                            .text_size(crate::ui::rem(11.))
                             .text_color(theme.muted_foreground)
                             .child(symbol),
                     )

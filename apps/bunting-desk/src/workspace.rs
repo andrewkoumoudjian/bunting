@@ -382,6 +382,7 @@ impl Workspace {
             .group(windows)
             .group(panes)
             .group(trading)
+            .group(crate::appearance::palette_group(cx))
             .placeholder("Type a command")
             .max_h(px(420.))
             .on_confirm(move |path, window, cx| {
@@ -671,13 +672,15 @@ impl Workspace {
         };
         let row = |label: &str, value: String| {
             h_flex()
-                .h(px(28.))
+                .h(crate::ui::rem_px(
+                    crate::appearance::metrics(cx).sidebar_row_height,
+                ))
                 .mx_1()
                 .pl(px(12.))
                 .pr(px(8.))
                 .items_center()
                 .justify_between()
-                .text_size(px(13.))
+                .text_size(crate::ui::rem(13.))
                 .child(
                     div()
                         .text_color(theme.muted_foreground)
@@ -774,7 +777,7 @@ impl Workspace {
         h_flex()
             .id("top-bar")
             .test_support()
-            .h(px(TITLE_BAR_HEIGHT))
+            .h(crate::ui::rem(TITLE_BAR_HEIGHT))
             .flex_shrink_0()
             .items_center()
             .px_3()
@@ -799,7 +802,7 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .child(theme::serif(name).text_size(px(15.)).truncate()),
+                    .child(theme::serif(name).text_size(crate::ui::rem(15.)).truncate()),
             )
             .child(
                 // A field that opens the command palette; the real command
@@ -807,7 +810,9 @@ impl Workspace {
                 h_flex()
                     .id("open-palette")
                     .test_support()
-                    .h(px(26.))
+                    .h(crate::ui::rem_px(
+                        crate::appearance::metrics(cx).control_height,
+                    ))
                     .w(px(400.))
                     .items_center()
                     .gap_2()
@@ -816,7 +821,7 @@ impl Workspace {
                     .border_1()
                     .border_color(theme.input)
                     .bg(theme.secondary)
-                    .text_size(px(12.))
+                    .text_size(crate::ui::rem(12.))
                     .text_color(theme.muted_foreground)
                     .child(
                         Icon::new(IconName::Search)
@@ -1035,12 +1040,16 @@ impl Render for Workspace {
             .palette
             .clone()
             .map(|state| self.palette(&state, cx).into_any_element());
+        // Every rem in the desk and in gpui-kit scales with the user's UI
+        // font size: 16 px rems at the default 13 px (ADR 0051 decision 7).
+        window.set_rem_size(crate::ui::rem_size(cx));
         let theme = cx.theme();
         v_flex()
             .id("workspace")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .map(|root| Self::with_actions(root, cx))
+            .map(crate::appearance::with_appearance_actions)
             .relative()
             .size_full()
             .bg(theme.background)
@@ -1056,7 +1065,7 @@ impl Render for Workspace {
             )
             .child(
                 StatusBar::new()
-                    .h(px(STATUS_BAR_HEIGHT))
+                    .h(crate::ui::rem(STATUS_BAR_HEIGHT))
                     .left(
                         div()
                             .id("connection")
@@ -1107,13 +1116,15 @@ impl Render for Workspace {
 /// with room for a trailing ghost action on the same row.
 fn section_header(text: &'static str, cx: &App) -> Div {
     h_flex()
-        .h(px(28.))
+        .h(crate::ui::rem_px(
+            crate::appearance::metrics(cx).sidebar_row_height,
+        ))
         .items_center()
         .justify_between()
         .pl(px(12.))
         .pr(px(8.))
         .mt_2()
-        .text_size(px(12.))
+        .text_size(crate::ui::rem(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.theme().muted_foreground)
         .child(div().child(text))
@@ -1132,14 +1143,16 @@ fn sidebar_row(
     h_flex()
         .id(gpui_kit::ElementId::Name(id.into()))
         .test_support()
-        .h(px(28.))
+        .h(crate::ui::rem_px(
+            crate::appearance::metrics(cx).sidebar_row_height,
+        ))
         .items_center()
         .gap(px(8.))
         .mx_1()
         .pl(px(12.))
         .pr(px(8.))
         .rounded(px(4.))
-        .text_size(px(13.))
+        .text_size(crate::ui::rem(13.))
         .text_color(if muted {
             theme.muted_foreground
         } else if active {

@@ -235,6 +235,7 @@ impl DealsPanel {
                 cell(tender_status(tender.status)),
                 actions,
             ],
+            cx,
         )
     }
 
@@ -316,6 +317,7 @@ impl DealsPanel {
                 cell(status),
                 actions.into_any_element(),
             ],
+            cx,
         )
     }
 
@@ -445,7 +447,7 @@ impl Render for DealsPanel {
             body = body.child(
                 div()
                     .id("otc-problem")
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );

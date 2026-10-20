@@ -144,8 +144,8 @@ pub(crate) fn aligned_header(cols: &[Col], cx: &App) -> Div {
 }
 
 /// One table row at the columns' minimum widths; see [`aligned_header`].
-pub(crate) fn aligned_row(cols: &[Col], cells: Vec<AnyElement>) -> Div {
-    ui::table_row(&ui::fit_fixed(cols), cells)
+pub(crate) fn aligned_row(cols: &[Col], cells: Vec<AnyElement>, cx: &App) -> Div {
+    ui::table_row(&ui::fit_fixed(cols), cells, cx)
 }
 
 // ---- books -----------------------------------------------------------------
@@ -370,7 +370,7 @@ impl Render for BooksPanel {
             );
         }
         body = body.child(
-            ui::toolbar()
+            ui::toolbar(cx)
                 .w_full()
                 .child(tabs)
                 .child(div().flex_1())
@@ -412,7 +412,7 @@ impl Render for BooksPanel {
                 div()
                     .id("books-problem")
                     .test_support()
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
@@ -437,7 +437,7 @@ fn halted_notice(desk: &Entity<Desk>, instrument: &Instrument, cx: &App) -> Opti
             div()
                 .id("books-halted")
                 .test_support()
-                .text_size(px(ui::LABEL_SIZE))
+                .text_size(ui::rem(ui::LABEL_SIZE))
                 .text_color(cx.theme().warning)
                 .child(format!(
                     "{} is halted on every venue: orders wait for the reopening",
@@ -531,7 +531,9 @@ impl BooksPanel {
         // the measured ages in muted tabular text, and the spread.
         let mut card_header = h_flex()
             .w_full()
-            .h(px(ui::CARD_HEADER_HEIGHT))
+            .h(ui::rem_px(
+                crate::appearance::metrics(cx).title_strip_height,
+            ))
             .items_center()
             .gap(px(ui::TOOLBAR_GAP))
             .child(
@@ -580,7 +582,7 @@ impl BooksPanel {
         if gaps > 0 {
             column = column.child(
                 div()
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().warning)
                     .child(format!("{gaps} feed gaps, resubscribed")),
             );
@@ -604,7 +606,7 @@ impl BooksPanel {
                             .w_full()
                             .py_2()
                             .text_center()
-                            .text_size(px(ui::LABEL_SIZE))
+                            .text_size(ui::rem(ui::LABEL_SIZE))
                             .text_color(cx.theme().muted_foreground)
                             .child(empty),
                     );
@@ -777,6 +779,7 @@ impl BooksPanel {
                 colored(order.price.to_string(), color),
                 cell(broker),
             ],
+            cx,
         ))
         .into_any_element()
     }
@@ -813,6 +816,7 @@ impl BooksPanel {
                 cell(level.quantity.to_string()),
                 colored(level.price.to_string(), color),
             ],
+            cx,
         ))
         .into_any_element()
     }
@@ -1144,7 +1148,7 @@ impl Render for TicketPanel {
                 div()
                     .id("ticket-problem")
                     .test_support()
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
@@ -1155,14 +1159,16 @@ impl Render for TicketPanel {
         if killed {
             body = body.child(
                 div()
-                    .text_size(px(ui::LABEL_SIZE))
+                    .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child("Kill switch active: the venue refuses new orders until you reset it"),
             );
         }
         body.child(
             h_flex()
-                .h(px(ui::TOOLBAR_HEIGHT))
+                .h(ui::rem_px(
+                    crate::appearance::metrics(cx).title_strip_height,
+                ))
                 .items_center()
                 .gap(px(ui::TOOLBAR_GAP))
                 .mt_1()
@@ -1380,6 +1386,7 @@ impl TradesPanel {
                     quote(venue_id, Side::Buy, best_bid),
                     quote(venue_id, Side::Sell, best_ask),
                 ],
+                cx,
             ));
         }
         quotes
@@ -1406,7 +1413,7 @@ impl Render for TradesPanel {
         let count = print_indices(prints, instrument_id).len();
         let desk = self.desk.clone();
         let mut body = panel_body("tape", &self.focus).child(
-            ui::toolbar().child(
+            ui::toolbar(cx).child(
                 ButtonGroup::new("tape-source")
                     .xsmall()
                     .child(self.source_segment(TradeSource::Consolidated))
@@ -1459,6 +1466,7 @@ impl Render for TradesPanel {
                                         cell(print.price.to_string()),
                                         cell(print.quantity.to_string()),
                                     ],
+                                    cx,
                                 )
                             })
                             .collect()
@@ -1555,6 +1563,7 @@ impl Render for OrdersPanel {
                                             ),
                                             action,
                                         ],
+                                        cx,
                                     )
                                 })
                                 .collect()
@@ -1619,6 +1628,7 @@ impl Render for FillsPanel {
                                             cell(fill.fee.to_string()),
                                             cell(format::liquidity(fill.liquidity)),
                                         ],
+                                        cx,
                                     )
                                 })
                                 .collect()
@@ -1708,7 +1718,7 @@ impl Render for PositionsPanel {
                     .min_h_0()
                     .overflow_y_scroll();
                 for cells in rows {
-                    list = list.child(ui::table_row(fitted, cells));
+                    list = list.child(ui::table_row(fitted, cells, cx));
                 }
                 table = table.child(list);
                 table
@@ -1727,7 +1737,7 @@ impl Render for AccountPanel {
         let desk = self.desk.read(cx);
         let model = desk.model();
         let mut body = panel_body("account", &self.focus).child(
-            ui::toolbar().child(
+            ui::toolbar(cx).child(
                 Button::new("refresh")
                     .label("Reload orders and account")
                     .xsmall()
@@ -1811,7 +1821,7 @@ impl Render for NoticesPanel {
                         };
                         h_flex()
                             .w_full()
-                            .h(px(ui::TABLE_ROW_HEIGHT))
+                            .h(ui::rem_px(crate::appearance::metrics(cx).row_height))
                             .items_center()
                             .gap_2()
                             .child(

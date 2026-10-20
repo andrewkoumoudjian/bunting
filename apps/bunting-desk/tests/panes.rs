@@ -49,6 +49,19 @@ struct Fixture {
     sent: Recorder,
 }
 
+/// A private configuration directory for one test window, so the desk's
+/// appearance settings and user themes never touch the real ones.
+fn isolated_config() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "bunting-desk-test-config-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("test config dir");
+    dir
+}
+
 fn open(cx: &mut TestAppContext) -> Fixture {
     cx.update(gpui_kit::init);
     let sent = Recorder::default();
@@ -65,7 +78,7 @@ fn open(cx: &mut TestAppContext) -> Fixture {
             ..WindowOptions::default()
         };
         let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-            bunting_desk::init(cx);
+            bunting_desk::init_in(&isolated_config(), cx);
             cx.new(|cx| Workspace::new(shared, None, window, cx))
         })
         .expect("open window");

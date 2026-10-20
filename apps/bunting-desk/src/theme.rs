@@ -233,5 +233,5 @@ pub fn serif(text: impl Into<SharedString>) -> Div {
 #[must_use]
 pub fn pane_title(kind: &str, symbol: Option<&str>) -> Div {
     let text = symbol.map_or_else(|| kind.to_owned(), |symbol| format!("{kind} · {symbol}"));
-    serif(text).text_size(px(15.))
+    serif(text).text_size(crate::ui::rem(15.))
 }

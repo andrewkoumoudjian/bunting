@@ -2,34 +2,29 @@
 //! body, toolbar, form field, stat, empty state, section label and table
 //! helpers every pane is built from, styled with theme tokens only.
 //!
-//! The sizes below are the visual spec's scale in one place. U2a's
-//! `metrics(cx)` replaces these constants at merge; pane code must not
-//! repeat the literals.
+//! The sizes below are the visual spec's scale at the default 13 px UI
+//! font. They are written as [`rem`]s: the workspace sets the window's
+//! rem size from the user's UI font size, so every size here scales with
+//! it. Row, toolbar and title-strip heights come from the density in
+//! [`metrics`]. Pane code must not repeat the literals.
 
+use crate::appearance::metrics;
 use crate::theme;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, Div, FocusHandle, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TestSupportExt as _, Window, div, px,
+    ParentElement as _, Pixels, Rems, SharedString, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window, div, px, rems,
 };
 
 /// Inner padding of every pane body.
 pub const PANE_PADDING: f32 = 8.;
 /// Vertical gap between a pane body's sections.
 pub const PANE_GAP: f32 = 8.;
-/// Height of a pane toolbar row.
-pub const TOOLBAR_HEIGHT: f32 = 28.;
 /// Gap between controls on one toolbar.
 pub const TOOLBAR_GAP: f32 = 6.;
-/// Height of a venue card's header row in the Book Trader.
-pub const CARD_HEADER_HEIGHT: f32 = 28.;
-/// Height of a table header row.
-pub const TABLE_HEADER_HEIGHT: f32 = 24.;
-/// Height of one table or book row.
-pub const TABLE_ROW_HEIGHT: f32 = 24.;
 /// Horizontal padding inside one table cell.
 pub const CELL_PADDING: f32 = 8.;
 /// Label text: field labels, stat labels, section labels, table heads.
@@ -40,6 +35,41 @@ pub const VALUE_SIZE: f32 = 13.;
 pub const FIELD_GAP: f32 = 4.;
 /// Icon size in an empty state.
 pub const EMPTY_ICON_SIZE: f32 = 16.;
+
+/// The rem size at the default 13 px UI font: 16 px, GPUI's default, so
+/// gpui-kit components keep their designed sizes until the user changes
+/// the font size.
+pub const BASE_REM: f32 = 16.;
+
+/// A size given in pixels at the default UI font, as rems, so it scales
+/// with the user's UI font size (ADR 0051 decision 7).
+#[must_use]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "rems are pixels at the default font over the base rem"
+)]
+pub fn rem(at_default: f32) -> Rems {
+    rems(at_default / BASE_REM)
+}
+
+/// The window's rem size for the user's UI font size: [`BASE_REM`] at
+/// the default 13 px, scaled in proportion, so every rem in the desk and
+/// in gpui-kit grows and shrinks with the chosen font size.
+#[must_use]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "the rem size is the base rem scaled by the font size ratio"
+)]
+pub fn rem_size(cx: &App) -> Pixels {
+    let font_size = f32::from(metrics(cx).font_size);
+    px(BASE_REM * font_size / crate::appearance::DEFAULT_UI_FONT_SIZE)
+}
+
+/// [`rem`] for a measured [`Pixels`] value, such as a density height.
+#[must_use]
+pub fn rem_px(at_default: Pixels) -> Rems {
+    rem(f32::from(at_default))
+}
 
 /// A pane's body: 8 px padding, an 8 px section gap, tabular figures.
 /// The canvas's `WindowFrame` draws the title; panes never draw their own.
@@ -55,16 +85,16 @@ pub fn pane_body(
         .size_full()
         .p(px(PANE_PADDING))
         .gap(px(PANE_GAP))
-        .text_size(px(VALUE_SIZE))
+        .text_size(rem(VALUE_SIZE))
         .font_features(theme::tabular())
 }
 
 /// One 28 px row of xsmall buttons, toggles and segmented controls,
 /// vertically centred on one line.
 #[must_use]
-pub fn toolbar() -> Div {
+pub fn toolbar(cx: &App) -> Div {
     h_flex()
-        .h(px(TOOLBAR_HEIGHT))
+        .h(rem_px(metrics(cx).title_strip_height))
         .items_center()
         .gap(px(TOOLBAR_GAP))
 }
@@ -77,7 +107,7 @@ pub fn field(label: impl Into<SharedString>, control: AnyElement, cx: &App) -> D
         .gap(px(FIELD_GAP))
         .child(
             div()
-                .text_size(px(LABEL_SIZE))
+                .text_size(rem(LABEL_SIZE))
                 .text_color(cx.theme().muted_foreground)
                 .child(label.into()),
         )
@@ -100,7 +130,7 @@ pub fn field_tipped(
         .child(
             div()
                 .id(id)
-                .text_size(px(LABEL_SIZE))
+                .text_size(rem(LABEL_SIZE))
                 .text_color(cx.theme().muted_foreground)
                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .child(label.into()),
@@ -126,13 +156,13 @@ pub fn stat_colored(
         .gap(px(FIELD_GAP))
         .child(
             div()
-                .text_size(px(LABEL_SIZE))
+                .text_size(rem(LABEL_SIZE))
                 .text_color(cx.theme().muted_foreground)
                 .child(label.into()),
         )
         .child(
             div()
-                .text_size(px(VALUE_SIZE))
+                .text_size(rem(VALUE_SIZE))
                 .text_color(color)
                 .child(value.into()),
         )
@@ -142,7 +172,7 @@ pub fn stat_colored(
 #[must_use]
 pub fn section_label(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .text_size(px(LABEL_SIZE))
+        .text_size(rem(LABEL_SIZE))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
@@ -152,7 +182,7 @@ pub fn section_label(text: impl Into<SharedString>, cx: &App) -> Div {
 #[must_use]
 pub fn muted(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .text_size(px(LABEL_SIZE))
+        .text_size(rem(LABEL_SIZE))
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
 }
@@ -184,7 +214,7 @@ pub fn empty_state(
         )
         .child(
             div()
-                .text_size(px(VALUE_SIZE))
+                .text_size(rem(VALUE_SIZE))
                 .text_color(muted)
                 .child(text.into()),
         );
@@ -417,13 +447,16 @@ fn aligned_cell(width: f32, align: Align, content: AnyElement) -> Div {
 #[must_use]
 pub fn table_head(fitted: &[Fit], cx: &App) -> Div {
     let color = cx.theme().table_head_foreground;
-    let mut head = h_flex().w_full().h(px(TABLE_HEADER_HEIGHT)).items_center();
+    let mut head = h_flex()
+        .w_full()
+        .h(rem_px(metrics(cx).row_height))
+        .items_center();
     for fit in fitted {
         head = head.child(aligned_cell(
             fit.width,
             fit.col.align,
             div()
-                .text_size(px(LABEL_SIZE))
+                .text_size(rem(LABEL_SIZE))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(color)
                 .child(fit.col.label)
@@ -436,9 +469,12 @@ pub fn table_head(fitted: &[Fit], cx: &App) -> Div {
 /// One 24 px table row. `cells` holds one element per column of the
 /// full set, in column order; only the fitted ones are shown.
 #[must_use]
-pub fn table_row(fitted: &[Fit], cells: Vec<AnyElement>) -> Div {
+pub fn table_row(fitted: &[Fit], cells: Vec<AnyElement>, cx: &App) -> Div {
     let mut cells: Vec<Option<AnyElement>> = cells.into_iter().map(Some).collect();
-    let mut row = h_flex().w_full().h(px(TABLE_ROW_HEIGHT)).items_center();
+    let mut row = h_flex()
+        .w_full()
+        .h(rem_px(metrics(cx).row_height))
+        .items_center();
     for fit in fitted {
         if let Some(cell) = cells.get_mut(fit.index).and_then(Option::take) {
             row = row.child(aligned_cell(fit.width, fit.col.align, cell));
