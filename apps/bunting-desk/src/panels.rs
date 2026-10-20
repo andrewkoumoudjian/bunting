@@ -37,28 +37,28 @@ const ORDER_DEPTH: usize = 16;
 /// Venues shown side by side.
 const MAX_VENUE_COLUMNS: usize = 6;
 /// One side of an order-by-order book. Numbers right-align with their
-/// headers; the broker is an identifier and stays left.
-const ORDER_COLUMNS: [Col; 5] = [
+/// headers; the broker is an identifier and stays left. As a card
+/// narrows the broker drops first, then the quantity ahead (both
+/// priority 0, the rightmost first), before anything clips.
+pub const ORDER_COLUMNS: [Col; 5] = [
     Col::right("place", 44.),
-    Col::right("ahead", 52.),
+    Col::right("ahead", 52.).priority(0),
     Col::right("qty", 52.).priority(2),
     Col::right("price", 60.).priority(2),
     Col::left("broker", 52.).priority(0),
 ];
-/// The cells of [`ORDER_COLUMNS`].
-const ORDER_SIDE_WIDTH: f32 = 260.;
 /// One side of a price-level book.
-const LEVEL_COLUMNS: [Col; 3] = [
+pub const LEVEL_COLUMNS: [Col; 3] = [
     Col::center("mine", 48.).priority(0),
     Col::right("qty", 60.).priority(2),
     Col::right("price", 68.).priority(2),
 ];
-/// The cells of [`LEVEL_COLUMNS`].
-const LEVEL_SIDE_WIDTH: f32 = 176.;
-/// A venue card's least width: both sides, the gap between them, padding
-/// and border (2 × side + 30).
-const ORDER_CARD_WIDTH: f32 = 550.;
-const LEVEL_CARD_WIDTH: f32 = 382.;
+/// A venue card's least width: both sides' essential columns (place,
+/// qty, price / qty, price), the gap between them, padding and border.
+/// Wider cards fit more columns back in; the books scroll sideways
+/// below this.
+const ORDER_CARD_WIDTH: f32 = 400.;
+const LEVEL_CARD_WIDTH: f32 = 300.;
 
 /// The boilerplate every dock panel shares.
 macro_rules! dock_panel {
@@ -172,6 +172,11 @@ pub struct BooksPanel {
     redraw_pending: bool,
     /// Why the last one-click order or cancel did not go.
     problem: Option<String>,
+    /// Each venue card's content width last measured by its width
+    /// probe, so each book side fits its columns to the card.
+    card_widths: std::rc::Rc<
+        std::cell::RefCell<std::collections::HashMap<Listing, std::rc::Rc<std::cell::Cell<f32>>>>,
+    >,
     _observe: Subscription,
 }
 
@@ -193,6 +198,9 @@ impl BooksPanel {
             flashes: Flashes::default(),
             redraw_pending: false,
             problem: None,
+            card_widths: std::rc::Rc::new(
+                std::cell::RefCell::new(std::collections::HashMap::new()),
+            ),
         }
     }
 
@@ -296,6 +304,16 @@ impl BooksPanel {
         }
     }
 
+    /// The measured-width cell for one venue card, kept across frames.
+    /// Bounded like the flashes: past 64 cards the memory starts again.
+    fn card_width_cell(&self, listing: Listing) -> std::rc::Rc<std::cell::Cell<f32>> {
+        let mut widths = self.card_widths.borrow_mut();
+        if widths.len() >= 64 && !widths.contains_key(&listing) {
+            widths.clear();
+        }
+        widths.entry(listing).or_default().clone()
+    }
+
     fn one_click_bar(&self, cx: &mut Context<Self>) -> Div {
         let mut bar = h_flex()
             .gap(px(ui::TOOLBAR_GAP))
@@ -320,7 +338,7 @@ impl BooksPanel {
                     div()
                         .id("books-volume")
                         .test_support()
-                        .w(px(76.))
+                        .w(ui::rem(ui::NUMBER_INPUT_MIN_WIDTH))
                         .child(NumberInput::new(&self.volume).xsmall()),
                 )
                 .child(muted("O", cx))
@@ -328,7 +346,7 @@ impl BooksPanel {
                     div()
                         .id("books-offset")
                         .test_support()
-                        .w(px(68.))
+                        .w(ui::rem(ui::NUMBER_INPUT_MIN_WIDTH))
                         .child(NumberInput::new(&self.offset).xsmall()),
                 );
         }
@@ -475,6 +493,10 @@ impl BooksPanel {
         clippy::too_many_lines,
         reason = "one venue's column: header, status lines and both sides"
     )]
+    #[allow(
+        clippy::float_arithmetic,
+        reason = "halving the measured f32 card width for the two sides"
+    )]
     fn book_column(
         &self,
         listing: Listing,
@@ -538,30 +560,36 @@ impl BooksPanel {
             .gap(px(ui::TOOLBAR_GAP))
             .child(
                 div()
+                    .flex_shrink_0()
                     .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                     .child(format::venue(listing)),
             )
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_1()
                     .child(ui::status_dot(state_color))
                     .child(muted(state, cx)),
             )
             .child(div().flex_1());
+        // The ages truncate first; the spread never does.
         if let Some(age) = age {
-            card_header = card_header.child(muted(age, cx));
+            card_header = card_header.child(muted(age, cx).min_w_0().truncate());
         }
         if let Some(trip) = order_trip {
-            card_header = card_header.child(muted(trip, cx));
+            card_header = card_header.child(muted(trip, cx).min_w_0().truncate());
         }
-        card_header = card_header.child(muted(
-            spread.map_or_else(
-                || "one-sided".to_owned(),
-                |spread| format!("spread {spread}"),
-            ),
-            cx,
-        ));
+        card_header = card_header.child(
+            muted(
+                spread.map_or_else(
+                    || "one-sided".to_owned(),
+                    |spread| format!("spread {spread}"),
+                ),
+                cx,
+            )
+            .flex_shrink_0(),
+        );
         let mut column = v_flex()
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
@@ -578,6 +606,10 @@ impl BooksPanel {
             .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
                 desk.select_listing(listing, cx);
             }))
+            .child(ui::width_probe(
+                cx.entity().downgrade(),
+                self.card_width_cell(listing),
+            ))
             .child(card_header);
         if gaps > 0 {
             column = column.child(
@@ -588,16 +620,27 @@ impl BooksPanel {
             );
         }
         let clock = Instant::now();
+        // Each side fits its columns to half the card's measured content
+        // width (minus the gap between the sides): lower-priority
+        // columns drop whole instead of clipping. Unmeasured (0) keeps
+        // every column at its minimum for the first frame.
+        let gap = f32::from(ui::rem_size(cx)) * 0.75;
+        let measured = self.card_width_cell(listing).get();
+        let side_available = if measured > 0. {
+            (measured - gap) / 2.
+        } else {
+            0.
+        };
+        let order_fit = ui::fit(&ORDER_COLUMNS, side_available);
+        let level_fit = ui::fit(&LEVEL_COLUMNS, side_available);
         // Bids on the left and asks on the right, best price at the top of
         // each, as in RIT's Book Trader.
-        // Each side is wide enough for its cells, so the two never overlap;
-        // the books scroll sideways instead.
-        let sides = |bids: Vec<AnyElement>, asks: Vec<AnyElement>, head: &[Col], width: f32| {
+        let sides = |bids: Vec<AnyElement>, asks: Vec<AnyElement>, fitted: &[ui::Fit]| {
             let list = |side_name: &'static str, empty: &'static str, rows: Vec<AnyElement>| {
                 let mut list = v_flex()
                     .flex_1()
-                    .min_w(px(width))
-                    .child(aligned_header(head, cx));
+                    .min_w_0()
+                    .child(ui::table_head(fitted, cx));
                 if rows.is_empty() {
                     list = list.child(
                         div()
@@ -635,7 +678,7 @@ impl BooksPanel {
                         self.flashes
                             .get(listing, flash::Key::Order(order.reference), clock);
                     let mine = model.own_order(listing, order.reference).is_some();
-                    Self::order_row(row, order, index, flash, mine, cx)
+                    Self::order_row(row, order, index, flash, mine, &order_fit, cx)
                 };
                 let asks = feed.book.orders(Side::Sell);
                 let bids = feed.book.orders(Side::Buy);
@@ -652,8 +695,7 @@ impl BooksPanel {
                         .enumerate()
                         .map(|(index, order)| order_row(order, index, &all_asks))
                         .collect(),
-                    &ORDER_COLUMNS,
-                    ORDER_SIDE_WIDTH,
+                    &order_fit,
                 ));
                 if hidden > 0 {
                     column = column.child(muted(format!("{hidden} more orders deeper"), cx));
@@ -674,7 +716,15 @@ impl BooksPanel {
             let flash = self
                 .flashes
                 .get(listing, flash::Key::Level(side, level.price), clock);
-            Self::level_row(row, *level, own(level.price, side), index, flash, cx)
+            Self::level_row(
+                row,
+                *level,
+                own(level.price, side),
+                index,
+                flash,
+                &level_fit,
+                cx,
+            )
         };
         column.child(sides(
             all_bids
@@ -689,8 +739,7 @@ impl BooksPanel {
                 .enumerate()
                 .map(|(index, level)| level_row(level, Side::Sell, index, &all_asks))
                 .collect(),
-            &LEVEL_COLUMNS,
-            LEVEL_SIDE_WIDTH,
+            &level_fit,
         ))
     }
 
@@ -748,6 +797,7 @@ impl BooksPanel {
         index: usize,
         flash: Option<Flash>,
         mine: bool,
+        fitted: &[ui::Fit],
         cx: &Context<Self>,
     ) -> AnyElement {
         let side_name = match order.side {
@@ -770,8 +820,8 @@ impl BooksPanel {
             mine,
             cx,
         )
-        .child(aligned_row(
-            &ORDER_COLUMNS,
+        .child(ui::table_row(
+            fitted,
             vec![
                 cell(format!("#{}", order.position_at_price)),
                 cell(order.quantity_ahead.to_string()),
@@ -790,6 +840,7 @@ impl BooksPanel {
         mine: i64,
         index: usize,
         flash: Option<Flash>,
+        fitted: &[ui::Fit],
         cx: &Context<Self>,
     ) -> AnyElement {
         let mark = if mine > 0 {
@@ -809,8 +860,8 @@ impl BooksPanel {
             mine > 0,
             cx,
         )
-        .child(aligned_row(
-            &LEVEL_COLUMNS,
+        .child(ui::table_row(
+            fitted,
             vec![
                 cell(mark),
                 cell(level.quantity.to_string()),
@@ -839,6 +890,9 @@ pub struct TicketPanel {
     seen_hint: u64,
     /// Why the last order was not sent.
     problem: Option<String>,
+    /// The pane content width last measured by the body's width probe,
+    /// so paired fields can stack when the pane is narrow.
+    width: std::rc::Rc<std::cell::Cell<f32>>,
     _observe: Subscription,
 }
 
@@ -873,6 +927,7 @@ impl TicketPanel {
             anonymous: false,
             seen_hint,
             problem: None,
+            width: std::rc::Rc::new(std::cell::Cell::new(0.)),
             _observe: observation,
         }
     }
@@ -955,8 +1010,19 @@ impl Render for TicketPanel {
                 cx,
             ));
         };
-        // The venue: no default, the participant chooses (ADR 0050). The
-        // hint lives in this field, beside the choice it asks for.
+        // The fields scroll; the footer below them never does, so the
+        // submit button and the kill switch stay reachable however
+        // short the window is. The probe measures the content width so
+        // paired fields can stack in a narrow pane (360 px: the probe
+        // sits inside the pane padding, hence 344).
+        let wide = self.width.get() >= 344.;
+        let mut fields = v_flex()
+            .id("ticket-fields")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap(px(ui::PANE_GAP));
+        // The venue: no default, the participant chooses (ADR 0050).
         let mut venues = h_flex().gap_1().flex_wrap().items_center();
         for info in &instrument.listings {
             let listing = info.listing;
@@ -987,11 +1053,7 @@ impl Render for TicketPanel {
                 )),
             );
         }
-        let mut venue_control = v_flex().gap_1().child(venues);
-        if chosen.is_none() {
-            venue_control = venue_control.child(muted("Choose the venue for this order", cx));
-        }
-        body = body.child(ui::field("Venue", venue_control.into_any_element(), cx));
+        fields = fields.child(ui::field("Venue", venues.into_any_element(), cx));
         // Side and type are segmented controls. The selected side takes
         // its market colour: bullish for Buy, bearish for Sell.
         let side_segment = |id: &'static str, label: &'static str, selected: bool, buy: bool| {
@@ -1002,61 +1064,71 @@ impl Render for TicketPanel {
                 (false, _) => button,
             }
         };
-        body = body
-            .child(ui::field(
-                "Side",
-                ButtonGroup::new("ticket-side")
-                    .small()
-                    .child(side_segment(
-                        "ticket-buy",
-                        "Buy",
-                        self.side == Side::Buy,
-                        true,
-                    ))
-                    .child(side_segment(
-                        "ticket-sell",
-                        "Sell",
-                        self.side == Side::Sell,
-                        false,
-                    ))
-                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                        this.side = if clicks.contains(&0) {
-                            Side::Buy
-                        } else {
-                            Side::Sell
-                        };
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                cx,
-            ))
-            .child(ui::field(
-                "Type",
-                ButtonGroup::new("ticket-kind")
-                    .small()
-                    .child(ui::segment(
-                        "ticket-limit",
-                        "Limit",
-                        self.kind == TicketKind::Limit,
-                    ))
-                    .child(ui::segment(
-                        "ticket-market",
-                        "Market",
-                        self.kind == TicketKind::Market,
-                    ))
-                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                        this.kind = if clicks.contains(&0) {
-                            TicketKind::Limit
-                        } else {
-                            TicketKind::Market
-                        };
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                cx,
-            ));
+        fields = fields.child(
+            h_flex()
+                .gap_2()
+                .items_start()
+                .child(
+                    ui::field(
+                        "Side",
+                        ButtonGroup::new("ticket-side")
+                            .small()
+                            .child(side_segment(
+                                "ticket-buy",
+                                "Buy",
+                                self.side == Side::Buy,
+                                true,
+                            ))
+                            .child(side_segment(
+                                "ticket-sell",
+                                "Sell",
+                                self.side == Side::Sell,
+                                false,
+                            ))
+                            .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                                this.side = if clicks.contains(&0) {
+                                    Side::Buy
+                                } else {
+                                    Side::Sell
+                                };
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                        cx,
+                    )
+                    .flex_1(),
+                )
+                .child(
+                    ui::field(
+                        "Type",
+                        ButtonGroup::new("ticket-kind")
+                            .small()
+                            .child(ui::segment(
+                                "ticket-limit",
+                                "Limit",
+                                self.kind == TicketKind::Limit,
+                            ))
+                            .child(ui::segment(
+                                "ticket-market",
+                                "Market",
+                                self.kind == TicketKind::Market,
+                            ))
+                            .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                                this.kind = if clicks.contains(&0) {
+                                    TicketKind::Limit
+                                } else {
+                                    TicketKind::Market
+                                };
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                        cx,
+                    )
+                    .flex_1(),
+                ),
+        );
         // Quantity and price: two fields of equal width on one row.
-        body = body.child(
+        fields = fields.child(
             h_flex()
                 .gap_2()
                 .items_start()
@@ -1080,7 +1152,7 @@ impl Render for TicketPanel {
                     .flex_1(),
                 ),
         );
-        body = body.child(ui::field_tipped(
+        fields = fields.child(ui::field_tipped(
             "ticket-display-label",
             "Display qty",
             "Iceberg: the quantity shown in the book at a time. Blank shows the whole order.",
@@ -1113,23 +1185,34 @@ impl Render for TicketPanel {
             }
             cx.notify();
         }));
-        body = body
-            .child(ui::field("Time in force", tifs.into_any_element(), cx))
-            .child(ui::field(
-                "Flags",
-                ButtonGroup::new("ticket-flags")
-                    .small()
-                    .multiple(true)
-                    .child(ui::segment("ticket-post-only", "Post only", self.post_only))
-                    .child(ui::segment("ticket-anonymous", "Anonymous", self.anonymous))
-                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                        this.post_only = clicks.contains(&0);
-                        this.anonymous = clicks.contains(&1);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                cx,
-            ));
+        let tif_field = ui::field("Time in force", tifs.into_any_element(), cx);
+        let flags_field = ui::field(
+            "Flags",
+            ButtonGroup::new("ticket-flags")
+                .small()
+                .multiple(true)
+                .child(ui::segment("ticket-post-only", "Post only", self.post_only))
+                .child(ui::segment("ticket-anonymous", "Anonymous", self.anonymous))
+                .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                    this.post_only = clicks.contains(&0);
+                    this.anonymous = clicks.contains(&1);
+                    cx.notify();
+                }))
+                .into_any_element(),
+            cx,
+        );
+        // One row when the pane is wide enough for both, stacked else.
+        fields = if wide {
+            fields.child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(tif_field.flex_1())
+                    .child(flags_field.flex_1()),
+            )
+        } else {
+            fields.child(tif_field).child(flags_field)
+        };
         // Full width, coloured by side, and labelled with the order it
         // sends; with no venue it says so and stays disabled.
         let send = Button::new("ticket-send")
@@ -1142,9 +1225,16 @@ impl Render for TicketPanel {
             Side::Buy => send.success(),
             Side::Sell => send.danger(),
         };
-        body = body.child(send);
+        // The sticky footer: outside the scrolling fields, always
+        // visible. A trader must always be able to send and kill.
+        let mut footer = v_flex()
+            .gap_2()
+            .pt_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(send);
         if let Some(problem) = &self.problem {
-            body = body.child(
+            footer = footer.child(
                 div()
                     .id("ticket-problem")
                     .test_support()
@@ -1154,53 +1244,54 @@ impl Render for TicketPanel {
             );
         }
         if !connected {
-            body = body.child(muted("Not connected: orders cannot be sent", cx));
+            footer = footer.child(muted("Not connected: orders cannot be sent", cx));
         }
         if killed {
-            body = body.child(
+            footer = footer.child(
                 div()
                     .text_size(ui::rem(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child("Kill switch active: the venue refuses new orders until you reset it"),
             );
         }
+        body = body
+            .child(ui::width_probe(cx.entity().downgrade(), self.width.clone()))
+            .child(fields);
         body.child(
-            h_flex()
-                .h(ui::rem_px(
-                    crate::appearance::metrics(cx).title_strip_height,
-                ))
-                .items_center()
-                .gap(px(ui::TOOLBAR_GAP))
-                .mt_1()
-                .pt_2()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .child(
-                    Button::new("cancel-all")
-                        .label("Cancel all")
-                        .small()
-                        .outline()
-                        .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
-                            desk.cancel_all(cx);
-                        })),
-                )
-                .child(if killed {
-                    Button::new("kill-switch-reset")
-                        .label("Reset kill switch")
-                        .small()
-                        .warning()
-                        .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
-                            desk.reset_kill_switch(cx);
-                        }))
-                } else {
-                    Button::new("kill-switch")
-                        .label("Kill switch")
-                        .small()
-                        .danger()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            confirm_kill_switch(this.desk.clone(), window, cx);
-                        }))
-                }),
+            footer.child(
+                h_flex()
+                    .h(ui::rem_px(
+                        crate::appearance::metrics(cx).title_strip_height,
+                    ))
+                    .items_center()
+                    .gap(px(ui::TOOLBAR_GAP))
+                    .child(
+                        Button::new("cancel-all")
+                            .label("Cancel all")
+                            .small()
+                            .outline()
+                            .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
+                                desk.cancel_all(cx);
+                            })),
+                    )
+                    .child(if killed {
+                        Button::new("kill-switch-reset")
+                            .label("Reset kill switch")
+                            .small()
+                            .warning()
+                            .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
+                                desk.reset_kill_switch(cx);
+                            }))
+                    } else {
+                        Button::new("kill-switch")
+                            .label("Kill switch")
+                            .small()
+                            .danger()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                confirm_kill_switch(this.desk.clone(), window, cx);
+                            }))
+                    }),
+            ),
         )
     }
 }
@@ -1332,10 +1423,10 @@ impl TradesPanel {
 
     /// Each venue's best bid and offer as the tape last showed them; the
     /// best across venues is bold.
-    fn quotes(&self, cx: &App) -> Div {
+    fn quotes(&self, cx: &App) -> gpui_kit::Stateful<Div> {
         let desk = self.desk.read(cx);
         let Some(instrument) = desk.instrument() else {
-            return div();
+            return v_flex().id("tape-quotes");
         };
         let tape = desk.model().tape(instrument.instrument_id);
         let state = match tape.map(|tape| &tape.state) {
@@ -1344,10 +1435,16 @@ impl TradesPanel {
             Some(FeedState::Refused(reason)) => format!("refused: {reason}"),
             None => "not subscribed".to_owned(),
         };
-        let mut quotes = v_flex().child(muted(
-            format!("{} from the hub · {state}", instrument.symbol),
-            cx,
-        ));
+        // The quotes scroll inside their own region when an instrument
+        // lists on more venues than the pane is tall.
+        let mut quotes = v_flex()
+            .id("tape-quotes")
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(muted(
+                format!("{} from the hub · {state}", instrument.symbol),
+                cx,
+            ));
         let Some(tape) = tape else {
             return quotes;
         };
@@ -1736,12 +1833,22 @@ impl Render for AccountPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let desk = self.desk.read(cx);
         let model = desk.model();
-        let mut body = panel_body("account", &self.focus).child(
-            ui::toolbar(cx).child(
+        // The toolbar: the as-of line on the left in muted text, a quiet
+        // ghost refresh icon on the right.
+        let mut toolbar = ui::toolbar(cx).w_full();
+        if let Some(account) = model.account() {
+            toolbar = toolbar.child(muted(
+                format!("As of committed sequence {}", account.run_sequence),
+                cx,
+            ));
+        }
+        let body = panel_body("account", &self.focus).child(
+            toolbar.child(div().flex_1()).child(
                 Button::new("refresh")
-                    .label("Reload orders and account")
+                    .ghost()
                     .xsmall()
-                    .outline()
+                    .icon(IconName::RefreshCw)
+                    .tooltip("Reload orders and account")
                     .on_click(window.listener_for(&self.desk, |desk, _, _, cx| desk.refresh(cx))),
             ),
         );
@@ -1754,12 +1861,15 @@ impl Render for AccountPanel {
                 cx,
             ));
         };
-        body = body.child(muted(
-            format!("As of committed sequence {}", account.run_sequence),
-            cx,
-        ));
         // Balances as stats, coloured by sign (the model carries no
-        // separate P&L figure).
+        // separate P&L figure), in a region that scrolls when there are
+        // more currencies than the window is tall.
+        let mut stats = v_flex()
+            .id("account-stats")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap(px(ui::PANE_GAP));
         for balance in &account.cash {
             let theme = cx.theme();
             let balance_color = match balance.balance.cmp(&0) {
@@ -1767,7 +1877,7 @@ impl Render for AccountPanel {
                 std::cmp::Ordering::Less => theme.chart_bearish,
                 std::cmp::Ordering::Equal => theme.foreground,
             };
-            body = body
+            stats = stats
                 .child(ui::section_label(
                     format!("Currency {}", balance.currency_id),
                     cx,
@@ -1785,7 +1895,7 @@ impl Render for AccountPanel {
                         .child(ui::stat("Reserved", balance.reserved.to_string(), cx)),
                 );
         }
-        body
+        body.child(stats)
     }
 }
 
@@ -1812,13 +1922,20 @@ impl Render for NoticesPanel {
                 let desk = desk.read(cx);
                 let notices = desk.model().notices();
                 range
-                    .filter_map(|index| notices.get(notices.len().checked_sub(index + 1)?))
-                    .map(|notice| {
+                    .filter_map(|index| {
+                        notices
+                            .get(notices.len().checked_sub(index + 1)?)
+                            .map(|notice| (index, notice))
+                    })
+                    .map(|(index, notice)| {
                         let color = match notice.level {
                             NoticeLevel::Info => cx.theme().muted_foreground,
                             NoticeLevel::Warning => cx.theme().warning,
                             NoticeLevel::Error => cx.theme().danger,
                         };
+                        // Rows are uniform for the virtual list: the text
+                        // truncates to one line, the tooltip has it all.
+                        let full = notice.text.clone();
                         h_flex()
                             .w_full()
                             .h(ui::rem_px(crate::appearance::metrics(cx).row_height))
@@ -1832,10 +1949,15 @@ impl Render for NoticesPanel {
                             )
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("notice-text-{index}")))
                                     .flex_1()
                                     .min_w_0()
-                                    .overflow_hidden()
+                                    .truncate()
                                     .text_color(color)
+                                    .tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                                            .build(window, cx)
+                                    })
                                     .child(notice.text.clone()),
                             )
                     })

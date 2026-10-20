@@ -23,7 +23,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
-    Window, div, px,
+    Window, div,
 };
 use std::collections::BTreeMap;
 
@@ -220,7 +220,7 @@ impl Render for LadderPanel {
                     div()
                         .id("ladder-volume")
                         .test_support()
-                        .w(px(76.))
+                        .w(ui::rem(ui::NUMBER_INPUT_MIN_WIDTH))
                         .child(NumberInput::new(&self.volume).xsmall()),
                 )
                 .child(
