@@ -25,6 +25,7 @@ What to look at in Zed:
 - `crates/ui/src/styles/{spacing,typography,elevation}.rs`: spacing scale, type ramp, elevation levels.
 - `crates/ui/src/components/keybinding_hint.rs`: key hints.
 - `assets/themes/one/one.json`: a complete, well-balanced dark/light theme pair.
+- `crates/sidebar/src/sidebar.rs` (`render_list_entry`, `render_thread`), `thread_switcher.rs` and `crates/agent_ui/src`: Zed's threads sidebar and agent panel. Delta's shell (sections such as Pinned, Projects and Threads, with dense rows) appears to be built from these (*inferred*: the public monorepo has no `delta` crate, only Delta artwork in `assets/images/delta_*` and `crates/ui/src/components/ai/delta_illustration.rs`). They are the closest readable source for the Delta sidebar look. GPL: take the design values, not the code.
 
 Other GPUI apps listed in <https://github.com/zed-industries/awesome-gpui>, for example DBFlux, GitComet, Arbor and Zedis, show further real-world dense layouts. Check each licence before reading code with intent to adapt.
 
@@ -45,7 +46,7 @@ not write:
 | Path | Contents |
 |---|---|
 | `gpui-kit/` | Sparse: `skills`, `crates/story`, `examples`, `themes`, at `4d63c73` |
-| `zed/` | Sparse: `crates/ui`, `workspace`, `title_bar`, `theme`, `command_palette`, `settings_ui`, `gpui/examples` and `assets/themes`, at `1d8a29e` |
+| `zed/` | Sparse: `crates/ui`, `workspace`, `title_bar`, `theme`, `command_palette`, `settings_ui`, `sidebar`, `agent_ui`, `gpui/examples` and `assets/themes`, at `1d8a29e` |
 | `buzz/globals.css` | Buzz's token sheet |
 | `refs/delta.dev.png`, `refs/delta-app.png` | Screenshots of Delta's site and app shell, 2026-10-20 |
 
