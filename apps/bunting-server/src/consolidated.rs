@@ -45,6 +45,12 @@ struct InFlight {
     trades: Vec<(PriceTicks, QuantityLots)>,
     best_bid: Quote,
     best_ask: Quote,
+    /// A skipped report (ADR 0053 §2): this commit's public projection
+    /// failed, so the processor consumes one report sequence number
+    /// without publishing entries and adopts `best_bid`/`best_ask` as
+    /// its rebuilt quotes. The next published record then visibly
+    /// skips a number and subscribers resnapshot.
+    gap: bool,
 }
 
 #[derive(Default)]
@@ -201,11 +207,82 @@ impl ConsolidatedTape {
                         .collect(),
                     best_bid: update.best_bid,
                     best_ask: update.best_ask,
+                    gap: false,
                 },
             );
         }
         drop(state);
         self.heard.notify_all();
+    }
+
+    /// Starts a skipped report for each listing whose public projection
+    /// failed after commit (ADR 0053 §2), on its way to the hub like a
+    /// change from that listing's venue. `rebuilt` carries each listing's
+    /// true best bid and offer after the commit; the processor adopts
+    /// them when the gap arrives, so a later snapshot is true while live
+    /// subscribers still see the missing report number. Like [`Self::hear`]
+    /// it cannot fail the commit: exceeding a bound takes the tape down.
+    pub(crate) fn hear_gap(
+        &self,
+        ordinal: u64,
+        durable_us: u64,
+        rebuilt: &[(ListingKey, (Quote, Quote))],
+    ) {
+        if rebuilt.is_empty() {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.failed.is_some() {
+            return;
+        }
+        for (index, &(listing_key, (best_bid, best_ask))) in rebuilt.iter().enumerate() {
+            let delay = match (self.delay_to_hub)(listing_key.venue_id) {
+                Ok(delay) => delay,
+                Err(error) => {
+                    self.fail(
+                        &mut state,
+                        format!("consolidated tape path failed: {error}"),
+                    );
+                    return;
+                }
+            };
+            if state.in_flight.len() >= self.capacity {
+                let reason = format!(
+                    "consolidated tape held more than {} changes in flight and is down",
+                    self.capacity
+                );
+                self.fail(&mut state, reason);
+                return;
+            }
+            let arrives = durable_us
+                .saturating_add(delay)
+                .saturating_add(self.processing_us);
+            state.in_flight.insert(
+                (arrives, ordinal, index),
+                InFlight {
+                    listing_key,
+                    trades: Vec::new(),
+                    best_bid,
+                    best_ask,
+                    gap: true,
+                },
+            );
+        }
+        drop(state);
+        self.heard.notify_all();
+    }
+
+    /// Takes the tape down with `reason`: every subscriber is
+    /// disconnected and later subscribes and snapshots fail, rather
+    /// than serve a view known to be stale.
+    pub(crate) fn take_down(&self, reason: String) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.failed.is_none() {
+                self.fail(&mut state, reason);
+            }
+        }
     }
 
     fn fail(&self, state: &mut TapeState, reason: String) {
@@ -224,6 +301,14 @@ impl ConsolidatedTape {
             }
             let change = entry.remove();
             let key = change.listing_key;
+            if change.gap {
+                // Consume one report number without publishing, and
+                // adopt the rebuilt quotes as the processor's view.
+                state.quotes.insert(key, (change.best_bid, change.best_ask));
+                let next = state.next_report.entry(key.instrument_id).or_insert(1);
+                *next = next.saturating_add(1);
+                continue;
+            }
             let (old_bid, old_ask) = state.quotes.get(&key).copied().unwrap_or((None, None));
             let mut entries: Vec<_> = change
                 .trades
@@ -416,6 +501,41 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_gap_skips_a_report_and_adopts_the_rebuilt_quotes() -> Result<(), String> {
+        let live = tape(0, 64);
+        let records = live.subscribe(None)?;
+        live.hear(0, 0, &update(2, Some(level(101, 5)), false));
+        // The next commit's projection failed; its rebuilt best ask is
+        // 3 at 101. Then a normal change empties the side.
+        live.hear_gap(1, 10, &[(key(2), (None, Some(level(101, 3))))]);
+        live.hear(2, 20, &update(2, None, false));
+        let (last, quotes) = live.snapshot(InstrumentId::new(1), 10_000)?;
+        // Report 1 published, 2 skipped by the gap, 3 is the delete.
+        assert_eq!(last, 3);
+        assert!(quotes.is_empty());
+        let published = records.drain()?;
+        assert_eq!(
+            published
+                .iter()
+                .map(|record| record.first_report)
+                .collect::<Vec<_>>(),
+            vec![1, 3],
+            "subscribers see report 2 missing, never a silent skip"
+        );
+        // A snapshot taken right after the gap (before any later change)
+        // carries the rebuilt quote: resnapshotting is true.
+        let rebuilt = tape(0, 64);
+        rebuilt.hear(0, 0, &update(2, Some(level(101, 5)), false));
+        rebuilt.hear_gap(1, 10, &[(key(2), (None, Some(level(101, 3))))]);
+        let (last, quotes) = rebuilt.snapshot(InstrumentId::new(1), 10_000)?;
+        assert_eq!(last, 2);
+        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes[0].2, PriceTicks::new(101));
+        assert_eq!(quotes[0].3, QuantityLots::new(3));
         Ok(())
     }
 

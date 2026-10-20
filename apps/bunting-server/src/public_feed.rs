@@ -300,7 +300,7 @@ impl<'a, M> PublicFeeds<'a, M> {
         buffered
             .iter()
             .filter(|batch| batch.ordinal >= published_before)
-            .filter_map(|batch| feed.increment(batch, encode))
+            .filter_map(|batch| feed.apply(batch, encode))
             .collect()
     }
 
@@ -321,6 +321,7 @@ impl<'a, M> PublicFeeds<'a, M> {
                 .public
                 .iter()
                 .any(|update| update.listing_key == feed.listing_key)
+                && !batch.public_gaps.contains(&feed.listing_key)
             {
                 continue;
             }
@@ -334,7 +335,7 @@ impl<'a, M> PublicFeeds<'a, M> {
                     }
                     buffer.push(batch.clone());
                 }
-                None => messages.extend(feed.increment(batch, encode)),
+                None => messages.extend(feed.apply(batch, encode)),
             }
         }
         Ok(messages)
@@ -375,6 +376,24 @@ impl TapeFeed {
 }
 
 impl Feed {
+    /// One batch on an active feed: either its increment, or — when the
+    /// batch's public projection failed for this listing (ADR 0053 §2) —
+    /// no message and one skipped report sequence number, so the next
+    /// increment's first report visibly jumps and the subscriber
+    /// resnapshots. A gap batch carries no public update for the
+    /// listings it names.
+    fn apply<M>(
+        &mut self,
+        batch: &CommittedBatch,
+        encode: IncrementEncoder<M>,
+    ) -> Option<FeedMessage<M>> {
+        if batch.public_gaps.contains(&self.listing_key) {
+            self.next_report = self.next_report.saturating_add(1);
+            return None;
+        }
+        self.increment(batch, encode)
+    }
+
     fn increment<M>(
         &mut self,
         batch: &CommittedBatch,
@@ -508,6 +527,21 @@ mod tests {
                 best_ask: None,
                 orders: Vec::new(),
             }],
+            public_gaps: Vec::new(),
+            references: Vec::new(),
+            deals: bunting_application::competition::DealChanges::default(),
+        })
+    }
+
+    /// A batch whose public projection failed for `venue`'s listing.
+    fn gap_batch(ordinal: u64, venue: u128) -> CommittedBatch {
+        Arc::new(Committed {
+            durable_us: ordinal.saturating_mul(10),
+            source: Endpoint::Venue(VenueId::new(venue)),
+            events: Vec::new(),
+            ordinal,
+            public: Vec::new(),
+            public_gaps: vec![listing(venue)],
             references: Vec::new(),
             deals: bunting_application::competition::DealChanges::default(),
         })
@@ -531,6 +565,43 @@ mod tests {
         assert_eq!(next[0].message.value(279), Some("2"));
         assert_eq!(next[0].message.value(271), Some("0"));
         assert_eq!(next[0].message.value(83), Some("2"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_gap_batch_skips_a_report_sequence_on_active_and_pending_feeds() -> Result<(), String> {
+        // Active feed: report 1, a silent-looking batch that consumes
+        // report 2, then the next increment jumps to 3.
+        let mut feeds = PublicFeeds::default();
+        assert_eq!(feeds.subscribe("a", listing(1), BOOK, true), None);
+        feeds.activate("a", 0, &[]);
+        let first = feeds.on_batch(&batch(0, 1, 100, 0, 5))?;
+        assert_eq!(first[0].message.value(83), Some("1"));
+        assert!(feeds.on_batch(&gap_batch(1, 1))?.is_empty());
+        // A gap for another venue does not touch this feed.
+        assert!(feeds.on_batch(&gap_batch(2, 2))?.is_empty());
+        let next = feeds.on_batch(&batch(3, 1, 100, 3, 0))?;
+        assert_eq!(next[0].message.value(83), Some("3"));
+
+        // Pending feed whose snapshot precedes the gap: the buffered gap
+        // is applied on activation, so the first live increment skips.
+        let mut feeds = PublicFeeds::default();
+        assert_eq!(feeds.subscribe("p", listing(1), BOOK, true), None);
+        assert!(feeds.on_batch(&gap_batch(0, 1))?.is_empty());
+        assert!(feeds.on_batch(&batch(1, 1, 100, 0, 5))?.is_empty());
+        let resumed = feeds.activate("p", 0, &[]);
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].message.value(83), Some("2"));
+
+        // Pending feed whose snapshot already reflects the gap batch:
+        // no skip, the snapshot is the subscriber's base.
+        let mut feeds = PublicFeeds::default();
+        assert_eq!(feeds.subscribe("s", listing(1), BOOK, true), None);
+        assert!(feeds.on_batch(&gap_batch(0, 1))?.is_empty());
+        assert!(feeds.on_batch(&batch(1, 1, 100, 0, 5))?.is_empty());
+        let resumed = feeds.activate("s", 1, &[]);
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].message.value(83), Some("1"));
         Ok(())
     }
 
