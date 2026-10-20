@@ -326,13 +326,88 @@ impl Book {
             .filter_map(|order_id| self.orders.get(order_id))
     }
 
-    /// The call-auction price (ADR 0037 §3), with the volume it executes:
-    /// among the book's resting prices, the one that executes the most,
-    /// then leaves the smallest imbalance, then is nearest `reference`, then
-    /// is lowest. Hidden quantity counts. `None` when the book is not
-    /// crossed.
+    /// The call-auction price (ADR 0037 §3), with the volume it executes.
+    ///
+    /// Runs in `O(P)` in the number of price levels `P`: one ascending
+    /// sweep over the ordered levels maintains cumulative demand (bids at
+    /// or above the candidate price) and cumulative supply (asks at or
+    /// below the candidate price), with no per-candidate range sums.
+    ///
+    /// Tie-breaks, in order: maximum matched volume; minimum absolute
+    /// imbalance `|demand - supply|`; nearest `reference`; lowest price.
+    /// Hidden quantity counts. `None` when the book is not crossed.
     #[must_use]
     pub fn auction_price(&self, reference: PriceTicks) -> Option<(PriceTicks, QuantityLots)> {
+        // Cumulative demand at the lowest candidate is the whole bid side;
+        // as the sweep rises, levels below the candidate leave it.
+        let total_demand = self
+            .bids
+            .values()
+            .map(|level| i128::from(level.total.get()))
+            .sum::<i128>();
+        let mut bids_below: i128 = 0;
+        let mut supply: i128 = 0;
+        let mut best: Option<(PriceTicks, i128, i128)> = None;
+        let mut bids = self.bids.iter().peekable();
+        let mut asks = self.asks.iter().peekable();
+        while bids.peek().is_some() || asks.peek().is_some() {
+            let price = match (bids.peek(), asks.peek()) {
+                (Some((bid_price, _)), Some((ask_price, _))) => {
+                    if bid_price.get() <= ask_price.get() {
+                        **bid_price
+                    } else {
+                        **ask_price
+                    }
+                }
+                (Some((bid_price, _)), None) => **bid_price,
+                (None, Some((ask_price, _))) => **ask_price,
+                (None, None) => break,
+            };
+            let mut bid_at_price: i128 = 0;
+            if bids
+                .peek()
+                .is_some_and(|(bid_price, _)| bid_price.get() == price.get())
+            {
+                if let Some((_, level)) = bids.next() {
+                    bid_at_price = i128::from(level.total.get());
+                }
+            }
+            if asks
+                .peek()
+                .is_some_and(|(ask_price, _)| ask_price.get() == price.get())
+            {
+                if let Some((_, level)) = asks.next() {
+                    supply += i128::from(level.total.get());
+                }
+            }
+            let demand = total_demand - bids_below;
+            let volume = demand.min(supply);
+            if volume > 0 {
+                let imbalance = (demand - supply).abs();
+                let better = best.is_none_or(|(chosen, chosen_volume, chosen_imbalance)| {
+                    let distance = |value: PriceTicks| {
+                        (i128::from(value.get()) - i128::from(reference.get())).abs()
+                    };
+                    (volume, -imbalance, -distance(price))
+                        > (chosen_volume, -chosen_imbalance, -distance(chosen))
+                });
+                if better {
+                    best = Some((price, volume, imbalance));
+                }
+            }
+            bids_below += bid_at_price;
+        }
+        best.and_then(|(price, volume, _)| {
+            i64::try_from(volume)
+                .ok()
+                .map(|volume| (price, QuantityLots::new(volume)))
+        })
+    }
+
+    /// `O(P²)` reference implementation of [`Book::auction_price`], kept
+    /// unchanged as a test oracle.
+    #[cfg(test)]
+    fn auction_price_reference(&self, reference: PriceTicks) -> Option<(PriceTicks, QuantityLots)> {
         let prices = self
             .bids
             .keys()
@@ -599,6 +674,149 @@ mod tests {
         book.rest(id(4), Side::Sell, px(99), qty(3), None).unwrap();
         // Now 99 executes 8: the most volume wins regardless of reference.
         assert_eq!(book.auction_price(px(102)), Some((px(99), qty(8))));
+    }
+
+    #[test]
+    fn auction_price_prefers_maximum_volume_over_reference() {
+        let mut book = Book::new();
+        book.rest(id(1), Side::Buy, px(102), qty(5), None).unwrap();
+        book.rest(id(2), Side::Buy, px(99), qty(3), None).unwrap();
+        book.rest(id(3), Side::Sell, px(98), qty(5), None).unwrap();
+        book.rest(id(4), Side::Sell, px(99), qty(3), None).unwrap();
+        // 99 executes 8; 98 and 102 execute 5. Volume wins even though the
+        // reference sits on 102.
+        assert_eq!(book.auction_price(px(102)), Some((px(99), qty(8))));
+    }
+
+    #[test]
+    fn auction_price_prefers_minimum_imbalance_on_volume_tie() {
+        let mut book = Book::new();
+        book.rest(id(1), Side::Buy, px(102), qty(5), None).unwrap();
+        book.rest(id(2), Side::Buy, px(99), qty(3), None).unwrap();
+        book.rest(id(3), Side::Sell, px(98), qty(5), None).unwrap();
+        // 98, 99 and 102 all execute 5. Only 102 balances (demand 5,
+        // supply 5); 98 and 99 leave imbalance 3. Imbalance wins even
+        // though the reference sits on 98.
+        assert_eq!(book.auction_price(px(98)), Some((px(102), qty(5))));
+    }
+
+    #[test]
+    fn auction_price_prefers_nearest_reference_on_volume_and_imbalance_tie() {
+        let mut book = Book::new();
+        book.rest(id(1), Side::Buy, px(102), qty(5), None).unwrap();
+        book.rest(id(2), Side::Sell, px(98), qty(5), None).unwrap();
+        // 98 and 102 both execute 5 with no imbalance.
+        assert_eq!(book.auction_price(px(101)), Some((px(102), qty(5))));
+        assert_eq!(book.auction_price(px(99)), Some((px(98), qty(5))));
+    }
+
+    #[test]
+    fn auction_price_prefers_lower_price_when_equidistant_from_reference() {
+        let mut book = Book::new();
+        book.rest(id(1), Side::Buy, px(102), qty(5), None).unwrap();
+        book.rest(id(2), Side::Sell, px(98), qty(5), None).unwrap();
+        // 98 and 102 are both two ticks from 100 with equal volume and
+        // imbalance: the lower price wins.
+        assert_eq!(book.auction_price(px(100)), Some((px(98), qty(5))));
+    }
+
+    #[test]
+    fn auction_price_counts_hidden_iceberg_quantity() {
+        let mut book = Book::new();
+        // Only 2 of the 10 bid lots are displayed, but all 10 count.
+        book.rest(id(1), Side::Buy, px(100), qty(10), Some(qty(2)))
+            .unwrap();
+        book.rest(id(2), Side::Sell, px(100), qty(7), None).unwrap();
+        assert_eq!(book.auction_price(px(100)), Some((px(100), qty(7))));
+    }
+
+    #[test]
+    fn auction_price_is_none_for_empty_single_sided_and_uncrossed_books() {
+        let empty = Book::new();
+        assert_eq!(empty.auction_price(px(100)), None);
+
+        let mut bids_only = Book::new();
+        bids_only
+            .rest(id(1), Side::Buy, px(100), qty(5), None)
+            .unwrap();
+        assert_eq!(bids_only.auction_price(px(100)), None);
+
+        let mut asks_only = Book::new();
+        asks_only
+            .rest(id(1), Side::Sell, px(100), qty(5), None)
+            .unwrap();
+        assert_eq!(asks_only.auction_price(px(100)), None);
+
+        let mut uncrossed = Book::new();
+        uncrossed
+            .rest(id(1), Side::Buy, px(99), qty(5), None)
+            .unwrap();
+        uncrossed
+            .rest(id(2), Side::Sell, px(101), qty(5), None)
+            .unwrap();
+        assert_eq!(uncrossed.auction_price(px(100)), None);
+    }
+
+    /// Seeded xorshift64* so the auction oracle test needs no `rand`.
+    struct Xorshift64(u64);
+
+    impl Xorshift64 {
+        fn next_u64(&mut self) -> u64 {
+            let mut value = self.0;
+            value ^= value >> 12;
+            value ^= value << 25;
+            value ^= value >> 27;
+            self.0 = value;
+            value.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next_u64() % bound
+        }
+    }
+
+    #[test]
+    fn auction_price_matches_quadratic_reference_on_random_books() {
+        let mut rng = Xorshift64(0x9E37_79B9_7F4A_7C15);
+        for trial in 0_u32..800 {
+            let mut book = Book::new();
+            let mut next_id: u128 = 1;
+            for side in [Side::Buy, Side::Sell] {
+                // 0..=12 levels per side in a narrow band, so ties and
+                // crosses are frequent. Duplicate prices across draws
+                // aggregate into one level.
+                let levels = rng.below(13);
+                for _ in 0..levels {
+                    let price = 95 + i64::try_from(rng.below(11)).unwrap();
+                    let orders = 1 + rng.below(2);
+                    for _ in 0..orders {
+                        let quantity = 1 + i64::try_from(rng.below(12)).unwrap();
+                        let display = if rng.below(4) == 0 {
+                            let peak =
+                                1 + i64::try_from(rng.below(u64::try_from(quantity).unwrap()))
+                                    .unwrap();
+                            Some(qty(peak))
+                        } else {
+                            None
+                        };
+                        book.rest(id(next_id), side, px(price), qty(quantity), display)
+                            .unwrap();
+                        next_id += 1;
+                    }
+                }
+            }
+            let mut references = (90_i64..=110).collect::<Vec<_>>();
+            references.extend([1, 10_000]);
+            for reference in references {
+                assert_eq!(
+                    book.auction_price(px(reference)),
+                    book.auction_price_reference(px(reference)),
+                    "trial {trial} reference {reference} bids {:?} asks {:?}",
+                    book.orders(Side::Buy).collect::<Vec<_>>(),
+                    book.orders(Side::Sell).collect::<Vec<_>>(),
+                );
+            }
+        }
     }
 
     #[test]
