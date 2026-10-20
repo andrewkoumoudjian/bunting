@@ -22,6 +22,7 @@ pub mod one_click;
 pub mod panels;
 pub mod panes;
 pub mod theme;
+pub mod ui;
 pub mod workspace;
 
 pub use canvas::Canvas;
