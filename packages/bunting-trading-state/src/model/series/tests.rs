@@ -144,48 +144,55 @@ fn cost_is_the_vwap_of_the_position_through_add_partial_close_and_flip() {
 
     // Sell half at 115: realized 10 * (115 - 105); cost unchanged.
     book.fill(Side::Sell, 115, 10, 0, 3);
-    assert_eq!(book.realized, 100);
+    assert_eq!(book.realized_tick_lots, 100);
     assert_eq!(book.cost_ticks(), Some(105));
     assert_eq!(book.position, 10);
 
     // Sell 25 at 95: closes the 10 long (10 * (95 - 105) = -100) and
     // opens 15 short whose cost is the average sale price, 95.
     book.fill(Side::Sell, 95, 25, 0, 4);
-    assert_eq!(book.realized, 0);
+    assert_eq!(book.realized_tick_lots, 0);
     assert_eq!(book.position, -15);
     assert_eq!(book.cost_ticks(), Some(95));
 
     // Buy back 5 at 90: realized 5 * (95 - 90); cost stays 95.
     book.fill(Side::Buy, 90, 5, 0, 5);
-    assert_eq!(book.realized, 25);
+    assert_eq!(book.realized_tick_lots, 25);
     assert_eq!(book.cost_ticks(), Some(95));
     // Closing the rest at 95 realizes nothing more; flat has no cost.
     book.fill(Side::Buy, 95, 10, 0, 6);
-    assert_eq!(book.realized, 25);
+    assert_eq!(book.realized_tick_lots, 25);
     assert_eq!(book.cost_ticks(), None);
 }
 
 #[test]
-fn realized_pnl_counts_fees_as_a_loss_and_rebates_back() {
+fn fees_stay_in_minor_units_and_meet_ticks_only_through_the_multiplier() {
     let mut book = PnlBook::known();
     book.fill(Side::Buy, 100, 10, 7, 1);
-    assert_eq!(book.realized, -7, "the opening fee is already a loss");
+    // The fee is kept apart, in its own units, from the start.
+    assert_eq!(book.realized_tick_lots, 0);
+    assert_eq!(book.fees_minor, 7);
     book.fill(Side::Sell, 102, 10, -3, 2);
-    // 10 * (102 - 100) - 7 + 3 (the rebate).
-    assert_eq!(book.realized, 16);
+    assert_eq!(book.realized_tick_lots, 20);
+    assert_eq!(book.fees_minor, 4, "the rebate counts back");
+    // Money meets ticks only through the multiplier: 20 * 1 - 4.
+    assert_eq!(book.realized_money(1), 16);
+    // A x10 contract makes the trade side ten times the money and
+    // leaves the fees exactly as charged: 20 * 10 - 4.
+    assert_eq!(book.realized_money(10), 196);
 }
 
 #[test]
 fn unrealized_marks_long_at_the_bid_and_short_at_the_ask() {
     let mut book = PnlBook::known();
     book.fill(Side::Buy, 100, 10, 0, 1);
-    assert_eq!(book.unrealized(103), Some(30));
-    assert_eq!(book.unrealized(98), Some(-20));
+    assert_eq!(book.unrealized_tick_lots(103), Some(30));
+    assert_eq!(book.unrealized_tick_lots(98), Some(-20));
 
     let mut short = PnlBook::known();
     short.fill(Side::Sell, 100, 10, 0, 1);
-    assert_eq!(short.unrealized(97), Some(30));
-    assert_eq!(short.unrealized(101), Some(-10));
+    assert_eq!(short.unrealized_tick_lots(97), Some(30));
+    assert_eq!(short.unrealized_tick_lots(101), Some(-10));
 }
 
 #[test]
@@ -199,11 +206,12 @@ fn an_account_position_without_fills_has_unknown_cost_until_flat() {
     book.account(40, 6);
     assert_eq!(book.position, 40);
     assert_eq!(book.cost_ticks(), None);
-    assert_eq!(book.unrealized(200), None);
+    assert_eq!(book.unrealized_tick_lots(200), None);
     // Closing it books no price gain (cost unknown), only the fee,
     // and being flat makes the next position's cost known again.
     book.fill(Side::Sell, 200, 40, 2, 7);
-    assert_eq!(book.realized, -2);
+    assert_eq!(book.realized_tick_lots, 0);
+    assert_eq!(book.fees_minor, 2);
     book.fill(Side::Buy, 50, 4, 0, 8);
     assert_eq!(book.cost_ticks(), Some(50));
 }
@@ -276,7 +284,15 @@ fn model_marks_on_the_primary_listings_touch_then_its_last_trade() {
     assert_eq!(model.realized_pnl(7), 50);
     assert_eq!(model.cost(7), Some(105));
     assert_eq!(model.unrealized_pnl(7), Some(20 * (105 - 109)));
-    assert_eq!(model.pnl_totals(), (50, -80, -30));
+    assert_eq!(
+        model.pnl_totals(),
+        PnlTotals {
+            realized: 50,
+            unrealized: -80,
+            total: -30,
+            multipliers_known: false,
+        }
+    );
 }
 
 #[test]
@@ -338,4 +354,41 @@ fn series_and_books_stop_at_their_bounds() {
         );
     }
     assert_eq!(model.series.books.len(), MAX_PNL_BOOKS);
+}
+
+#[test]
+fn money_pnl_is_tick_lots_times_the_multiplier_minus_fees() {
+    let mut model = model_with_listings();
+    // BNP carries no multiplier yet: assumed 1, and the totals say so.
+    assert_eq!(model.multiplier(7), (1, false));
+    model.series_set_multiplier(7, 10);
+    assert_eq!(model.multiplier(7), (10, true));
+
+    // Buy 10 at 100 (fee 7 minor), sell 10 at 102 (rebate 3 minor):
+    // 20 tick-lots of price gain, 4 minor of net fees.
+    fill(&mut model, NEAR, Side::Buy, 100, 10, 7, 1, 0);
+    fill(&mut model, NEAR, Side::Sell, 102, 10, -3, 2, 1_000_000);
+    assert_eq!(model.realized_pnl(7), 20 * 10 - 4);
+
+    // Long again at 100, marked at the primary listing's last trade
+    // of 103: 30 tick-lots become 300 minor.
+    fill(&mut model, NEAR, Side::Buy, 100, 10, 0, 3, 2_000_000);
+    model.series_trade(NEAR, 103, 1, 3_000_000);
+    assert_eq!(model.unrealized_pnl(7), Some(300));
+    let totals = model.pnl_totals();
+    assert_eq!(totals.realized, 196);
+    assert_eq!(totals.unrealized, 300);
+    assert_eq!(totals.total, 496);
+    assert!(totals.multipliers_known);
+    assert_eq!(
+        model.pnl_series().back().map(|sample| sample.total),
+        Some(196),
+        "samples are money too (the last fill predates the mark)"
+    );
+    assert!(
+        model
+            .pnl_series()
+            .back()
+            .is_some_and(|sample| sample.multipliers_known)
+    );
 }

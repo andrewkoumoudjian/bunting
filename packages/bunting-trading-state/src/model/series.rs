@@ -25,11 +25,14 @@
 //!   at the best bid (long) or best ask (short) of the instrument's
 //!   primary listing (venue 1 where listed, else the first venue),
 //!   falling back to that listing's last trade.
-//! - Money is price ticks × lots. The venue's cash is that times the
-//!   contract multiplier, which BNP does not yet carry (the reference
-//!   data gap), so these figures equal minor currency units only
-//!   where the multiplier is 1. Fill fees arrive in minor units and
-//!   are subtracted as reported.
+//! - Trade-side P&L is kept in price ticks × lots per instrument and
+//!   fees separately in the minor currency units BNP reports them
+//!   in. The two meet only at the reading boundary, where money is
+//!   `tick-lots × multiplier − fees` — the engine ledger's own
+//!   notional (`price × quantity × multiplier`). BNP does not yet
+//!   carry the multiplier (the reference-data gap), so
+//!   [`Model::multiplier`] reports `(1, false)` today and money
+//!   figures say whether they assume contract size 1.
 
 use super::{FillRow, Model};
 use bunting_client::bnp_wire::{Listing, Position, Side};
@@ -101,12 +104,27 @@ impl Bar {
     }
 }
 
-/// Total derived P&L (realized plus unrealized, ticks × lots) at one
-/// run-time instant.
+/// Total derived P&L (realized plus unrealized) at one run-time
+/// instant, in minor currency units.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PnlSample {
     pub time_ns: u64,
     pub total: i128,
+    /// False when some open book's contract multiplier is not known
+    /// (contract size 1 assumed) — see [`Model::multiplier`].
+    pub multipliers_known: bool,
+}
+
+/// Derived P&L summed over every instrument, in minor currency
+/// units: each instrument's tick-lots times its contract multiplier,
+/// less its fills' fees as reported.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PnlTotals {
+    pub realized: i128,
+    pub unrealized: i128,
+    pub total: i128,
+    /// False when some open book's multiplier is assumed to be 1.
+    pub multipliers_known: bool,
 }
 
 /// The series clock: run time as last reported by a stamped message,
@@ -229,8 +247,13 @@ struct PnlBook {
     /// the lots are known, their cost is not, until fills flatten
     /// the position and open a known one.
     cost_known: bool,
-    /// Closed quantity's P&L less every fill's fee, ticks × lots.
-    realized: i128,
+    /// Closed quantity's price P&L, ticks × lots. Fees are not in
+    /// here: they arrive in minor currency units, and the two are
+    /// only comparable through the contract multiplier.
+    realized_tick_lots: i128,
+    /// Every fill's fee, summed in minor currency units as reported
+    /// (negative is a rebate).
+    fees_minor: i128,
     /// Highest committed sequence of a fill in this book.
     last_fill_sequence: u64,
 }
@@ -255,7 +278,7 @@ impl PnlBook {
 
     fn fill(&mut self, side: Side, price: i64, quantity: i64, fee: i128, sequence: u64) {
         self.last_fill_sequence = self.last_fill_sequence.max(sequence);
-        self.realized = self.realized.saturating_sub(fee);
+        self.fees_minor = self.fees_minor.saturating_add(fee);
         let delta: i64 = match side {
             Side::Buy => quantity,
             Side::Sell => -quantity,
@@ -291,7 +314,7 @@ impl PnlBook {
                 closed,
                 open,
             );
-            self.realized = self.realized.saturating_add(sign * gain);
+            self.realized_tick_lots = self.realized_tick_lots.saturating_add(sign * gain);
             self.cost_tick_lots -= Self::share(self.cost_tick_lots, closed, open);
         }
         self.position = self.position.saturating_add(delta);
@@ -329,9 +352,17 @@ impl PnlBook {
         )
     }
 
+    /// Realized P&L in minor currency units at contract multiplier
+    /// `multiplier`: tick-lots times the multiplier, less fees.
+    fn realized_money(&self, multiplier: i64) -> i128 {
+        self.realized_tick_lots
+            .saturating_mul(i128::from(multiplier))
+            .saturating_sub(self.fees_minor)
+    }
+
     /// P&L of closing the open position at `mark` (ticks × lots),
     /// excluding commissions.
-    fn unrealized(&self, mark: i64) -> Option<i128> {
+    fn unrealized_tick_lots(&self, mark: i64) -> Option<i128> {
         if !self.cost_known || self.position == 0 {
             return None;
         }
@@ -346,6 +377,9 @@ pub(super) struct SeriesState {
     clock: SeriesClock,
     listings: BTreeMap<Listing, ListingSeries>,
     books: BTreeMap<u128, PnlBook>,
+    /// Contract multipliers by instrument, once BNP carries them
+    /// (the reference-data gap); empty today.
+    multipliers: BTreeMap<u128, i64>,
     samples: VecDeque<PnlSample>,
 }
 
@@ -409,46 +443,73 @@ impl Model {
             .and_then(PnlBook::cost_ticks)
     }
 
+    /// The contract multiplier that turns `instrument_id`'s
+    /// tick-lots into minor currency units, and whether it is known.
+    /// BNP v1 carries no instrument reference data (the gap in
+    /// `docs/specs/rit-desk-window-parity.md`), so this is `(1,
+    /// false)` — contract size 1, assumed — until it does.
+    #[must_use]
+    pub fn multiplier(&self, instrument_id: u128) -> (i64, bool) {
+        self.series
+            .multipliers
+            .get(&instrument_id)
+            .map_or((1, false), |multiplier| (*multiplier, true))
+    }
+
     /// P&L booked on closed quantity in `instrument_id`, less every
-    /// fill's fee, in ticks × lots.
+    /// fill's fee, in minor currency units at the instrument's
+    /// contract multiplier (assumed 1 while unknown).
     #[must_use]
     pub fn realized_pnl(&self, instrument_id: u128) -> i128 {
+        let (multiplier, _) = self.multiplier(instrument_id);
         self.series
             .books
             .get(&instrument_id)
-            .map_or(0, |book| book.realized)
+            .map_or(0, |book| book.realized_money(multiplier))
     }
 
     /// P&L of closing the open position in `instrument_id` now: at
     /// the best bid if long, the best ask if short, of its primary
     /// listing (venue 1 where listed, else the first venue), or that
-    /// listing's last trade when the touch is missing. Excludes
-    /// commissions. `None` when flat, cost is unknown, or no mark
-    /// exists yet.
+    /// listing's last trade when the touch is missing, in minor
+    /// currency units at the contract multiplier (assumed 1 while
+    /// unknown). Excludes commissions. `None` when flat, cost is
+    /// unknown, or no mark exists yet.
     #[must_use]
     pub fn unrealized_pnl(&self, instrument_id: u128) -> Option<i128> {
         let book = self.series.books.get(&instrument_id)?;
-        book.unrealized(self.mark(instrument_id, book.position)?)
+        let (multiplier, _) = self.multiplier(instrument_id);
+        book.unrealized_tick_lots(self.mark(instrument_id, book.position)?)
+            .map(|tick_lots| tick_lots.saturating_mul(i128::from(multiplier)))
     }
 
-    /// Realized, unrealized and total derived P&L (ticks × lots)
-    /// summed over every instrument. An instrument whose unrealized
-    /// figure cannot be derived (unknown cost, no mark) contributes
-    /// only its realized part.
+    /// Derived P&L summed over every instrument, in minor currency
+    /// units. An instrument whose unrealized figure cannot be
+    /// derived (unknown cost, no mark) contributes only its realized
+    /// part. `multipliers_known` is false when any book's contract
+    /// multiplier is assumed to be 1.
     #[must_use]
-    pub fn pnl_totals(&self) -> (i128, i128, i128) {
+    pub fn pnl_totals(&self) -> PnlTotals {
         let mut realized: i128 = 0;
         let mut unrealized: i128 = 0;
+        let mut multipliers_known = true;
         for (instrument_id, book) in &self.series.books {
-            realized = realized.saturating_add(book.realized);
+            let (multiplier, known) = self.multiplier(*instrument_id);
+            multipliers_known &= known;
+            realized = realized.saturating_add(book.realized_money(multiplier));
             if book.position != 0
                 && let Some(mark) = self.mark(*instrument_id, book.position)
-                && let Some(open) = book.unrealized(mark)
+                && let Some(open) = book.unrealized_tick_lots(mark)
             {
-                unrealized = unrealized.saturating_add(open);
+                unrealized = unrealized.saturating_add(open.saturating_mul(i128::from(multiplier)));
             }
         }
-        (realized, unrealized, realized.saturating_add(unrealized))
+        PnlTotals {
+            realized,
+            unrealized,
+            total: realized.saturating_add(unrealized),
+            multipliers_known,
+        }
     }
 
     /// Total derived P&L sampled on the run clock, oldest first: at
@@ -559,6 +620,13 @@ impl Model {
         }
     }
 
+    /// Sets an instrument's contract multiplier as a future BNP
+    /// reference-data message will; only tests can, today.
+    #[cfg(test)]
+    pub(super) fn series_set_multiplier(&mut self, instrument_id: u128, multiplier: i64) {
+        self.series.multipliers.insert(instrument_id, multiplier);
+    }
+
     /// Records total P&L for the current run second, replacing that
     /// second's sample while it is still the latest.
     pub(super) fn series_sample(&mut self, now_us: u64) {
@@ -566,18 +634,23 @@ impl Model {
             return;
         }
         let time_ns = self.series.clock.now_ns(now_us);
-        let total = self.pnl_totals().2;
+        let totals = self.pnl_totals();
         if let Some(last) = self.series.samples.back_mut()
             && last.time_ns / PNL_SAMPLE_NS == time_ns / PNL_SAMPLE_NS
         {
             last.time_ns = time_ns;
-            last.total = total;
+            last.total = totals.total;
+            last.multipliers_known = totals.multipliers_known;
             return;
         }
         if self.series.samples.len() == MAX_PNL_SAMPLES {
             self.series.samples.pop_front();
         }
-        self.series.samples.push_back(PnlSample { time_ns, total });
+        self.series.samples.push_back(PnlSample {
+            time_ns,
+            total: totals.total,
+            multipliers_known: totals.multipliers_known,
+        });
     }
 }
 

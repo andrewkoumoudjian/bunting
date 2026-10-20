@@ -24,7 +24,7 @@ mod series;
 pub use run::{Dealt, MAX_DEALS, MAX_NEWS, NewsItem};
 pub use series::{
     BAR_SIZES_NS, Bar, FINEST_BAR_NS, MAX_FINE_BARS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES,
-    MAX_SERIES_LISTINGS, PNL_SAMPLE_NS, PnlSample,
+    MAX_SERIES_LISTINGS, PNL_SAMPLE_NS, PnlSample, PnlTotals,
 };
 
 /// Subscriptions a BNP session may hold, direct feeds and tapes together
