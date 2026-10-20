@@ -108,7 +108,7 @@ fn the_themes_folder_is_created_with_how_to_add_a_theme() {
     appearance::ensure_themes_dir(&dir).unwrap();
     let readme = std::fs::read_to_string(dir.join("README.txt")).unwrap();
     assert!(readme.contains("chart.bullish"), "readme:\n{readme}");
-    assert!(readme.contains("json"), "readme:\n{readme}");
+    assert!(readme.contains("JSON"), "readme:\n{readme}");
     // A second run leaves the user's edited note alone.
     std::fs::write(dir.join("README.txt"), "my own notes").unwrap();
     appearance::ensure_themes_dir(&dir).unwrap();
