@@ -6,6 +6,10 @@
   starred gpui projects as reference". Phase 1 (this ADR and the
   `apps/bunting-desk` skeleton) landed in slice 31; the trading views build
   on `packages/bunting-trading-state` (ADR 0047, slice 30).
+  *Amended 2026-10-20:* decision 6's `DockArea` layout, presets and
+  sidebar/top bar are superseded in part by ADR 0051 (a canvas of
+  floating windows, saved screens, user themes and a command line); pane
+  kinds, one-click trading and decision 7 remain binding.
 - Date: 2026-10-10
 - Depends on: ADR 0031 (FIX and BNP only), ADR 0035 (latency), ADR 0036
   (market data), ADR 0040 (BNP v1), ADR 0044 (native `bunting server`), and
