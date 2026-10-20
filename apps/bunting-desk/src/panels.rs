@@ -1290,6 +1290,52 @@ impl WhenToggled for Button {
     }
 }
 
+const QUOTE_COLUMNS: [Col; 3] = [
+    Col::left("venue", 72.).priority(2),
+    Col::right("best bid", 104.).priority(2),
+    Col::right("best ask", 104.).priority(2),
+];
+
+const TAPE_COLUMNS: [Col; 5] = [
+    Col::right("received", 80.).priority(0),
+    Col::left("venue", 72.),
+    Col::left("symbol", 64.).priority(2),
+    Col::right("price", 72.).priority(2),
+    Col::right("qty", 56.).priority(2),
+];
+
+const BLOTTER_COLUMNS: [Col; 10] = [
+    Col::left("venue", 72.),
+    Col::left("symbol", 64.).priority(2),
+    Col::left("side", 48.).priority(2),
+    Col::right("qty", 56.).priority(2),
+    Col::right("price", 72.).priority(2),
+    Col::right("left", 56.),
+    Col::left("status", 130.).priority(2),
+    Col::left("queue", 110.).priority(0),
+    Col::right("answer", 72.).priority(0),
+    Col::center("", 72.).priority(2),
+];
+
+const FILL_COLUMNS: [Col; 8] = [
+    Col::right("run time", 80.),
+    Col::left("venue", 72.),
+    Col::left("symbol", 64.).priority(2),
+    Col::left("side", 48.).priority(2),
+    Col::right("qty", 56.).priority(2),
+    Col::right("price", 72.).priority(2),
+    Col::right("fee", 64.).priority(0),
+    Col::left("liquidity", 72.).priority(0),
+];
+
+const POSITION_COLUMNS: [Col; 5] = [
+    Col::left("symbol", 72.).priority(2),
+    Col::right("position", 80.).priority(2),
+    Col::right("open buy", 80.),
+    Col::right("open sell", 80.),
+    Col::right("fills since", 88.).priority(0),
+];
+
 // ---- trades ------------------------------------------------------------------
 
 /// Which trades the tape panel lists.
@@ -1321,19 +1367,20 @@ impl TradesPanel {
         }
     }
 
-    fn source_button(&self, source: TradeSource, cx: &mut Context<Self>) -> Button {
-        let (id, label) = match source {
-            TradeSource::Consolidated => ("tape-consolidated", "Consolidated"),
-            TradeSource::Direct => ("tape-direct", "Direct feeds"),
+    fn source_segment(&self, source: TradeSource) -> Button {
+        let (id, label, tip) = match source {
+            TradeSource::Consolidated => (
+                "tape-consolidated",
+                "Consolidated",
+                "Published at the hub, so near a venue it arrives after that venue's direct feed",
+            ),
+            TradeSource::Direct => (
+                "tape-direct",
+                "Direct feeds",
+                "Each venue's own feed, newest first, as it reached you after its own distance",
+            ),
         };
-        Button::new(id)
-            .label(label)
-            .xsmall()
-            .when_toggled(self.source == source)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.source = source;
-                cx.notify();
-            }))
+        ui::segment(id, label, self.source == source).tooltip(tip)
     }
 
     /// Each venue's best bid and offer as the tape last showed them; the
@@ -1359,12 +1406,21 @@ impl TradesPanel {
         };
         let best_bid = tape.book.best(Side::Buy).map(|(venue, _)| venue);
         let best_ask = tape.book.best(Side::Sell).map(|(venue, _)| venue);
+        // Prices are coloured by side; quantities are not. The best
+        // across venues is bold.
         let quote = |venue_id: u128, side: Side, best: Option<u128>| -> AnyElement {
             let Some(level) = tape.book.quote(venue_id, side) else {
                 return cell("—");
             };
-            let text = format!("{} × {}", level.quantity, level.price);
-            let element = div().text_color(side_color(side, cx)).child(text);
+            let element = h_flex()
+                .gap_1()
+                .items_center()
+                .child(format!("{} ×", level.quantity))
+                .child(
+                    div()
+                        .text_color(side_color(side, cx))
+                        .child(level.price.to_string()),
+                );
             if best == Some(venue_id) {
                 element
                     .font_weight(gpui_kit::FontWeight::BOLD)
@@ -1373,17 +1429,17 @@ impl TradesPanel {
                 element.into_any_element()
             }
         };
-        quotes = quotes.child(header(
-            &[("venue", 64.), ("best bid", 96.), ("best ask", 96.)],
-            cx,
-        ));
+        quotes = quotes.child(aligned_header(&QUOTE_COLUMNS, cx));
         for info in &instrument.listings {
             let venue_id = info.listing.venue_id;
-            quotes = quotes.child(row(vec![
-                (cell(format::venue(info.listing)), 64.),
-                (quote(venue_id, Side::Buy, best_bid), 96.),
-                (quote(venue_id, Side::Sell, best_ask), 96.),
-            ]));
+            quotes = quotes.child(aligned_row(
+                &QUOTE_COLUMNS,
+                vec![
+                    cell(format::venue(info.listing)),
+                    quote(venue_id, Side::Buy, best_bid),
+                    quote(venue_id, Side::Sell, best_ask),
+                ],
+            ));
         }
         quotes
     }
@@ -1408,56 +1464,67 @@ impl Render for TradesPanel {
         };
         let count = print_indices(prints, instrument_id).len();
         let desk = self.desk.clone();
-        let columns = [
-            ("received", 72.),
-            ("venue", 64.),
-            ("symbol", 64.),
-            ("price", 72.),
-            ("qty", 56.),
-        ];
         let mut body = panel_body("tape", &self.focus).child(
-            h_flex()
-                .gap_1()
-                .child(self.source_button(TradeSource::Consolidated, cx))
-                .child(self.source_button(TradeSource::Direct, cx)),
+            ui::toolbar().child(
+                ButtonGroup::new("tape-source")
+                    .xsmall()
+                    .child(self.source_segment(TradeSource::Consolidated))
+                    .child(self.source_segment(TradeSource::Direct))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.source = if clicks.contains(&0) {
+                            TradeSource::Consolidated
+                        } else {
+                            TradeSource::Direct
+                        };
+                        cx.notify();
+                    })),
+            ),
         );
-        body = match source {
-            TradeSource::Consolidated => body.child(self.quotes(cx)).child(muted(
-                "The tape is published at the hub, so near a venue it arrives after that venue's direct feed.",
+        if source == TradeSource::Consolidated {
+            body = body.child(self.quotes(cx));
+        }
+        if count == 0 {
+            return body.child(ui::empty_state(
+                "tape-empty",
+                IconName::Globe,
+                "No trades yet",
+                None,
                 cx,
-            )),
-            TradeSource::Direct => body.child(muted(
-                "Trades from each venue's direct feed, newest first, as they reached you; each venue's arrive after its own distance.",
-                cx,
-            )),
-        };
-        body.child(header(&columns, cx)).child(
-            uniform_list("tape-rows", count, move |range, _, cx| {
-                let desk = desk.read(cx);
-                let model = desk.model();
-                let prints = match source {
-                    TradeSource::Consolidated => model.tape_prints(),
-                    TradeSource::Direct => model.prints(),
-                };
-                let indices = print_indices(prints, instrument_id);
-                range
-                    .filter_map(|index| prints.get(*indices.get(index)?))
-                    .map(|print| {
-                        row(vec![
-                            (cell(format::clock(print.received_us)), 72.),
-                            (cell(format::venue(print.listing)), 64.),
-                            (
-                                cell(model.symbol(print.listing).unwrap_or("?").to_owned()),
-                                64.,
-                            ),
-                            (cell(print.price.to_string()), 72.),
-                            (cell(print.quantity.to_string()), 56.),
-                        ])
+            ));
+        }
+        body.child(ui::responsive_table(&TAPE_COLUMNS, move |fitted, _, cx| {
+            let fitted: Vec<ui::Fit> = fitted.to_vec();
+            v_flex()
+                .size_full()
+                .child(ui::table_head(&fitted, cx))
+                .child(
+                    uniform_list("tape-rows", count, move |range, _, cx| {
+                        let desk = desk.read(cx);
+                        let model = desk.model();
+                        let prints = match source {
+                            TradeSource::Consolidated => model.tape_prints(),
+                            TradeSource::Direct => model.prints(),
+                        };
+                        let indices = print_indices(prints, instrument_id);
+                        range
+                            .filter_map(|index| prints.get(*indices.get(index)?))
+                            .map(|print| {
+                                ui::table_row(
+                                    &fitted,
+                                    vec![
+                                        cell(format::clock(print.received_us)),
+                                        cell(format::venue(print.listing)),
+                                        cell(model.symbol(print.listing).unwrap_or("?").to_owned()),
+                                        cell(print.price.to_string()),
+                                        cell(print.quantity.to_string()),
+                                    ],
+                                )
+                            })
+                            .collect()
                     })
-                    .collect()
-            })
-            .flex_1(),
-        )
+                    .flex_1(),
+                )
+        }))
     }
 }
 
@@ -1469,80 +1536,92 @@ dock_panel!(OrdersPanel, "orders", "Blotter");
 impl Render for OrdersPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.desk.read(cx).model().orders().len();
+        if count == 0 {
+            return panel_body("orders", &self.focus).child(ui::empty_state(
+                "orders-empty",
+                IconName::Inbox,
+                "No open orders",
+                None,
+                cx,
+            ));
+        }
         let desk = self.desk.clone();
         let cancel = window.listener_for(&self.desk, |desk, id: &u64, _, cx| desk.cancel(*id, cx));
         let cancel = std::rc::Rc::new(cancel);
-        let columns = [
-            ("venue", 64.),
-            ("symbol", 64.),
-            ("side", 40.),
-            ("qty", 56.),
-            ("price", 72.),
-            ("left", 56.),
-            ("status", 150.),
-            ("queue", 96.),
-            ("answer", 72.),
-            ("", 64.),
-        ];
-        panel_body("orders", &self.focus)
-            .child(header(&columns, cx))
-            .child(
-                uniform_list("order-rows", count, move |range, _, cx| {
-                    let desk = desk.read(cx);
-                    let model = desk.model();
-                    let orders = model.orders();
-                    range
-                        .filter_map(|index| orders.get(orders.len().checked_sub(index + 1)?))
-                        .map(|order| {
-                            let color = side_color(order.side, cx);
-                            let id = order.client_order_id;
-                            let action =
-                                if matches!(order.status, OrderStatus::New | OrderStatus::Resting)
-                                    && id != 0
-                                {
-                                    let cancel = cancel.clone();
-                                    Button::new(SharedString::from(format!("cancel-{id}")))
-                                        .label("Cancel")
-                                        .xsmall()
-                                        .on_click(move |_, window, cx| cancel(&id, window, cx))
-                                        .into_any_element()
-                                } else {
-                                    cell("")
-                                };
-                            row(vec![
-                                (cell(format::venue(order.listing)), 64.),
-                                (
-                                    cell(model.symbol(order.listing).unwrap_or("?").to_owned()),
-                                    64.,
-                                ),
-                                (colored(format::side(order.side), color), 40.),
-                                (cell(order.quantity.to_string()), 56.),
-                                (cell(format::price(order.price)), 72.),
-                                (cell(order.remaining.to_string()), 56.),
-                                (cell(order.status.label()), 150.),
-                                (
-                                    cell(model.queue_place(order).map_or_else(
-                                        String::new,
-                                        |place| {
-                                            format!(
-                                                "#{} · {} ahead",
-                                                place.position_at_price, place.quantity_ahead
-                                            )
-                                        },
-                                    )),
-                                    96.,
-                                ),
-                                (
-                                    cell(order.answer_us.map(format::duration).unwrap_or_default()),
-                                    72.,
-                                ),
-                                (action, 64.),
-                            ])
+        panel_body("orders", &self.focus).child(ui::responsive_table(
+            &BLOTTER_COLUMNS,
+            move |fitted, _, cx| {
+                let fitted: Vec<ui::Fit> = fitted.to_vec();
+                v_flex()
+                    .size_full()
+                    .child(ui::table_head(&fitted, cx))
+                    .child(
+                        uniform_list("order-rows", count, move |range, _, cx| {
+                            let desk = desk.read(cx);
+                            let model = desk.model();
+                            let orders = model.orders();
+                            range
+                                .filter_map(|index| {
+                                    orders.get(orders.len().checked_sub(index + 1)?)
+                                })
+                                .map(|order| {
+                                    let color = side_color(order.side, cx);
+                                    let id = order.client_order_id;
+                                    let action = if matches!(
+                                        order.status,
+                                        OrderStatus::New | OrderStatus::Resting
+                                    ) && id != 0
+                                    {
+                                        let cancel = cancel.clone();
+                                        Button::new(SharedString::from(format!("cancel-{id}")))
+                                            .label("Cancel")
+                                            .xsmall()
+                                            .on_click(move |_, window, cx| cancel(&id, window, cx))
+                                            .into_any_element()
+                                    } else {
+                                        cell("")
+                                    };
+                                    ui::table_row(
+                                        &fitted,
+                                        vec![
+                                            cell(format::venue(order.listing)),
+                                            cell(
+                                                model
+                                                    .symbol(order.listing)
+                                                    .unwrap_or("?")
+                                                    .to_owned(),
+                                            ),
+                                            colored(format::side(order.side), color),
+                                            cell(order.quantity.to_string()),
+                                            cell(format::price(order.price)),
+                                            cell(order.remaining.to_string()),
+                                            cell(order.status.label()),
+                                            cell(model.queue_place(order).map_or_else(
+                                                String::new,
+                                                |place| {
+                                                    format!(
+                                                        "#{} · {} ahead",
+                                                        place.position_at_price,
+                                                        place.quantity_ahead
+                                                    )
+                                                },
+                                            )),
+                                            cell(
+                                                order
+                                                    .answer_us
+                                                    .map(format::duration)
+                                                    .unwrap_or_default(),
+                                            ),
+                                            action,
+                                        ],
+                                    )
+                                })
+                                .collect()
                         })
-                        .collect()
-                })
-                .flex_1(),
-            )
+                        .flex_1(),
+                    )
+            },
+        ))
     }
 }
 
@@ -1554,48 +1633,59 @@ dock_panel!(FillsPanel, "fills", "Fills");
 impl Render for FillsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.desk.read(cx).model().fills().len();
+        if count == 0 {
+            return panel_body("fills", &self.focus).child(ui::empty_state(
+                "fills-empty",
+                IconName::CircleCheck,
+                "No fills yet",
+                None,
+                cx,
+            ));
+        }
         let desk = self.desk.clone();
-        let columns = [
-            ("run time", 72.),
-            ("venue", 64.),
-            ("symbol", 64.),
-            ("side", 40.),
-            ("qty", 56.),
-            ("price", 72.),
-            ("fee", 64.),
-            ("", 56.),
-        ];
-        panel_body("fills", &self.focus)
-            .child(header(&columns, cx))
-            .child(
-                uniform_list("fill-rows", count, move |range, _, cx| {
-                    let desk = desk.read(cx);
-                    let model = desk.model();
-                    let fills = model.fills();
-                    range
-                        .filter_map(|index| fills.get(fills.len().checked_sub(index + 1)?))
-                        .map(|fill| {
-                            row(vec![
-                                (cell(format::logical(fill.logical_time_ns)), 72.),
-                                (cell(format::venue(fill.listing)), 64.),
-                                (
-                                    cell(model.symbol(fill.listing).unwrap_or("?").to_owned()),
-                                    64.,
-                                ),
-                                (
-                                    colored(format::side(fill.side), side_color(fill.side, cx)),
-                                    40.,
-                                ),
-                                (cell(fill.quantity.to_string()), 56.),
-                                (cell(fill.price.to_string()), 72.),
-                                (cell(fill.fee.to_string()), 64.),
-                                (cell(format::liquidity(fill.liquidity)), 56.),
-                            ])
+        panel_body("fills", &self.focus).child(ui::responsive_table(
+            &FILL_COLUMNS,
+            move |fitted, _, cx| {
+                let fitted: Vec<ui::Fit> = fitted.to_vec();
+                v_flex()
+                    .size_full()
+                    .child(ui::table_head(&fitted, cx))
+                    .child(
+                        uniform_list("fill-rows", count, move |range, _, cx| {
+                            let desk = desk.read(cx);
+                            let model = desk.model();
+                            let fills = model.fills();
+                            range
+                                .filter_map(|index| fills.get(fills.len().checked_sub(index + 1)?))
+                                .map(|fill| {
+                                    ui::table_row(
+                                        &fitted,
+                                        vec![
+                                            cell(format::logical(fill.logical_time_ns)),
+                                            cell(format::venue(fill.listing)),
+                                            cell(
+                                                model
+                                                    .symbol(fill.listing)
+                                                    .unwrap_or("?")
+                                                    .to_owned(),
+                                            ),
+                                            colored(
+                                                format::side(fill.side),
+                                                side_color(fill.side, cx),
+                                            ),
+                                            cell(fill.quantity.to_string()),
+                                            cell(fill.price.to_string()),
+                                            cell(fill.fee.to_string()),
+                                            cell(format::liquidity(fill.liquidity)),
+                                        ],
+                                    )
+                                })
+                                .collect()
                         })
-                        .collect()
-                })
-                .flex_1(),
-            )
+                        .flex_1(),
+                    )
+            },
+        ))
     }
 }
 
@@ -1610,28 +1700,33 @@ impl Render for PositionsPanel {
         let model = desk.model();
         let mut body = panel_body("positions", &self.focus);
         let Some(account) = model.account() else {
-            return body.child(muted("No account answer from the venue yet.", cx));
-        };
-        let instruments = model.instruments();
-        body = body
-            .child(muted(
-                format!(
-                    "As of committed sequence {}, received {} ago",
-                    account.run_sequence,
-                    format::duration(desk.now_us().saturating_sub(account.received_us))
-                ),
-                cx,
-            ))
-            .child(header(
-                &[
-                    ("symbol", 72.),
-                    ("position", 72.),
-                    ("open buy", 72.),
-                    ("open sell", 72.),
-                    ("fills since", 80.),
-                ],
+            return body.child(ui::empty_state(
+                "positions-empty",
+                IconName::ChartPie,
+                "No account answer from the venue yet",
+                None,
                 cx,
             ));
+        };
+        let instruments = model.instruments();
+        body = body.child(muted(
+            format!(
+                "As of committed sequence {}, received {} ago",
+                account.run_sequence,
+                format::duration(desk.now_us().saturating_sub(account.received_us))
+            ),
+            cx,
+        ));
+        if account.positions.is_empty() {
+            return body.child(ui::empty_state(
+                "positions-none",
+                IconName::ChartPie,
+                "No positions",
+                None,
+                cx,
+            ));
+        }
+        let mut rows: Vec<Vec<AnyElement>> = Vec::new();
         for position in &account.positions {
             let symbol = instruments
                 .iter()
@@ -1641,31 +1736,43 @@ impl Render for PositionsPanel {
                     |instrument| instrument.symbol.clone(),
                 );
             let pending = model.unreported_position(position.instrument_id);
-            body = body.child(row(vec![
-                (cell(symbol), 72.),
-                (cell(position.position.to_string()), 72.),
-                (
-                    colored(position.open_buy.to_string(), cx.theme().chart_bullish),
-                    72.,
+            let theme = cx.theme();
+            let position_color = match position.position.cmp(&0) {
+                std::cmp::Ordering::Greater => theme.chart_bullish,
+                std::cmp::Ordering::Less => theme.chart_bearish,
+                std::cmp::Ordering::Equal => theme.foreground,
+            };
+            rows.push(vec![
+                cell(symbol),
+                colored(position.position.to_string(), position_color),
+                cell(position.open_buy.to_string()),
+                cell(position.open_sell.to_string()),
+                colored(
+                    if pending == 0 {
+                        String::new()
+                    } else {
+                        format!("{pending:+}")
+                    },
+                    theme.warning,
                 ),
-                (
-                    colored(position.open_sell.to_string(), cx.theme().chart_bearish),
-                    72.,
-                ),
-                (
-                    colored(
-                        if pending == 0 {
-                            String::new()
-                        } else {
-                            format!("{pending:+}")
-                        },
-                        cx.theme().warning,
-                    ),
-                    80.,
-                ),
-            ]));
+            ]);
         }
-        body
+        body.child(ui::responsive_table(
+            &POSITION_COLUMNS,
+            move |fitted, _, cx| {
+                let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
+                let mut list = v_flex()
+                    .id("positions-rows")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll();
+                for cells in rows {
+                    list = list.child(ui::table_row(fitted, cells));
+                }
+                table = table.child(list);
+                table
+            },
+        ))
     }
 }
 
