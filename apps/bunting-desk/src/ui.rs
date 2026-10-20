@@ -35,6 +35,10 @@ pub const VALUE_SIZE: f32 = 13.;
 pub const FIELD_GAP: f32 = 4.;
 /// Icon size in an empty state.
 pub const EMPTY_ICON_SIZE: f32 = 16.;
+/// Least width of a toolbar `NumberInput`: five tabular digits plus its
+/// two stepper buttons (1.5 rem each) and padding, so a volume like 100
+/// is never clipped to "10".
+pub const NUMBER_INPUT_MIN_WIDTH: f32 = 112.;
 
 /// The rem size at the default 13 px UI font: 16 px, GPUI's default, so
 /// gpui-kit components keep their designed sizes until the user changes
