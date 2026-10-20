@@ -54,6 +54,16 @@ pub fn install(cx: &mut App) {
     });
 }
 
+/// The palette's key hint on this platform.
+#[must_use]
+pub const fn command_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘K"
+    } else {
+        "Ctrl K"
+    }
+}
+
 /// Tabular figures, so digits line up in columns.
 #[must_use]
 pub fn tabular() -> FontFeatures {

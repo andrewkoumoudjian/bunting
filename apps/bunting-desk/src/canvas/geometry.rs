@@ -292,6 +292,20 @@ pub fn resize_rect(start: Rect, edge: Edge, dx: f32, dy: f32, min: (f32, f32)) -
     rect
 }
 
+/// Places fractional rects (0..1 of the canvas) on `canvas`, keeping
+/// [`GUTTER`] between neighbouring rects and inside the canvas edges.
+#[must_use]
+pub fn place_fraction(fraction: Rect, canvas: Rect) -> Rect {
+    let base = canvas.inset(GUTTER / 2.);
+    Rect::new(
+        base.x + fraction.x * base.w,
+        base.y + fraction.y * base.h,
+        fraction.w * base.w,
+        fraction.h * base.h,
+    )
+    .inset(GUTTER / 2.)
+}
+
 /// Keeps at least `min` of size, growing right and down from the corner.
 #[must_use]
 pub fn enforce_min(rect: Rect, min: (f32, f32)) -> Rect {
@@ -410,7 +424,9 @@ pub fn tile(n: usize, canvas: Rect, gap: f32) -> Vec<Rect> {
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,
-    reason = "window counts are tiny; f32 holds them exactly"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "window counts and step counts are tiny and floored at zero"
 )]
 pub fn cascade(n: usize, canvas: Rect, step: f32) -> Vec<Rect> {
     let canvas = canvas.inset(GUTTER);
@@ -579,6 +595,16 @@ mod tests {
             assert!(rect.bottom() <= inner.bottom() + 0.01);
         }
         assert!(cascade(0, CANVAS, 28.).is_empty());
+    }
+
+    #[test]
+    fn placed_fractions_keep_the_gutter_between_and_around() {
+        let left = place_fraction(Rect::new(0., 0., 0.5, 1.), CANVAS);
+        let right = place_fraction(Rect::new(0.5, 0., 0.5, 1.), CANVAS);
+        assert!(close(left.x, GUTTER));
+        assert!(close(right.x - left.right(), GUTTER));
+        assert!(close(right.right(), CANVAS.right() - GUTTER));
+        assert!(close(left.y, GUTTER) && close(left.bottom(), CANVAS.bottom() - GUTTER));
     }
 
     #[test]

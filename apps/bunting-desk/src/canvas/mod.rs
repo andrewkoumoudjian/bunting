@@ -1,10 +1,914 @@
 //! The canvas of floating windows (ADR 0051 decisions 2 and 7): each pane
-//! lives in a window that can be moved, resized, minimised, maximised and
-//! closed, drawn with the one [`WindowFrame`]. Pure geometry lives in
-//! [`geometry`]; this module holds the GPUI entity and rendering.
+//! lives in a window that can be moved by its title strip, resized from
+//! any edge, minimised to the sidebar, maximised within the canvas and
+//! closed (and reopened). Windows snap to the canvas and to each other
+//! while dragging and show the guide they snapped to. Pure geometry lives
+//! in [`geometry`]; the one title strip is in [`frame`].
+//!
+//! Every edit emits [`CanvasEvent::Changed`], which the workspace turns
+//! into the debounced screen save. Rendering clamps windows into a shrunken
+//! canvas without rewriting their saved rects.
+#![allow(
+    clippy::float_arithmetic,
+    reason = "drag and placement math is f32 logical pixels"
+)]
 
+pub mod frame;
 #[allow(
     clippy::float_arithmetic,
     reason = "window geometry is f32 logical pixels throughout"
 )]
 pub mod geometry;
+
+use crate::desk::Desk;
+use crate::panes::PaneKind;
+use crate::theme;
+use geometry::{Edge, GUTTER, Guide, Point, Rect};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::dock::BasePanelView;
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::{
+    AnyElement, Context, Div, Entity, EventEmitter, FontWeight, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    Pixels, Point as GpuiPoint, Render, SharedString, Styled as _, TestSupportExt as _, Window,
+    canvas as paint_canvas, div, prelude::*, px,
+};
+use serde::{Deserialize, Serialize};
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+/// The title strip's height: [`frame::WindowFrame`] and the clamp agree.
+pub const TITLE_HEIGHT: f32 = 28.;
+/// How close an edge must come to snap.
+const SNAP_THRESHOLD: f32 = 8.;
+/// Cascade offset between newly opened windows.
+const CASCADE_STEP: f32 = 28.;
+/// Gap between tiled windows.
+const TILE_GAP: f32 = GUTTER;
+/// Closed windows kept for reopen.
+const MAX_CLOSED: usize = 16;
+
+/// One window's saved form: rebuilt with `PaneKind::from_name` + `build`.
+/// Panes dump no custom state, so kind and geometry are the whole record.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SavedWindow {
+    pub kind: String,
+    pub rect: Rect,
+    pub z: usize,
+    pub minimised: bool,
+    pub maximised: bool,
+}
+
+/// What the sidebar's Windows list shows about one window.
+#[derive(Clone, Debug)]
+pub struct WindowInfo {
+    pub id: u64,
+    pub kind: PaneKind,
+    pub minimised: bool,
+    pub focused: bool,
+}
+
+/// Canvas edits the workspace saves (debounced) and redraws for.
+pub enum CanvasEvent {
+    Changed,
+}
+
+impl EventEmitter<CanvasEvent> for Canvas {}
+
+struct CanvasWindow {
+    id: u64,
+    kind: PaneKind,
+    view: Arc<dyn BasePanelView>,
+    rect: Rect,
+    /// The floating rect to restore from maximise.
+    restore: Option<Rect>,
+    minimised: bool,
+    maximised: bool,
+}
+
+struct ClosedWindow {
+    kind: PaneKind,
+    rect: Rect,
+}
+
+#[derive(Clone, Copy)]
+enum DragKind {
+    Move,
+    Resize(Edge),
+}
+
+struct Drag {
+    id: u64,
+    kind: DragKind,
+    /// Where the drag began, in canvas coordinates.
+    start: Point,
+    start_rect: Rect,
+}
+
+/// The floating windows of the shown screen.
+pub struct Canvas {
+    desk: Entity<Desk>,
+    /// Back to front; the last is on top.
+    windows: Vec<CanvasWindow>,
+    closed: Vec<ClosedWindow>,
+    focused: Option<u64>,
+    next_id: u64,
+    screen_name: String,
+    /// The screen's template as canvas fractions, for the empty state.
+    template: Vec<(PaneKind, Rect)>,
+    template_name: String,
+    /// Last known canvas size; seeded by the workspace, kept by paint.
+    size: (f32, f32),
+    /// The canvas bounds in window coordinates, recorded each paint.
+    bounds: Rc<Cell<Rect>>,
+    drag: Option<Drag>,
+    guides: Vec<Guide>,
+}
+
+impl Canvas {
+    #[must_use]
+    pub fn new(desk: Entity<Desk>, size: (f32, f32)) -> Self {
+        Self {
+            desk,
+            windows: Vec::new(),
+            closed: Vec::new(),
+            focused: None,
+            next_id: 1,
+            screen_name: String::new(),
+            template: Vec::new(),
+            template_name: String::new(),
+            size,
+            bounds: Rc::new(Cell::new(Rect::default())),
+            drag: None,
+            guides: Vec::new(),
+        }
+    }
+
+    /// The last known canvas size.
+    #[must_use]
+    pub const fn size(&self) -> (f32, f32) {
+        self.size
+    }
+
+    fn canvas_rect(&self) -> Rect {
+        Rect::new(0., 0., self.size.0, self.size.1)
+    }
+
+    /// Shows a screen: its saved windows, or its template (`fractions` of
+    /// the canvas) when nothing is saved yet.
+    pub fn set_screen(
+        &mut self,
+        name: String,
+        template_name: String,
+        fractions: &[(PaneKind, Rect)],
+        saved: Option<&[SavedWindow]>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.screen_name = name;
+        self.template_name = template_name;
+        self.template = fractions.to_vec();
+        self.windows.clear();
+        self.closed.clear();
+        self.focused = None;
+        self.drag = None;
+        self.guides.clear();
+        match saved {
+            Some(saved) => {
+                let mut ordered: Vec<&SavedWindow> = saved.iter().collect();
+                ordered.sort_by_key(|each| each.z);
+                for each in ordered {
+                    if let Some(kind) = PaneKind::from_name(&each.kind) {
+                        let id = self.push(kind, each.rect, window, cx);
+                        if let Some(win) = self.window_mut(id) {
+                            win.minimised = each.minimised;
+                            win.maximised = each.maximised;
+                            if each.maximised {
+                                win.restore = Some(each.rect);
+                            }
+                        }
+                    }
+                }
+            }
+            None => self.place_template(fractions, window, cx),
+        }
+        self.focused = self
+            .windows
+            .iter()
+            .rev()
+            .find(|win| !win.minimised)
+            .map(|win| win.id);
+        cx.notify();
+    }
+
+    /// Every window in saved form, back to front.
+    #[must_use]
+    pub fn dump(&self) -> Vec<SavedWindow> {
+        self.windows
+            .iter()
+            .enumerate()
+            .map(|(z, win)| SavedWindow {
+                kind: win.kind.name().to_owned(),
+                rect: if win.maximised {
+                    win.restore.unwrap_or(win.rect)
+                } else {
+                    win.rect
+                },
+                z,
+                minimised: win.minimised,
+                maximised: win.maximised,
+            })
+            .collect()
+    }
+
+    /// The windows for the sidebar list, front first.
+    #[must_use]
+    pub fn window_list(&self) -> Vec<WindowInfo> {
+        self.windows
+            .iter()
+            .rev()
+            .map(|win| WindowInfo {
+                id: win.id,
+                kind: win.kind,
+                minimised: win.minimised,
+                focused: Some(win.id) == self.focused && !win.minimised,
+            })
+            .collect()
+    }
+
+    // ---- opening and closing -------------------------------------------
+
+    fn push(
+        &mut self,
+        kind: PaneKind,
+        rect: Rect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let view = kind.build(self.desk.clone(), window, cx);
+        self.windows.push(CanvasWindow {
+            id,
+            kind,
+            view,
+            rect,
+            restore: None,
+            minimised: false,
+            maximised: false,
+        });
+        id
+    }
+
+    /// Opens a window of `kind`, cascaded from the focused one (or from the
+    /// top-left), at the kind's default size and fully within the canvas
+    /// inset by the gutter.
+    pub fn open(&mut self, kind: PaneKind, window: &mut Window, cx: &mut Context<Self>) -> u64 {
+        let canvas = self.canvas_rect().inset(GUTTER);
+        let (min_w, min_h) = kind.min_size();
+        let (def_w, def_h) = kind.default_size();
+        let w = def_w.min(canvas.w).max(min_w.min(canvas.w));
+        let h = def_h.min(canvas.h).max(min_h.min(canvas.h));
+        let base = self
+            .focused
+            .and_then(|id| self.window(id))
+            .filter(|win| !win.minimised)
+            .map_or((canvas.x, canvas.y), |win| {
+                let rect = self.display_rect(win);
+                (rect.x + CASCADE_STEP, rect.y + CASCADE_STEP)
+            });
+        let x = base.0.clamp(canvas.x, (canvas.right() - w).max(canvas.x));
+        let y = base.1.clamp(canvas.y, (canvas.bottom() - h).max(canvas.y));
+        let id = self.push(kind, Rect::new(x, y, w, h), window, cx);
+        self.focus_window(id, window, cx);
+        self.changed(cx);
+        id
+    }
+
+    /// Places fractional template windows on the current canvas and
+    /// reports the edit.
+    pub fn place_fractions(
+        &mut self,
+        fractions: &[(PaneKind, Rect)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.place_template(fractions, window, cx);
+        self.changed(cx);
+    }
+
+    /// Places the screen's own template and reports the edit.
+    pub fn apply_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let template = self.template.clone();
+        self.place_fractions(&template, window, cx);
+    }
+
+    fn place_template(
+        &mut self,
+        fractions: &[(PaneKind, Rect)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let canvas = self.canvas_rect();
+        for &(kind, fraction) in fractions {
+            let rect = geometry::place_fraction(fraction, canvas);
+            self.push(kind, rect, window, cx);
+        }
+        self.focused = self.windows.last().map(|win| win.id);
+        cx.notify();
+    }
+
+    /// Closes the focused window.
+    pub fn close_focused(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.focused {
+            self.close_window(id, cx);
+        }
+    }
+
+    /// Closes a window, keeping it on the bounded reopen stack.
+    pub fn close_window(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.windows.iter().position(|win| win.id == id) else {
+            return;
+        };
+        let win = self.windows.remove(index);
+        self.closed.push(ClosedWindow {
+            kind: win.kind,
+            rect: if win.maximised {
+                win.restore.unwrap_or(win.rect)
+            } else {
+                win.rect
+            },
+        });
+        if self.closed.len() > MAX_CLOSED {
+            self.closed.remove(0);
+        }
+        if self.focused == Some(id) {
+            self.focused = self
+                .windows
+                .iter()
+                .rev()
+                .find(|win| !win.minimised)
+                .map(|win| win.id);
+        }
+        self.changed(cx);
+    }
+
+    /// Reopens the last closed window with its geometry.
+    pub fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(closed) = self.closed.pop() else {
+            return;
+        };
+        let rect = geometry::clamp_to_canvas(closed.rect, self.canvas_rect(), TITLE_HEIGHT);
+        let id = self.push(closed.kind, rect, window, cx);
+        self.focus_window(id, window, cx);
+        self.changed(cx);
+    }
+
+    // ---- arrangement -----------------------------------------------------
+
+    /// Tiles the visible windows in a grid filling the canvas.
+    pub fn tile_windows(&mut self, cx: &mut Context<Self>) {
+        let visible: Vec<u64> = self
+            .windows
+            .iter()
+            .filter(|win| !win.minimised)
+            .map(|win| win.id)
+            .collect();
+        let rects = geometry::tile(visible.len(), self.canvas_rect(), TILE_GAP);
+        for (id, rect) in visible.into_iter().zip(rects) {
+            if let Some(win) = self.window_mut(id) {
+                win.rect = rect;
+                win.maximised = false;
+                win.restore = None;
+            }
+        }
+        self.changed(cx);
+    }
+
+    /// Fans the visible windows out from the top-left, each at least its
+    /// minimum size.
+    pub fn cascade_windows(&mut self, cx: &mut Context<Self>) {
+        let visible: Vec<u64> = self
+            .windows
+            .iter()
+            .filter(|win| !win.minimised)
+            .map(|win| win.id)
+            .collect();
+        let rects = geometry::cascade(visible.len(), self.canvas_rect(), CASCADE_STEP);
+        for (id, rect) in visible.into_iter().zip(rects) {
+            if let Some(win) = self.window_mut(id) {
+                win.rect = geometry::enforce_min(rect, win.kind.min_size());
+                win.maximised = false;
+                win.restore = None;
+            }
+        }
+        self.changed(cx);
+    }
+
+    /// Focuses the next or previous visible window, wrapping around.
+    pub fn cycle_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let visible: Vec<u64> = self
+            .windows
+            .iter()
+            .filter(|win| !win.minimised)
+            .map(|win| win.id)
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let current = self
+            .focused
+            .and_then(|id| visible.iter().position(|each| *each == id));
+        let next = match current {
+            Some(index) if forward => visible[(index + 1) % visible.len()],
+            Some(index) => visible[(index + visible.len() - 1) % visible.len()],
+            None if forward => visible[0],
+            None => visible[visible.len() - 1],
+        };
+        self.focus_window(next, window, cx);
+        cx.notify();
+    }
+
+    /// Maximises the focused window, or restores it.
+    pub fn maximise_focused(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.focused {
+            self.toggle_maximise(id, cx);
+        }
+    }
+
+    /// Maximises a window within the canvas, or restores its floating rect.
+    pub fn toggle_maximise(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(win) = self.window_mut(id) else {
+            return;
+        };
+        if win.maximised {
+            win.maximised = false;
+            if let Some(restore) = win.restore.take() {
+                win.rect = restore;
+            }
+        } else {
+            win.restore = Some(win.rect);
+            win.maximised = true;
+            win.minimised = false;
+        }
+        self.bring_to_front(id);
+        self.focused = Some(id);
+        self.changed(cx);
+    }
+
+    /// Minimises a window to the sidebar's Windows list.
+    pub fn minimise(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(win) = self.window_mut(id) else {
+            return;
+        };
+        win.minimised = true;
+        if self.focused == Some(id) {
+            self.focused = self
+                .windows
+                .iter()
+                .rev()
+                .find(|win| !win.minimised)
+                .map(|win| win.id);
+        }
+        self.changed(cx);
+    }
+
+    /// Brings a window to the front, restores it if minimised, and gives it
+    /// keyboard focus.
+    pub fn focus_window(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(win) = self.window_mut(id) else {
+            return;
+        };
+        win.minimised = false;
+        self.bring_to_front(id);
+        self.focused = Some(id);
+        if let Some(win) = self.window(id) {
+            let handle = win.view.focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    fn bring_to_front(&mut self, id: u64) {
+        if let Some(index) = self.windows.iter().position(|win| win.id == id)
+            && index + 1 != self.windows.len()
+        {
+            let win = self.windows.remove(index);
+            self.windows.push(win);
+        }
+    }
+
+    fn window(&self, id: u64) -> Option<&CanvasWindow> {
+        self.windows.iter().find(|win| win.id == id)
+    }
+
+    fn window_mut(&mut self, id: u64) -> Option<&mut CanvasWindow> {
+        self.windows.iter_mut().find(|win| win.id == id)
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "reads as the canvas reporting its own edit"
+    )]
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        cx.emit(CanvasEvent::Changed);
+        cx.notify();
+    }
+
+    /// The rect a window renders at: the whole canvas when maximised, else
+    /// its saved rect clamped so the title stays reachable. The saved rect
+    /// is not rewritten.
+    fn display_rect(&self, win: &CanvasWindow) -> Rect {
+        if win.maximised {
+            return self.canvas_rect().inset(GUTTER);
+        }
+        geometry::clamp_to_canvas(win.rect, self.canvas_rect(), TITLE_HEIGHT)
+    }
+
+    // ---- mouse -----------------------------------------------------------
+
+    fn local(&self, position: GpuiPoint<Pixels>) -> Point {
+        let bounds = self.bounds.get();
+        Point {
+            x: position.x.as_f32() - bounds.x,
+            y: position.y.as_f32() - bounds.y,
+        }
+    }
+
+    fn others(&self, except: u64) -> Vec<Rect> {
+        self.windows
+            .iter()
+            .filter(|win| win.id != except && !win.minimised)
+            .map(|win| self.display_rect(win))
+            .collect()
+    }
+
+    /// A press anywhere in a window: bring it to the front and focus it.
+    fn window_mouse_down(&mut self, id: u64, cx: &mut Context<Self>) {
+        let was_front = self.windows.last().is_some_and(|win| win.id == id);
+        self.bring_to_front(id);
+        if self.focused != Some(id) || !was_front {
+            self.focused = Some(id);
+            cx.notify();
+        }
+    }
+
+    /// A press on the title strip: start a move, or toggle maximise on the
+    /// second click.
+    pub(crate) fn title_mouse_down(
+        &mut self,
+        id: u64,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_mouse_down(id, cx);
+        if let Some(win) = self.window(id) {
+            let handle = win.view.focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+        if event.click_count >= 2 {
+            self.toggle_maximise(id, cx);
+            return;
+        }
+        let Some(win) = self.window(id) else {
+            return;
+        };
+        if win.maximised {
+            return;
+        }
+        self.drag = Some(Drag {
+            id,
+            kind: DragKind::Move,
+            start: self.local(event.position),
+            start_rect: win.rect,
+        });
+    }
+
+    /// A press on an edge grip: start a resize.
+    fn grip_mouse_down(
+        &mut self,
+        id: u64,
+        edge: Edge,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_mouse_down(id, cx);
+        let Some(win) = self.window(id) else {
+            return;
+        };
+        if win.maximised {
+            return;
+        }
+        self.drag = Some(Drag {
+            id,
+            kind: DragKind::Resize(edge),
+            start: self.local(event.position),
+            start_rect: win.rect,
+        });
+    }
+
+    fn drag_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(drag) = &self.drag else {
+            return;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let (id, kind, start, start_rect) = (drag.id, drag.kind, drag.start, drag.start_rect);
+        let at = self.local(event.position);
+        let canvas = self.canvas_rect();
+        let others = self.others(id);
+        let Some(win) = self.window_mut(id) else {
+            self.drag = None;
+            return;
+        };
+        let min = win.kind.min_size();
+        let snapped = match kind {
+            DragKind::Move => {
+                let moved = Rect::new(
+                    start_rect.x + at.x - start.x,
+                    start_rect.y + at.y - start.y,
+                    start_rect.w,
+                    start_rect.h,
+                );
+                geometry::snap_move(moved, &others, canvas, SNAP_THRESHOLD)
+            }
+            DragKind::Resize(edge) => {
+                let resized =
+                    geometry::resize_rect(start_rect, edge, at.x - start.x, at.y - start.y, min);
+                let snapped = geometry::snap_resize(resized, edge, &others, canvas, SNAP_THRESHOLD);
+                geometry::Snapped {
+                    rect: geometry::enforce_min(snapped.rect, min),
+                    guides: snapped.guides,
+                }
+            }
+        };
+        win.rect = geometry::clamp_to_canvas(snapped.rect, canvas, TITLE_HEIGHT);
+        self.guides = snapped.guides;
+        cx.notify();
+    }
+
+    fn drag_end(&mut self, cx: &mut Context<Self>) {
+        if self.drag.take().is_some() {
+            self.guides.clear();
+            self.changed(cx);
+        }
+    }
+
+    // ---- rendering ---------------------------------------------------------
+
+    fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let template_name = self.template_name.clone();
+        v_flex()
+            .id("canvas-empty")
+            .test_support()
+            .absolute()
+            .inset_0()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                theme::serif(self.screen_name.clone())
+                    .text_size(px(22.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.foreground),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(theme.muted_foreground)
+                    .child(format!(
+                        "Open a window with {}, or start from a template",
+                        crate::theme::command_key()
+                    )),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Button::new("canvas-open-book-trader")
+                            .label("Book Trader")
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open(PaneKind::BookTrader, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("canvas-apply-template")
+                            .label(format!("{template_name} template"))
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.apply_template(window, cx);
+                            })),
+                    ),
+            )
+    }
+
+    fn grip(
+        id: u64,
+        edge: Edge,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
+        let name = match edge {
+            Edge::Left => "left",
+            Edge::Right => "right",
+            Edge::Top => "top",
+            Edge::Bottom => "bottom",
+            Edge::TopLeft => "top-left",
+            Edge::TopRight => "top-right",
+            Edge::BottomLeft => "bottom-left",
+            Edge::BottomRight => "bottom-right",
+        };
+        let base = div()
+            .id(SharedString::from(format!("win-grip-{id}-{name}")))
+            .test_support()
+            .absolute();
+        let placed = match edge {
+            Edge::Left => base
+                .left_0()
+                .top(px(8.))
+                .bottom(px(8.))
+                .w(px(6.))
+                .cursor_col_resize(),
+            Edge::Right => base
+                .right_0()
+                .top(px(8.))
+                .bottom(px(8.))
+                .w(px(6.))
+                .cursor_col_resize(),
+            Edge::Top => base
+                .top_0()
+                .left(px(8.))
+                .right(px(8.))
+                .h(px(6.))
+                .cursor_row_resize(),
+            Edge::Bottom => base
+                .bottom_0()
+                .left(px(8.))
+                .right(px(8.))
+                .h(px(6.))
+                .cursor_row_resize(),
+            Edge::TopLeft => base.left_0().top_0().size(px(12.)).cursor_nwse_resize(),
+            Edge::BottomRight => base.right_0().bottom_0().size(px(12.)).cursor_nwse_resize(),
+            Edge::TopRight => base.right_0().top_0().size(px(12.)).cursor_nesw_resize(),
+            Edge::BottomLeft => base.left_0().bottom_0().size(px(12.)).cursor_nesw_resize(),
+        };
+        placed.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event, _, cx| this.grip_mouse_down(id, edge, event, cx)),
+        )
+    }
+
+    fn window_element(&self, win: &CanvasWindow, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let rect = self.display_rect(win);
+        let focused = self.focused == Some(win.id);
+        let id = win.id;
+        let instrument = if win.kind.follows_instrument() {
+            self.desk
+                .read(cx)
+                .instrument()
+                .map(|instrument| instrument.symbol)
+        } else {
+            None
+        };
+        let mut element = v_flex()
+            .id(SharedString::from(format!("window-{id}")))
+            .test_support()
+            .group("canvas-window")
+            .absolute()
+            .left(px(rect.x))
+            .top(px(rect.y))
+            .w(px(rect.w))
+            .h(px(rect.h))
+            .bg(theme.table)
+            .border_1()
+            .border_color(if focused {
+                theme.ring.alpha(0.6)
+            } else {
+                theme.border
+            })
+            .rounded(px(6.))
+            .overflow_hidden()
+            .when(focused, gpui_kit::Styled::shadow_md)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| this.window_mouse_down(id, cx)),
+            )
+            .child(frame::window_frame(
+                id,
+                win.kind,
+                instrument,
+                focused,
+                win.maximised,
+                cx,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(win.view.view()),
+            );
+        if !win.maximised {
+            for edge in [
+                Edge::Left,
+                Edge::Right,
+                Edge::Top,
+                Edge::Bottom,
+                Edge::TopLeft,
+                Edge::TopRight,
+                Edge::BottomLeft,
+                Edge::BottomRight,
+            ] {
+                element = element.child(Self::grip(id, edge, cx));
+            }
+        }
+        element.into_any_element()
+    }
+}
+
+impl Render for Canvas {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let painted = self.bounds.get();
+        if painted.w > 0. && painted.h > 0. {
+            self.size = (painted.w, painted.h);
+        }
+        let (background, ring) = {
+            let theme = cx.theme();
+            (theme.background, theme.ring)
+        };
+        let bounds = self.bounds.clone();
+        let empty = self.windows.is_empty();
+        let mut root = div()
+            .id("canvas")
+            .test_support()
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(background)
+            .on_mouse_move(cx.listener(|this, event, _, cx| this.drag_move(event, cx)))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.drag_end(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.drag_end(cx)),
+            )
+            .child(
+                paint_canvas(
+                    move |painted_bounds, _, _| {
+                        bounds.set(Rect::new(
+                            painted_bounds.origin.x.as_f32(),
+                            painted_bounds.origin.y.as_f32(),
+                            painted_bounds.size.width.as_f32(),
+                            painted_bounds.size.height.as_f32(),
+                        ));
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            );
+        let _ = window;
+        for index in 0..self.windows.len() {
+            if self.windows[index].minimised {
+                continue;
+            }
+            let element = self.window_element(&self.windows[index], cx);
+            root = root.child(element);
+        }
+        for guide in &self.guides {
+            root = root.child(match guide {
+                Guide::Vertical(x) => div()
+                    .absolute()
+                    .left(px(*x))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(1.))
+                    .bg(ring)
+                    .into_any_element(),
+                Guide::Horizontal(y) => div()
+                    .absolute()
+                    .top(px(*y))
+                    .left_0()
+                    .right_0()
+                    .h(px(1.))
+                    .bg(ring)
+                    .into_any_element(),
+            });
+        }
+        if empty {
+            root = root.child(self.empty_state(cx));
+        }
+        root
+    }
+}
