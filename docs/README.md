@@ -92,6 +92,7 @@ transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
 | `specs/rit-tui-parity-matrix.md` | Target | RIT workflow parity for the TUI (FIX era) |
 | `specs/rit-desk-window-parity.md` | Target | Desk acceptance contract: every RIT module, column and gesture at a minimum, with data source and current state |
 | `plans/2026-10-20-desk-backlog.md` | Current | Desk working TODO list |
+| `specs/rit-case-primitives.md` | Target | Every engine primitive the published RIT/RITC cases need (instruments, costs, limits, tenders, conversions, close-out, fines, price processes, roles, scoring), with Bunting status and a proposed order |
 | `ports/quarcc-trading-engine.md` | Current | QUARCC port record |
 | `ports/ritc-market-making.md` | Current | RITC participant reference |
 | `ports/nbc-*.md`, `ports/nbc-*.json`, `ports/nbc-*.tsv` | Historical provenance | NBC is reference only (ADR 0032) |

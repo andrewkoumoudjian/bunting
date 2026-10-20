@@ -101,6 +101,22 @@ are ordered steps toward that contract.
      running. Stop the child when the parent dies, for example with
      `PR_SET_PDEATHSIG` on Linux, and handle the platform equivalents.
 
+## Engine: RIT case primitives
+
+Owner, 2026-10-20: "make sure that our app will have ALL of the proper
+primitives so that we can run all of those cases simulations." The
+contract is `docs/specs/rit-case-primitives.md`. Six engine features, each
+with its own ADR then slice, in this order:
+
+1. settlement and close-out, plus portfolio limits;
+2. the fines framework and tender kinds;
+3. options settlement and the Black-Scholes market maker;
+4. converters and FX;
+5. roles, endowments, forwards and the price authority;
+6. sub-heats and RITC scoring.
+
+Each step ends with a playable case scenario run with several desks.
+
 ## Later
 
 - Second-monitor use (ADR 0051 decision 6, unresolved).
