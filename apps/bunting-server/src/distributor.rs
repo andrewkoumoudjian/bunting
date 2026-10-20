@@ -52,6 +52,12 @@ pub(crate) struct Committed {
     /// Anonymous public trades and depth changes of each listing this
     /// commit touched, computed from the state right after it committed.
     pub(crate) public: Vec<PublicListingUpdate>,
+    /// Listings whose public projection failed after this commit became
+    /// durable (ADR 0053 §2). Empty on the normal path. A feed of one of
+    /// these listings must skip a report sequence number for this batch,
+    /// so its subscribers see a gap and resnapshot instead of trusting a
+    /// book that is silently missing this commit.
+    pub(crate) public_gaps: Vec<ListingKey>,
     /// Public order-by-order reference of each order this commit rested or
     /// reduced that still rests, sorted by order: its owner's reports carry
     /// it (`bunting_application::order_references`).
@@ -284,6 +290,7 @@ impl EventDistributor {
         committed_us: u64,
         source: Endpoint,
         public: Vec<PublicListingUpdate>,
+        public_gaps: Vec<ListingKey>,
         (references, deals): (Vec<(OrderId, u64)>, DealChanges),
     ) {
         if events.is_empty() {
@@ -295,6 +302,7 @@ impl EventDistributor {
             events: events.to_vec(),
             ordinal: self.published.fetch_add(1, Ordering::AcqRel),
             public,
+            public_gaps,
             references,
             deals,
         });
@@ -373,6 +381,12 @@ pub(crate) struct PublishingOrigin {
     /// Last published displayed orders of every listing, per run, once
     /// order-by-order feeds are enabled.
     orders: Mutex<BTreeMap<RunId, BTreeMap<ListingKey, Vec<DisplayedOrder>>>>,
+    /// Post-commit projection failures so far (public updates and the
+    /// private order-reference/deal read). Each is also logged.
+    projection_failures: AtomicU64,
+    /// Test-only fault injection: the next public projection fails.
+    #[cfg(test)]
+    fail_public_projection: AtomicBool,
 }
 
 impl PublishingOrigin {
@@ -390,7 +404,21 @@ impl PublishingOrigin {
             tape,
             orders_enabled: AtomicBool::new(false),
             orders: Mutex::new(BTreeMap::new()),
+            projection_failures: AtomicU64::new(0),
+            #[cfg(test)]
+            fail_public_projection: AtomicBool::new(false),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_failures(&self) -> u64 {
+        self.projection_failures.load(Ordering::Acquire)
+    }
+
+    /// Forces the next commit's public projection to fail (tests only).
+    #[cfg(test)]
+    pub(crate) fn fail_next_public_projection(&self) {
+        self.fail_public_projection.store(true, Ordering::Release);
     }
 
     /// Starts order-by-order views: the next commit records every listing's
@@ -453,9 +481,16 @@ impl PublishingOrigin {
         run_id: RunId,
         events: &[EventEnvelope],
     ) -> Result<Vec<PublicListingUpdate>, OriginError> {
+        #[cfg(test)]
+        if self.fail_public_projection.swap(false, Ordering::AcqRel) {
+            return Err(OriginError::Unavailable);
+        }
         let mut books = self.books.lock().map_err(|_| OriginError::Unavailable)?;
+        // An unprimed run has no base to diff against: that is a failed
+        // projection, not an empty one. Returning `Ok` here would hide
+        // this commit's public updates exactly like a read failure.
         let Some(known) = books.get_mut(&run_id) else {
-            return Ok(Vec::new());
+            return Err(OriginError::Unavailable);
         };
         let mut touched = BTreeSet::new();
         let mut everything = false;
@@ -550,6 +585,92 @@ impl PublishingOrigin {
         Ok(updates)
     }
 
+    /// Recovery after a failed public projection (ADR 0053 §2): returns
+    /// every listing that may be affected, rebuilds the depth and
+    /// displayed-order caches from committed state, and schedules the
+    /// consolidated tape's gap for those listings. The failure itself is
+    /// counted and logged by the caller; a rebuild that also fails leaves
+    /// the caches absent, so the next commit primes from committed state
+    /// before it executes rather than diffing against a half-updated base.
+    fn recover_public_projection(
+        &self,
+        run_id: RunId,
+        events: &[EventEnvelope],
+        ordinal: u64,
+        durable_us: u64,
+    ) -> Vec<ListingKey> {
+        // The failure cannot say which listings it touched, so every
+        // listing of the run counts as affected: named by this commit's
+        // events, known to either cache, or in the committed run.
+        let mut affected = BTreeSet::new();
+        for event in events {
+            if let EventPayload::OrderReceived { listing_key, .. }
+            | EventPayload::OrderRested { listing_key, .. }
+            | EventPayload::OrderCanceled { listing_key, .. }
+            | EventPayload::TradeExecuted { listing_key, .. } = &event.payload
+            {
+                affected.extend(listing_key.iter().copied());
+            }
+        }
+        if let Ok(books) = self.books.lock() {
+            if let Some(known) = books.get(&run_id) {
+                affected.extend(known.keys().copied());
+            }
+        }
+        if let Ok(orders) = self.orders.lock() {
+            if let Some(known) = orders.get(&run_id) {
+                affected.extend(known.keys().copied());
+            }
+        }
+        if let Ok(listings) = self.inner.read_run(run_id, |state| {
+            state.listings().keys().copied().collect::<Vec<_>>()
+        }) {
+            affected.extend(listings);
+        }
+        // Drop both caches for the run and re-prime them from the state
+        // this commit left behind.
+        if let Ok(mut books) = self.books.lock() {
+            books.remove(&run_id);
+        }
+        if let Ok(mut orders) = self.orders.lock() {
+            orders.remove(&run_id);
+        }
+        for (what, result) in [
+            ("depth", self.prime_books(run_id)),
+            ("order", self.prime_orders(run_id)),
+        ] {
+            if let Err(error) = result {
+                eprintln!(
+                    "bunting-server: rebuilding the {what} projection cache for run {run_id} failed: {error}; it stays unprimed until a later commit"
+                );
+            }
+        }
+        // The tape's processor needs the rebuilt best bid and offer of
+        // each affected listing to pair with its skipped report. Without
+        // them its snapshot could stay stale, so it goes down instead
+        // (its existing failure mode) rather than publish a hole.
+        let rebuilt = self.inner.read_run(run_id, |state| {
+            affected
+                .iter()
+                .filter_map(|&key| match state.visible_levels(key) {
+                    Ok((bids, asks)) => Some((key, (bids.first().copied(), asks.first().copied()))),
+                    // A listing the run no longer has quotes nothing.
+                    Err(_) if !state.listings().contains_key(&key) => Some((key, (None, None))),
+                    Err(_) => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        match rebuilt {
+            Ok(rebuilt) if rebuilt.len() == affected.len() => {
+                self.tape.hear_gap(ordinal, durable_us, &rebuilt);
+            }
+            _ => self.tape.take_down(format!(
+                "consolidated tape quotes for run {run_id} could not be rebuilt after a failed public projection and the tape is down"
+            )),
+        }
+        affected.into_iter().collect()
+    }
+
     pub(crate) const fn inner(&self) -> &NativeOrigin {
         &self.inner
     }
@@ -578,25 +699,60 @@ impl OriginStore for PublishingOrigin {
             let durable_us = self.clock.now_us();
             // The commit is durable; a failed public projection must not
             // hide its reports, so it publishes without public updates.
-            let public = self
-                .public_updates(input.run_id(), &executed.events)
-                .unwrap_or_default();
-            let private = self
-                .inner
-                .read_run(input.run_id(), |state| {
-                    (
-                        order_references(state, &executed.events),
-                        deal_changes(state, &executed.events),
-                    )
-                })
-                .unwrap_or_default();
-            self.tape
-                .hear(self.distributor.published(), durable_us, &public);
+            // But it must not be silent either (ADR 0053 §2): the batch
+            // names every listing that may be affected as a public gap,
+            // each direct feed of those listings skips a report sequence
+            // number, and the consolidated tape skips one of its own, so
+            // subscribers resnapshot instead of trusting a stale book.
+            let (public, public_gaps) = match self.public_updates(input.run_id(), &executed.events)
+            {
+                Ok(public) => (public, Vec::new()),
+                Err(error) => {
+                    self.projection_failures.fetch_add(1, Ordering::AcqRel);
+                    eprintln!(
+                        "bunting-server: public projection failed after commit for run {}: {error}; affected public feeds will skip a report sequence",
+                        input.run_id()
+                    );
+                    let gaps = self.recover_public_projection(
+                        input.run_id(),
+                        &executed.events,
+                        self.distributor.published(),
+                        durable_us,
+                    );
+                    (Vec::new(), gaps)
+                }
+            };
+            // The same rule for the private order references and deal
+            // changes: reports built from the events still go out, but a
+            // failed read is counted and logged, never defaulted quietly.
+            let private = match self.inner.read_run(input.run_id(), |state| {
+                (
+                    order_references(state, &executed.events),
+                    deal_changes(state, &executed.events),
+                )
+            }) {
+                Ok(private) => private,
+                Err(error) => {
+                    self.projection_failures.fetch_add(1, Ordering::AcqRel);
+                    eprintln!(
+                        "bunting-server: private projection (order references and deal changes) failed after commit for run {}: {error}; execution reports still publish without them",
+                        input.run_id()
+                    );
+                    Default::default()
+                }
+            };
+            // On the gap path the tape already heard its skipped report
+            // (with rebuilt quotes) during recovery; `public` is empty.
+            if public_gaps.is_empty() {
+                self.tape
+                    .hear(self.distributor.published(), durable_us, &public);
+            }
             self.distributor.publish(
                 &executed.events,
                 durable_us,
                 batch_source(admission, &executed.events),
                 public,
+                public_gaps,
                 private,
             );
         }
@@ -654,6 +810,7 @@ mod tests {
             1,
             Endpoint::Hub,
             Vec::new(),
+            Vec::new(),
             Default::default(),
         );
         let second = distributor.subscribe(None)?;
@@ -662,9 +819,17 @@ mod tests {
             2,
             Endpoint::Hub,
             Vec::new(),
+            Vec::new(),
             Default::default(),
         );
-        distributor.publish(&[], 3, Endpoint::Hub, Vec::new(), Default::default());
+        distributor.publish(
+            &[],
+            3,
+            Endpoint::Hub,
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+        );
         let sequences = |batches: Vec<CommittedBatch>| -> Vec<u64> {
             batches
                 .iter()
@@ -690,6 +855,7 @@ mod tests {
                 sequence,
                 Endpoint::Hub,
                 Vec::new(),
+                Vec::new(),
                 Default::default(),
             );
         }
@@ -698,6 +864,7 @@ mod tests {
             &[event(3)],
             3,
             Endpoint::Hub,
+            Vec::new(),
             Vec::new(),
             Default::default(),
         );
@@ -765,6 +932,7 @@ mod tests {
                 sequence,
                 Endpoint::Hub,
                 Vec::new(),
+                Vec::new(),
                 Default::default(),
             );
         }
@@ -779,6 +947,7 @@ mod tests {
             5,
             Endpoint::Hub,
             Vec::new(),
+            Vec::new(),
             Default::default(),
         );
         assert_eq!(sequences(&live.drain()?), vec![5]);
@@ -791,6 +960,285 @@ mod tests {
             distributor.subscribe_resuming(None, 9, || None)?.1,
             Resume::Gap
         ));
+        Ok(())
+    }
+
+    /// A run with one listing, a funded seller (7, holding the instrument)
+    /// and a funded buyer (8), ready to trade at venue 1.
+    fn trading_origin() -> Result<PublishingOrigin, String> {
+        use bunting_engine::{
+            InstrumentDefinition, InstrumentKind, ListingDefinition, ParticipantDefinition,
+            ScenarioDefinition,
+        };
+        use bunting_market_types::{
+            CurrencyId, IterationId, MoneyMinor, PriceBounds, PriceTicks, ScenarioId,
+            ScenarioVersion,
+        };
+        use bunting_origin_store::InMemoryOrigin;
+        use bunting_risk_engine::RiskLimits;
+        let participant = |id: u128, positions: i64| {
+            ParticipantDefinition::new(
+                ParticipantId::new(id),
+                true,
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(1_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(1_000_000))]),
+                BTreeMap::from([(InstrumentId::new(1), QuantityLots::new(positions))]),
+            )
+        };
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(1),
+            ScenarioVersion::new(1),
+            [InstrumentDefinition::new(
+                InstrumentId::new(1),
+                "BNT",
+                CurrencyId::new(1),
+                InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(100))],
+            [ListingDefinition::new(
+                ListingKey::new(VenueId::new(1), InstrumentId::new(1)),
+                "ONE".to_owned(),
+                PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000))
+                    .map_err(|error| format!("{error:?}"))?,
+            )
+            .map_err(|error| format!("{error:?}"))?],
+            [participant(7, 1_000), participant(8, 0)],
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        let run = RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario)
+            .map_err(|error| format!("{error}"))?;
+        let inner = NativeOrigin::Memory(InMemoryOrigin::new());
+        inner.insert_run(run).map_err(|error| format!("{error}"))?;
+        Ok(PublishingOrigin::new(
+            inner,
+            64,
+            VenueClock::start(),
+            ConsolidatedTape::new(0, 64, Box::new(|_| Ok(0))),
+        ))
+    }
+
+    fn submit(
+        origin: &PublishingOrigin,
+        id: u128,
+        actor: u128,
+        side: bunting_market_events::Side,
+        quantity: i64,
+        price: i64,
+    ) -> Result<Executed, String> {
+        use bunting_market_events::{Command, CommandPayload, OrderKind, SubmitOrder};
+        use bunting_market_types::PriceTicks;
+        let expected_sequence = origin
+            .read_run(RunId::new(1), RunState::sequence)
+            .map_err(|error| format!("{error}"))?;
+        origin
+            .execute(&JournalInput::Command(Command {
+                run_id: RunId::new(1),
+                command_id: CommandId::new(id),
+                correlation_id: CorrelationId::new(id),
+                logical_time: LogicalTimeNs::new(
+                    u64::try_from(id).map_err(|error| error.to_string())?,
+                ),
+                expected_sequence,
+                actor: ParticipantId::new(actor),
+                payload: CommandPayload::SubmitOrder(SubmitOrder {
+                    order_id: OrderId::new(id),
+                    instrument_id: InstrumentId::new(1),
+                    participant_id: ParticipantId::new(actor),
+                    side,
+                    quantity: QuantityLots::new(quantity),
+                    kind: OrderKind::Limit {
+                        price: PriceTicks::new(price),
+                    },
+                    anonymous: false,
+                }),
+            }))
+            .map_err(|error| format!("{error}"))
+    }
+
+    type FixFeeds<'a> = crate::public_feed::PublicFeeds<'a, simfix_wire::FixMessage>;
+
+    fn report_sequences(messages: &[crate::public_feed::FeedMessage]) -> Vec<String> {
+        messages
+            .iter()
+            .flat_map(|message| message.message.fields.iter())
+            .filter(|field| field.tag == 83)
+            .map(|field| field.value.clone())
+            .collect()
+    }
+
+    /// Applies every batch to the direct feeds; returns the report
+    /// sequences (83) of the messages produced.
+    fn feed_reports(
+        feeds: &mut FixFeeds<'_>,
+        batches: &[CommittedBatch],
+    ) -> Result<Vec<String>, String> {
+        let mut messages = Vec::new();
+        for batch in batches {
+            messages.extend(feeds.on_batch(batch)?);
+        }
+        Ok(report_sequences(&messages))
+    }
+
+    /// Report sequences of every tape record the processor has applied.
+    fn tape_reports(
+        feeds: &mut FixFeeds<'_>,
+        origin: &PublishingOrigin,
+    ) -> Result<Vec<String>, String> {
+        origin.tape().snapshot(InstrumentId::new(1), u64::MAX)?;
+        Ok(report_sequences(&feeds.drain_tape()?))
+    }
+
+    fn committed_depth(
+        origin: &PublishingOrigin,
+        key: ListingKey,
+    ) -> Result<bunting_application::PublicDepth, String> {
+        origin
+            .read_run(RunId::new(1), |state| state.visible_levels(key))
+            .map_err(|error| format!("{error}"))?
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn has_trade(events: &[EventEnvelope], quantity: i64) -> bool {
+        events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::TradeExecuted { buyer_id, seller_id, quantity: traded, .. }
+                    if *buyer_id == ParticipantId::new(8)
+                        && *seller_id == ParticipantId::new(7)
+                        && *traded == QuantityLots::new(quantity)
+            )
+        })
+    }
+
+    /// Both sides' private facts are in the batch sessions build
+    /// execution reports from: the trade, the maker's reduced order
+    /// (3 left) and the taker's completed order.
+    fn assert_both_sides_learn_of_the_fill(batch: &Committed) {
+        assert!(has_trade(&batch.events, 2));
+        assert!(
+            batch.events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::OrderReduced { order_id, remaining }
+                    if *order_id == OrderId::new(1) && *remaining == QuantityLots::new(3)
+            )),
+            "the maker learns of its fill"
+        );
+        assert!(
+            batch.events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::OrderCompleted { order_id }
+                    if *order_id == OrderId::new(2)
+            )),
+            "the taker learns of its fill"
+        );
+    }
+
+    #[test]
+    fn a_failed_public_projection_is_a_visible_feed_gap_not_a_silent_skip() -> Result<(), String> {
+        use crate::public_feed::PublicFeeds;
+        use bunting_application::MarketDataEntryType;
+        use bunting_market_events::Side;
+        let origin = trading_origin()?;
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let private = origin.distributor().subscribe(None)?;
+        let mut feeds = PublicFeeds::default();
+        let all = [
+            MarketDataEntryType::Bid,
+            MarketDataEntryType::Offer,
+            MarketDataEntryType::Trade,
+        ];
+        assert_eq!(feeds.subscribe("feed", key, &all, true), None);
+        let waker = crate::wake::Waker::detached();
+        assert_eq!(
+            feeds.subscribe_consolidated("tape", InstrumentId::new(1), origin.tape(), &waker),
+            None
+        );
+        feeds.activate("feed", 0, &[]);
+        feeds.activate("tape", 0, &[]);
+
+        // The maker rests 5 at 100: a normal first increment on both feeds.
+        submit(&origin, 1, 7, Side::Sell, 5, 100)?;
+        let batches = private.drain()?;
+        assert_eq!(feed_reports(&mut feeds, &batches)?, ["1"]);
+        assert_eq!(tape_reports(&mut feeds, &origin)?, ["1"]);
+
+        // The taker lifts 2, and this commit's public projection fails.
+        origin.fail_next_public_projection();
+        let traded = submit(&origin, 2, 8, Side::Buy, 2, 100)?;
+        assert!(has_trade(&traded.events, 2), "the commit itself stands");
+        let batches = private.drain()?;
+        assert_eq!(batches.len(), 1);
+        assert_both_sides_learn_of_the_fill(&batches[0]);
+        assert!(
+            batches[0].public.is_empty(),
+            "the projection produced nothing"
+        );
+        assert!(feed_reports(&mut feeds, &batches)?.is_empty());
+        assert!(tape_reports(&mut feeds, &origin)?.is_empty());
+        assert_eq!(batches[0].public_gaps, vec![key]);
+        assert_eq!(origin.projection_failures(), 1, "the failure is counted");
+        // The projection caches were rebuilt from committed state (3 left
+        // at 100), not left at the pre-trade depth.
+        {
+            let books = origin.books.lock().map_err(|_| "books lock".to_owned())?;
+            assert_eq!(
+                books.get(&RunId::new(1)).and_then(|run| run.get(&key)),
+                Some(&committed_depth(&origin, key)?),
+                "cache must be rebuilt after a failed projection"
+            );
+        }
+
+        // The taker lifts the remaining 3 with no failure injected. The
+        // direct feed's next increment must skip report 2 and the tape
+        // must skip its report 2: a visible gap, never a continuous
+        // sequence missing the first trade.
+        submit(&origin, 3, 8, Side::Buy, 3, 100)?;
+        let batches = private.drain()?;
+        assert_eq!(feed_reports(&mut feeds, &batches)?, ["3", "4"]);
+        assert_eq!(tape_reports(&mut feeds, &origin)?, ["3", "4"]);
+        // The post-failure increment diffs against true committed state:
+        // the 100 ask goes from the rebuilt 3 (not the stale 5) to 0.
+        let level = batches[0].public[0]
+            .levels
+            .first()
+            .ok_or("expected a level change")?;
+        assert_eq!(level.previous, QuantityLots::new(3));
+        assert_eq!(level.quantity, QuantityLots::new(0));
+
+        // Resnapshotting after the gap gives the venue's committed book,
+        // and increments after it stay correct.
+        let mut resnap = PublicFeeds::default();
+        assert_eq!(resnap.subscribe("feed", key, &all, true), None);
+        let published_before = origin.distributor().published();
+        let snapshot = committed_depth(&origin, key)?;
+        assert!(snapshot.0.is_empty() && snapshot.1.is_empty());
+        resnap.activate("feed", published_before, &[]);
+        submit(&origin, 4, 7, Side::Sell, 4, 102)?;
+        let batches = private.drain()?;
+        assert_eq!(feed_reports(&mut resnap, &batches)?, ["1"]);
+        assert_eq!(
+            committed_depth(&origin, key)?.1,
+            vec![(
+                bunting_market_types::PriceTicks::new(102),
+                QuantityLots::new(4)
+            )],
+            "resnapshotted feed tracks the committed book"
+        );
+        // The tape's resnapshot likewise shows the rebuilt best ask.
+        let (_, quotes) = origin.tape().snapshot(InstrumentId::new(1), u64::MAX)?;
+        assert_eq!(
+            quotes,
+            vec![(
+                key,
+                Side::Sell,
+                bunting_market_types::PriceTicks::new(102),
+                QuantityLots::new(4)
+            )]
+        );
         Ok(())
     }
 }
