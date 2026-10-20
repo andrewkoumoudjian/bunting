@@ -186,8 +186,9 @@ one link group.
 ### 6. Windows stay in the app (owner, 2026-10-20)
 
 Windows float inside the app's canvas only. The owner preferred in-app
-floating windows to native pop-outs. A second monitor is served by a second
-app window showing another screen, which needs no new mechanism. Native
+floating windows to native pop-outs. Second-monitor use (a second app
+window on another screen, or pop-outs) is unresolved and not designed
+here. Native
 pop-out (GPUI `open_window` per pane) is **deferred**: it is not part of
 U1 to U4 and is revisited only if owners ask for it.
 
