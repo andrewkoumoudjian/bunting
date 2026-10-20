@@ -1,0 +1,585 @@
+//! Derived series for charts and the portfolio: per-listing bars from
+//! the direct trade feeds, running market VWAP and volume, and the
+//! participant's own cost basis and P&L from their fills.
+//!
+//! Everything here is **derived** from committed BNP data this client
+//! has seen since it subscribed, never the venue's own valuation; the
+//! BNP history and valuation gaps are recorded in
+//! `docs/specs/rit-desk-window-parity.md`. In particular:
+//!
+//! - Feed updates (`MarketUpdate`/`OrderUpdate`) carry no run time on
+//!   BNP v1. A trade is stamped with the series clock: the latest run
+//!   time a stamped report carried, advanced at wall-clock rate from
+//!   that stamp until the next one (the `Paced` 1× case). A recorded
+//!   trade never moves when a later stamp lands, and the clock never
+//!   goes backwards. Before the first stamp, times are nanoseconds
+//!   since the first series event. Bar placement between stamps is
+//!   therefore an estimate in runs whose clock is not paced at 1×.
+//! - Only direct feeds feed the series. Tape trades are the same
+//!   trades again by way of the hub and would double-count volume.
+//! - Cost is the volume-weighted average price of the current
+//!   position, built fill by fill (RIT's definition: the average sale
+//!   price for a short). Realized P&L is booked on closed quantity
+//!   with commissions counted as a loss (a rebated fee, negative on
+//!   the wire, counts back). Unrealized P&L marks the open position
+//!   at the best bid (long) or best ask (short) of the instrument's
+//!   primary listing (venue 1 where listed, else the first venue),
+//!   falling back to that listing's last trade.
+//! - Money is price ticks × lots. The venue's cash is that times the
+//!   contract multiplier, which BNP does not yet carry (the reference
+//!   data gap), so these figures equal minor currency units only
+//!   where the multiplier is 1. Fill fees arrive in minor units and
+//!   are subtracted as reported.
+
+use super::{FillRow, Model};
+use bunting_client::bnp_wire::{Listing, Position, Side};
+use std::collections::{BTreeMap, VecDeque};
+
+/// The finest bar the series keeps, in nanoseconds of run time. Every
+/// bar size offered is a whole number of these.
+pub const FINEST_BAR_NS: u64 = 1_000_000_000;
+/// Bar sizes a chart may ask for, in nanoseconds of run time:
+/// 1 s, 5 s, 15 s, 1 min, 5 min.
+pub const BAR_SIZES_NS: [u64; 5] = [
+    FINEST_BAR_NS,
+    5 * FINEST_BAR_NS,
+    15 * FINEST_BAR_NS,
+    60 * FINEST_BAR_NS,
+    300 * FINEST_BAR_NS,
+];
+/// Finest bars kept per listing: 1 s bars for the last 4 hours of run
+/// time. Older bars drop; VWAP and volume below never do.
+pub const MAX_FINE_BARS: usize = 14_400;
+/// Listings with a series. A session holds at most
+/// [`super::MAX_FEEDS`] direct feeds, and a little room past that
+/// covers feeds that came and went.
+pub const MAX_SERIES_LISTINGS: usize = 64;
+/// Instruments with a P&L book (one per instrument ever filled or
+/// reported in an account answer).
+pub const MAX_PNL_BOOKS: usize = 256;
+/// Time between two samples of total P&L, in nanoseconds of run time.
+pub const PNL_SAMPLE_NS: u64 = FINEST_BAR_NS;
+/// P&L samples kept: one a second for 4 hours of run time.
+pub const MAX_PNL_SAMPLES: usize = 14_400;
+
+/// One bar of trades: run-time start, open/high/low/close in price
+/// ticks, and the lots traded (quantities as reported).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Bar {
+    pub start_ns: u64,
+    pub open: i64,
+    pub high: i64,
+    pub low: i64,
+    pub close: i64,
+    pub volume: i128,
+}
+
+impl Bar {
+    fn first(start_ns: u64, price: i64, quantity: i64) -> Self {
+        Self {
+            start_ns,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: i128::from(quantity),
+        }
+    }
+
+    fn trade(&mut self, price: i64, quantity: i64) {
+        self.high = self.high.max(price);
+        self.low = self.low.min(price);
+        self.close = price;
+        self.volume = self.volume.saturating_add(i128::from(quantity));
+    }
+
+    fn absorb(&mut self, later: &Self) {
+        self.high = self.high.max(later.high);
+        self.low = self.low.min(later.low);
+        self.close = later.close;
+        self.volume = self.volume.saturating_add(later.volume);
+    }
+}
+
+/// Total derived P&L (realized plus unrealized, ticks × lots) at one
+/// run-time instant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PnlSample {
+    pub time_ns: u64,
+    pub total: i128,
+}
+
+/// The series clock: run time as last reported by a stamped message,
+/// advanced with the client's clock between stamps. See the module
+/// docs for why this estimate exists.
+#[derive(Clone, Copy, Debug, Default)]
+struct SeriesClock {
+    /// `(run time ns, client µs when it was reported)` of the latest
+    /// stamp that advanced the run time.
+    anchor: Option<(u64, u64)>,
+    /// Client µs of the first series event, the zero before any stamp.
+    first_us: Option<u64>,
+    /// Highest series time handed out, so stamps never go backwards.
+    last_ns: u64,
+}
+
+impl SeriesClock {
+    fn note_stamp(&mut self, logical_time_ns: u64, now_us: u64) {
+        if self.anchor.is_none_or(|(ns, _)| logical_time_ns >= ns) {
+            self.anchor = Some((logical_time_ns, now_us));
+        }
+    }
+
+    fn now_ns(&mut self, now_us: u64) -> u64 {
+        let first = *self.first_us.get_or_insert(now_us);
+        let estimated = match self.anchor {
+            Some((ns, at_us)) => ns.saturating_add(now_us.saturating_sub(at_us) * 1_000),
+            None => now_us.saturating_sub(first) * 1_000,
+        };
+        self.last_ns = self.last_ns.max(estimated);
+        self.last_ns
+    }
+}
+
+/// One listing's trades folded into finest bars, plus the running
+/// totals that outlive the bars.
+#[derive(Clone, Debug, Default)]
+struct ListingSeries {
+    bars: VecDeque<Bar>,
+    /// Sum of price × quantity over every trade seen (ticks × lots).
+    traded_tick_lots: i128,
+    /// Sum of quantities over every trade seen.
+    volume: i128,
+    last_price: Option<i64>,
+}
+
+impl ListingSeries {
+    fn trade(&mut self, time_ns: u64, price: i64, quantity: i64) {
+        self.traded_tick_lots = self
+            .traded_tick_lots
+            .saturating_add(i128::from(price) * i128::from(quantity));
+        self.volume = self.volume.saturating_add(i128::from(quantity));
+        self.last_price = Some(price);
+        let start = time_ns - time_ns % FINEST_BAR_NS;
+        match self.bars.back_mut() {
+            // The clock is monotonic, so an older-looking bucket can
+            // only mean the same instant after alignment; fold it in.
+            Some(bar) if bar.start_ns >= start => bar.trade(price, quantity),
+            _ => {
+                if self.bars.len() == MAX_FINE_BARS {
+                    self.bars.pop_front();
+                }
+                self.bars.push_back(Bar::first(start, price, quantity));
+            }
+        }
+    }
+
+    /// Finest bars folded into `bar_ns` buckets aligned to the run
+    /// clock's zero. Seconds with no trades make no bar.
+    fn bars(&self, bar_ns: u64) -> Vec<Bar> {
+        let bar_ns = bar_ns.max(FINEST_BAR_NS);
+        let mut folded: Vec<Bar> = Vec::new();
+        for fine in &self.bars {
+            let start = fine.start_ns - fine.start_ns % bar_ns;
+            match folded.last_mut() {
+                Some(bar) if bar.start_ns == start => bar.absorb(fine),
+                _ => folded.push(Bar {
+                    start_ns: start,
+                    ..*fine
+                }),
+            }
+        }
+        folded
+    }
+
+    /// Volume-weighted average traded price since subscribing, in
+    /// ticks, rounded to the nearest tick.
+    fn vwap_ticks(&self) -> Option<i64> {
+        rounded_div(self.traded_tick_lots, self.volume)
+    }
+}
+
+/// `numerator / denominator` rounded to the nearest integer (half
+/// away from zero), as ticks; `None` when there is nothing to divide
+/// by or the result is not a price.
+fn rounded_div(numerator: i128, denominator: i128) -> Option<i64> {
+    if denominator == 0 {
+        return None;
+    }
+    let half = denominator.abs() / 2;
+    let rounded = if (numerator < 0) == (denominator < 0) {
+        numerator.abs().saturating_add(half) / denominator.abs()
+    } else {
+        -(numerator.abs().saturating_add(half) / denominator.abs())
+    };
+    i64::try_from(rounded).ok()
+}
+
+/// One instrument's derived cost basis: the filled position's
+/// volume-weighted cost, kept exact as `cost_tick_lots` over the open
+/// lots, and what closing has realized so far.
+#[derive(Clone, Copy, Debug, Default)]
+struct PnlBook {
+    /// Signed lots from fills (long positive).
+    position: i64,
+    /// Sum of price × lots for the lots still open.
+    cost_tick_lots: i128,
+    /// False when the venue reports a position this client's fills
+    /// do not explain (filled before it connected, an endowment):
+    /// the lots are known, their cost is not, until fills flatten
+    /// the position and open a known one.
+    cost_known: bool,
+    /// Closed quantity's P&L less every fill's fee, ticks × lots.
+    realized: i128,
+    /// Highest committed sequence of a fill in this book.
+    last_fill_sequence: u64,
+}
+
+impl PnlBook {
+    fn known() -> Self {
+        Self {
+            cost_known: true,
+            ..Self::default()
+        }
+    }
+
+    /// `numerator / |position|` booked against the open lots: the
+    /// exact share of `numerator` that `lots` of them carry.
+    fn share(numerator: i128, lots: i128, open: i128) -> i128 {
+        if open == 0 {
+            0
+        } else {
+            numerator.saturating_mul(lots) / open
+        }
+    }
+
+    fn fill(&mut self, side: Side, price: i64, quantity: i64, fee: i128, sequence: u64) {
+        self.last_fill_sequence = self.last_fill_sequence.max(sequence);
+        self.realized = self.realized.saturating_sub(fee);
+        let delta: i64 = match side {
+            Side::Buy => quantity,
+            Side::Sell => -quantity,
+        };
+        if delta == 0 {
+            return;
+        }
+        let lots = i128::from(delta.unsigned_abs());
+        let price = i128::from(price);
+        let open = i128::from(self.position.unsigned_abs());
+        if self.position == 0 || (delta > 0) == (self.position > 0) {
+            // Opening or adding: the new lots join at their price.
+            if self.position == 0 {
+                self.cost_known = true;
+                self.cost_tick_lots = 0;
+            }
+            if self.cost_known {
+                self.cost_tick_lots = self.cost_tick_lots.saturating_add(price * lots);
+            }
+            self.position = self.position.saturating_add(delta);
+            return;
+        }
+        // Closing some or all of the position, perhaps flipping it.
+        let closed = lots.min(open);
+        if self.cost_known {
+            // Signed so a long gains when the sale beats cost and a
+            // short gains when the buy-back undercuts it.
+            let sign: i128 = if self.position > 0 { 1 } else { -1 };
+            let gain = Self::share(
+                price
+                    .saturating_mul(open)
+                    .saturating_sub(self.cost_tick_lots),
+                closed,
+                open,
+            );
+            self.realized = self.realized.saturating_add(sign * gain);
+            self.cost_tick_lots -= Self::share(self.cost_tick_lots, closed, open);
+        }
+        self.position = self.position.saturating_add(delta);
+        if lots > open {
+            // The remainder opens the other way at this fill's price,
+            // and its cost is known whatever came before.
+            self.cost_known = true;
+            self.cost_tick_lots = price * (lots - open);
+        } else if self.position == 0 {
+            self.cost_known = true;
+            self.cost_tick_lots = 0;
+        }
+    }
+
+    /// The venue's account answer at `run_sequence`: adopt a position
+    /// the fills in this book do not explain, cost unknown. An answer
+    /// older than the latest fill says nothing.
+    fn account(&mut self, position: i64, run_sequence: u64) {
+        if run_sequence >= self.last_fill_sequence && position != self.position {
+            self.position = position;
+            self.cost_tick_lots = 0;
+            self.cost_known = position == 0;
+        }
+    }
+
+    /// Average cost of the open position in ticks, rounded to the
+    /// nearest tick.
+    fn cost_ticks(&self) -> Option<i64> {
+        if !self.cost_known {
+            return None;
+        }
+        rounded_div(
+            self.cost_tick_lots,
+            i128::from(self.position.unsigned_abs()),
+        )
+    }
+
+    /// P&L of closing the open position at `mark` (ticks × lots),
+    /// excluding commissions.
+    fn unrealized(&self, mark: i64) -> Option<i128> {
+        if !self.cost_known || self.position == 0 {
+            return None;
+        }
+        let sign: i128 = if self.position > 0 { 1 } else { -1 };
+        let open = i128::from(self.position.unsigned_abs());
+        Some(sign * (i128::from(mark).saturating_mul(open) - self.cost_tick_lots))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct SeriesState {
+    clock: SeriesClock,
+    listings: BTreeMap<Listing, ListingSeries>,
+    books: BTreeMap<u128, PnlBook>,
+    samples: VecDeque<PnlSample>,
+}
+
+impl Model {
+    // ---- reading: market series --------------------------------------
+
+    /// `listing`'s bars of `bar_ns` run-time nanoseconds (see
+    /// [`BAR_SIZES_NS`]), oldest first, from the trades its direct
+    /// feed carried since this client subscribed. Run seconds with
+    /// no trades make no bar. At most [`MAX_FINE_BARS`] finest bars
+    /// are behind the answer.
+    #[must_use]
+    pub fn bars(&self, listing: Listing, bar_ns: u64) -> Vec<Bar> {
+        self.series
+            .listings
+            .get(&listing)
+            .map_or_else(Vec::new, |series| series.bars(bar_ns))
+    }
+
+    /// The last price `listing` traded at on its direct feed.
+    #[must_use]
+    pub fn last_price(&self, listing: Listing) -> Option<i64> {
+        self.series
+            .listings
+            .get(&listing)
+            .and_then(|series| series.last_price)
+    }
+
+    /// Market VWAP of every trade in `listing` since subscribing, in
+    /// ticks rounded to the nearest tick; `None` before any trade.
+    /// Derived: trades before this client connected are not in it
+    /// (the BNP history gap).
+    #[must_use]
+    pub fn market_vwap(&self, listing: Listing) -> Option<i64> {
+        self.series
+            .listings
+            .get(&listing)
+            .and_then(ListingSeries::vwap_ticks)
+    }
+
+    /// Cumulative lots traded in `listing` since subscribing
+    /// (quantities as reported). Derived, like [`Self::market_vwap`].
+    #[must_use]
+    pub fn market_volume(&self, listing: Listing) -> i128 {
+        self.series
+            .listings
+            .get(&listing)
+            .map_or(0, |series| series.volume)
+    }
+
+    // ---- reading: own P&L (derived; see the module docs) --------------
+
+    /// Volume-weighted average cost of the current filled position
+    /// in `instrument_id`, in ticks; `None` when flat, or when the
+    /// venue's reported position has no fills behind it here.
+    #[must_use]
+    pub fn cost(&self, instrument_id: u128) -> Option<i64> {
+        self.series
+            .books
+            .get(&instrument_id)
+            .and_then(PnlBook::cost_ticks)
+    }
+
+    /// P&L booked on closed quantity in `instrument_id`, less every
+    /// fill's fee, in ticks × lots.
+    #[must_use]
+    pub fn realized_pnl(&self, instrument_id: u128) -> i128 {
+        self.series
+            .books
+            .get(&instrument_id)
+            .map_or(0, |book| book.realized)
+    }
+
+    /// P&L of closing the open position in `instrument_id` now: at
+    /// the best bid if long, the best ask if short, of its primary
+    /// listing (venue 1 where listed, else the first venue), or that
+    /// listing's last trade when the touch is missing. Excludes
+    /// commissions. `None` when flat, cost is unknown, or no mark
+    /// exists yet.
+    #[must_use]
+    pub fn unrealized_pnl(&self, instrument_id: u128) -> Option<i128> {
+        let book = self.series.books.get(&instrument_id)?;
+        book.unrealized(self.mark(instrument_id, book.position)?)
+    }
+
+    /// Realized, unrealized and total derived P&L (ticks × lots)
+    /// summed over every instrument. An instrument whose unrealized
+    /// figure cannot be derived (unknown cost, no mark) contributes
+    /// only its realized part.
+    #[must_use]
+    pub fn pnl_totals(&self) -> (i128, i128, i128) {
+        let mut realized: i128 = 0;
+        let mut unrealized: i128 = 0;
+        for (instrument_id, book) in &self.series.books {
+            realized = realized.saturating_add(book.realized);
+            if book.position != 0
+                && let Some(mark) = self.mark(*instrument_id, book.position)
+                && let Some(open) = book.unrealized(mark)
+            {
+                unrealized = unrealized.saturating_add(open);
+            }
+        }
+        (realized, unrealized, realized.saturating_add(unrealized))
+    }
+
+    /// Total derived P&L sampled on the run clock, oldest first: at
+    /// most one sample per [`PNL_SAMPLE_NS`], [`MAX_PNL_SAMPLES`] kept.
+    #[must_use]
+    pub const fn pnl_series(&self) -> &VecDeque<PnlSample> {
+        &self.series.samples
+    }
+
+    /// The price closing a position of `position` lots (signed) in
+    /// `instrument_id` would cross at: the primary listing's touch
+    /// on the closing side, else its last trade.
+    fn mark(&self, instrument_id: u128, position: i64) -> Option<i64> {
+        let listing = self.primary_listing(instrument_id)?;
+        let touch = self.feeds.get(&listing).and_then(|feed| {
+            if position > 0 {
+                feed.book.best_bid()
+            } else {
+                feed.book.best_ask()
+            }
+        });
+        touch.map_or_else(|| self.last_price(listing), |level| Some(level.price))
+    }
+
+    /// Venue 1's listing of the instrument where it has one, else
+    /// its first listing in venue order.
+    fn primary_listing(&self, instrument_id: u128) -> Option<Listing> {
+        let mut listings = self
+            .listings
+            .iter()
+            .filter(|info| info.listing.instrument_id == instrument_id)
+            .map(|info| info.listing);
+        let first = listings.next()?;
+        if first.venue_id == 1 {
+            return Some(first);
+        }
+        let mut primary = first;
+        for listing in listings {
+            if listing.venue_id == 1 || listing.venue_id < primary.venue_id {
+                primary = listing;
+            }
+            if primary.venue_id == 1 {
+                break;
+            }
+        }
+        Some(primary)
+    }
+
+    // ---- applying ------------------------------------------------------
+
+    pub(super) fn series_stamp(&mut self, logical_time_ns: u64, now_us: u64) {
+        self.series.clock.note_stamp(logical_time_ns, now_us);
+    }
+
+    pub(super) fn series_trade(
+        &mut self,
+        listing: Listing,
+        price: i64,
+        quantity: i64,
+        now_us: u64,
+    ) {
+        let time_ns = self.series.clock.now_ns(now_us);
+        if !self.series.listings.contains_key(&listing)
+            && self.series.listings.len() == MAX_SERIES_LISTINGS
+        {
+            return;
+        }
+        self.series
+            .listings
+            .entry(listing)
+            .or_default()
+            .trade(time_ns, price, quantity);
+    }
+
+    pub(super) fn series_fill(&mut self, fill: &FillRow, now_us: u64) {
+        let instrument_id = fill.listing.instrument_id;
+        if !self.series.books.contains_key(&instrument_id)
+            && self.series.books.len() == MAX_PNL_BOOKS
+        {
+            return;
+        }
+        self.series
+            .books
+            .entry(instrument_id)
+            .or_insert_with(PnlBook::known)
+            .fill(
+                fill.side,
+                fill.price,
+                fill.quantity,
+                fill.fee,
+                fill.sequence,
+            );
+        self.series_sample(now_us);
+    }
+
+    pub(super) fn series_account(&mut self, positions: &[Position], run_sequence: u64) {
+        for position in positions {
+            if !self.series.books.contains_key(&position.instrument_id)
+                && (position.position == 0 || self.series.books.len() == MAX_PNL_BOOKS)
+            {
+                continue;
+            }
+            self.series
+                .books
+                .entry(position.instrument_id)
+                .or_insert_with(PnlBook::known)
+                .account(position.position, run_sequence);
+        }
+    }
+
+    /// Records total P&L for the current run second, replacing that
+    /// second's sample while it is still the latest.
+    pub(super) fn series_sample(&mut self, now_us: u64) {
+        if self.series.books.is_empty() {
+            return;
+        }
+        let time_ns = self.series.clock.now_ns(now_us);
+        let total = self.pnl_totals().2;
+        if let Some(last) = self.series.samples.back_mut()
+            && last.time_ns / PNL_SAMPLE_NS == time_ns / PNL_SAMPLE_NS
+        {
+            last.time_ns = time_ns;
+            last.total = total;
+            return;
+        }
+        if self.series.samples.len() == MAX_PNL_SAMPLES {
+            self.series.samples.pop_front();
+        }
+        self.series.samples.push_back(PnlSample { time_ns, total });
+    }
+}
+
+#[cfg(test)]
+mod tests;

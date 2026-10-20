@@ -20,7 +20,12 @@ use bunting_client::{FeedBook, QueuedOrder, TapeBook};
 use std::collections::{BTreeMap, VecDeque};
 
 mod run;
+mod series;
 pub use run::{Dealt, MAX_DEALS, MAX_NEWS, NewsItem};
+pub use series::{
+    BAR_SIZES_NS, Bar, FINEST_BAR_NS, MAX_FINE_BARS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES,
+    MAX_SERIES_LISTINGS, PNL_SAMPLE_NS, PnlSample,
+};
 
 /// Subscriptions a BNP session may hold, direct feeds and tapes together
 /// (docs/specs/bnp-v1.md).
@@ -313,6 +318,7 @@ pub struct Model {
     next_request_id: u32,
     next_client_order_id: u64,
     run: run::RunState,
+    series: series::SeriesState,
 }
 
 impl Model {
@@ -345,6 +351,7 @@ impl Model {
             next_request_id: 1,
             next_client_order_id: first_client_order_id.max(1),
             run: run::RunState::default(),
+            series: series::SeriesState::default(),
         }
     }
 
@@ -634,8 +641,9 @@ impl Model {
     }
 
     /// Periodic work: reloads the account after fills, at most every
-    /// 250 ms.
+    /// 250 ms, and samples the derived P&L series for this instant.
     pub fn tick(&mut self, now_us: u64) -> Vec<ClientMessage> {
+        self.series_sample(now_us);
         if let Some((_, sent)) = self.account_request
             && now_us.saturating_sub(sent) > ACCOUNT_TIMEOUT_US
         {
@@ -722,6 +730,7 @@ impl Model {
     fn message(&mut self, message: ServerMessage, now_us: u64) -> Vec<ClientMessage> {
         if let Some(stamp) = message.stamp() {
             self.last_sequence = self.last_sequence.max(stamp.sequence);
+            self.series_stamp(stamp.logical_time_ns, now_us);
         }
         match message {
             ServerMessage::Listings { listings, .. } => {
@@ -857,7 +866,7 @@ impl Model {
                 if self.fills.len() == MAX_FILLS {
                     self.fills.pop_front();
                 }
-                self.fills.push_back(FillRow {
+                let fill = FillRow {
                     sequence: stamp.sequence,
                     logical_time_ns: stamp.logical_time_ns,
                     client_order_id,
@@ -869,7 +878,9 @@ impl Model {
                     fee,
                     liquidity,
                     received_us: now_us,
-                });
+                };
+                self.series_fill(&fill, now_us);
+                self.fills.push_back(fill);
                 self.account_dirty = true;
             }
             ServerMessage::OrderDone {
@@ -957,6 +968,7 @@ impl Model {
                     .fills
                     .back()
                     .is_some_and(|fill| fill.sequence > run_sequence);
+                self.series_account(&positions, run_sequence);
                 self.account = Some(AccountView {
                     run_sequence,
                     cash,
@@ -1097,7 +1109,10 @@ impl Model {
         let Some(feed) = self.feeds.get_mut(&listing) else {
             return Vec::new();
         };
-        match feed.book.apply(message) {
+        // Trades for the derived series, applied once the feed's
+        // borrow ends.
+        let mut trades: Vec<(i64, i64)> = Vec::new();
+        let messages = match feed.book.apply(message) {
             Ok(_) => {
                 feed.last_message_us = Some(now_us);
                 match message {
@@ -1113,6 +1128,7 @@ impl Model {
                     ServerMessage::MarketUpdate { entries, .. } => {
                         feed.updates = feed.updates.saturating_add(1);
                         for entry in entries.iter().filter(|e| e.kind == EntryKind::Trade) {
+                            trades.push((entry.price, entry.quantity));
                             push_print(
                                 &mut self.prints,
                                 TradePrint {
@@ -1137,6 +1153,7 @@ impl Model {
                                 ..
                             } = *entry
                             {
+                                trades.push((price, quantity));
                                 push_print(
                                     &mut self.prints,
                                     TradePrint {
@@ -1175,7 +1192,11 @@ impl Model {
                 }
                 vec![ClientMessage::Unsubscribe { request_id }, subscribe]
             }
+        };
+        for (price, quantity) in trades {
+            self.series_trade(listing, price, quantity, now_us);
         }
+        messages
     }
 
     fn tape_message(
