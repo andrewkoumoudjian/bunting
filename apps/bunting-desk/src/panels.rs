@@ -37,26 +37,29 @@ const BOOK_DEPTH: usize = 12;
 const ORDER_DEPTH: usize = 16;
 /// Venues shown side by side.
 const MAX_VENUE_COLUMNS: usize = 6;
-/// One side of an order-by-order book.
-const ORDER_COLUMNS: [(&str, f32); 5] = [
-    ("place", 36.),
-    ("ahead", 48.),
-    ("qty", 48.),
-    ("price", 56.),
-    ("broker", 48.),
+/// One side of an order-by-order book. Numbers right-align with their
+/// headers; the broker is an identifier and stays left.
+const ORDER_COLUMNS: [Col; 5] = [
+    Col::right("place", 44.),
+    Col::right("ahead", 52.),
+    Col::right("qty", 52.).priority(2),
+    Col::right("price", 60.).priority(2),
+    Col::left("broker", 52.).priority(0),
 ];
-/// The cells of [`ORDER_COLUMNS`] and the gaps between them.
-const ORDER_SIDE_WIDTH: f32 = 268.;
+/// The cells of [`ORDER_COLUMNS`].
+const ORDER_SIDE_WIDTH: f32 = 260.;
 /// One side of a price-level book.
-const LEVEL_COLUMNS: [(&str, f32); 3] = [("mine", 44.), ("qty", 56.), ("price", 64.)];
-/// The cells of [`LEVEL_COLUMNS`] and the gaps between them.
-const LEVEL_SIDE_WIDTH: f32 = 180.;
+const LEVEL_COLUMNS: [Col; 3] = [
+    Col::center("mine", 48.).priority(0),
+    Col::right("qty", 60.).priority(2),
+    Col::right("price", 68.).priority(2),
+];
+/// The cells of [`LEVEL_COLUMNS`].
+const LEVEL_SIDE_WIDTH: f32 = 176.;
 /// A venue card's least width: both sides, the gap between them, padding
 /// and border (2 × side + 30).
-const ORDER_CARD_WIDTH: f32 = 566.;
-const LEVEL_CARD_WIDTH: f32 = 390.;
-/// Height of one row in the scrolling lists.
-pub(crate) const ROW_HEIGHT: f32 = 22.;
+const ORDER_CARD_WIDTH: f32 = 550.;
+const LEVEL_CARD_WIDTH: f32 = 382.;
 
 /// The boilerplate every dock panel shares.
 macro_rules! dock_panel {
@@ -148,7 +151,7 @@ pub(crate) fn side_color(side: Side, cx: &App) -> Hsla {
 
 /// One table row of fixed-width cells.
 pub(crate) fn row(cells: Vec<(AnyElement, f32)>) -> Div {
-    let mut row = h_flex().w_full().h(px(ROW_HEIGHT)).gap_2();
+    let mut row = h_flex().w_full().h(px(ui::TABLE_ROW_HEIGHT)).gap_2();
     for (cell, width) in cells {
         row = row.child(
             div()
@@ -254,19 +257,20 @@ impl BooksPanel {
         }
     }
 
-    fn depth_button(&self, depth: Depth, cx: &mut Context<Self>) -> Button {
-        let (id, label) = match depth {
-            Depth::Levels => ("books-levels", "Levels"),
-            Depth::Orders => ("books-orders", "Orders"),
+    fn depth_segment(&self, depth: Depth) -> Button {
+        let (id, label, tip) = match depth {
+            Depth::Levels => (
+                "books-levels",
+                "Levels",
+                "Quantity per price. Click a price to put it on the ticket; alt+click cancels yours there. ● marks your resting quantity",
+            ),
+            Depth::Orders => (
+                "books-orders",
+                "Orders",
+                "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker. Yours are highlighted. Click an order to put its price on the ticket; alt+click cancels yours",
+            ),
         };
-        Button::new(id)
-            .label(label)
-            .xsmall()
-            .when_toggled(self.depth == depth)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.depth = depth;
-                cx.notify();
-            }))
+        ui::segment(id, label, self.depth == depth).tooltip(tip)
     }
 
     /// The one-click settings as entered; a field that does not parse
@@ -354,16 +358,22 @@ impl BooksPanel {
     }
 
     fn one_click_bar(&self, cx: &mut Context<Self>) -> Div {
-        let mut bar = h_flex().gap_2().items_center().child(
-            Button::new("books-one-click")
-                .label("One-click")
-                .xsmall()
-                .when_toggled(self.one_click)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.one_click = !this.one_click;
-                    cx.notify();
-                })),
-        );
+        let mut bar = h_flex()
+            .gap(px(ui::TOOLBAR_GAP))
+            .items_center()
+            .child(
+                Button::new("books-one-click")
+                    .label("One-click")
+                    .xsmall()
+                    .tooltip(
+                        "Left-click a bid to buy V at its price + O (an ask: sell at − O), right-click for market, shift+right-click to sweep, alt+click to cancel yours",
+                    )
+                    .when_toggled(self.one_click)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.one_click = !this.one_click;
+                        cx.notify();
+                    })),
+            );
         if self.one_click {
             bar = bar
                 .child(muted("V", cx))
@@ -371,7 +381,7 @@ impl BooksPanel {
                     div()
                         .id("books-volume")
                         .test_support()
-                        .w(px(92.))
+                        .w(px(76.))
                         .child(NumberInput::new(&self.volume).xsmall()),
                 )
                 .child(muted("O", cx))
@@ -379,7 +389,7 @@ impl BooksPanel {
                     div()
                         .id("books-offset")
                         .test_support()
-                        .w(px(80.))
+                        .w(px(68.))
                         .child(NumberInput::new(&self.offset).xsmall()),
                 );
         }
@@ -395,14 +405,15 @@ impl Render for BooksPanel {
         let chosen = desk.listing();
         let mut body = panel_body("books", &self.focus);
         if instruments.is_empty() {
-            return body
-                .child("No listings yet")
-                .child(muted(
-                    "Each venue's book appears here as that venue's own feed reports it. Books are never merged.",
-                    cx,
-                ));
+            return body.child(ui::empty_state(
+                "books-empty",
+                IconName::BookOpen,
+                "No listings yet",
+                None,
+                cx,
+            ));
         }
-        let mut tabs = h_flex().gap_1();
+        let mut tabs = h_flex().gap_1().items_center();
         for each in &instruments {
             let id = each.instrument_id;
             let selected = instrument
@@ -411,7 +422,8 @@ impl Render for BooksPanel {
             tabs = tabs.child(
                 Button::new(SharedString::from(format!("instrument-{id}")))
                     .label(each.symbol.clone())
-                    .small()
+                    .xsmall()
+                    .tooltip("Each venue's book as its own feed reports it; books are never merged")
                     .when_toggled(selected)
                     .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
                         desk.select_instrument(id, cx);
@@ -419,17 +431,24 @@ impl Render for BooksPanel {
             );
         }
         body = body.child(
-            h_flex()
-                .justify_between()
-                .flex_wrap()
-                .gap_2()
+            ui::toolbar()
+                .w_full()
                 .child(tabs)
+                .child(div().flex_1())
                 .child(self.one_click_bar(cx))
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .child(self.depth_button(Depth::Orders, cx))
-                        .child(self.depth_button(Depth::Levels, cx)),
+                    ButtonGroup::new("books-depth")
+                        .xsmall()
+                        .child(self.depth_segment(Depth::Orders))
+                        .child(self.depth_segment(Depth::Levels))
+                        .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                            this.depth = if clicks.contains(&0) {
+                                Depth::Orders
+                            } else {
+                                Depth::Levels
+                            };
+                            cx.notify();
+                        })),
                 ),
         );
         let Some(instrument) = instrument else {
@@ -449,24 +468,12 @@ impl Render for BooksPanel {
         for listing in &listings {
             columns = columns.child(self.book_column(*listing, chosen, window, cx));
         }
-        let hint = if self.one_click {
-            "One-click: left-click a bid to buy V at its price + O (an ask: sell at − O), right-click the asks to buy V at market (the bids: sell), shift+right-click to sweep through a price, alt+click to cancel yours."
-        } else {
-            match self.depth {
-                Depth::Levels => {
-                    "Click a venue to send there, or a price to put it on the ticket. Alt+click cancels yours at a price. ● marks your resting quantity."
-                }
-                Depth::Orders => {
-                    "Each displayed order in queue order: its place at its price, the quantity ahead of it and its broker. Yours are highlighted. Click an order to put its price on the ticket; alt+click cancels yours."
-                }
-            }
-        };
         if let Some(problem) = &self.problem {
             body = body.child(
                 div()
                     .id("books-problem")
                     .test_support()
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
@@ -479,7 +486,6 @@ impl Render for BooksPanel {
                 .overflow_scroll()
                 .child(columns),
         )
-        .child(muted(hint, cx))
     }
 }
 
@@ -492,10 +498,10 @@ fn halted_notice(desk: &Entity<Desk>, instrument: &Instrument, cx: &App) -> Opti
             div()
                 .id("books-halted")
                 .test_support()
-                .text_xs()
+                .text_size(px(ui::LABEL_SIZE))
                 .text_color(cx.theme().warning)
                 .child(format!(
-                    "{} is halted on every venue: orders wait for the reopening.",
+                    "{} is halted on every venue: orders wait for the reopening",
                     instrument.symbol
                 ))
                 .into_any_element()
@@ -514,13 +520,14 @@ fn through(levels: &[Level], side: Side, price: i64) -> i64 {
         .sum()
 }
 
-/// A row's background: lit by a flash, else marked when it is yours.
+/// A row's background: lit by a flash for 250 ms (bullish for new,
+/// bearish for traded, both at low alpha), else the own-order highlight.
 fn row_background(flash: Option<Flash>, own: bool, cx: &App) -> Option<Hsla> {
     let theme = cx.theme();
     match flash {
         Some(Flash::New) => Some(theme.chart_bullish.opacity(0.35)),
         Some(Flash::Traded) => Some(theme.chart_bearish.opacity(0.35)),
-        None => own.then(|| theme.primary.opacity(0.22)),
+        None => own.then_some(theme.list_active),
     }
 }
 
@@ -540,23 +547,21 @@ impl BooksPanel {
         let model = desk.model();
         let now = desk.now_us();
         let feed = model.feed(listing);
-        let state = match feed.map(|feed| &feed.state) {
-            Some(FeedState::Live) => "live".to_owned(),
-            Some(FeedState::Requested) => "subscribing".to_owned(),
-            Some(FeedState::Refused(reason)) => format!("refused: {reason}"),
-            None => "no feed".to_owned(),
+        let theme = cx.theme();
+        let (state, state_color) = match feed.map(|feed| &feed.state) {
+            Some(FeedState::Live) => ("live".to_owned(), theme.success),
+            Some(FeedState::Requested) => ("subscribing".to_owned(), theme.warning),
+            Some(FeedState::Refused(reason)) => (format!("refused: {reason}"), theme.danger),
+            None => ("no feed".to_owned(), theme.warning),
         };
-        let age = feed.and_then(|feed| feed.last_message_us).map(|at| {
-            format!(
-                "last update {} ago",
-                format::duration(now.saturating_sub(at))
-            )
-        });
+        let age = feed
+            .and_then(|feed| feed.last_message_us)
+            .map(|at| format!("{} ago", format::duration(now.saturating_sub(at))));
         let gaps = feed.map_or(0, |feed| feed.gaps);
         let order_trip = model
             .venue_round_trips()
             .get(&listing.venue_id)
-            .map(|trip| format!("order round trip {}", format::duration(trip.last_us)));
+            .map(|trip| format!("order trip {}", format::duration(trip.last_us)));
         let own = |price: i64, side: Side| -> i64 {
             model
                 .live_orders()
@@ -576,7 +581,6 @@ impl BooksPanel {
         };
         let selected = chosen == Some(listing);
         let venue_id = listing.venue_id;
-        let theme = cx.theme();
         let border = if selected { theme.ring } else { theme.border };
         // Room for both sides, the gap between them and the padding, so a
         // narrow pane scrolls sideways instead of overlapping the sides.
@@ -584,6 +588,39 @@ impl BooksPanel {
             Depth::Orders => ORDER_CARD_WIDTH,
             Depth::Levels => LEVEL_CARD_WIDTH,
         };
+        // The card's 28 px header: venue, feed state as a dot and word,
+        // the measured ages in muted tabular text, and the spread.
+        let mut card_header = h_flex()
+            .w_full()
+            .h(px(ui::CARD_HEADER_HEIGHT))
+            .items_center()
+            .gap(px(ui::TOOLBAR_GAP))
+            .child(
+                div()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(format::venue(listing)),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(ui::status_dot(state_color))
+                    .child(muted(state, cx)),
+            )
+            .child(div().flex_1());
+        if let Some(age) = age {
+            card_header = card_header.child(muted(age, cx));
+        }
+        if let Some(trip) = order_trip {
+            card_header = card_header.child(muted(trip, cx));
+        }
+        card_header = card_header.child(muted(
+            spread.map_or_else(
+                || "one-sided".to_owned(),
+                |spread| format!("spread {spread}"),
+            ),
+            cx,
+        ));
         let mut column = v_flex()
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
@@ -591,7 +628,7 @@ impl BooksPanel {
             .flex_shrink_0()
             .min_w(px(card_width))
             .max_w(px(640.))
-            .p_2()
+            .p(px(ui::PANE_PADDING))
             .gap_1()
             .border_1()
             .border_color(border)
@@ -600,60 +637,49 @@ impl BooksPanel {
             .on_click(window.listener_for(&self.desk, move |desk, _, _, cx| {
                 desk.select_listing(listing, cx);
             }))
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                            .child(format::venue(listing)),
-                    )
-                    .child(muted(state, cx)),
-            );
-        if let Some(age) = age {
-            column = column.child(muted(age, cx));
-        }
-        if let Some(trip) = order_trip {
-            column = column.child(muted(trip, cx));
-        }
+            .child(card_header);
         if gaps > 0 {
             column = column.child(
                 div()
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().warning)
                     .child(format!("{gaps} feed gaps, resubscribed")),
             );
         }
-        let spread = muted(
-            spread.map_or_else(
-                || "one-sided".to_owned(),
-                |spread| format!("spread {spread}"),
-            ),
-            cx,
-        );
         let clock = Instant::now();
-        column = column.child(spread);
         // Bids on the left and asks on the right, best price at the top of
         // each, as in RIT's Book Trader.
         // Each side is wide enough for its cells, so the two never overlap;
         // the books scroll sideways instead.
-        let sides = |bids: Vec<AnyElement>,
-                     asks: Vec<AnyElement>,
-                     head: &[(&'static str, f32)],
-                     width: f32| {
-            let list = |rows: Vec<AnyElement>| {
-                v_flex()
+        let sides = |bids: Vec<AnyElement>, asks: Vec<AnyElement>, head: &[Col], width: f32| {
+            let list = |side_name: &'static str, empty: &'static str, rows: Vec<AnyElement>| {
+                let mut list = v_flex()
                     .flex_1()
                     .min_w(px(width))
-                    .child(header(head, cx))
-                    .children(rows)
+                    .child(aligned_header(head, cx));
+                if rows.is_empty() {
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("no-{side_name}-{venue_id}")))
+                            .test_support()
+                            .w_full()
+                            .py_2()
+                            .text_center()
+                            .text_size(px(ui::LABEL_SIZE))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(empty),
+                    );
+                } else {
+                    list = list.children(rows);
+                }
+                list
             };
             h_flex()
                 .w_full()
                 .gap_3()
                 .items_start()
-                .child(list(bids))
-                .child(list(asks))
+                .child(list("bids", "No bids", bids))
+                .child(list("asks", "No asks", asks))
         };
         if self.depth == Depth::Orders {
             if let Some(feed) = feed.filter(|feed| feed.order_by_order) {
@@ -728,11 +754,13 @@ impl BooksPanel {
     }
 
     /// A book row that answers clicks: one-click orders, alt+click cancels,
-    /// or a price for the ticket.
+    /// or a price for the ticket. Your own rows carry the highlight's
+    /// left edge as well as its background.
     fn clickable(
         id: String,
         row: one_click::Row,
         background: Option<Hsla>,
+        own: bool,
         cx: &Context<Self>,
     ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
         let mut element = div()
@@ -762,6 +790,11 @@ impl BooksPanel {
             }));
         if let Some(background) = background {
             element = element.bg(background);
+        }
+        if own {
+            element = element
+                .border_l_1()
+                .border_color(cx.theme().list_active_border);
         }
         element
     }
@@ -793,19 +826,18 @@ impl BooksPanel {
             format!("{side_name}-order-{}-{index}", row.listing.venue_id),
             row,
             row_background(flash, mine, cx),
+            mine,
             cx,
         )
-        .child(row_cells(
-            [
+        .child(aligned_row(
+            &ORDER_COLUMNS,
+            vec![
                 cell(format!("#{}", order.position_at_price)),
                 cell(order.quantity_ahead.to_string()),
-                colored(order.quantity.to_string(), color),
+                cell(order.quantity.to_string()),
                 colored(order.price.to_string(), color),
                 cell(broker),
-            ]
-            .into_iter()
-            .zip(ORDER_COLUMNS.map(|(_, width)| width))
-            .collect(),
+            ],
         ))
         .into_any_element()
     }
@@ -832,17 +864,16 @@ impl BooksPanel {
             format!("{side_name}-{}-{index}", row.listing.venue_id),
             row,
             row_background(flash, mine > 0, cx),
+            mine > 0,
             cx,
         )
-        .child(row_cells(
-            [
+        .child(aligned_row(
+            &LEVEL_COLUMNS,
+            vec![
                 cell(mark),
-                colored(level.quantity.to_string(), color),
+                cell(level.quantity.to_string()),
                 colored(level.price.to_string(), color),
-            ]
-            .into_iter()
-            .zip(LEVEL_COLUMNS.map(|(_, width)| width))
-            .collect(),
+            ],
         ))
         .into_any_element()
     }
