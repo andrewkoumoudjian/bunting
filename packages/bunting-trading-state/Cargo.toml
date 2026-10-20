@@ -14,5 +14,13 @@ bunting-client.workspace = true
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 serde_json.workspace = true
 
+# Advisory file locks and process signals for the shared local venue
+# (claims, join-or-start, last-client shutdown). Already in both lock
+# files (`bunting-server` pins `=1.1.4` at the root; the desk lock has
+# 1.1.5); Windows uses `std` share modes instead, so this is Unix-only.
+# Recorded in `docs/reference-adoption.md`.
+[target.'cfg(all(not(target_arch = "wasm32"), unix))'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
 [lints]
 workspace = true

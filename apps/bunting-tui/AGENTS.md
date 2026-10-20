@@ -5,8 +5,11 @@
   trading state lives in that package so the GPUI desktop app can render the
   same thing. Do not add state, protocol or venue logic here.
 - It speaks BNP only, through `bunting-client`. Do not add FIX, an embedded
-  engine, agents or any other market host. `--local` starts the real
-  `bunting server` as a child process and connects to it like any venue.
+  engine, agents or any other market host. `--local` joins the shared
+  local venue (`local_venue::join_or_start`): the first client starts the
+  real `bunting server` detached, later terminals and desks join the same
+  market as the next free of eight participants (`--participant N` picks
+  one), and the server stops when its last client leaves.
 - `ui` is pure (keys → model calls and requests) and `view` only reads; keep
   both testable headlessly on Ratatui's `TestBackend`.
 - Pass the session's receive instant to `Model::apply`, and send requests as

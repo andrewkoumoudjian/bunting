@@ -10,7 +10,7 @@
 //! this app's frame rate.
 
 use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, OtcDecision, Side};
-use bunting_trading_state::local_venue::LocalVenue;
+use bunting_trading_state::local_venue::SharedVenue;
 use bunting_trading_state::{Instrument, Model, OrderTicket, Session, SessionEvent, TicketError};
 use gpui_kit::{AsyncApp, Context, WeakEntity};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,15 +43,17 @@ enum Link {
 /// The venue this window is attached to.
 pub struct Venue {
     pub session: Session,
-    /// A local practice venue this app started; dropped after the session.
-    pub local: Option<LocalVenue>,
+    /// This desk's claim on the shared local venue, if any; dropped
+    /// after the session. The claim's drop stops the server only when
+    /// this was the market's last client.
+    pub local: Option<SharedVenue>,
 }
 
 pub struct Desk {
     model: Model,
     link: Link,
-    /// Kept so a local venue outlives the session that logs out of it.
-    local: Option<LocalVenue>,
+    /// Kept so the participant claim outlives the session that logs out.
+    local: Option<SharedVenue>,
     label: String,
     started: Instant,
     instrument: Option<u128>,
@@ -65,7 +67,8 @@ pub struct Desk {
 
 impl Drop for Desk {
     fn drop(&mut self) {
-        // Log out before the local venue (if any) stops.
+        // Log out before releasing the participant claim; releasing the
+        // last claim stops the shared local server.
         self.link = Link::None;
         self.local = None;
     }
