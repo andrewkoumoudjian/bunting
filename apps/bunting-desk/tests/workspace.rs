@@ -1329,20 +1329,104 @@ fn a_screen_from_a_larger_canvas_reflows_to_this_one(cx: &mut TestAppContext) {
             maximised: false,
         },
     ];
-    let (_, canvas) = open_canvas(cx, Some(&saved), Some((2560., 1440.)));
-    let flowed = canvas.read_with(cx, |canvas, _| canvas.dump());
-    let tape = flowed
-        .iter()
-        .find(|each| each.kind == "tape")
-        .expect("tape kept");
+    let (window, canvas) = open_canvas(cx, Some(&saved), Some((2560., 1440.)));
+    // The base layout is untouched by being shown smaller.
+    assert_eq!(
+        canvas.read_with(cx, |canvas, _| canvas.base_size()),
+        Some((2560., 1440.))
+    );
+    assert_eq!(canvas.read_with(cx, |canvas, _| canvas.dump()), saved);
+    // Live, the tape window sits on this canvas's right gutter.
+    let tape = canvas
+        .read_with(cx, |canvas, _| {
+            canvas
+                .window_list()
+                .into_iter()
+                .find(|info| info.kind.name() == "tape")
+                .map(|info| info.id)
+        })
+        .expect("tape window");
+    let right = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find(format!("window-{tape}")).bounds().right()
+        })
+        .unwrap();
     assert!(
-        (tape.rect.right() - (1600. - 6.)).abs() < 1.,
-        "tape reflowed onto the smaller canvas: {:?}",
-        tape.rect
+        (right.as_f32() - (1600. - 6.)).abs() < 1.,
+        "tape reflowed onto the smaller canvas: right={right:?}"
+    );
+}
+
+#[gpui_kit::test]
+#[allow(clippy::float_arithmetic, reason = "expected edges in logical pixels")]
+fn shrinking_below_minimums_and_growing_back_restores_the_base(cx: &mut TestAppContext) {
+    use bunting_desk::canvas::SavedWindow;
+    use bunting_desk::canvas::geometry::Rect;
+    // Laid out for the host's own 1600x940; the tape is narrow enough
+    // that 700x500 forces its minimum width.
+    let saved = vec![
+        SavedWindow {
+            kind: "books".to_owned(),
+            rect: Rect::new(6., 6., 800., 600.),
+            z: 0,
+            minimised: false,
+            maximised: false,
+        },
+        SavedWindow {
+            kind: "tape".to_owned(),
+            rect: Rect::new(812., 6., 300., 400.),
+            z: 1,
+            minimised: false,
+            maximised: false,
+        },
+    ];
+    let (window, canvas) = open_canvas(cx, Some(&saved), Some((1600., 940.)));
+    let tape = canvas
+        .read_with(cx, |canvas, _| {
+            canvas
+                .window_list()
+                .into_iter()
+                .find(|info| info.kind.name() == "tape")
+                .map(|info| info.id)
+        })
+        .expect("tape window");
+    let live = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find(format!("window-{tape}")).bounds()
+        })
+        .unwrap()
+    };
+    let resize = |cx: &mut TestAppContext, w: f32, h: f32| {
+        cx.simulate_window_resize(window.into(), size(px(w), px(h)));
+        for _ in 0..3 {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
+    };
+    let before = live(cx);
+    resize(cx, 700., 500.);
+    let shrunk = live(cx);
+    assert!(
+        (shrunk.size.width.as_f32() - 240.).abs() < 1.,
+        "minimum width forced at 700px: {shrunk:?}"
     );
     assert_eq!(
-        canvas.read_with(cx, |canvas, _| canvas.layout_size()),
-        Some((1600., 940.)),
-        "the new layout size is recorded"
+        canvas.read_with(cx, |canvas, _| canvas.dump()),
+        saved,
+        "the base layout did not drift while shrunk"
+    );
+    resize(cx, 1600., 940.);
+    let back = live(cx);
+    assert!(
+        (back.origin.x.as_f32() - before.origin.x.as_f32()).abs() < 1.
+            && (back.origin.y.as_f32() - before.origin.y.as_f32()).abs() < 1.
+            && (back.size.width.as_f32() - before.size.width.as_f32()).abs() < 1.
+            && (back.size.height.as_f32() - before.size.height.as_f32()).abs() < 1.,
+        "growing back restores the base within a pixel: {back:?} vs {before:?}"
     );
 }

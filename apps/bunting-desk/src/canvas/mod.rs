@@ -78,7 +78,12 @@ struct CanvasWindow {
     id: u64,
     kind: PaneKind,
     view: Arc<dyn BasePanelView>,
+    /// The rect at the current painted canvas size.
     rect: Rect,
+    /// The rect as last set by the user, in the base layout's canvas
+    /// size. Reflow always derives `rect` from this, so resizing forth
+    /// and back never drifts the layout.
+    base_rect: Rect,
     /// The floating rect to restore from maximise.
     restore: Option<Rect>,
     minimised: bool,
@@ -119,11 +124,11 @@ pub struct Canvas {
     /// so its real size is unknown and fractions must not be placed (or
     /// saved) against the seed size.
     pending_template: bool,
-    /// The canvas size the current rects are laid out for. When the
-    /// painted size differs, windows reflow proportionally (a screen
-    /// saved on a desktop monitor shown on a laptop). `None` adopts the
-    /// first painted size without reflowing.
-    layout_size: Option<(f32, f32)>,
+    /// The canvas size the base layout was laid out for. When the
+    /// painted size differs, windows reflow from the base (a screen
+    /// saved on a desktop monitor shown on a laptop); only user edits
+    /// rewrite the base. `None` adopts the first painted size.
+    base_size: Option<(f32, f32)>,
     /// Last known canvas size; seeded by the workspace, kept by paint.
     size: (f32, f32),
     /// The canvas bounds in window coordinates, recorded each paint.
@@ -144,7 +149,7 @@ impl Canvas {
             screen_name: String::new(),
             template: Vec::new(),
             pending_template: false,
-            layout_size: None,
+            base_size: None,
             size,
             bounds: Rc::new(Cell::new(Rect::default())),
             drag: None,
@@ -163,10 +168,10 @@ impl Canvas {
         self.pending_template
     }
 
-    /// The canvas size the current rects are laid out for, once known.
+    /// The canvas size the base layout was laid out for, once known.
     #[must_use]
-    pub const fn layout_size(&self) -> Option<(f32, f32)> {
-        self.layout_size
+    pub const fn base_size(&self) -> Option<(f32, f32)> {
+        self.base_size
     }
 
     fn canvas_rect(&self) -> Rect {
@@ -189,7 +194,7 @@ impl Canvas {
     ) {
         self.screen_name = name;
         self.template = fractions.to_vec();
-        self.layout_size = layout_size;
+        self.base_size = layout_size;
         self.pending_template = false;
         self.windows.clear();
         self.closed.clear();
@@ -238,11 +243,7 @@ impl Canvas {
             .enumerate()
             .map(|(z, win)| SavedWindow {
                 kind: win.kind.name().to_owned(),
-                rect: if win.maximised {
-                    win.restore.unwrap_or(win.rect)
-                } else {
-                    win.rect
-                },
+                rect: win.base_rect,
                 z,
                 minimised: win.minimised,
                 maximised: win.maximised,
@@ -282,6 +283,7 @@ impl Canvas {
             kind,
             view,
             rect,
+            base_rect: rect,
             restore: None,
             minimised: false,
             maximised: false,
@@ -310,6 +312,7 @@ impl Canvas {
         let y = base.1.clamp(canvas.y, (canvas.bottom() - h).max(canvas.y));
         let id = self.push(kind, Rect::new(x, y, w, h), window, cx);
         self.focus_window(id, window, cx);
+        self.rebase();
         self.changed(cx);
         id
     }
@@ -339,7 +342,7 @@ impl Canvas {
         cx: &mut Context<Self>,
     ) {
         self.pending_template = false;
-        self.layout_size = Some(self.size);
+        self.base_size = Some(self.size);
         let canvas = self.canvas_rect();
         for &(kind, fraction) in fractions {
             let rect = geometry::place_fraction(fraction, canvas);
@@ -387,6 +390,7 @@ impl Canvas {
                 window.focus(&handle, cx);
             }
         }
+        self.rebase();
         self.changed(cx);
     }
 
@@ -395,9 +399,21 @@ impl Canvas {
         let Some(closed) = self.closed.pop() else {
             return;
         };
-        let rect = geometry::clamp_to_canvas(closed.rect, self.canvas_rect(), TITLE_HEIGHT);
+        // Closed rects are kept in base space; bring this one to the
+        // painted size before it re-enters the base.
+        let live = match self.base_size {
+            Some(base) if base != self.size => geometry::reflow(
+                &[closed.rect],
+                Rect::new(0., 0., base.0, base.1),
+                self.canvas_rect(),
+                &[closed.kind.min_size()],
+            )[0],
+            _ => closed.rect,
+        };
+        let rect = geometry::clamp_to_canvas(live, self.canvas_rect(), TITLE_HEIGHT);
         let id = self.push(closed.kind, rect, window, cx);
         self.focus_window(id, window, cx);
+        self.rebase();
         self.changed(cx);
     }
 
@@ -419,6 +435,7 @@ impl Canvas {
                 win.restore = None;
             }
         }
+        self.rebase();
         self.changed(cx);
     }
 
@@ -439,6 +456,7 @@ impl Canvas {
                 win.restore = None;
             }
         }
+        self.rebase();
         self.changed(cx);
     }
 
@@ -565,39 +583,55 @@ impl Canvas {
             return;
         }
         let new_size = (painted.w, painted.h);
+        // Reflow only on an actual resize, never per frame: between
+        // resizes the live rects are the user's to drag.
+        let resized =
+            (new_size.0 - self.size.0).abs() > 0.5 || (new_size.1 - self.size.1).abs() > 0.5;
         self.size = new_size;
         if self.pending_template {
             let template = self.template.clone();
             self.place_template(&template, window, cx);
             return;
         }
-        match self.layout_size {
-            None => self.layout_size = Some(new_size),
-            Some(old) if (old.0 - new_size.0).abs() > 0.5 || (old.1 - new_size.1).abs() > 0.5 => {
-                self.reflow_windows(old, new_size);
-                self.layout_size = Some(new_size);
-                self.changed(cx);
+        match self.base_size {
+            None => {
+                // Adopt the painted size as the base: rects just loaded
+                // or seeded are taken to be laid out for it.
+                self.base_size = Some(new_size);
+                for win in &mut self.windows {
+                    win.base_rect = if win.maximised {
+                        win.restore.unwrap_or(win.rect)
+                    } else {
+                        win.rect
+                    };
+                }
+            }
+            Some(base) if resized => {
+                if (base.0 - new_size.0).abs() > 0.5 || (base.1 - new_size.1).abs() > 0.5 {
+                    self.reflow_windows(base, new_size);
+                } else {
+                    // Back at the base size: the base rects are the live
+                    // rects again, exactly as laid out.
+                    for win in &mut self.windows {
+                        win.rect = win.base_rect;
+                        if win.maximised {
+                            win.restore = Some(win.base_rect);
+                        }
+                    }
+                }
+                cx.notify();
             }
             Some(_) => {}
         }
     }
 
+    /// Derives live rects from the base layout at a new painted size.
+    /// The base itself is untouched, so growing back restores it exactly.
     fn reflow_windows(&mut self, from: (f32, f32), to: (f32, f32)) {
         if self.windows.is_empty() {
             return;
         }
-        // A maximised window stays maximised; its floating rect reflows.
-        let rects: Vec<Rect> = self
-            .windows
-            .iter()
-            .map(|win| {
-                if win.maximised {
-                    win.restore.unwrap_or(win.rect)
-                } else {
-                    win.rect
-                }
-            })
-            .collect();
+        let rects: Vec<Rect> = self.windows.iter().map(|win| win.base_rect).collect();
         let mins: Vec<(f32, f32)> = self.windows.iter().map(|win| win.kind.min_size()).collect();
         let flowed = geometry::reflow(
             &rects,
@@ -606,12 +640,24 @@ impl Canvas {
             &mins,
         );
         for (win, rect) in self.windows.iter_mut().zip(flowed) {
+            win.rect = rect;
             if win.maximised {
                 win.restore = Some(rect);
-            } else {
-                win.rect = rect;
             }
         }
+    }
+
+    /// Makes the live layout the base: after a user edit, the base is
+    /// what is on screen, laid out for the current painted size.
+    fn rebase(&mut self) {
+        for win in &mut self.windows {
+            win.base_rect = if win.maximised {
+                win.restore.unwrap_or(win.rect)
+            } else {
+                win.rect
+            };
+        }
+        self.base_size = Some(self.size);
     }
 
     /// The rect a window renders at: the whole canvas when maximised, else
@@ -751,6 +797,7 @@ impl Canvas {
     fn drag_end(&mut self, cx: &mut Context<Self>) {
         if self.drag.take().is_some() {
             self.guides.clear();
+            self.rebase();
             self.changed(cx);
         }
     }

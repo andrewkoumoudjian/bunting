@@ -131,3 +131,10 @@ which the root workspace excludes (ADR 0050).
 
 Gate after these fixes: `tools/check_desk.sh` green (26 library, 22
 workspace tests).
+- Reflow is non-cumulative: the canvas keeps a base layout (rects plus
+  the canvas size they were laid out for, as saved) and derives live
+  rects from it at the painted size. Only user edits (template
+  placement, move/resize drag end, tile, cascade, open, close, reopen)
+  rewrite the base at the then-current size, so shrinking below
+  minimum sizes and growing back restores the layout exactly. Tested
+  end to end with a real test-window resize to 700×500 and back.

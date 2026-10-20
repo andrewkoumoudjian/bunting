@@ -427,7 +427,7 @@ impl Workspace {
             return;
         }
         let windows = canvas.dump();
-        let layout_size = canvas.layout_size();
+        let layout_size = canvas.base_size();
         if let Some(screen) = self.screens.get_mut(self.active) {
             screen.windows = Some(windows);
             if let Some((w, h)) = layout_size {
