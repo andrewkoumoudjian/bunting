@@ -9,6 +9,7 @@
 //! `bunting server` and connects to it like any hosted venue.
 
 pub mod actions;
+pub mod canvas;
 pub mod connect;
 pub mod deals;
 pub mod desk;
