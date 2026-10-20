@@ -7,18 +7,19 @@ use crate::flash::{self, Flash, Flashes};
 use crate::format;
 use crate::one_click::{self, Gesture, Intent, OneClick};
 use crate::theme;
+use crate::ui::{self, Col};
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
 use bunting_trading_state::{
     Connection, FeedState, Instrument, NoticeLevel, OrderStatus, OrderTicket, TicketKind,
     TicketTif, TradePrint,
 };
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{InputState, NumberInput};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, WindowExt as _,
+    h_flex, v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, ClickEvent, Context, Div, Entity, EventEmitter,
@@ -160,6 +161,14 @@ pub(crate) fn row(cells: Vec<(AnyElement, f32)>) -> Div {
     row
 }
 
+/// A table header at the columns' minimum widths, for layouts that
+/// guarantee that much room (a book side in its minimum-width card, the
+/// tape's three quote columns in its minimum-width pane). Pane-width
+/// tables use [`ui::responsive_table`] instead.
+pub(crate) fn aligned_header(cols: &[Col], cx: &App) -> Div {
+    ui::table_head(&ui::fit_fixed(cols), cx)
+}
+
 /// [`row`], for code where a book row's `row` shadows it.
 fn row_cells(cells: Vec<(AnyElement, f32)>) -> Div {
     row(cells)
@@ -190,6 +199,11 @@ pub(crate) fn header(cells: &[(&'static str, f32)], cx: &App) -> Div {
             )
         })
         .collect())
+}
+
+/// One table row at the columns' minimum widths; see [`aligned_header`].
+pub(crate) fn aligned_row(cols: &[Col], cells: Vec<AnyElement>) -> Div {
+    ui::table_row(&ui::fit_fixed(cols), cells)
 }
 
 // ---- books -----------------------------------------------------------------
@@ -918,6 +932,31 @@ impl TicketPanel {
         self.problem = result.err().map(|error| error.to_string());
         cx.notify();
     }
+
+    /// The submit button's label: the action it sends, venue included, or
+    /// what is missing before anything can be sent.
+    fn send_label(&self, symbol: &str, chosen: Option<Listing>, cx: &App) -> String {
+        let Some(listing) = chosen else {
+            return "Choose a venue".to_owned();
+        };
+        let ticket = self.ticket(cx);
+        let side = format::side(self.side);
+        let venue = format::venue(listing);
+        match self.kind {
+            TicketKind::Market => {
+                format!("{side} {} {symbol} at market on {venue}", ticket.quantity)
+            }
+            TicketKind::Limit if self.price.read(cx).value().trim().is_empty() => {
+                format!("{side} {} {symbol} on {venue}", ticket.quantity)
+            }
+            TicketKind::Limit => {
+                format!(
+                    "{side} {} {symbol} @ {} on {venue}",
+                    ticket.quantity, ticket.price
+                )
+            }
+        }
+    }
 }
 
 impl Render for TicketPanel {
@@ -934,18 +973,17 @@ impl Render for TicketPanel {
         let trips = desk.model().venue_round_trips().clone();
         let mut body = panel_body("ticket", &self.focus);
         let Some(instrument) = instrument else {
-            return body.child("No listings yet").child(muted(
-                "Side, quantity, price, time in force and the venue for each order.",
+            return body.child(ui::empty_state(
+                "ticket-empty",
+                IconName::SquareTerminal,
+                "No listings yet",
+                None,
                 cx,
             ));
         };
-        body = body.child(
-            div()
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .child(instrument.symbol.clone()),
-        );
-        // The venue: no default, the participant chooses (ADR 0050).
-        let mut venues = h_flex().gap_1().flex_wrap();
+        // The venue: no default, the participant chooses (ADR 0050). The
+        // hint lives in this field, beside the choice it asks for.
+        let mut venues = h_flex().gap_1().flex_wrap().items_center();
         for info in &instrument.listings {
             let listing = info.listing;
             let label = trips.get(&listing.venue_id).map_or_else(
@@ -965,6 +1003,7 @@ impl Render for TicketPanel {
                 )))
                 .label(label)
                 .small()
+                .tooltip("Every order names its venue; there is no default router")
                 .when_toggled(chosen == Some(listing))
                 .on_click(window.listener_for(
                     &self.desk,
@@ -974,127 +1013,153 @@ impl Render for TicketPanel {
                 )),
             );
         }
-        body = body.child(muted("Venue", cx)).child(venues);
+        let mut venue_control = v_flex().gap_1().child(venues);
         if chosen.is_none() {
-            body = body.child(muted("Choose the venue for this order.", cx));
+            venue_control = venue_control.child(muted("Choose the venue for this order", cx));
         }
-        let side = self.side;
-        body = body.child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("ticket-buy")
-                        .label("Buy")
-                        .small()
-                        .when_toggled(side == Side::Buy)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.side = Side::Buy;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("ticket-sell")
-                        .label("Sell")
-                        .small()
-                        .when_toggled(side == Side::Sell)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.side = Side::Sell;
-                            cx.notify();
-                        })),
-                )
-                .child(div().w(px(12.)))
-                .child(
-                    Button::new("ticket-limit")
-                        .label("Limit")
-                        .small()
-                        .when_toggled(self.kind == TicketKind::Limit)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.kind = TicketKind::Limit;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("ticket-market")
-                        .label("Market")
-                        .small()
-                        .when_toggled(self.kind == TicketKind::Market)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.kind = TicketKind::Market;
-                            cx.notify();
-                        })),
-                ),
-        );
+        body = body.child(ui::field("Venue", venue_control.into_any_element(), cx));
+        // Side and type are segmented controls. The selected side takes
+        // its market colour: bullish for Buy, bearish for Sell.
+        let side_segment = |id: &'static str, label: &'static str, selected: bool, buy: bool| {
+            let button = Button::new(id).label(label).selected(selected).flex_1();
+            match (selected, buy) {
+                (true, true) => button.success(),
+                (true, false) => button.danger(),
+                (false, _) => button,
+            }
+        };
+        body = body
+            .child(ui::field(
+                "Side",
+                ButtonGroup::new("ticket-side")
+                    .small()
+                    .child(side_segment(
+                        "ticket-buy",
+                        "Buy",
+                        self.side == Side::Buy,
+                        true,
+                    ))
+                    .child(side_segment(
+                        "ticket-sell",
+                        "Sell",
+                        self.side == Side::Sell,
+                        false,
+                    ))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.side = if clicks.contains(&0) {
+                            Side::Buy
+                        } else {
+                            Side::Sell
+                        };
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                cx,
+            ))
+            .child(ui::field(
+                "Type",
+                ButtonGroup::new("ticket-kind")
+                    .small()
+                    .child(ui::segment(
+                        "ticket-limit",
+                        "Limit",
+                        self.kind == TicketKind::Limit,
+                    ))
+                    .child(ui::segment(
+                        "ticket-market",
+                        "Market",
+                        self.kind == TicketKind::Market,
+                    ))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.kind = if clicks.contains(&0) {
+                            TicketKind::Limit
+                        } else {
+                            TicketKind::Market
+                        };
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                cx,
+            ));
+        // Quantity and price: two fields of equal width on one row.
         body = body.child(
             h_flex()
                 .gap_2()
+                .items_start()
                 .child(
-                    v_flex()
-                        .flex_1()
-                        .child(muted("Quantity (lots)", cx))
-                        .child(NumberInput::new(&self.quantity).small()),
+                    ui::field(
+                        "Quantity (lots)",
+                        NumberInput::new(&self.quantity).small().into_any_element(),
+                        cx,
+                    )
+                    .flex_1(),
                 )
                 .child(
-                    v_flex().flex_1().child(muted("Price (ticks)", cx)).child(
+                    ui::field(
+                        "Price (ticks)",
                         NumberInput::new(&self.price)
                             .small()
-                            .disabled(self.kind == TicketKind::Market),
-                    ),
+                            .disabled(self.kind == TicketKind::Market)
+                            .into_any_element(),
+                        cx,
+                    )
+                    .flex_1(),
                 ),
         );
-        body = body.child(
-            v_flex()
+        body = body.child(ui::field(
+            "Show at a time (iceberg; blank shows all)",
+            div()
                 .id("ticket-display")
                 .test_support()
-                .child(muted("Show at a time (iceberg; blank shows all)", cx))
                 .child(
                     NumberInput::new(&self.display)
                         .small()
                         .disabled(self.kind == TicketKind::Market),
-                ),
-        );
-        let mut tifs = h_flex().gap_1();
+                )
+                .into_any_element(),
+            cx,
+        ));
+        let market = self.kind == TicketKind::Market;
+        let mut tifs = ButtonGroup::new("ticket-tifs").small();
         for tif in TicketTif::ALL {
             tifs = tifs.child(
-                Button::new(SharedString::from(format!("ticket-tif-{}", tif.label())))
-                    .label(tif.label())
-                    .xsmall()
-                    .when_toggled(self.tif == tif)
-                    .disabled(self.kind == TicketKind::Market)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.tif = tif;
-                        cx.notify();
-                    })),
+                ui::segment(
+                    SharedString::from(format!("ticket-tif-{}", tif.label())),
+                    tif.label(),
+                    self.tif == tif,
+                )
+                .disabled(market),
             );
         }
-        body = body.child(tifs).child(
-            h_flex()
-                .gap_3()
-                .child(
-                    Checkbox::new("ticket-post-only")
-                        .label("Post only")
-                        .checked(self.post_only)
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.post_only = *checked;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Checkbox::new("ticket-anonymous")
-                        .label("Anonymous")
-                        .checked(self.anonymous)
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.anonymous = *checked;
-                            cx.notify();
-                        })),
-                ),
-        );
-        let send_label = match (self.side, chosen) {
-            (Side::Buy, Some(listing)) => format!("Buy on {}", format::venue(listing)),
-            (Side::Sell, Some(listing)) => format!("Sell on {}", format::venue(listing)),
-            (_, None) => "Choose a venue".to_owned(),
-        };
+        let tifs = tifs.on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+            if let Some(index) = clicks.first() {
+                this.tif = TicketTif::ALL[*index];
+            }
+            cx.notify();
+        }));
+        body = body
+            .child(ui::field("Time in force", tifs.into_any_element(), cx))
+            .child(ui::field(
+                "Flags",
+                ButtonGroup::new("ticket-flags")
+                    .small()
+                    .multiple(true)
+                    .child(ui::segment("ticket-post-only", "Post only", self.post_only))
+                    .child(ui::segment("ticket-anonymous", "Anonymous", self.anonymous))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.post_only = clicks.contains(&0);
+                        this.anonymous = clicks.contains(&1);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                cx,
+            ));
+        // Full width, coloured by side, and labelled with the order it
+        // sends; with no venue it says so and stays disabled.
         let send = Button::new("ticket-send")
-            .label(send_label)
+            .label(self.send_label(&instrument.symbol, chosen, cx))
+            .small()
+            .w_full()
             .disabled(!connected || killed || chosen.is_none())
             .on_click(cx.listener(|this, _, _, cx| this.send(cx)));
         let send = match self.side {
@@ -1107,30 +1172,36 @@ impl Render for TicketPanel {
                 div()
                     .id("ticket-problem")
                     .test_support()
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
                     .child(problem.clone()),
             );
         }
         if !connected {
-            body = body.child(muted("Not connected: orders cannot be sent.", cx));
+            body = body.child(muted("Not connected: orders cannot be sent", cx));
         }
         if killed {
             body = body.child(
                 div()
-                    .text_xs()
+                    .text_size(px(ui::LABEL_SIZE))
                     .text_color(cx.theme().danger)
-                    .child("Kill switch active: the venue refuses new orders until you reset it."),
+                    .child("Kill switch active: the venue refuses new orders until you reset it"),
             );
         }
         body.child(
             h_flex()
-                .gap_1()
+                .h(px(ui::TOOLBAR_HEIGHT))
+                .items_center()
+                .gap(px(ui::TOOLBAR_GAP))
+                .mt_1()
                 .pt_2()
+                .border_t_1()
+                .border_color(cx.theme().border)
                 .child(
                     Button::new("cancel-all")
                         .label("Cancel all")
                         .small()
+                        .outline()
                         .on_click(window.listener_for(&self.desk, |desk, _, _, cx| {
                             desk.cancel_all(cx);
                         })),
