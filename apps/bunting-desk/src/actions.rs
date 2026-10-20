@@ -4,6 +4,7 @@
 
 use crate::panes::PaneKind;
 use gpui_kit::{Action, App, KeyBinding, actions};
+use serde::Deserialize;
 
 actions!(
     desk,
@@ -41,8 +42,31 @@ actions!(
         Refresh,
         /// Brings the market back to the middle of a ladder.
         CentreLadder,
+        /// Cycles to the next installed theme (ADR 0051 U2a).
+        SelectNextTheme,
+        /// Switches between the current theme's light and dark sides.
+        ToggleLightDark,
+        IncreaseUiFontSize,
+        DecreaseUiFontSize,
+        ResetUiFontSize,
+        /// Cycles compact, default and comfortable density.
+        CycleDensity,
     ]
 );
+
+/// Makes the named theme current: one palette entry per installed
+/// theme (ADR 0051 U2a). Handled with the other appearance actions in
+/// `crate::appearance::with_appearance_actions`.
+#[derive(Clone, Action, PartialEq, Eq, Deserialize, Debug)]
+#[action(namespace = desk, no_json)]
+#[allow(
+    clippy::unsafe_derive_deserialize,
+    reason = "the unsafe is in GPUI's generated Action impl, not in deserializing a name"
+)]
+pub struct SelectTheme {
+    /// The theme's name, as written in its theme file.
+    pub name: String,
+}
 
 /// The key context the workspace sets; bindings apply anywhere inside it.
 pub const CONTEXT: &str = "Workspace";
@@ -63,6 +87,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-`", FocusNextWindow, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-`", FocusPreviousWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-r", Refresh, Some(CONTEXT)),
+        KeyBinding::new("secondary-=", IncreaseUiFontSize, Some(CONTEXT)),
+        KeyBinding::new("secondary--", DecreaseUiFontSize, Some(CONTEXT)),
+        KeyBinding::new("secondary-0", ResetUiFontSize, Some(CONTEXT)),
         KeyBinding::new("f12", CancelAll, Some(CONTEXT)),
         KeyBinding::new("space", CentreLadder, Some("Ladder && !Input")),
     ]);

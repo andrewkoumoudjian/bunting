@@ -9,6 +9,7 @@
 //! `bunting server` and connects to it like any hosted venue.
 
 pub mod actions;
+pub mod appearance;
 pub mod canvas;
 pub mod connect;
 pub mod deals;
@@ -24,6 +25,7 @@ pub mod panes;
 pub mod theme;
 pub mod workspace;
 
+pub use appearance::{Appearance, AppearanceStore, Density, Metrics};
 pub use canvas::Canvas;
 pub use desk::{Desk, Outbox, Venue};
 pub use layouts::{LayoutStore, Preset, Screen};
@@ -33,5 +35,6 @@ pub use workspace::{PANELS, Workspace};
 /// Sets the desk's look and keys. Call once, after `gpui_kit::init`.
 pub fn init(cx: &mut gpui_kit::App) {
     theme::install(cx);
+    appearance::install(cx);
     actions::bind_keys(cx);
 }
