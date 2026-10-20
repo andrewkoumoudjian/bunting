@@ -1,33 +1,37 @@
-//! The window: a sidebar of workspaces, panes to add and a watchlist; a top
-//! bar for the workspace and the connection; the dock of panes; and a status
-//! bar (ADR 0050 decision 6). Panes can be opened any number of times,
-//! moved, split, tabbed and resized; each workspace keeps its own layout and
-//! every change is saved.
+//! The window frame (ADR 0051 decision 1): a title bar with the screen
+//! name, the command field and the connection; a collapsible sidebar of
+//! Screens, Windows and Run; the canvas of floating windows; and a status
+//! line. A screen is a saved view of the canvas; every canvas change is
+//! saved (debounced) and restored at the next start.
 
 use crate::actions::{self, CONTEXT};
+use crate::canvas::{Canvas, CanvasEvent};
 use crate::desk::Desk;
 use crate::format;
-use crate::layouts::{LAYOUT_VERSION, LayoutStore, MAX_WORKSPACES, Preset, Saved};
+use crate::layouts::{LayoutStore, MAX_SCREENS, Preset, Screen};
 use crate::panels::{confirm_kill_switch, connection_label};
-use crate::panes::{self, PaneKind};
+use crate::panes::PaneKind;
 use crate::theme;
 use bunting_trading_state::Connection;
-use bunting_trading_state::bunting_client::bnp_wire::Side;
-use gpui_kit::component::button::Button;
+use gpui_kit::assets::IconName as CatalogIcon;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::dock::{DockArea, DockEvent, DockPlacement, DockSkin};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::{
-    AnyElement, App, AsyncApp, Context, Div, Entity, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, WeakEntity,
-    Window, div, prelude::*, px,
+    AnyElement, App, AppContext as _, AsyncApp, Context, Div, Entity, FocusHandle, Focusable,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TestSupportExt as _, WeakEntity, Window, div, prelude::*, px,
 };
 use std::time::Duration;
 
-/// Element IDs of the panes a first run shows, in layout order.
-pub const PANELS: [&str; 8] = [
+/// Element IDs of the panes the Trading template opens, in template order.
+pub const PANELS: [&str; 7] = [
     "books",
     "ticket",
     "tape",
@@ -35,60 +39,87 @@ pub const PANELS: [&str; 8] = [
     "fills",
     "positions",
     "account",
-    "notices",
 ];
 
-/// Layout changes are written this long after the last one.
+/// Screen changes are written this long after the last one.
 const SAVE_DELAY: Duration = Duration::from_millis(500);
-const SIDEBAR_WIDTH: f32 = 224.;
-/// Commands in the palette's workspace group before the workspaces.
-const FIXED_WORKSPACE_COMMANDS: usize = 5;
+const SIDEBAR_WIDTH: f32 = 240.;
+const TITLE_BAR_HEIGHT: f32 = 36.;
+const STATUS_BAR_HEIGHT: f32 = 24.;
+/// Commands in the palette's screen group before the screens themselves.
+const FIXED_SCREEN_COMMANDS: usize = 6;
 
 /// The window's content.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the frame's toggles are independent: save pending, sidebar, and two menus"
+)]
 pub struct Workspace {
     desk: Entity<Desk>,
-    area: Entity<DockArea>,
-    workspaces: Vec<Saved>,
+    canvas: Entity<Canvas>,
+    screens: Vec<Screen>,
     active: usize,
     store: Option<LayoutStore>,
     save_pending: bool,
     focus: FocusHandle,
+    sidebar_visible: bool,
+    /// The Windows section's "+" menu of pane kinds is open.
+    add_menu_open: bool,
+    /// The Screens section's template choices are open.
+    templates_open: bool,
+    /// The screen being renamed inline, and its field.
+    renaming: Option<(usize, Entity<InputState>)>,
     /// The command palette while it is open.
     palette: Option<Entity<CommandState>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
-    /// Opens the workspaces saved in `store` (or one per preset), showing
+    /// Opens the screens saved in `store` (or one per template), showing
     /// the last active one. Without a store nothing is saved.
+    #[expect(
+        clippy::float_arithmetic,
+        reason = "the canvas seed size is the viewport minus the frame, in pixels"
+    )]
     pub fn new(
         desk: Entity<Desk>,
         store: Option<LayoutStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        panes::register(&desk, cx);
-        let (area, _skin) = DockSkin::dock_area("bunting-desk", Some(LAYOUT_VERSION), window, cx);
-        let (workspaces, active) = store
+        let (screens, active) = store
             .as_ref()
             .and_then(LayoutStore::load)
-            .unwrap_or_else(|| (Saved::defaults(), 0));
+            .unwrap_or_else(|| (Screen::defaults(), 0));
+        let viewport = window.viewport_size();
+        let canvas_size = (
+            (viewport.width.as_f32() - SIDEBAR_WIDTH).max(320.),
+            (viewport.height.as_f32() - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(240.),
+        );
+        let shared = desk.clone();
+        let canvas = cx.new(|_| Canvas::new(shared, canvas_size));
         let subscriptions = vec![
             cx.observe(&desk, |_, _, cx| cx.notify()),
-            cx.subscribe(&area, |this, _, event: &DockEvent, cx| {
-                if matches!(event, DockEvent::LayoutChanged) {
+            cx.subscribe(&canvas, |this, _, event: &CanvasEvent, cx| match event {
+                CanvasEvent::Changed => {
                     this.schedule_save(cx);
+                    cx.notify();
                 }
             }),
+            cx.observe(&canvas, |_, _, cx| cx.notify()),
         ];
         let mut this = Self {
             desk,
-            area,
-            workspaces,
+            canvas,
+            screens,
             active,
             store,
             save_pending: false,
             focus: cx.focus_handle(),
+            sidebar_visible: true,
+            add_menu_open: false,
+            templates_open: false,
+            renaming: None,
             palette: None,
             _subscriptions: subscriptions,
         };
@@ -103,25 +134,28 @@ impl Workspace {
     }
 
     #[must_use]
-    pub const fn area(&self) -> &Entity<DockArea> {
-        &self.area
+    pub const fn canvas(&self) -> &Entity<Canvas> {
+        &self.canvas
     }
 
-    /// The workspaces' names, and which one is shown.
+    /// The screens' names, and which one is shown.
     #[must_use]
-    pub fn workspaces(&self) -> (Vec<String>, usize) {
+    pub fn screens(&self) -> (Vec<String>, usize) {
         (
-            self.workspaces
-                .iter()
-                .map(|each| each.name.clone())
-                .collect(),
+            self.screens.iter().map(|each| each.name.clone()).collect(),
             self.active,
         )
     }
 
-    /// Shows workspace `index`, keeping the current one's layout.
+    /// Whether the sidebar is shown.
+    #[must_use]
+    pub const fn sidebar_visible(&self) -> bool {
+        self.sidebar_visible
+    }
+
+    /// Shows screen `index`, keeping the current one's windows.
     pub fn switch_to(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.workspaces.len() || index == self.active {
+        if index >= self.screens.len() || index == self.active {
             return;
         }
         self.remember(cx);
@@ -130,38 +164,55 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Adds a workspace laid out as `preset` and shows it.
-    pub fn add_workspace(&mut self, preset: Preset, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspaces.len() >= MAX_WORKSPACES {
+    /// Adds a screen laid out as `preset`'s template and shows it.
+    pub fn add_screen(&mut self, preset: Preset, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screens.len() >= MAX_SCREENS {
             return;
         }
         self.remember(cx);
-        let number = self.workspaces.len() + 1;
-        self.workspaces
-            .push(Saved::new(format!("Workspace {number}"), preset));
-        self.show(self.workspaces.len() - 1, window, cx);
+        let name = self.fresh_name(preset.name());
+        self.screens.push(Screen::new(name, preset));
+        self.templates_open = false;
+        self.show(self.screens.len() - 1, window, cx);
         self.save(cx);
         cx.notify();
     }
 
-    /// Puts the current workspace back to its preset.
+    /// Deletes screen `index` (asked first from the sidebar).
+    pub fn delete_screen(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screens.len() <= 1 || index >= self.screens.len() {
+            return;
+        }
+        self.screens.remove(index);
+        if index < self.active {
+            self.active -= 1;
+        } else if index == self.active {
+            let next = index.min(self.screens.len() - 1);
+            self.show(next, window, cx);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Puts the current screen back to its template.
     pub fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(saved) = self.workspaces.get_mut(self.active) {
-            saved.layout = None;
+        if let Some(screen) = self.screens.get_mut(self.active) {
+            screen.windows = None;
         }
         self.show(self.active, window, cx);
         self.save(cx);
     }
 
-    /// Opens another pane of `kind` in the centre.
+    /// Opens another window of `kind`, cascaded from the focused one.
     pub fn add_pane(&mut self, kind: PaneKind, window: &mut Window, cx: &mut Context<Self>) {
-        let pane = kind.build(self.desk.clone(), window, cx);
-        self.area.update(cx, |area, cx| {
-            area.add_panel_view(pane, DockPlacement::Center, None, window, cx);
+        self.add_menu_open = false;
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.open(kind, window, cx);
         });
+        cx.notify();
     }
 
-    /// Saves every workspace now.
+    /// Saves every screen now.
     pub fn save_layout(&mut self, cx: &mut Context<Self>) {
         self.remember(cx);
         self.save(cx);
@@ -191,9 +242,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Shows the workspace `step` places along, wrapping around.
-    fn step_workspace(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let count = self.workspaces.len();
+    /// Shows the screen `step` places along, wrapping around.
+    fn step_screen(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.screens.len();
         if count > 1 {
             let next = if forward {
                 (self.active + 1) % count
@@ -204,47 +255,106 @@ impl Workspace {
         }
     }
 
+    fn fresh_name(&self, base: &str) -> String {
+        if !self.screens.iter().any(|screen| screen.name == base) {
+            return base.to_owned();
+        }
+        for number in 2..=MAX_SCREENS {
+            let candidate = format!("{base} {number}");
+            if !self.screens.iter().any(|screen| screen.name == candidate) {
+                return candidate;
+            }
+        }
+        format!("{base} {}", self.screens.len() + 1)
+    }
+
     /// The palette's entries: every command, with its key where it has one.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the palette's groups read best whole, beside each other"
+    )]
     fn palette(&self, state: &Entity<CommandState>, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut workspaces = CommandGroup::new()
-            .label("Workspace")
+        let mut screens = CommandGroup::new()
+            .label("Screen")
             .item(
                 CommandItem::new()
-                    .label("New workspace")
+                    .label("New screen from the Trading template")
                     .icon(IconName::Plus)
                     .action(Box::new(actions::NewWorkspace)),
             )
             .item(
                 CommandItem::new()
-                    .label("Next workspace")
+                    .label("Next screen")
                     .action(Box::new(actions::NextWorkspace)),
             )
             .item(
                 CommandItem::new()
-                    .label("Previous workspace")
+                    .label("Previous screen")
                     .action(Box::new(actions::PreviousWorkspace)),
             )
             .item(
                 CommandItem::new()
-                    .label("Save layout")
+                    .label("Save screens")
                     .action(Box::new(actions::SaveLayout)),
             )
             .item(
                 CommandItem::new()
-                    .label("Reset layout to its preset")
+                    .label("Reset screen to its template")
                     .action(Box::new(actions::ResetLayout)),
-            );
-        // Entries after the fixed ones show a workspace; confirming one
-        // switches (see `on_confirm` below).
-        for (index, saved) in self.workspaces.iter().enumerate() {
-            workspaces = workspaces.item(
+            )
+            .item(
                 CommandItem::new()
-                    .label(format!("Show {}", saved.name))
+                    .label("Toggle sidebar")
+                    .action(Box::new(actions::ToggleSidebar)),
+            );
+        // Entries after the fixed ones show a screen; confirming one
+        // switches (see `on_confirm` below).
+        for (index, screen) in self.screens.iter().enumerate() {
+            screens = screens.item(
+                CommandItem::new()
+                    .label(format!("Show {}", screen.name))
                     .icon(IconName::LayoutDashboard)
                     .checked(index == self.active)
-                    .keywords(["switch", "workspace"]),
+                    .keywords(["switch", "screen"]),
             );
         }
+        let windows = CommandGroup::new()
+            .label("Window")
+            .item(
+                CommandItem::new()
+                    .label("Tile windows")
+                    .action(Box::new(actions::TileWindows)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Cascade windows")
+                    .action(Box::new(actions::CascadeWindows)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Close window")
+                    .action(Box::new(actions::CloseWindow)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Reopen closed window")
+                    .action(Box::new(actions::ReopenClosedWindow)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Focus next window")
+                    .action(Box::new(actions::FocusNextWindow)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Focus previous window")
+                    .action(Box::new(actions::FocusPreviousWindow)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Maximize or restore window")
+                    .action(Box::new(actions::MaximizeWindow)),
+            );
         let mut panes = CommandGroup::new().label("Open pane");
         for kind in PaneKind::ALL {
             panes = panes.item(
@@ -279,7 +389,8 @@ impl Workspace {
         let close = cx.entity();
         let cancel = cx.entity();
         Command::new(state)
-            .group(workspaces)
+            .group(screens)
+            .group(windows)
             .group(panes)
             .group(trading)
             .placeholder("Type a command")
@@ -287,8 +398,8 @@ impl Workspace {
             .on_confirm(move |path, window, cx| {
                 close.update(cx, |this, cx| {
                     this.close_palette(window, cx);
-                    if path.section == 0 && path.row >= FIXED_WORKSPACE_COMMANDS {
-                        this.switch_to(path.row - FIXED_WORKSPACE_COMMANDS, window, cx);
+                    if path.section == 0 && path.row >= FIXED_SCREEN_COMMANDS {
+                        this.switch_to(path.row - FIXED_SCREEN_COMMANDS, window, cx);
                     }
                 });
             })
@@ -299,40 +410,38 @@ impl Workspace {
 
     fn show(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = index;
-        let Some(saved) = self.workspaces.get(index) else {
+        let Some(screen) = self.screens.get(index) else {
             return;
         };
-        let preset = saved.preset;
-        let state = saved
-            .layout
-            .clone()
-            .filter(|state| state.version == Some(LAYOUT_VERSION));
-        let loaded = state.is_some_and(|state| {
-            self.area
-                .update(cx, |area, cx| area.load(state, window, cx))
-                .is_ok()
+        let name = screen.name.clone();
+        let preset = screen.preset;
+        let saved = screen.windows.clone();
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.set_screen(
+                name,
+                preset.name().to_owned(),
+                &preset.fractions(),
+                saved.as_deref(),
+                window,
+                cx,
+            );
         });
-        if !loaded {
-            let layout = preset.layout(&self.desk, window, cx);
-            self.area
-                .update(cx, |area, cx| area.set_center(layout, window, cx));
-        }
     }
 
-    /// Copies the shown layout into its workspace.
+    /// Copies the shown canvas into its screen.
     fn remember(&mut self, cx: &App) {
-        let state = self.area.read(cx).dump(cx);
-        if let Some(saved) = self.workspaces.get_mut(self.active) {
-            saved.layout = Some(state);
+        let windows = self.canvas.read(cx).dump();
+        if let Some(screen) = self.screens.get_mut(self.active) {
+            screen.windows = Some(windows);
         }
     }
 
     fn save(&self, _cx: &App) {
         if let Some(store) = &self.store
-            && let Err(error) = store.save(&self.workspaces, self.active)
+            && let Err(error) = store.save(&self.screens, self.active)
         {
             eprintln!(
-                "bunting-desk: workspaces not saved to {}: {error}",
+                "bunting-desk: screens not saved to {}: {error}",
                 store.path().display()
             );
         }
@@ -357,44 +466,6 @@ impl Workspace {
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let mut workspaces = v_flex().gap_px();
-        for (index, saved) in self.workspaces.iter().enumerate() {
-            let active = index == self.active;
-            workspaces = workspaces.child(
-                sidebar_row(
-                    SharedString::from(format!("workspace-{index}")),
-                    IconName::LayoutDashboard,
-                    saved.name.clone(),
-                    active,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.switch_to(index, window, cx);
-                })),
-            );
-        }
-        workspaces = workspaces.child(
-            sidebar_row("workspace-new", IconName::Plus, "New workspace", false, cx).on_click(
-                cx.listener(|this, _, window, cx| {
-                    this.add_workspace(Preset::Trading, window, cx);
-                }),
-            ),
-        );
-        let mut add = v_flex().gap_px();
-        for kind in PaneKind::ALL {
-            add = add.child(
-                sidebar_row(
-                    SharedString::from(format!("add-{}", kind.name())),
-                    kind.icon(),
-                    kind.title(),
-                    false,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.add_pane(kind, window, cx);
-                })),
-            );
-        }
         v_flex()
             .id("sidebar")
             .test_support()
@@ -405,155 +476,343 @@ impl Workspace {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .px_2()
             .pb_3()
-            .gap_1()
             .child(
-                theme::serif("Bunting")
-                    .text_size(px(24.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .px_2()
-                    .pt_3()
-                    .pb_2(),
+                section_header("Screens", cx).child(
+                    Button::new("workspace-new")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.templates_open = !this.templates_open;
+                            cx.notify();
+                        })),
+                ),
             )
-            .child(section_label("Workspaces", cx))
-            .child(workspaces)
-            .child(section_label("Add pane", cx))
-            .child(add)
-            .child(section_label("Watchlist", cx))
-            .child(self.watchlist(cx))
+            .child(self.screens_section(cx))
+            .child(
+                section_header("Windows", cx).child(
+                    Button::new("windows-add")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.add_menu_open = !this.add_menu_open;
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(self.windows_section(cx))
+            .child(section_header("Run", cx))
+            .child(self.run_section(cx))
     }
 
-    /// Each instrument with its last consolidated trade and the best bid and
-    /// offer across venues as the tape shows them; clicking one shows it.
-    fn watchlist(&self, cx: &mut Context<Self>) -> Div {
-        let desk = self.desk.read(cx);
-        let model = desk.model();
-        let shown = desk.instrument().map(|instrument| instrument.instrument_id);
-        let rows: Vec<(u128, String, String, String)> = desk
-            .instruments()
-            .into_iter()
-            .map(|instrument| {
-                let id = instrument.instrument_id;
-                let last = model
-                    .tape_prints()
-                    .iter()
-                    .rev()
-                    .find(|print| print.listing.instrument_id == id)
-                    .map_or_else(|| "—".to_owned(), |print| print.price.to_string());
-                let quote = model.tape(id).map_or_else(String::new, |tape| {
-                    let side = |side| {
-                        tape.book
-                            .best(side)
-                            .map_or_else(|| "—".to_owned(), |(_, level)| level.price.to_string())
-                    };
-                    format!("{} × {}", side(Side::Buy), side(Side::Sell))
-                });
-                (id, instrument.symbol, last, quote)
-            })
-            .collect();
+    fn screens_section(&self, cx: &mut Context<Self>) -> Div {
         let mut list = v_flex().gap_px();
-        if rows.is_empty() {
-            return list.child(
-                div()
-                    .px_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Instruments appear when the venue lists them."),
-            );
+        for (index, screen) in self.screens.iter().enumerate() {
+            if let Some((renaming, state)) = &self.renaming
+                && *renaming == index
+            {
+                list = list.child(
+                    h_flex()
+                        .id(SharedString::from(format!("workspace-rename-{index}")))
+                        .test_support()
+                        .gap_1()
+                        .items_center()
+                        .px_1()
+                        .child(div().flex_1().child(Input::new(state).small()))
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "workspace-rename-save-{index}"
+                            )))
+                            .label("Save")
+                            .xsmall()
+                            .on_click(cx.listener(move |this, _, _, cx| this.finish_rename(cx))),
+                        ),
+                );
+                continue;
+            }
+            let active = index == self.active;
+            list =
+                list.child(
+                    h_flex()
+                        .group("screen-row")
+                        .gap_1()
+                        .items_center()
+                        .pr_1()
+                        .child(
+                            sidebar_row(
+                                SharedString::from(format!("workspace-{index}")),
+                                IconName::LayoutDashboard,
+                                screen.name.clone(),
+                                active,
+                                false,
+                                cx,
+                            )
+                            .flex_1()
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.switch_to(index, window, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(2.))
+                                .opacity(if active { 1. } else { 0. })
+                                .group_hover("screen-row", |style| style.opacity(1.))
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "workspace-rename-open-{index}"
+                                    )))
+                                    .icon(CatalogIcon::Pencil)
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.begin_rename(index, window, cx);
+                                    })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "workspace-delete-{index}"
+                                    )))
+                                    .icon(CatalogIcon::Trash)
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_delete(index, window, cx);
+                                    })),
+                                ),
+                        ),
+                );
         }
-        for (id, symbol, last, quote) in rows {
-            let active = shown == Some(id);
-            let theme = cx.theme();
-            list = list.child(
-                h_flex()
-                    .id(SharedString::from(format!("watch-{id}")))
-                    .test_support()
-                    .px_2()
-                    .py_1()
-                    .rounded(theme.radius)
-                    .cursor_pointer()
-                    .when(active, |row| row.bg(theme.sidebar_accent))
-                    .hover(|row| row.bg(theme.sidebar_accent))
-                    .font_features(theme::tabular())
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.sidebar_foreground)
-                            .child(symbol),
+        if self.templates_open {
+            for preset in Preset::ALL {
+                list = list.child(
+                    sidebar_row(
+                        SharedString::from(format!("template-{}", preset_key(preset))),
+                        IconName::Frame,
+                        preset.name(),
+                        false,
+                        false,
+                        cx,
                     )
-                    .child(
-                        v_flex()
-                            .items_end()
-                            .child(div().text_sm().child(last))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(quote),
-                            ),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.desk
-                            .update(cx, |desk, cx| desk.select_instrument(id, cx));
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.add_screen(preset, window, cx);
                     })),
-            );
+                );
+            }
         }
         list
     }
 
-    // ---- top bar -------------------------------------------------------------
+    fn windows_section(&self, cx: &mut Context<Self>) -> Div {
+        let mut list = v_flex().gap_px();
+        for info in self.canvas.read(cx).window_list() {
+            let id = info.id;
+            let label = if info.minimised {
+                format!("{} (minimised)", info.kind.title())
+            } else {
+                info.kind.title().to_owned()
+            };
+            list = list.child(
+                sidebar_row(
+                    SharedString::from(format!("screen-window-{id}")),
+                    info.kind.icon(),
+                    label,
+                    info.focused,
+                    info.minimised,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.canvas.update(cx, |canvas, cx| {
+                        canvas.focus_window(id, window, cx);
+                    });
+                    cx.notify();
+                })),
+            );
+        }
+        if self.add_menu_open {
+            for kind in PaneKind::ALL {
+                list = list.child(
+                    sidebar_row(
+                        SharedString::from(format!("add-{}", kind.name())),
+                        kind.icon(),
+                        kind.title(),
+                        false,
+                        false,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.add_pane(kind, window, cx);
+                    })),
+                );
+            }
+        }
+        list
+    }
 
-    fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Run status, logical time and halts, as the venue last committed them.
+    fn run_section(&self, cx: &App) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
+        let theme = cx.theme();
+        let desk = self.desk.read(cx);
+        let model = desk.model();
+        let status = model.run_status().unwrap_or("not reported").to_owned();
+        let time = if model.run_time_ns() == 0 {
+            "—".to_owned()
+        } else {
+            format::logical(model.run_time_ns())
+        };
+        let halted: Vec<String> = desk
+            .instruments()
+            .into_iter()
+            .filter(|instrument| model.is_halted(instrument.instrument_id))
+            .map(|instrument| instrument.symbol)
+            .collect();
+        let halts = if halted.is_empty() {
+            "None".to_owned()
+        } else {
+            halted.join(", ")
+        };
+        let row = |label: &str, value: String| {
+            h_flex()
+                .h(px(28.))
+                .mx_1()
+                .pl(px(12.))
+                .pr(px(8.))
+                .items_center()
+                .justify_between()
+                .text_size(px(13.))
+                .child(
+                    div()
+                        .text_color(theme.muted_foreground)
+                        .child(label.to_owned()),
+                )
+                .child(
+                    div()
+                        .font_features(theme::tabular())
+                        .text_color(theme.sidebar_foreground)
+                        .child(value),
+                )
+        };
+        v_flex()
+            .id("run-section")
+            .test_support()
+            .gap_px()
+            .child(row("Status", status))
+            .child(row("Run time", time))
+            .child(row("Halts", halts))
+    }
+
+    fn begin_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(screen) = self.screens.get(index) else {
+            return;
+        };
+        let name = screen.name.clone();
+        let state = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        state.update(cx, |state, cx| state.focus(window, cx));
+        self.renaming = Some((index, state));
+        cx.notify();
+    }
+
+    fn finish_rename(&mut self, cx: &mut Context<Self>) {
+        let Some((index, state)) = self.renaming.take() else {
+            return;
+        };
+        let name = state.read(cx).value().trim().to_owned();
+        if !name.is_empty()
+            && let Some(screen) = self.screens.get_mut(index)
+        {
+            screen.name = name;
+            self.schedule_save(cx);
+        }
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screens.len() <= 1 {
+            return;
+        }
+        let Some(screen) = self.screens.get(index) else {
+            return;
+        };
+        let name = screen.name.clone();
+        let workspace = cx.entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let workspace = workspace.clone();
+            alert
+                .confirm()
+                .title(format!("Delete the screen “{name}”?"))
+                .description(
+                    "Its windows and their arrangement are removed from the saved screens.",
+                )
+                .ok_text("Delete")
+                .on_ok(move |_, window, cx| {
+                    workspace.update(cx, |this, cx| this.delete_screen(index, window, cx));
+                    true
+                })
+        });
+    }
+
+    // ---- title bar -----------------------------------------------------------
+
+    fn title_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let name = self
-            .workspaces
+            .screens
             .get(self.active)
-            .map_or_else(String::new, |saved| saved.name.clone());
-        let preset = self
-            .workspaces
-            .get(self.active)
-            .map_or(Preset::Trading, |saved| saved.preset);
+            .map_or_else(String::new, |screen| screen.name.clone());
+        let key_hint = Kbd::binding_for_action(&actions::TogglePalette, None, window);
         h_flex()
             .id("top-bar")
             .test_support()
-            .h(px(44.))
+            .h(px(TITLE_BAR_HEIGHT))
             .flex_shrink_0()
+            .items_center()
             .px_3()
             .gap_2()
             .bg(theme.title_bar)
             .border_b_1()
             .border_color(theme.title_bar_border)
             .child(
+                Button::new("toggle-sidebar")
+                    .icon(IconName::PanelLeft)
+                    .ghost()
+                    .xsmall()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sidebar_visible = !this.sidebar_visible;
+                        cx.notify();
+                    })),
+            )
+            .child(theme::serif(name).text_size(px(15.)))
+            .child(div().flex_1())
+            .child(
+                // A field that opens the command palette; the real command
+                // line with codes is U3 (ADR 0051 decision 4).
                 h_flex()
+                    .id("open-palette")
+                    .test_support()
+                    .h(px(26.))
+                    .w(px(400.))
+                    .items_center()
                     .gap_2()
-                    .items_baseline()
-                    .child(theme::serif(name).text_size(px(17.)))
+                    .px_2()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.input)
+                    .bg(theme.secondary)
+                    .text_size(px(12.))
+                    .text_color(theme.muted_foreground)
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(format!("from {}", preset.name())),
-                    ),
-            )
-            .child(div().w(px(8.)))
-            .child(
-                Button::new("save-layout")
-                    .label("Save layout")
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.save_layout(cx))),
-            )
-            .child(
-                Button::new("reset-layout")
-                    .label("Reset layout")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.reset_layout(window, cx))),
-            )
-            .child(
-                Button::new("open-palette")
-                    .label("Commands")
-                    .small()
+                        Icon::new(IconName::Search)
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child(div().flex_1().child("Type a command or code"))
+                    .child(key_hint.unwrap_or_else(|| {
+                        Kbd::new(gpui_kit::Keystroke::parse("secondary-k").unwrap_or_default())
+                    }))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_palette(window, cx))),
             )
             .child(div().flex_1())
@@ -566,10 +825,7 @@ impl Workspace {
         let desk = self.desk.read(cx);
         let model = desk.model();
         let (color, text): (Hsla, String) = match model.connection() {
-            Connection::Connected { welcome, .. } => (
-                theme.success,
-                format!("Connected · participant {}", welcome.participant_id),
-            ),
+            Connection::Connected { .. } => (theme.success, desk.label().to_owned()),
             Connection::Connecting { attempt } => {
                 (theme.warning, format!("Connecting (attempt {attempt})"))
             }
@@ -579,6 +835,7 @@ impl Workspace {
         let mut pill = h_flex()
             .id("connection-pill")
             .test_support()
+            .items_center()
             .gap_2()
             .text_xs()
             .font_features(theme::tabular())
@@ -588,7 +845,7 @@ impl Workspace {
             pill = pill.child(
                 div()
                     .text_color(theme.muted_foreground)
-                    .child(format!("Venue {venue} {}", format::duration(trip.last_us))),
+                    .child(format!("V{venue} {}", format::duration(trip.last_us))),
             );
         }
         if let Some(status) = model.run_status() {
@@ -618,8 +875,20 @@ impl Workspace {
     }
 }
 
+fn preset_key(preset: Preset) -> &'static str {
+    match preset {
+        Preset::Trading => "trading",
+        Preset::MarketMaking => "market-making",
+        Preset::Arbitrage => "arbitrage",
+    }
+}
+
 impl Workspace {
     /// Handles every desk action: from keys, the palette or a button.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one handler per action, listed whole so none is missing"
+    )]
     fn with_actions(root: Stateful<Div>, cx: &Context<Self>) -> Stateful<Div> {
         root.on_action(cx.listener(|this, _: &actions::TogglePalette, window, cx| {
             this.toggle_palette(window, cx);
@@ -631,19 +900,61 @@ impl Workspace {
             this.reset_layout(window, cx);
         }))
         .on_action(cx.listener(|this, _: &actions::NewWorkspace, window, cx| {
-            this.add_workspace(Preset::Trading, window, cx);
+            this.add_screen(Preset::Trading, window, cx);
         }))
         .on_action(cx.listener(|this, _: &actions::NextWorkspace, window, cx| {
-            this.step_workspace(true, window, cx);
+            this.step_screen(true, window, cx);
         }))
         .on_action(
             cx.listener(|this, _: &actions::PreviousWorkspace, window, cx| {
-                this.step_workspace(false, window, cx);
+                this.step_screen(false, window, cx);
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::ToggleSidebar, _, cx| {
+            this.sidebar_visible = !this.sidebar_visible;
+            cx.notify();
+        }))
+        .on_action(cx.listener(|this, _: &actions::TileWindows, _, cx| {
+            this.canvas.update(cx, Canvas::tile_windows);
+        }))
+        .on_action(cx.listener(|this, _: &actions::CascadeWindows, _, cx| {
+            this.canvas.update(cx, Canvas::cascade_windows);
+        }))
+        .on_action(cx.listener(|this, _: &actions::CloseWindow, _, cx| {
+            this.canvas.update(cx, Canvas::close_focused);
+        }))
+        .on_action(
+            cx.listener(|this, _: &actions::ReopenClosedWindow, window, cx| {
+                this.canvas.update(cx, |canvas, cx| {
+                    canvas.reopen_closed(window, cx);
+                });
             }),
         )
         .on_action(
+            cx.listener(|this, _: &actions::FocusNextWindow, window, cx| {
+                this.canvas.update(cx, |canvas, cx| {
+                    canvas.cycle_focus(true, window, cx);
+                });
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::FocusPreviousWindow, window, cx| {
+                this.canvas.update(cx, |canvas, cx| {
+                    canvas.cycle_focus(false, window, cx);
+                });
+            }),
+        )
+        .on_action(cx.listener(|this, _: &actions::MaximizeWindow, _, cx| {
+            this.canvas.update(cx, Canvas::maximise_focused);
+        }))
+        .on_action(
             cx.listener(|this, _: &actions::OpenBookTrader, window, cx| {
                 this.add_pane(PaneKind::BookTrader, window, cx);
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &actions::OpenLadderTrader, window, cx| {
+                this.add_pane(PaneKind::LadderTrader, window, cx);
             }),
         )
         .on_action(
@@ -671,6 +982,12 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &actions::OpenNotices, window, cx| {
             this.add_pane(PaneKind::Notices, window, cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::OpenNews, window, cx| {
+            this.add_pane(PaneKind::News, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenDeals, window, cx| {
+            this.add_pane(PaneKind::Deals, window, cx);
+        }))
         .on_action(cx.listener(|this, _: &actions::CancelAll, _, cx| {
             this.desk.update(cx, Desk::cancel_all);
         }))
@@ -693,14 +1010,14 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = connection_label(self.desk.read(cx));
         let palette = self
             .palette
             .clone()
             .map(|state| self.palette(&state, cx).into_any_element());
         let theme = cx.theme();
-        h_flex()
+        v_flex()
             .id("workspace")
             .key_context(CONTEXT)
             .track_focus(&self.focus)
@@ -710,25 +1027,29 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.foreground)
             .font_family(theme::SANS)
-            .child(self.sidebar(cx))
+            .child(self.title_bar(window, cx))
             .child(
-                v_flex()
+                h_flex()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.top_bar(cx))
-                    .child(div().flex_1().min_h_0().child(self.area.clone()))
-                    .child(
-                        StatusBar::new()
-                            .left(
-                                div()
-                                    .id("connection")
-                                    .test_support()
-                                    .font_features(theme::tabular())
-                                    .child(status),
-                            )
-                            .right(concat!("bunting-desk ", env!("CARGO_PKG_VERSION"))),
-                    ),
+                    .min_h_0()
+                    .when(self.sidebar_visible, |row| row.child(self.sidebar(cx)))
+                    .child(div().flex_1().min_w_0().h_full().child(self.canvas.clone())),
+            )
+            .child(
+                StatusBar::new()
+                    .h(px(STATUS_BAR_HEIGHT))
+                    .left(
+                        div()
+                            .id("connection")
+                            .test_support()
+                            .font_features(theme::tabular())
+                            .child(status),
+                    )
+                    .child(div().text_xs().child(format!(
+                        "{} commands · Ctrl+Tab screens",
+                        theme::command_key()
+                    )))
+                    .right(concat!("bunting-desk ", env!("CARGO_PKG_VERSION"))),
             )
             .when_some(palette, |root, palette| {
                 root.child(
@@ -763,15 +1084,20 @@ impl Render for Workspace {
     }
 }
 
-fn section_label(text: &'static str, cx: &App) -> Div {
-    div()
-        .px_2()
-        .pt_3()
-        .pb_1()
-        .text_xs()
-        .font_weight(FontWeight::MEDIUM)
+/// A sidebar section header: 28 px, sentence-case 12 px semibold muted,
+/// with room for a trailing ghost action on the same row.
+fn section_header(text: &'static str, cx: &App) -> Div {
+    h_flex()
+        .h(px(28.))
+        .items_center()
+        .justify_between()
+        .pl(px(12.))
+        .pr(px(8.))
+        .mt_2()
+        .text_size(px(12.))
+        .font_weight(FontWeight::SEMIBOLD)
         .text_color(cx.theme().muted_foreground)
-        .child(text.to_uppercase())
+        .child(div().child(text))
 }
 
 fn sidebar_row(
@@ -779,25 +1105,32 @@ fn sidebar_row(
     icon: IconName,
     label: impl Into<SharedString>,
     active: bool,
+    muted: bool,
     cx: &App,
 ) -> gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>> {
     let theme = cx.theme();
     h_flex()
         .id(gpui_kit::ElementId::Name(id.into()))
         .test_support()
-        .gap_2()
-        .px_2()
-        .py_1()
-        .rounded(theme.radius)
-        .cursor_pointer()
-        .text_sm()
-        .text_color(if active {
+        .h(px(28.))
+        .items_center()
+        .gap(px(8.))
+        .mx_1()
+        .pl(px(12.))
+        .pr(px(8.))
+        .rounded(px(4.))
+        .text_size(px(13.))
+        .text_color(if muted {
+            theme.muted_foreground
+        } else if active {
             theme.sidebar_accent_foreground
         } else {
             theme.sidebar_foreground
         })
-        .when(active, |row| row.bg(theme.sidebar_accent))
+        .when(active, |row| {
+            row.bg(theme.sidebar_accent).font_weight(FontWeight::MEDIUM)
+        })
         .hover(|row| row.bg(theme.sidebar_accent))
         .child(Icon::new(icon).small().text_color(theme.muted_foreground))
-        .child(label.into())
+        .child(div().overflow_hidden().child(label.into()))
 }

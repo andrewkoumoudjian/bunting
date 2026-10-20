@@ -1,5 +1,5 @@
-//! Every kind of pane the workspace can open, any number of times, and the
-//! builders that bring panes back from a saved layout.
+//! Every kind of pane a canvas window can hold, any number of times, and
+//! the builder that brings panes back from a saved screen (ADR 0051).
 
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
@@ -10,8 +10,8 @@ use crate::panels::{
     TradesPanel,
 };
 use gpui_kit::component::IconName;
-use gpui_kit::component::dock::{BasePanelView, panel_handle, register_panel};
-use gpui_kit::{App, AppContext as _, Entity, Global, Window};
+use gpui_kit::component::dock::{BasePanelView, panel_handle};
+use gpui_kit::{App, AppContext as _, Entity, Window};
 use std::sync::Arc;
 
 /// A kind of pane. Its [`name`](Self::name) is written into saved layouts
@@ -170,21 +170,5 @@ impl PaneKind {
             Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
             Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
         }
-    }
-}
-
-/// The desk restored panes attach to.
-struct DeskHandle(Entity<Desk>);
-
-impl Global for DeskHandle {}
-
-/// Lets saved layouts rebuild every kind of pane on `desk`.
-pub fn register(desk: &Entity<Desk>, cx: &mut App) {
-    cx.set_global(DeskHandle(desk.clone()));
-    for kind in PaneKind::ALL {
-        register_panel(cx, kind.name(), move |_, window, cx| {
-            let desk = cx.global::<DeskHandle>().0.clone();
-            kind.build(desk, window, cx)
-        });
     }
 }

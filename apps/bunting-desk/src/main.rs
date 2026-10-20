@@ -4,7 +4,34 @@
 use bunting_desk::connect::{self, Options};
 use bunting_desk::{Desk, LayoutStore, Workspace};
 use clap::Parser as _;
-use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_kit::assets::{Assets, icon_assets};
+use gpui_kit::{
+    AppContext as _, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowBounds,
+    WindowOptions, px, size,
+};
+use std::borrow::Cow;
+
+// The default component icon bundle plus the few catalog icons the desk
+// uses, composed as in gpui-kit's examples (longbridge/gpui-kit,
+// Apache-2.0, examples/speech/src/main.rs at 4d63c73).
+icon_assets!(ExtraIcons, [Pencil, Trash]);
+
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some(bytes) = ExtraIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = Assets.list(path)?;
+        paths.extend(ExtraIcons.list(path)?);
+        Ok(paths)
+    }
+}
 
 fn main() {
     let options = Options::parse();
@@ -19,7 +46,7 @@ fn main() {
     };
     let mut venue = Some(venue);
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             bunting_desk::init(cx);
@@ -31,6 +58,13 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             let window = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // The Wayland app_id (window class) and title, so the
+                // compositor can name and rule the window.
+                app_id: Some("bunting-desk".to_owned()),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Bunting".into()),
+                    ..TitlebarOptions::default()
+                }),
                 ..WindowOptions::default()
             };
             let store = LayoutStore::default_location();
