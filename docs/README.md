@@ -89,7 +89,9 @@ transport details), 0007, 0008, 0012, 0013, 0014 (folded into 0018), 0015,
 | `specs/jane-street-exchange-engine-requirements.md` | Current baseline + Target | Source-by-source Jane Street talk spec matrix with pinned implementation evidence, verification gates and link to ADR 0053 |
 | `specs/competition-policies-v1.md` | Current | Implemented competition policies |
 | `specs/rit-class-market-simulation.md` | Target | RIT-class feature requirements |
-| `specs/rit-tui-parity-matrix.md` | Target | RIT workflow parity for the app/TUI |
+| `specs/rit-tui-parity-matrix.md` | Target | RIT workflow parity for the TUI (FIX era) |
+| `specs/rit-desk-window-parity.md` | Target | Desk acceptance contract: every RIT module, column and gesture at a minimum, with data source and current state |
+| `plans/2026-10-20-desk-backlog.md` | Current | Desk working TODO list |
 | `ports/quarcc-trading-engine.md` | Current | QUARCC port record |
 | `ports/ritc-market-making.md` | Current | RITC participant reference |
 | `ports/nbc-*.md`, `ports/nbc-*.json`, `ports/nbc-*.tsv` | Historical provenance | NBC is reference only (ADR 0032) |

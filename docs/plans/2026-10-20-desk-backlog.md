@@ -18,6 +18,12 @@ date.
 
 ## Next
 
+**Binding contract:** `docs/specs/rit-desk-window-parity.md` (owner,
+2026-10-20): every window must behave like RIT's module of the same
+purpose, at a minimum. Charts are universal: any security, several
+securities, bar sizes and indicators, plus a P&L chart. The items below
+are ordered steps toward that contract.
+
 1. **Practicality test with several identities** (owner, 2026-10-20:
    "test practicality of the app by building it, spinning up multiple
    instances with multiple identity and connect to the same server
