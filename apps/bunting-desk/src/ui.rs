@@ -8,10 +8,12 @@
 
 use crate::theme;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, Div, FocusHandle, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, Styled as _, TestSupportExt as _, Window, div, px,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window, div, px,
 };
 
 /// Inner padding of every pane body.
@@ -77,6 +79,30 @@ pub fn field(label: impl Into<SharedString>, control: AnyElement, cx: &App) -> D
             div()
                 .text_size(px(LABEL_SIZE))
                 .text_color(cx.theme().muted_foreground)
+                .child(label.into()),
+        )
+        .child(control)
+}
+
+/// [`field`] whose label carries a tooltip: the label stays a short
+/// name, the explanation lives in the tip.
+#[must_use]
+pub fn field_tipped(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    tip: impl Into<SharedString>,
+    control: AnyElement,
+    cx: &App,
+) -> Div {
+    let tip: SharedString = tip.into();
+    v_flex()
+        .gap(px(FIELD_GAP))
+        .child(
+            div()
+                .id(id)
+                .text_size(px(LABEL_SIZE))
+                .text_color(cx.theme().muted_foreground)
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .child(label.into()),
         )
         .child(control)

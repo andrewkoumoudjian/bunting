@@ -1137,8 +1137,10 @@ impl Render for TicketPanel {
                     .flex_1(),
                 ),
         );
-        body = body.child(ui::field(
-            "Show at a time (iceberg; blank shows all)",
+        body = body.child(ui::field_tipped(
+            "ticket-display-label",
+            "Display qty",
+            "Iceberg: the quantity shown in the book at a time. Blank shows the whole order.",
             div()
                 .id("ticket-display")
                 .test_support()
@@ -1786,31 +1788,53 @@ impl Render for AccountPanel {
         let desk = self.desk.read(cx);
         let model = desk.model();
         let mut body = panel_body("account", &self.focus).child(
-            h_flex().gap_2().child(
+            ui::toolbar().child(
                 Button::new("refresh")
                     .label("Reload orders and account")
                     .xsmall()
+                    .outline()
                     .on_click(window.listener_for(&self.desk, |desk, _, _, cx| desk.refresh(cx))),
             ),
         );
         let Some(account) = model.account() else {
-            return body.child(muted("No account answer from the venue yet.", cx));
-        };
-        body = body
-            .child(muted(
-                format!("As of committed sequence {}", account.run_sequence),
-                cx,
-            ))
-            .child(header(
-                &[("currency", 96.), ("balance", 120.), ("reserved", 120.)],
+            return body.child(ui::empty_state(
+                "account-empty",
+                IconName::CircleUser,
+                "No account answer from the venue yet",
+                None,
                 cx,
             ));
+        };
+        body = body.child(muted(
+            format!("As of committed sequence {}", account.run_sequence),
+            cx,
+        ));
+        // Balances as stats, coloured by sign (the model carries no
+        // separate P&L figure).
         for balance in &account.cash {
-            body = body.child(row(vec![
-                (cell(balance.currency_id.to_string()), 96.),
-                (cell(balance.balance.to_string()), 120.),
-                (cell(balance.reserved.to_string()), 120.),
-            ]));
+            let theme = cx.theme();
+            let balance_color = match balance.balance.cmp(&0) {
+                std::cmp::Ordering::Greater => theme.chart_bullish,
+                std::cmp::Ordering::Less => theme.chart_bearish,
+                std::cmp::Ordering::Equal => theme.foreground,
+            };
+            body = body
+                .child(ui::section_label(
+                    format!("Currency {}", balance.currency_id),
+                    cx,
+                ))
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .items_start()
+                        .child(ui::stat_colored(
+                            "Balance",
+                            balance.balance.to_string(),
+                            balance_color,
+                            cx,
+                        ))
+                        .child(ui::stat("Reserved", balance.reserved.to_string(), cx)),
+                );
         }
         body
     }
@@ -1824,6 +1848,15 @@ dock_panel!(NoticesPanel, "notices", "Notices");
 impl Render for NoticesPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.desk.read(cx).model().notices().len();
+        if count == 0 {
+            return panel_body("notices", &self.focus).child(ui::empty_state(
+                "notices-empty",
+                IconName::Bell,
+                "No notices yet",
+                None,
+                cx,
+            ));
+        }
         let desk = self.desk.clone();
         panel_body("notices", &self.focus).child(
             uniform_list("notice-rows", count, move |range, _, cx| {
@@ -1837,10 +1870,25 @@ impl Render for NoticesPanel {
                             NoticeLevel::Warning => cx.theme().warning,
                             NoticeLevel::Error => cx.theme().danger,
                         };
-                        row(vec![
-                            (cell(format::clock(notice.at_us)), 72.),
-                            (colored(notice.text.clone(), color), 640.),
-                        ])
+                        h_flex()
+                            .w_full()
+                            .h(px(ui::TABLE_ROW_HEIGHT))
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(72.))
+                                    .flex_shrink_0()
+                                    .child(format::clock(notice.at_us)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_color(color)
+                                    .child(notice.text.clone()),
+                            )
                     })
                     .collect()
             })
