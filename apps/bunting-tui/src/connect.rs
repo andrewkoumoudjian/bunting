@@ -1,8 +1,8 @@
 //! Where the terminal connects: a hosted venue named by flags, environment
-//! or a saved profile, or a private local venue.
+//! or a saved profile, or the shared local venue on this machine.
 
 use bunting_trading_state::bunting_client::ClientConfig;
-use bunting_trading_state::local_venue::{self, LocalVenue, ServerProgram};
+use bunting_trading_state::local_venue::{self, ServerProgram, SharedVenue};
 use clap::Args;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -11,12 +11,20 @@ use std::path::{Path, PathBuf};
 /// Connection options; the same flags and environment as `bunting-trader`.
 #[derive(Args, Clone, Debug, Default)]
 pub struct TuiOptions {
-    /// Start a private practice venue on this machine and connect to it.
+    /// Join the shared practice venue on this machine (starting it
+    /// first if needed) as the next free of its eight participants, so
+    /// several terminals and desks trade in one local market.
     #[arg(long, conflicts_with_all = ["server", "profile"])]
     pub local: bool,
-    /// Directory for the local venue's certificates, configuration and log.
+    /// Directory for the local venue's certificates, configuration and
+    /// log (default: the per-user `bunting/local-venue` directory,
+    /// shared by every local client).
     #[arg(long, requires = "local")]
     pub venue_dir: Option<PathBuf>,
+    /// Claim exactly this local participant (1-8) instead of the next
+    /// free one; fails if another client already holds it.
+    #[arg(long, requires = "local")]
+    pub participant: Option<u64>,
     /// Program that runs the local venue (`bunting` or `bunting-server`).
     #[arg(long, requires = "local")]
     pub server_bin: Option<PathBuf>,
@@ -66,11 +74,12 @@ struct Profile {
     key: PathBuf,
 }
 
-/// What the terminal connects to, and the local venue it keeps running.
+/// What the terminal connects to, and its claim on the shared local
+/// venue (whose drop stops the server only for the last client).
 pub struct Target {
     pub client: ClientConfig,
     pub label: String,
-    pub local: Option<LocalVenue>,
+    pub local: Option<SharedVenue>,
 }
 
 pub fn resolve(options: &TuiOptions, server: Option<ServerProgram>) -> Result<Target, String> {
@@ -135,14 +144,27 @@ fn local(options: &TuiOptions, server: Option<ServerProgram>) -> Result<Target, 
         })
         .or(server)
         .ok_or("--local needs --server-bin: the path of `bunting` or `bunting-server`")?;
-    let directory = options.venue_dir.clone().unwrap_or_else(default_venue_dir);
-    eprintln!("starting a local venue in {}", directory.display());
-    let prepared = local_venue::prepare(&directory).map_err(|error| error.to_string())?;
-    let venue = LocalVenue::start(prepared, &program).map_err(|error| error.to_string())?;
-    let mut client = venue.prepared.client.clone();
+    let directory = options
+        .venue_dir
+        .clone()
+        .unwrap_or_else(local_venue::default_venue_dir);
+    let venue =
+        local_venue::join_or_start(&directory, &program, options.participant.map(u128::from))
+            .map_err(|error| error.to_string())?;
+    eprintln!(
+        "{} the local venue in {} as participant {}",
+        if venue.started_server {
+            "started"
+        } else {
+            "joined"
+        },
+        directory.display(),
+        venue.participant_id
+    );
+    let mut client = venue.client.clone();
     client_name(&mut client);
     Ok(Target {
-        label: format!("local venue {}", client.address),
+        label: venue.label(),
         client,
         local: Some(venue),
     })
@@ -167,17 +189,6 @@ fn config_dir() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("bunting")
-}
-
-fn default_venue_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"))
-        })
-        .unwrap_or_else(std::env::temp_dir)
-        .join("bunting")
-        .join("local-venue")
 }
 
 fn load_profile(path: Option<&Path>, name: Option<&str>) -> Result<Option<Profile>, String> {
