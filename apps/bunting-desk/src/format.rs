@@ -61,9 +61,57 @@ pub fn price(price: Option<i64>) -> String {
     price.map_or_else(|| "market".to_owned(), |price| price.to_string())
 }
 
+/// A whole number with a thousands separator: `1234567` as `1,234,567`.
+#[must_use]
+pub fn grouped(value: i128) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if value < 0 {
+        text.push('-');
+    }
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// [`grouped`] with an explicit `+` on positive numbers, for P&L.
+#[must_use]
+pub fn grouped_signed(value: i128) -> String {
+    if value > 0 {
+        format!("+{}", grouped(value))
+    } else {
+        grouped(value)
+    }
+}
+
+/// "Updated 1.20 s ago": how long since `received_us`, `now_us` being the
+/// desk clock.
+#[must_use]
+pub fn updated_ago(received_us: u64, now_us: u64) -> String {
+    format!(
+        "Updated {} ago",
+        duration(now_us.saturating_sub(received_us))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbers_group_by_thousands() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(grouped(-1_234_567), "-1,234,567");
+        assert_eq!(grouped_signed(1_500), "+1,500");
+        assert_eq!(grouped_signed(-5), "-5");
+        assert_eq!(updated_ago(1_000, 2_501_000), "Updated 2.50 s ago");
+    }
 
     #[test]
     fn durations_read_in_the_largest_whole_unit() {

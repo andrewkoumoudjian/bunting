@@ -6,6 +6,7 @@ use crate::desk::Desk;
 use crate::flash::{self, Flash, Flashes};
 use crate::format;
 use crate::one_click::{self, Gesture, Intent, OneClick};
+use crate::portfolio;
 use crate::ui::{self, Col};
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
@@ -1366,14 +1367,6 @@ const FILL_COLUMNS: [Col; 8] = [
     Col::left("liquidity", 72.).priority(0),
 ];
 
-const POSITION_COLUMNS: [Col; 5] = [
-    Col::left("symbol", 72.).priority(2),
-    Col::right("position", 80.).priority(2),
-    Col::right("open buy", 80.),
-    Col::right("open sell", 80.),
-    Col::right("fills since", 88.).priority(0),
-];
-
 // ---- trades ------------------------------------------------------------------
 
 /// Which trades the tape panel lists.
@@ -1742,84 +1735,130 @@ impl Render for FillsPanel {
 reader_panel!(PositionsPanel);
 dock_panel!(PositionsPanel, "positions", "Portfolio");
 
+/// The cell for column `index` of a portfolio row: signed figures take
+/// the market colours, Last takes its tick, and the two columns the
+/// venue cannot fill yet carry a tooltip saying why.
+fn portfolio_cell(row: &portfolio::Row, texts: &[String], index: usize, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let text = texts[index].clone();
+    let sign = |value: i128| match value.cmp(&0) {
+        std::cmp::Ordering::Greater => theme.chart_bullish,
+        std::cmp::Ordering::Less => theme.chart_bearish,
+        std::cmp::Ordering::Equal => theme.foreground,
+    };
+    let id = row.instrument_id;
+    match index {
+        1 => ui::tipped(
+            SharedString::from(format!("pf-type-{id}")),
+            portfolio::TYPE_GAP,
+            text,
+        )
+        .into_any_element(),
+        2 if !row.contract_size.1 => ui::tipped(
+            SharedString::from(format!("pf-size-{id}")),
+            "Contract size assumed 1 until the venue sends contract sizes (BNP reference data gap)",
+            text,
+        )
+        .into_any_element(),
+        3 => colored(text, sign(row.position.unwrap_or(0).into())),
+        5 => {
+            // The tick colour lasts until the price next changes.
+            let cell = div()
+                .id(SharedString::from(format!("pf-last-{id}")))
+                .test_support()
+                .px_1()
+                .rounded_sm();
+            match row.tick {
+                Some(std::cmp::Ordering::Greater) => cell.bg(theme.chart_bullish.opacity(0.35)),
+                Some(std::cmp::Ordering::Less) => cell.bg(theme.chart_bearish.opacity(0.35)),
+                _ => cell,
+            }
+            .child(text)
+            .into_any_element()
+        }
+        9 => colored(text, sign(row.realized)),
+        10 => colored(text, sign(row.unrealized.unwrap_or(0))),
+        15 => colored(text, theme.warning),
+        _ => cell(text),
+    }
+}
+
 impl Render for PositionsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let desk = self.desk.read(cx);
         let model = desk.model();
         let mut body = panel_body("positions", &self.focus);
-        let Some(account) = model.account() else {
+        let rows = portfolio::rows(model);
+        if rows.is_empty() {
             return body.child(ui::empty_state(
                 "positions-empty",
                 IconName::ChartPie,
-                "No account answer from the venue yet",
-                None,
-                cx,
-            ));
-        };
-        let instruments = model.instruments();
-        body = body.child(muted(
-            format!(
-                "As of committed sequence {}, received {} ago",
-                account.run_sequence,
-                format::duration(desk.now_us().saturating_sub(account.received_us))
-            ),
-            cx,
-        ));
-        if account.positions.is_empty() {
-            return body.child(ui::empty_state(
-                "positions-none",
-                IconName::ChartPie,
-                "No positions",
+                "No listings yet",
                 None,
                 cx,
             ));
         }
-        let mut rows: Vec<Vec<AnyElement>> = Vec::new();
-        for position in &account.positions {
-            let symbol = instruments
-                .iter()
-                .find(|instrument| instrument.instrument_id == position.instrument_id)
-                .map_or_else(
-                    || format!("#{}", position.instrument_id),
-                    |instrument| instrument.symbol.clone(),
+        body = body.child(match model.account() {
+            Some(account) => ui::tipped(
+                "positions-updated",
+                format!("As of committed sequence {}", account.run_sequence),
+                muted(format::updated_ago(account.received_us, desk.now_us()), cx),
+            )
+            .into_any_element(),
+            None => muted("No account answer from the venue yet", cx).into_any_element(),
+        });
+        let multi = rows.iter().any(|row| row.multi_venue);
+        let assumed = rows.iter().any(|row| !row.contract_size.1);
+        let mut note = String::from(
+            "Cost, NLV, realized, unrealized, VWAP and volume are derived from your fills, the books and the trades since you connected, not the venue's own valuation.",
+        );
+        if assumed {
+            note.push_str(" * Contract size assumed 1.");
+        }
+        if multi {
+            note.push_str(
+                " Last, bid and ask name their venue; VWAP and volume cover every venue.",
+            );
+        }
+        body = body.child(
+            div()
+                .id("positions-note")
+                .test_support()
+                .child(muted(note, cx)),
+        );
+        let desk = self.desk.clone();
+        let table = ui::responsive_table(&portfolio::COLUMNS, move |fitted, _, cx| {
+            let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
+            let mut list = v_flex()
+                .id("positions-rows")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll();
+            for row in &rows {
+                let texts = row.texts();
+                let cells = (0..texts.len())
+                    .map(|index| portfolio_cell(row, &texts, index, cx))
+                    .collect();
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("position-{}", row.symbol)))
+                        .test_support()
+                        .child(ui::table_row(fitted, cells, cx)),
                 );
-            let pending = model.unreported_position(position.instrument_id);
-            let theme = cx.theme();
-            let position_color = match position.position.cmp(&0) {
-                std::cmp::Ordering::Greater => theme.chart_bullish,
-                std::cmp::Ordering::Less => theme.chart_bearish,
-                std::cmp::Ordering::Equal => theme.foreground,
-            };
-            rows.push(vec![
-                cell(symbol),
-                colored(position.position.to_string(), position_color),
-                cell(position.open_buy.to_string()),
-                cell(position.open_sell.to_string()),
-                colored(
-                    if pending == 0 {
-                        String::new()
-                    } else {
-                        format!("{pending:+}")
-                    },
-                    theme.warning,
-                ),
-            ]);
-        }
-        body.child(ui::responsive_table(
-            &POSITION_COLUMNS,
-            move |fitted, _, cx| {
-                let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
-                let mut list = v_flex()
-                    .id("positions-rows")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll();
-                for cells in rows {
-                    list = list.child(ui::table_row(fitted, cells, cx));
-                }
-                table = table.child(list);
-                table
-            },
+            }
+            table = table.child(list);
+            table
+        });
+        body.child(ui::copy_menu(
+            v_flex()
+                .id("positions-table")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(table),
+            desk,
+            |desk| portfolio::copy_text(desk.model()),
         ))
     }
 }
@@ -1829,17 +1868,33 @@ impl Render for PositionsPanel {
 reader_panel!(AccountPanel);
 dock_panel!(AccountPanel, "account", "Trader Info");
 
+/// The colour of a signed money figure: bullish above zero, bearish below.
+fn signed_color(value: i128, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match value.cmp(&0) {
+        std::cmp::Ordering::Greater => theme.chart_bullish,
+        std::cmp::Ordering::Less => theme.chart_bearish,
+        std::cmp::Ordering::Equal => theme.foreground,
+    }
+}
+
 impl Render for AccountPanel {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "identity, P&L, cash and limits sections read best whole"
+    )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let desk = self.desk.read(cx);
         let model = desk.model();
-        // The toolbar: the as-of line on the left in muted text, a quiet
-        // ghost refresh icon on the right.
+        // The toolbar: how fresh the answer is on the left in muted text
+        // (the committed sequence in its tooltip), a quiet ghost refresh
+        // icon on the right.
         let mut toolbar = ui::toolbar(cx).w_full();
         if let Some(account) = model.account() {
-            toolbar = toolbar.child(muted(
+            toolbar = toolbar.child(ui::tipped(
+                "account-updated",
                 format!("As of committed sequence {}", account.run_sequence),
-                cx,
+                muted(format::updated_ago(account.received_us, desk.now_us()), cx),
             ));
         }
         let body = panel_body("account", &self.focus).child(
@@ -1861,40 +1916,95 @@ impl Render for AccountPanel {
                 cx,
             ));
         };
-        // Balances as stats, coloured by sign (the model carries no
-        // separate P&L figure), in a region that scrolls when there are
-        // more currencies than the window is tall.
+        let trader_id = match model.connection() {
+            Connection::Connected { welcome, .. } => welcome.participant_id.to_string(),
+            _ => "—".to_owned(),
+        };
+        let totals = model.pnl_totals();
+        let currencies = account.cash.len();
+        // The sections scroll when the window is shorter than they are.
         let mut stats = v_flex()
             .id("account-stats")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .gap(px(ui::PANE_GAP));
-        for balance in &account.cash {
-            let theme = cx.theme();
-            let balance_color = match balance.balance.cmp(&0) {
-                std::cmp::Ordering::Greater => theme.chart_bullish,
-                std::cmp::Ordering::Less => theme.chart_bearish,
-                std::cmp::Ordering::Equal => theme.foreground,
-            };
-            stats = stats
-                .child(ui::section_label(
-                    format!("Currency {}", balance.currency_id),
-                    cx,
-                ))
-                .child(
-                    h_flex()
-                        .gap_4()
-                        .items_start()
-                        .child(ui::stat_colored(
-                            "Balance",
-                            balance.balance.to_string(),
-                            balance_color,
+            .gap(px(ui::PANE_GAP))
+            .child(ui::section_label("Trader", cx))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .items_start()
+                    .child(ui::stat("Trader ID", trader_id, cx))
+                    .child(ui::tipped(
+                        "account-name",
+                        "The venue does not send the trader's name yet (BNP participant identity gap)",
+                        ui::stat("Name", "—", cx),
+                    )),
+            )
+            .child(ui::section_label("P&L (derived)", cx))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .items_start()
+                    .child(
+                        div().id("account-pnl").test_support().child(ui::stat_colored(
+                            "P&L",
+                            format::grouped_signed(totals.total),
+                            signed_color(totals.total, cx),
                             cx,
-                        ))
-                        .child(ui::stat("Reserved", balance.reserved.to_string(), cx)),
-                );
+                        )),
+                    )
+                    .child(ui::stat_colored(
+                        "Realized",
+                        format::grouped_signed(totals.realized),
+                        signed_color(totals.realized, cx),
+                        cx,
+                    ))
+                    .child(ui::stat_colored(
+                        "Unrealized",
+                        format::grouped_signed(totals.unrealized),
+                        signed_color(totals.unrealized, cx),
+                        cx,
+                    )),
+            )
+            .child(muted(
+                if totals.multipliers_known {
+                    "Derived from your fills and the books, not the venue's own valuation."
+                } else {
+                    "Derived from your fills and the books, not the venue's own valuation; assumes contract size 1."
+                },
+                cx,
+            ));
+        for balance in &account.cash {
+            let heading = if currencies > 1 {
+                format!("Cash · currency {}", balance.currency_id)
+            } else {
+                "Cash".to_owned()
+            };
+            stats = stats.child(ui::section_label(heading, cx)).child(
+                h_flex()
+                    .gap_4()
+                    .items_start()
+                    .child(ui::stat_colored(
+                        "Balance",
+                        format::grouped(balance.balance),
+                        signed_color(balance.balance, cx),
+                        cx,
+                    ))
+                    .child(ui::stat("Reserved", format::grouped(balance.reserved), cx)),
+            );
         }
+        stats = stats
+            .child(ui::section_label("Trading limits", cx))
+            .child(
+                div()
+                    .id("account-limits-empty")
+                    .test_support()
+                    .child(muted(
+                        "The venue does not send trading limits yet (gross and net limit per security, and how much of each you use).",
+                        cx,
+                    )),
+            );
         body.child(stats)
     }
 }

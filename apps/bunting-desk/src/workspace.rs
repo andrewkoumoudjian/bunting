@@ -653,7 +653,7 @@ impl Workspace {
         let theme = cx.theme();
         let desk = self.desk.read(cx);
         let model = desk.model();
-        let status = model.run_status().unwrap_or("not reported").to_owned();
+        let status = model.run_status().unwrap_or("—").to_owned();
         let time = if model.run_time_ns() == 0 {
             "—".to_owned()
         } else {
