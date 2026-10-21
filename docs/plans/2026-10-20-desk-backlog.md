@@ -97,6 +97,26 @@ date.
   - **1 tick = 1% of price** makes many candles dojis. Finer ticks need
     the tick size and display scale on BNP (ADR 0054, Proposed, owner
     questions open).
+- **Venue crash found live after the resting-quote change, then fixed:**
+  - Log: `deterministic runtime failed: … InvalidTransition { from:
+    PendingCancel, report: Rejected { UnknownOrder } }`.
+  - Cause: a taker filled a provider's quote while its cancel was in
+    flight, and the cancel's reject reached the agent before the fill.
+  - Fixed in `01bc183`. `efdc875` makes the other cancel, expiry and fill
+    races idempotent, and `20bba74` retires a failing agent
+    (deterministic, in the snapshot) instead of stopping the venue.
+  - Stress test (release build): six CLI participants sent random market
+    orders to all four listings for 3 minutes, 26,600 orders. The venue
+    stayed up with no agent retired, and every book was still quoted.
+  - Gates on `20bba74`: all seven pass, and the workspace tests ran
+    85 suites, 346 passed, 0 failed, 1 ignored.
+- **Chart review round 3, merged as `2caf239`:**
+  - Labels never overlap.
+  - Book Trader venue cards fit or stack.
+  - Average cost keeps its decimals.
+  - Charting opens on one series, and same-instrument venues overlay on
+    the price axis.
+  - `tools/check_desk.sh`: 118 tests passed.
 
 ## Next
 
