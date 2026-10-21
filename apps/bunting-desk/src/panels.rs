@@ -30,6 +30,10 @@ use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::time::Instant;
 
+/// Lots one click of the Order Entry volume stepper adds (RIT: 10).
+pub const VOLUME_STEP: f64 = 10.;
+/// Ticks one click of the price stepper adds.
+pub const PRICE_STEP: f64 = 1.;
 /// Book levels shown per side.
 const BOOK_DEPTH: usize = 12;
 /// Displayed orders shown per side in the order-by-order view.
@@ -918,6 +922,11 @@ pub struct TicketPanel {
     price: Entity<InputState>,
     /// Quantity shown at a time (an iceberg); blank shows it all.
     display: Entity<InputState>,
+    /// The security this window trades; none follows the desk's until
+    /// the trader picks one here.
+    instrument: Option<u128>,
+    /// The venue this window sends to; there is no default.
+    listing: Option<Listing>,
     side: Side,
     kind: TicketKind,
     tif: TicketTif,
@@ -940,6 +949,11 @@ impl TicketPanel {
             let (number, price) = desk.read(cx).price_hint();
             if number != this.seen_hint {
                 this.seen_hint = number;
+                // A book click names an instrument and venue as well.
+                if let Some(listing) = desk.read(cx).listing() {
+                    this.instrument = Some(listing.instrument_id);
+                    this.listing = Some(listing);
+                }
                 if let Some(price) = price {
                     this.kind = TicketKind::Limit;
                     this.price.update(cx, |state, cx| {
@@ -951,11 +965,19 @@ impl TicketPanel {
         });
         let seen_hint = desk.read(cx).price_hint().0;
         Self {
-            quantity: cx.new(|cx| InputState::new(window, cx).default_value("1")),
-            price: cx.new(|cx| InputState::new(window, cx)),
+            // RIT steps volume by 10 lots and price by one tick.
+            quantity: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value("1")
+                    .step(VOLUME_STEP)
+                    .min(0.)
+            }),
+            price: cx.new(|cx| InputState::new(window, cx).step(PRICE_STEP).min(0.)),
             display: cx.new(|cx| InputState::new(window, cx).placeholder("all")),
             desk,
             focus: cx.focus_handle(),
+            instrument: None,
+            listing: None,
             side: Side::Buy,
             kind: TicketKind::Limit,
             tif: TicketTif::Gtc,
@@ -968,13 +990,32 @@ impl TicketPanel {
         }
     }
 
+    /// The security this window trades.
+    fn instrument(&self, cx: &App) -> Option<Instrument> {
+        let desk = self.desk.read(cx);
+        self.instrument
+            .and_then(|id| {
+                desk.instruments()
+                    .into_iter()
+                    .find(|each| each.instrument_id == id)
+            })
+            .or_else(|| desk.instrument())
+    }
+
+    /// The venue chosen in this window, if it lists the security shown.
+    fn chosen(&self, cx: &App) -> Option<Listing> {
+        let instrument = self.instrument(cx)?;
+        self.listing
+            .filter(|listing| listing.instrument_id == instrument.instrument_id)
+    }
+
     /// The ticket as entered; numbers that do not parse become 0, which the
     /// ticket refuses with its own reason.
     fn ticket(&self, cx: &App) -> OrderTicket {
         let number =
             |state: &Entity<InputState>| state.read(cx).value().trim().parse::<i64>().unwrap_or(0);
         OrderTicket {
-            listing: self.desk.read(cx).listing(),
+            listing: self.chosen(cx),
             side: self.side,
             quantity: number(&self.quantity),
             kind: self.kind,
@@ -1005,18 +1046,21 @@ impl TicketPanel {
             return "Choose a venue".to_owned();
         };
         let ticket = self.ticket(cx);
-        let side = format::side(self.side);
+        let side = format::side(self.side).to_uppercase();
         let venue = format::venue(listing);
         match self.kind {
             TicketKind::Market => {
-                format!("{side} {} {symbol} at market on {venue}", ticket.quantity)
+                format!(
+                    "Submit {side} · {} {symbol} at market · {venue}",
+                    ticket.quantity
+                )
             }
             TicketKind::Limit if self.price.read(cx).value().trim().is_empty() => {
-                format!("{side} {} {symbol} on {venue}", ticket.quantity)
+                format!("Submit {side} · {} {symbol} · {venue}", ticket.quantity)
             }
             TicketKind::Limit => {
                 format!(
-                    "{side} {} {symbol} @ {} on {venue}",
+                    "Submit {side} · {} {symbol} @ {} · {venue}",
                     ticket.quantity, ticket.price
                 )
             }
@@ -1030,9 +1074,10 @@ impl Render for TicketPanel {
         reason = "the whole ticket form, field by field"
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let instrument = self.instrument(cx);
+        let chosen = self.chosen(cx);
         let desk = self.desk.read(cx);
-        let instrument = desk.instrument();
-        let chosen = desk.listing();
+        let instruments = desk.instruments();
         let connected = desk.model().is_connected();
         let killed = desk.model().kill_switch_active();
         let trips = desk.model().venue_round_trips().clone();
@@ -1081,14 +1126,31 @@ impl Render for TicketPanel {
                 .small()
                 .tooltip("Every order names its venue; there is no default router")
                 .when_toggled(chosen == Some(listing))
-                .on_click(window.listener_for(
-                    &self.desk,
-                    move |desk, _, _, cx| {
-                        desk.select_listing(listing, cx);
-                    },
-                )),
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.listing = Some(listing);
+                    cx.notify();
+                })),
             );
         }
+        // This window's own security: RIT's ticker box.
+        let mut tickers = h_flex().gap_1().flex_wrap().items_center();
+        for each in &instruments {
+            let id = each.instrument_id;
+            tickers = tickers.child(
+                Button::new(SharedString::from(format!("ticket-instrument-{id}")))
+                    .label(each.symbol.clone())
+                    .small()
+                    .when_toggled(instrument.instrument_id == id)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.instrument != Some(id) {
+                            this.instrument = Some(id);
+                            this.listing = None;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        fields = fields.child(ui::field("Ticker", tickers.into_any_element(), cx));
         fields = fields.child(ui::field("Venue", venues.into_any_element(), cx));
         // Side and type are segmented controls. The selected side takes
         // its market colour: bullish for Buy, bearish for Sell.
@@ -1171,7 +1233,11 @@ impl Render for TicketPanel {
                 .child(
                     ui::field(
                         "Quantity (lots)",
-                        NumberInput::new(&self.quantity).small().into_any_element(),
+                        div()
+                            .id("ticket-quantity")
+                            .test_support()
+                            .child(NumberInput::new(&self.quantity).small())
+                            .into_any_element(),
                         cx,
                     )
                     .flex_1(),
@@ -1179,9 +1245,14 @@ impl Render for TicketPanel {
                 .child(
                     ui::field(
                         "Price (ticks)",
-                        NumberInput::new(&self.price)
-                            .small()
-                            .disabled(self.kind == TicketKind::Market)
+                        div()
+                            .id("ticket-price")
+                            .test_support()
+                            .child(
+                                NumberInput::new(&self.price)
+                                    .small()
+                                    .disabled(self.kind == TicketKind::Market),
+                            )
                             .into_any_element(),
                         cx,
                     )

@@ -1015,6 +1015,15 @@ fn news_halts_and_run_status_are_shown(cx: &mut TestAppContext) {
     connect_with_books(&fixture, cx);
     run_stream(&fixture, cx);
     add_pane(&fixture, cx, "news");
+    // The news layout is a container query holding the list's own, so it
+    // takes a few frames to settle.
+    for _ in 0..3 {
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
     cx.update_window(fixture.window.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("run-status").visible());

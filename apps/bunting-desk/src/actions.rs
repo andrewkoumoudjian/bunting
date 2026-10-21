@@ -20,6 +20,8 @@ actions!(
         TileWindows,
         CascadeWindows,
         CloseWindow,
+        /// RIT's Windows menu: close every window (reopen brings them back).
+        CloseAllWindows,
         ReopenClosedWindow,
         FocusNextWindow,
         FocusPreviousWindow,

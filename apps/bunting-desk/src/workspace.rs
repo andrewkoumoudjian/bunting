@@ -326,6 +326,11 @@ impl Workspace {
             )
             .item(
                 CommandItem::new()
+                    .label("Close all windows")
+                    .action(Box::new(actions::CloseAllWindows)),
+            )
+            .item(
+                CommandItem::new()
                     .label("Reopen closed window")
                     .action(Box::new(actions::ReopenClosedWindow)),
             )
@@ -840,6 +845,22 @@ impl Workspace {
                     .min_w_0()
                     .items_center()
                     .justify_end()
+                    .gap_3()
+                    .child(
+                        // RIT's Kill All Orders: cancels every live order of
+                        // yours. The participant kill switch is separate.
+                        Button::new("kill-all-orders")
+                            .label("Kill all orders")
+                            .xsmall()
+                            .outline()
+                            .danger()
+                            .tooltip(
+                                "Cancel all your live orders (F12). The kill switch is a separate, confirmed action",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.desk.update(cx, Desk::cancel_all);
+                            })),
+                    )
                     .child(self.connection_pill(cx)),
             )
     }
@@ -947,6 +968,12 @@ impl Workspace {
             this.canvas
                 .update(cx, |canvas, cx| canvas.close_focused(window, cx));
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::CloseAllWindows, window, cx| {
+                this.canvas
+                    .update(cx, |canvas, cx| canvas.close_all(window, cx));
+            }),
+        )
         .on_action(
             cx.listener(|this, _: &actions::ReopenClosedWindow, window, cx| {
                 this.canvas.update(cx, |canvas, cx| {

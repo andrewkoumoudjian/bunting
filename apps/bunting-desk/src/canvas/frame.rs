@@ -16,6 +16,7 @@ use gpui_kit::{
 };
 
 /// The title strip of window `id`.
+#[expect(clippy::too_many_lines, reason = "the one title strip, built whole")]
 pub fn window_frame(
     id: u64,
     kind: PaneKind,
@@ -97,6 +98,15 @@ pub fn window_frame(
                 .gap(px(2.))
                 .opacity(if focused { 1. } else { 0. })
                 .group_hover("canvas-window", |style| style.opacity(1.))
+                .when_some(kind.frame_action(), |row, (icon, tip)| {
+                    row.child(
+                        frame_button(SharedString::from(format!("win-add-{id}")), icon)
+                            .tooltip(tip)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_beside(id, window, cx);
+                            })),
+                    )
+                })
                 .child(
                     frame_button(SharedString::from(format!("win-min-{id}")), IconName::Minus)
                         .on_click(cx.listener(move |this, _, _, cx| this.minimise(id, cx))),

@@ -263,12 +263,12 @@ fn the_submit_label_names_side_quantity_price_and_venue(cx: &mut TestAppContext)
     click(&fixture, cx, "bid-1-0");
     assert_eq!(
         label(&fixture, cx, "ticket-send").as_deref(),
-        Some("Buy 1 BNT @ 99 on Venue 1")
+        Some("Submit BUY · 1 BNT @ 99 · Venue 1")
     );
     click(&fixture, cx, "ticket-sell");
     assert_eq!(
         label(&fixture, cx, "ticket-send").as_deref(),
-        Some("Sell 1 BNT @ 99 on Venue 1")
+        Some("Submit SELL · 1 BNT @ 99 · Venue 1")
     );
     click(&fixture, cx, "ticket-send");
     let orders = new_orders(&fixture);
@@ -823,4 +823,148 @@ fn copy_to_clipboard_writes_tab_separated_text(cx: &mut TestAppContext) {
     let header = lines.next().expect("header");
     assert!(header.starts_with("ticker\ttype\tsize\tposition\tcost\tlast\tbid\task\tNLV"));
     assert!(lines.next().expect("row").starts_with("BNT\t—\t1*\t6\t100"));
+}
+
+// ---- window parity (RIT): Order Entry, Kill All, Close all ------------------------
+
+/// Rests a one-lot bid through the ticket and returns its client order ID.
+fn rest_a_bid(fixture: &Fixture, cx: &mut TestAppContext) -> u64 {
+    click(fixture, cx, "bid-1-0");
+    let _ = fixture.sent.take();
+    click(fixture, cx, "ticket-send");
+    let id = new_orders(fixture)[0].client_order_id;
+    let stamp = |sequence| Stamp {
+        sequence,
+        logical_time_ns: 0,
+    };
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderAccepted {
+            stamp: stamp(1),
+            client_order_id: id,
+            order_id: 5,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 1,
+            price: Some(99),
+        }),
+    );
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp: stamp(2),
+            client_order_id: id,
+            order_id: 5,
+            price: 99,
+            remaining: 1,
+            reference: None,
+        }),
+    );
+    id
+}
+
+fn step(fixture: &Fixture, cx: &mut TestAppContext, field: &str, button: &str) {
+    let (field, button) = (field.to_owned(), button.to_owned());
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within(field).click(button, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_steppers_move_volume_by_ten_lots_and_price_by_one_tick(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(
+        &fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    click(&fixture, cx, "bid-1-0");
+    let send = |cx: &mut TestAppContext| label(&fixture, cx, "ticket-send").unwrap();
+    assert_eq!(send(cx), "Submit BUY · 1 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-quantity", "increment");
+    step(&fixture, cx, "ticket-quantity", "increment");
+    assert_eq!(send(cx), "Submit BUY · 21 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-quantity", "decrement");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-price", "increment");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 100 · Venue 1");
+    step(&fixture, cx, "ticket-price", "decrement");
+    step(&fixture, cx, "ticket-price", "decrement");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 98 · Venue 1");
+}
+
+#[gpui_kit::test]
+fn plus_in_the_frame_opens_another_order_entry(cx: &mut TestAppContext) {
+    let (fixture, canvas) = open_canvas(cx, bunting_desk::Preset::Trading, None);
+    let tickets = |cx: &mut TestAppContext| {
+        canvas
+            .read_with(cx, |canvas, _| canvas.window_list())
+            .into_iter()
+            .filter(|info| info.kind.name() == "ticket")
+            .map(|info| info.id)
+            .collect::<Vec<_>>()
+    };
+    let before = tickets(cx);
+    assert_eq!(before.len(), 1);
+    click(&fixture, cx, &format!("win-add-{}", before[0]));
+    let after = tickets(cx);
+    assert_eq!(after.len(), 2, "a second Order Entry window");
+}
+
+#[gpui_kit::test]
+fn kill_all_orders_cancels_every_live_order(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(
+        &fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    let id = rest_a_bid(&fixture, cx);
+    let _ = fixture.sent.take();
+    click(&fixture, cx, "kill-all-orders");
+    assert_eq!(
+        fixture.sent.take(),
+        [ClientMessage::CancelOrder {
+            client_order_id: id
+        }]
+    );
+}
+
+#[gpui_kit::test]
+fn close_all_closes_every_window_and_reopen_brings_one_back(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(visible(&fixture, cx, "ticket"));
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(bunting_desk::actions::CloseAllWindows), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    for pane in bunting_desk::PANELS {
+        assert!(!visible(&fixture, cx, pane), "{pane} closed");
+    }
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(bunting_desk::actions::ReopenClosedWindow), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let open: usize = bunting_desk::PANELS
+        .iter()
+        .filter(|pane| visible(&fixture, cx, pane))
+        .count();
+    assert_eq!(open, 1, "the last closed window is back");
 }

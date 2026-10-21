@@ -150,10 +150,18 @@ impl PaneKind {
     /// carries the instrument chip.
     #[must_use]
     pub const fn follows_instrument(self) -> bool {
-        matches!(
-            self,
-            Self::BookTrader | Self::LadderTrader | Self::OrderEntry | Self::Tape
-        )
+        matches!(self, Self::BookTrader | Self::LadderTrader | Self::Tape)
+    }
+
+    /// An extra action this kind wears in its window frame: its icon and
+    /// tooltip. Order Entry has RIT's "+", which opens another beside it
+    /// (the close button is RIT's "−").
+    #[must_use]
+    pub const fn frame_action(self) -> Option<(IconName, &'static str)> {
+        match self {
+            Self::OrderEntry => Some((IconName::Plus, "Another Order Entry window")),
+            _ => None,
+        }
     }
 
     /// A new pane of this kind on `desk`.
