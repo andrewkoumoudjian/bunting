@@ -47,9 +47,7 @@ fn order(
 #[test]
 fn a_flat_practice_participant_sells_short_up_to_its_limit_and_no_further() -> Result<(), String> {
     let scenario: ScenarioDefinition = serde_json::from_str(SCENARIO).map_err(|e| e.to_string())?;
-    let limits = scenario.participants()[&ParticipantId::new(2)]
-        .limits()
-        .clone();
+    let limits = scenario.participants()[&ParticipantId::new(2)].limits();
     assert_eq!(limits.max_absolute_position, QuantityLots::new(1_000_000));
     for instrument in [1_u128, 2] {
         let mut state = RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario)

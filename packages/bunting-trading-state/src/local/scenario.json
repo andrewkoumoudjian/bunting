@@ -206,6 +206,81 @@
       "initial_positions": {
         "1": 100000
       }
+    },
+    "13": {
+      "participant_id": 13,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "14": {
+      "participant_id": 14,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "15": {
+      "participant_id": 15,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "16": {
+      "participant_id": 16,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
+    },
+    "18": {
+      "participant_id": 18,
+      "enabled": true,
+      "limits": {
+        "max_order_quantity": 100000,
+        "max_open_order_quantity": 1000000,
+        "max_absolute_position": 1000000
+      },
+      "initial_cash": {
+        "1": 1000000000
+      },
+      "initial_positions": {
+        "1": 100000
+      }
     }
   },
   "simulation": {

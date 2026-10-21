@@ -536,6 +536,7 @@ struct VenueRecord {
     nonce: String,
     /// The server program as started (from `venue.json`); its file name
     /// is checked against the live process off Linux.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     program: String,
 }
 
@@ -997,10 +998,15 @@ impl Drop for LocalVenue {
 
 fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
     let link = |a: &str, b: &str, latency_us: u64| json!({"between": [a, b], "latency_us": latency_us, "jitter_us": latency_us / 20});
-    let agent = |kind: &str, participant_id: u128, seed: u64| {
+    let agent = |kind: &str,
+                 participant_id: u128,
+                 seed: u64,
+                 base_quantity: u64,
+                 spread_ticks: u64,
+                 wake_ms: u64| {
         json!({
-            "kind": kind, "participant_id": participant_id, "base_quantity": 5,
-            "spread_ticks": 2, "inventory_target": 0, "wake_interval_ns": 500_000_000_u64,
+            "kind": kind, "participant_id": participant_id, "base_quantity": base_quantity,
+            "spread_ticks": spread_ticks, "inventory_target": 0, "wake_interval_ns": wake_ms * 1_000_000,
             "seed": seed, "max_intents_per_wake": 4
         })
     };
@@ -1081,9 +1087,14 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
                 "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
                 "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
                 "agents": [
-                    agent("static_liquidity_provider", 10, 42),
-                    agent("zero_intelligence_noise", 11, 43),
-                    agent("long_momentum", 12, 44)
+                    agent("static_liquidity_provider", 10, 42, 40, 1, 500),
+                    agent("static_liquidity_provider", 13, 45, 40, 2, 500),
+                    agent("static_liquidity_provider", 14, 46, 40, 3, 500),
+                    agent("static_liquidity_provider", 15, 47, 40, 4, 500),
+                    agent("static_liquidity_provider", 16, 48, 40, 5, 500),
+                    agent("zero_intelligence_noise", 11, 43, 10, 4, 500),
+                    agent("mean_reversion", 12, 44, 5, 2, 500),
+                    agent("fully_informed", 18, 50, 40, 2, 500)
                 ]
             }
         }
@@ -1363,6 +1374,41 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert!(!process_is_our_server(&read, &directory));
         let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
+    }
+
+    #[test]
+    fn every_built_in_agent_trades_as_a_funded_scenario_participant() -> Result<(), String> {
+        let scenario: Value = serde_json::from_str(SCENARIO).map_err(|e| e.to_string())?;
+        let participants = scenario["participants"]
+            .as_object()
+            .ok_or("scenario participants")?;
+        let config = server_config(1, 2, &["0123456789abcdef0123456789abcdef"]);
+        let agents = config["runtime"]["scheduler"]["agents"]
+            .as_array()
+            .ok_or("agents")?;
+        // Liquidity at several price levels, so a 100-lot market order fills.
+        let providers = agents
+            .iter()
+            .filter(|agent| agent["kind"] == json!("static_liquidity_provider"))
+            .count();
+        assert!(providers >= 5, "{providers} liquidity providers");
+        let mut ids = Vec::new();
+        for agent in agents {
+            let id = agent["participant_id"].as_u64().ok_or("participant_id")?;
+            assert!(
+                participants.contains_key(&id.to_string()),
+                "agent participant {id} is in the scenario"
+            );
+            assert!(
+                u128::from(id) > LAST_PARTICIPANT,
+                "agent {id} is not a desk seat"
+            );
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), agents.len(), "one participant per agent");
         Ok(())
     }
 
