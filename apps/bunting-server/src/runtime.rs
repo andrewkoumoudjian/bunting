@@ -184,9 +184,19 @@ fn bootstrap_run(config: &ServerConfig, origin: &NativeOrigin) -> Result<Option<
         .map_err(|error| format!("cannot create run from scenario: {error}"))?;
         if let Some(runtime) = &config.runtime {
             if runtime.scheduler.run_id != run.run_id()
-                || run
-                    .listing_key_for_instrument(runtime.scheduler.instrument_id)
-                    .is_err()
+                || runtime.scheduler.agents.iter().any(|agent| {
+                    let instrument = agent
+                        .instrument_id
+                        .unwrap_or(runtime.scheduler.instrument_id);
+                    match agent.venue_id {
+                        Some(venue) => run
+                            .visible_levels(bunting_market_types::ListingKey::new(
+                                venue, instrument,
+                            ))
+                            .is_err(),
+                        None => run.listing_key_for_instrument(instrument).is_err(),
+                    }
+                })
                 || runtime.scheduler.agents.iter().any(|agent| {
                     !definition
                         .participants()

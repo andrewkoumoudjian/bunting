@@ -9,17 +9,21 @@ use bunting_agents::{
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
 use bunting_application::VerifiedActor;
 use bunting_engine::RunState;
-use bunting_market_events::{EventEnvelope, EventPayload};
+use bunting_market_events::{CommandPayload, EventEnvelope, EventPayload};
 use bunting_market_types::{
-    CorrelationId, InstrumentId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots, RunId,
+    CorrelationId, InstrumentId, ListingKey, LogicalTimeNs, ParticipantId, PriceTicks,
+    QuantityLots, RunId, VenueId,
 };
 use quarcc_bunting_adapter::{BuntingCommandContext, BuntingExecutionAdapter};
 use quarcc_execution_engine::{
     ExecutionAction, ExecutionConfig, ExecutionSnapshot, QuarccExecutionEngine,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+
+mod fundamental;
+pub use fundamental::{FundamentalPath, FundamentalWalker, VolatilityRegime};
 
 const AGENT_ID_STRIDE: u128 = 1_000_000;
 /// Orders, open or finished, a built-in agent's QUARCC state remembers.
@@ -38,6 +42,28 @@ pub struct RuntimeAgentConfig {
     pub wake_interval_ns: u64,
     pub seed: u64,
     pub max_intents_per_wake: usize,
+    /// The instrument this agent trades; absent means the scheduler's
+    /// `instrument_id`. Any other instrument needs an entry in
+    /// `RuntimeConfig::other_instruments` and a `venue_id`.
+    #[serde(default)]
+    pub instrument_id: Option<InstrumentId>,
+    /// The venue whose listing this agent trades. Absent means the
+    /// instrument's only listing (its orders are ordinary `SubmitOrder`s);
+    /// present, its orders are `SubmitOrderAtListing` for that listing.
+    #[serde(default)]
+    pub venue_id: Option<VenueId>,
+}
+
+/// The fundamental of an instrument other than the scheduler's own. Every
+/// listing of the instrument shares it; the listings' books stay independent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstrumentFundamental {
+    pub instrument_id: InstrumentId,
+    pub fundamental_price: PriceTicks,
+    /// Its own path (and seed); absent keeps the price constant.
+    #[serde(default)]
+    pub fundamental_path: Option<FundamentalPath>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,6 +75,13 @@ pub struct RuntimeConfig {
     pub remaining_parent_quantity: QuantityLots,
     pub max_actions_per_tick: usize,
     pub agents: Vec<RuntimeAgentConfig>,
+    /// How the fundamental moves with the run clock; absent keeps
+    /// `fundamental_price` constant.
+    #[serde(default)]
+    pub fundamental_path: Option<FundamentalPath>,
+    /// Fundamentals of the further instruments agents trade.
+    #[serde(default)]
+    pub other_instruments: Vec<InstrumentFundamental>,
 }
 
 impl RuntimeConfig {
@@ -58,12 +91,32 @@ impl RuntimeConfig {
             || self.fundamental_price.get() <= 1
             || self.remaining_parent_quantity.get() < 0
             || self.max_actions_per_tick == 0
+            || self
+                .fundamental_path
+                .as_ref()
+                .is_some_and(|path| !path.is_valid(self.fundamental_price))
         {
             return Err(RuntimeError::InvalidConfig);
         }
+        let mut instruments = BTreeSet::from([self.instrument_id]);
+        for other in &self.other_instruments {
+            if other.instrument_id.get() == 0
+                || other.fundamental_price.get() <= 1
+                || other
+                    .fundamental_path
+                    .as_ref()
+                    .is_some_and(|path| !path.is_valid(other.fundamental_price))
+                || !instruments.insert(other.instrument_id)
+            {
+                return Err(RuntimeError::InvalidConfig);
+            }
+        }
         let mut participants = BTreeSet::new();
         for agent in &self.agents {
-            if agent.participant_id.get() == 0
+            let instrument = agent.instrument_id.unwrap_or(self.instrument_id);
+            if !instruments.contains(&instrument)
+                || (instrument != self.instrument_id && agent.venue_id.is_none())
+                || agent.participant_id.get() == 0
                 || agent.base_quantity.get() <= 0
                 || agent.spread_ticks <= 0
                 || agent.wake_interval_ns == 0
@@ -101,10 +154,21 @@ pub struct RuntimeSnapshot {
     pub previous_trade: PriceTicks,
     pub last_trade: PriceTicks,
     pub agents: Vec<RuntimeAgentSnapshot>,
+    /// Last two trade prices of each listing an agent names by venue.
+    #[serde(default)]
+    pub listing_trades: Vec<ListingTrades>,
     /// Decided actions not yet submitted, in submission order. A runtime
     /// restored mid-tick submits these before deciding anything new.
     #[serde(default)]
     pub pending: Vec<PendingAction>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ListingTrades {
+    pub venue_id: VenueId,
+    pub instrument_id: InstrumentId,
+    pub previous_trade: PriceTicks,
+    pub last_trade: PriceTicks,
 }
 
 /// Snapshot format written by [`DeterministicRuntime::snapshot`].
@@ -183,6 +247,9 @@ struct ScheduledAgent {
     managed: ManagedAgent<BuiltInPolicy>,
     adapter: BuntingExecutionAdapter,
     next_wake: NextWake,
+    /// The instrument traded, and the listing when the config names a venue.
+    instrument: InstrumentId,
+    listing: Option<ListingKey>,
 }
 
 pub struct DeterministicRuntime {
@@ -192,6 +259,49 @@ pub struct DeterministicRuntime {
     previous_trade: PriceTicks,
     last_trade: PriceTicks,
     pending: VecDeque<(usize, ExecutionAction)>,
+    /// Last two trades of each listing named by an agent's `venue_id`.
+    listing_trades: BTreeMap<ListingKey, (PriceTicks, PriceTicks)>,
+    /// One per instrument; caches only, rebuilt from the config after a
+    /// restart.
+    walkers: BTreeMap<InstrumentId, FundamentalWalker>,
+}
+
+fn walkers_of(config: &RuntimeConfig) -> BTreeMap<InstrumentId, FundamentalWalker> {
+    let mut walkers = BTreeMap::from([(
+        config.instrument_id,
+        FundamentalWalker::new(config.fundamental_path.clone(), config.fundamental_price),
+    )]);
+    for other in &config.other_instruments {
+        walkers.insert(
+            other.instrument_id,
+            FundamentalWalker::new(other.fundamental_path.clone(), other.fundamental_price),
+        );
+    }
+    walkers
+}
+
+fn start_price(config: &RuntimeConfig, instrument: InstrumentId) -> PriceTicks {
+    config
+        .other_instruments
+        .iter()
+        .find(|other| other.instrument_id == instrument)
+        .map_or(config.fundamental_price, |other| other.fundamental_price)
+}
+
+/// The listings agents name by venue, each starting at its instrument's
+/// fundamental.
+fn listing_trades_of(config: &RuntimeConfig) -> BTreeMap<ListingKey, (PriceTicks, PriceTicks)> {
+    config
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            let instrument = agent.instrument_id.unwrap_or(config.instrument_id);
+            let start = start_price(config, instrument);
+            agent
+                .venue_id
+                .map(|venue| (ListingKey::new(venue, instrument), (start, start)))
+        })
+        .collect()
 }
 
 impl DeterministicRuntime {
@@ -200,11 +310,13 @@ impl DeterministicRuntime {
         let agents = config
             .agents
             .iter()
-            .map(|agent| scheduled_agent(agent, config.instrument_id))
+            .map(|agent| scheduled_agent(agent, &config))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             previous_trade: config.fundamental_price,
             last_trade: config.fundamental_price,
+            walkers: walkers_of(&config),
+            listing_trades: listing_trades_of(&config),
             config,
             agents,
             logical_time: LogicalTimeNs::new(0),
@@ -230,7 +342,10 @@ impl DeterministicRuntime {
             .map(|(saved, configured)| {
                 if saved.participant_id != configured.participant_id
                     || saved.managed.policy.config.participant_id != configured.participant_id
-                    || saved.managed.policy.config.instrument_id != snapshot.config.instrument_id
+                    || saved.managed.policy.config.instrument_id
+                        != configured
+                            .instrument_id
+                            .unwrap_or(snapshot.config.instrument_id)
                 {
                     return Err(RuntimeError::InvalidSnapshot);
                 }
@@ -246,10 +361,31 @@ impl DeterministicRuntime {
                     ),
                     adapter: saved.adapter,
                     next_wake: saved.next_wake,
+                    instrument: configured
+                        .instrument_id
+                        .unwrap_or(snapshot.config.instrument_id),
+                    listing: configured.venue_id.map(|venue| {
+                        ListingKey::new(
+                            venue,
+                            configured
+                                .instrument_id
+                                .unwrap_or(snapshot.config.instrument_id),
+                        )
+                    }),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let mut listing_trades = listing_trades_of(&snapshot.config);
+        for saved in &snapshot.listing_trades {
+            if let Some(entry) =
+                listing_trades.get_mut(&ListingKey::new(saved.venue_id, saved.instrument_id))
+            {
+                *entry = (saved.previous_trade, saved.last_trade);
+            }
+        }
         Ok(Self {
+            walkers: walkers_of(&snapshot.config),
+            listing_trades,
             config: snapshot.config,
             agents,
             logical_time: snapshot.logical_time,
@@ -271,6 +407,16 @@ impl DeterministicRuntime {
             logical_time: self.logical_time,
             previous_trade: self.previous_trade,
             last_trade: self.last_trade,
+            listing_trades: self
+                .listing_trades
+                .iter()
+                .map(|(key, (previous_trade, last_trade))| ListingTrades {
+                    venue_id: key.venue_id,
+                    instrument_id: key.instrument_id,
+                    previous_trade: *previous_trade,
+                    last_trade: *last_trade,
+                })
+                .collect(),
             agents: self
                 .agents
                 .iter()
@@ -314,7 +460,7 @@ impl DeterministicRuntime {
             let expected_sequence = host.read_state(self.config.run_id, RunState::sequence)?;
             self.logical_time = LogicalTimeNs::new(self.logical_time.get().saturating_add(1));
             let participant_id = self.agents[index].participant_id;
-            let command = self.agents[index]
+            let mut command = self.agents[index]
                 .adapter
                 .command_for_action(
                     &action,
@@ -327,6 +473,16 @@ impl DeterministicRuntime {
                     },
                 )
                 .map_err(|error| RuntimeError::Adapter(format!("command: {error:?}")))?;
+            // An agent that names a venue trades that listing; the order
+            // still goes through the same sequencer as any other.
+            if let (Some(listing_key), CommandPayload::SubmitOrder(order)) =
+                (self.agents[index].listing, &command.payload)
+            {
+                command.payload = CommandPayload::SubmitOrderAtListing {
+                    listing_key,
+                    order: order.clone(),
+                };
+            }
             let actor = built_in_actor(participant_id)?;
             let events = host.commit(&actor, &command)?;
             self.observe_trades(&events);
@@ -366,8 +522,12 @@ impl DeterministicRuntime {
         };
         self.logical_time =
             LogicalTimeNs::new(now.get().max(self.logical_time.get().saturating_add(1)));
-        let observation =
-            host.read_state(self.config.run_id, |state| self.observation(state))??;
+        let now_ns = self.logical_time.get();
+        let fundamentals: BTreeMap<InstrumentId, PriceTicks> = self
+            .walkers
+            .iter_mut()
+            .map(|(instrument, walker)| (*instrument, walker.at(now_ns)))
+            .collect();
         let due = self
             .agents
             .iter()
@@ -377,12 +537,21 @@ impl DeterministicRuntime {
             })
             .collect::<Vec<_>>();
         for index in due {
+            let instrument = self.agents[index].instrument;
+            let listing = self.agents[index].listing;
+            let fundamental = fundamentals
+                .get(&instrument)
+                .copied()
+                .ok_or(RuntimeError::InvalidConfig)?;
+            let observation = host.read_state(self.config.run_id, |state| {
+                self.observation(state, instrument, listing, fundamental)
+            })??;
             let position = self.agents[index]
                 .managed
                 .snapshot()
                 .execution
                 .positions
-                .get(&self.config.instrument_id)
+                .get(&instrument)
                 .map_or_else(|| QuantityLots::new(0), |position| position.quantity);
             let (next_wake, actions) = self.agents[index]
                 .managed
@@ -402,14 +571,26 @@ impl DeterministicRuntime {
         host.checkpoint(&self.snapshot())
     }
 
-    fn observation(&self, state: &RunState) -> Result<AgentObservation, RuntimeError> {
-        let key = state
-            .listing_key_for_instrument(self.config.instrument_id)
-            .map_err(|_| RuntimeError::InvalidMarket)?;
+    fn observation(
+        &self,
+        state: &RunState,
+        instrument: InstrumentId,
+        listing: Option<ListingKey>,
+        fundamental: PriceTicks,
+    ) -> Result<AgentObservation, RuntimeError> {
+        let key = match listing {
+            Some(key) => key,
+            None => state
+                .listing_key_for_instrument(instrument)
+                .map_err(|_| RuntimeError::InvalidMarket)?,
+        };
+        let (previous_trade, last_trade) = listing
+            .and_then(|key| self.listing_trades.get(&key).copied())
+            .unwrap_or((self.previous_trade, self.last_trade));
         let (bids, asks) = state
             .visible_levels(key)
             .map_err(|_| RuntimeError::InvalidMarket)?;
-        let fallback_bid = self.config.fundamental_price.get().saturating_sub(1).max(1);
+        let fallback_bid = fundamental.get().saturating_sub(1).max(1);
         let best_bid = bids.first().map_or(fallback_bid, |(price, _)| price.get());
         let best_ask = asks
             .first()
@@ -422,9 +603,9 @@ impl DeterministicRuntime {
             best_ask: PriceTicks::new(best_ask.max(best_bid.saturating_add(1))),
             bid_quantity: QuantityLots::new(quantity(&bids)?),
             ask_quantity: QuantityLots::new(quantity(&asks)?),
-            last_trade: self.last_trade,
-            fundamental: self.config.fundamental_price,
-            previous_trade: self.previous_trade,
+            last_trade,
+            fundamental,
+            previous_trade,
             observed_volume: QuantityLots::new(quantity(&bids)?.saturating_add(quantity(&asks)?)),
             stress_bps: 0,
         })
@@ -432,9 +613,19 @@ impl DeterministicRuntime {
 
     fn observe_trades(&mut self, events: &[EventEnvelope]) {
         for event in events {
-            if let EventPayload::TradeExecuted { price, .. } = event.payload {
-                self.previous_trade = self.last_trade;
-                self.last_trade = price;
+            if let EventPayload::TradeExecuted {
+                price,
+                instrument_id,
+                listing_key,
+                ..
+            } = event.payload
+            {
+                if let Some(entry) = listing_key.and_then(|key| self.listing_trades.get_mut(&key)) {
+                    *entry = (entry.1, price);
+                } else if instrument_id == self.config.instrument_id {
+                    self.previous_trade = self.last_trade;
+                    self.last_trade = price;
+                }
             }
         }
     }
@@ -463,8 +654,9 @@ impl DeterministicRuntime {
 
 fn scheduled_agent(
     config: &RuntimeAgentConfig,
-    instrument_id: InstrumentId,
+    scheduler: &RuntimeConfig,
 ) -> Result<ScheduledAgent, RuntimeError> {
+    let instrument_id = config.instrument_id.unwrap_or(scheduler.instrument_id);
     let policy = BuiltInPolicy::new(AgentConfig {
         kind: config.kind,
         participant_id: config.participant_id,
@@ -498,6 +690,10 @@ fn scheduled_agent(
         next_wake: NextWake {
             logical_time: LogicalTimeNs::new(0),
         },
+        instrument: instrument_id,
+        listing: config
+            .venue_id
+            .map(|venue| ListingKey::new(venue, instrument_id)),
     })
 }
 
@@ -627,6 +823,8 @@ mod tests {
             fundamental_price: PriceTicks::new(100),
             remaining_parent_quantity: QuantityLots::new(1_000),
             max_actions_per_tick: 16,
+            fundamental_path: None,
+            other_instruments: Vec::new(),
             agents: vec![RuntimeAgentConfig {
                 kind: PolicyKind::StaticLiquidityProvider,
                 participant_id,
@@ -636,6 +834,8 @@ mod tests {
                 wake_interval_ns: 1_000_000_000,
                 seed: 42,
                 max_intents_per_wake: 4,
+                instrument_id: None,
+                venue_id: None,
             }],
         };
         Ok((
@@ -686,6 +886,220 @@ mod tests {
                 .map_err(|_| RuntimeError::InvalidSnapshot)?
         );
         assert_eq!(uninterrupted.snapshot(), resumed.snapshot());
+        Ok(())
+    }
+
+    fn walking_config() -> Result<(RuntimeConfig, MemoryHost), RuntimeError> {
+        let (mut config, host) = fixture()?;
+        config.agents[0].kind = PolicyKind::FundamentalLiquidityProvider;
+        config.fundamental_path = Some(FundamentalPath::RandomWalk {
+            seed: 9,
+            step_ns: 1_000_000_000,
+            annual_volatility_bps: 60_000,
+            trading_days_per_year: 252,
+            run_ns_per_day: 10_000_000_000,
+            regimes: vec![VolatilityRegime {
+                from_ns: 8_000_000_000,
+                annual_volatility_bps: 90_000,
+            }],
+            min_price_ticks: 20,
+            max_price_ticks: 500,
+        });
+        Ok((config, host))
+    }
+
+    /// BNT on venue 1; QRC on venues 1 and 2. One provider per listing.
+    fn two_listing_fixture() -> Result<(RuntimeConfig, MemoryHost), RuntimeError> {
+        let bounds = || {
+            PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000))
+                .map_err(|_| RuntimeError::InvalidMarket)
+        };
+        let listing = |venue: u128, instrument: u128, symbol: &str| {
+            ListingDefinition::new(
+                ListingKey::new(VenueId::new(venue), InstrumentId::new(instrument)),
+                symbol.to_owned(),
+                bounds()?,
+            )
+            .map_err(|_| RuntimeError::InvalidMarket)
+        };
+        let funded = |id: u128| {
+            ParticipantDefinition::new(
+                ParticipantId::new(id),
+                true,
+                RiskLimits::new(
+                    QuantityLots::new(100),
+                    QuantityLots::new(1_000),
+                    QuantityLots::new(10_000),
+                ),
+                BTreeMap::from([(CurrencyId::new(1), MoneyMinor::new(10_000_000))]),
+                BTreeMap::from([
+                    (InstrumentId::new(1), QuantityLots::new(100)),
+                    (InstrumentId::new(2), QuantityLots::new(100)),
+                ]),
+            )
+        };
+        let instrument = |id: u128, symbol: &str, mark: i64| {
+            bunting_engine::InstrumentDefinition::new(
+                InstrumentId::new(id),
+                symbol,
+                CurrencyId::new(1),
+                bunting_engine::InstrumentKind::Equity,
+            )
+            .with_opening_mark(PriceTicks::new(mark))
+        };
+        let scenario = ScenarioDefinition::new(
+            ScenarioId::new(1),
+            ScenarioVersion::new(1),
+            [instrument(1, "BNT", 100), instrument(2, "QRC", 50)],
+            [
+                listing(1, 1, "BNT")?,
+                listing(1, 2, "QRC")?,
+                listing(2, 2, "QRC")?,
+            ],
+            [funded(10), funded(11), funded(12)],
+        )
+        .map_err(|_| RuntimeError::InvalidMarket)?;
+        let state = RunState::from_scenario(RunId::new(1), IterationId::new(1), &scenario)
+            .map_err(|error| RuntimeError::Host(error.to_string()))?;
+        let agent =
+            |participant: u128, instrument: Option<u128>, venue: Option<u128>| RuntimeAgentConfig {
+                kind: PolicyKind::FundamentalLiquidityProvider,
+                participant_id: ParticipantId::new(participant),
+                base_quantity: QuantityLots::new(5),
+                spread_ticks: 2,
+                inventory_target: QuantityLots::new(0),
+                wake_interval_ns: 1_000_000_000,
+                seed: u64::try_from(participant).unwrap_or(0),
+                max_intents_per_wake: 4,
+                instrument_id: instrument.map(InstrumentId::new),
+                venue_id: venue.map(VenueId::new),
+            };
+        let config = RuntimeConfig {
+            run_id: RunId::new(1),
+            instrument_id: InstrumentId::new(1),
+            fundamental_price: PriceTicks::new(100),
+            remaining_parent_quantity: QuantityLots::new(1_000),
+            max_actions_per_tick: 16,
+            fundamental_path: None,
+            other_instruments: vec![InstrumentFundamental {
+                instrument_id: InstrumentId::new(2),
+                fundamental_price: PriceTicks::new(50),
+                fundamental_path: None,
+            }],
+            agents: vec![
+                agent(10, None, None),
+                agent(11, Some(2), Some(1)),
+                agent(12, Some(2), Some(2)),
+            ],
+        };
+        Ok((
+            config,
+            MemoryHost {
+                state,
+                roles: Vec::new(),
+                elsewhere: Vec::new(),
+                committed: BTreeMap::new(),
+                checkpoints: Vec::new(),
+                crash_after: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn agents_on_two_listings_each_quote_their_own_book() -> Result<(), RuntimeError> {
+        let (config, mut host) = two_listing_fixture()?;
+        let mut runtime = DeterministicRuntime::new(config)?;
+        assert_eq!(runtime.advance(&mut host)?, 6);
+        let book = |venue: u128, instrument: u128| {
+            host.state
+                .visible_levels(ListingKey::new(
+                    VenueId::new(venue),
+                    InstrumentId::new(instrument),
+                ))
+                .map_err(|_| RuntimeError::InvalidMarket)
+        };
+        let ticks = |levels: &bunting_engine::VisibleLevels| -> Vec<i64> {
+            levels.iter().map(|(price, _)| price.get()).collect()
+        };
+        // Each book is centred on its own instrument's fundamental, and the
+        // two QRC listings hold separate quotes of their own providers.
+        let (bnt_bids, bnt_asks) = book(1, 1)?;
+        assert_eq!((ticks(&bnt_bids), ticks(&bnt_asks)), (vec![98], vec![102]));
+        for venue in [1, 2] {
+            let (bids, asks) = book(venue, 2)?;
+            assert_eq!((ticks(&bids), ticks(&asks)), (vec![48], vec![52]));
+        }
+        // A restored runtime continues identically.
+        let mut resumed = DeterministicRuntime::restore(runtime.snapshot())?;
+        let mut resumed_host = host.clone();
+        runtime.advance(&mut host)?;
+        resumed.advance(&mut resumed_host)?;
+        assert_eq!(runtime.snapshot(), resumed.snapshot());
+        assert_eq!(
+            host.state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?,
+            resumed_host
+                .state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_agent_on_another_instrument_must_name_a_venue() -> Result<(), RuntimeError> {
+        let (mut config, _) = two_listing_fixture()?;
+        config.agents[1].venue_id = None;
+        assert_eq!(config.validate(), Err(RuntimeError::InvalidConfig));
+        Ok(())
+    }
+
+    #[test]
+    fn a_walking_fundamental_moves_the_quotes_and_survives_a_restart() -> Result<(), RuntimeError> {
+        let (config, mut host) = walking_config()?;
+        let mut uninterrupted = DeterministicRuntime::new(config)?;
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let mut best_bids = BTreeSet::new();
+        let mut resumed = None;
+        let mut resumed_host = host.clone();
+        for round in 0..12 {
+            uninterrupted.advance(&mut host)?;
+            if round == 4 {
+                let mut copy = DeterministicRuntime::restore(uninterrupted.snapshot())?;
+                resumed_host = host.clone();
+                copy.advance(&mut resumed_host)?;
+                resumed = Some(copy);
+                uninterrupted.advance(&mut host)?;
+                assert_eq!(
+                    uninterrupted.snapshot(),
+                    resumed
+                        .as_ref()
+                        .map(DeterministicRuntime::snapshot)
+                        .ok_or(RuntimeError::InvalidSnapshot)?
+                );
+                continue;
+            }
+            if let Some(copy) = resumed.as_mut() {
+                copy.advance(&mut resumed_host)?;
+                assert_eq!(uninterrupted.snapshot(), copy.snapshot());
+            }
+            let (bids, _) = host
+                .state
+                .visible_levels(key)
+                .map_err(|_| RuntimeError::InvalidMarket)?;
+            best_bids.extend(bids.iter().map(|(price, _)| price.get()));
+        }
+        assert!(best_bids.len() > 1, "quotes never moved: {best_bids:?}");
+        assert_eq!(
+            host.state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?,
+            resumed_host
+                .state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?
+        );
         Ok(())
     }
 

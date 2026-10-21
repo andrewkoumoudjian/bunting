@@ -123,7 +123,7 @@ companion to `rit-desk-window-parity.md` (the windows).
 
 | Primitive | RIT evidence | Bunting | Status |
 |---|---|---|---|
-| Random-walk price path (normal returns, annualized volatility) that drives the quotes | LT3, Volatility (σ shifts weekly), Social Outcry (spot) | `bunting-agents` (static liquidity provider, ZI noise, momentum) | **Partial:** needs a **scenario price path**: a seeded GBM or random walk with scheduled volatility regimes and news jumps, published as the fundamental the agents quote around |
+| Random-walk price path (normal returns, annualized volatility) that drives the quotes | LT3, Volatility (σ shifts weekly), Social Outcry (spot) | `bunting-runtime` `FundamentalPath::RandomWalk` (seeded, integer fixed-point, a pure function of the run clock, scheduled volatility regimes), observed by every agent as `fundamental`; market makers centre quotes on it | **Have** for the basic form (slice entry `2026-10-20-fundamental-walk.md`). Still missing: news-linked jumps and a published fundamental for close-out marks |
 | Option market maker quoting Black-Scholes at a **lagged** volatility estimate, 2-cent spread, unlimited size | Volatility | — | Missing (agent kind) |
 | Quote liquidity and volatility per security (low, medium, high) | LT3 tables | agent parameters | Partial |
 | Extra closing liquidity, so the close cannot be manipulated | LT3 | — | Missing (an agent schedule) |

@@ -183,7 +183,7 @@ fn two_clients_share_one_local_market_and_the_last_leaver_stops_it() -> Result<(
     assert_eq!(trader_b.participant_id(), Some(2));
 
     // A resting bid from participant 1 appears in participant 2's
-    // public book. QRC has no built-in agents, so it rests.
+    // public book. It sits well below the agents' quotes, so it rests.
     let mut bid = OrderTicket::new(Some(QRC_NEAR), Side::Buy);
     bid.price = 90;
     bid.quantity = 3;
@@ -197,8 +197,7 @@ fn two_clients_share_one_local_market_and_the_last_leaver_stops_it() -> Result<(
     trader_b.until("the bid in participant 2's public book", |model| {
         model
             .feed(QRC_NEAR)
-            .and_then(|feed| feed.book.best_bid())
-            .is_some_and(|level| level.price == 90)
+            .is_some_and(|feed| feed.book.bids().iter().any(|level| level.price == 90))
     })?;
 
     // The starter leaving must not kill the market for the other.

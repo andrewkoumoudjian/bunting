@@ -43,6 +43,9 @@ bunting-risk-engine = { path = "../../packages/risk-engine" }
 bunting-rs = { path = "../../bunting-rs" }
 # Test-only certificate authority for the BNP mutual-TLS tests (ADR 0040).
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# The local practice venue's agent configuration, so a test runs the market
+# the desk starts.
+bunting-trading-state.workspace = true
 
 [lints]
 workspace = true

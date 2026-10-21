@@ -403,6 +403,7 @@ dependencies = [
  "bunting-risk-engine",
  "bunting-rs",
  "bunting-runtime",
+ "bunting-trading-state",
  "quarcc-execution-engine",
  "rcgen",
  "rustix",
