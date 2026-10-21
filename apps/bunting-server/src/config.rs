@@ -331,6 +331,7 @@ impl ServerConfig {
                     remaining_parent_quantity: QuantityLots::new(1_000),
                     max_actions_per_tick: 256,
                     fundamental_path: None,
+                    other_instruments: Vec::new(),
                     agents: vec![RuntimeAgentConfig {
                         kind: PolicyKind::StaticLiquidityProvider,
                         participant_id: ParticipantId::new(10),
@@ -340,6 +341,8 @@ impl ServerConfig {
                         wake_interval_ns: 1_000_000_000,
                         seed: 42,
                         max_intents_per_wake: 4,
+                        instrument_id: None,
+                        venue_id: None,
                     }],
                 },
             }),
