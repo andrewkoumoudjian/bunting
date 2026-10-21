@@ -5,6 +5,7 @@ use bunting_market_events::{OrderKind, Side, TimeInForcePolicy};
 use bunting_market_types::{InstrumentId, LogicalTimeNs, ParticipantId, PriceTicks, QuantityLots};
 use quarcc_execution_engine::command::ExecutionIntent;
 use quarcc_execution_engine::ids::{ClientOrderId, IntentId};
+use quarcc_execution_engine::lifecycle::OrderLifecycle;
 use quarcc_execution_engine::normalized_report::NormalizedVenueReport;
 use quarcc_execution_engine::order::DesiredOrder;
 use quarcc_execution_engine::{
@@ -203,9 +204,41 @@ impl IntentBuffer {
     }
 }
 
+/// One order of the agent that is resting (or on its way to rest) at the
+/// venue, as its execution state knows it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RestingOrder {
+    pub client_order_id: ClientOrderId,
+    pub side: Side,
+    pub price: PriceTicks,
+    pub remaining: QuantityLots,
+}
+
 pub trait AgentPolicy {
     type Config;
     type Snapshot;
+
+    /// True for a policy whose quotes rest until their level moves: its
+    /// orders carry no expiry and `reconcile` diffs each wake's desired
+    /// quotes against them.
+    fn rests_quotes(&self) -> bool {
+        false
+    }
+
+    /// Turns a wake's desired quotes into the changes that reach the
+    /// venue: unchanged levels stay as they are (and keep their queue
+    /// position), moved levels are cancelled, a missing or partly filled
+    /// level is topped up. The default sends the intents as they are.
+    ///
+    /// # Errors
+    /// Returns an error from the policy's own ID allocation.
+    fn reconcile(
+        &mut self,
+        intents: Vec<ExecutionIntent>,
+        _resting: &[RestingOrder],
+    ) -> Result<Vec<ExecutionIntent>, AgentError> {
+        Ok(intents)
+    }
 
     fn metadata(&self) -> AgentModelMetadata;
     /// Evaluates one deterministic logical wake.
@@ -400,6 +433,74 @@ impl BuiltInPolicy {
 impl AgentPolicy for BuiltInPolicy {
     type Config = AgentConfig;
     type Snapshot = PolicySnapshot;
+
+    fn rests_quotes(&self) -> bool {
+        self.state.config.kind == PolicyKind::FundamentalLiquidityProvider
+    }
+
+    fn reconcile(
+        &mut self,
+        intents: Vec<ExecutionIntent>,
+        resting: &[RestingOrder],
+    ) -> Result<Vec<ExecutionIntent>, AgentError> {
+        if !self.rests_quotes() {
+            return Ok(intents);
+        }
+        let level = |order: &DesiredOrder| match order.kind {
+            OrderKind::Limit { price } | OrderKind::LimitWithPolicy { price, .. } => {
+                Some((order.side, price))
+            }
+            _ => None,
+        };
+        let mut wanted = Vec::new();
+        let mut passthrough = Vec::new();
+        for intent in intents {
+            match &intent {
+                ExecutionIntent::Submit { order, .. } if level(order).is_some() => {
+                    wanted.push(intent);
+                }
+                _ => passthrough.push(intent),
+            }
+        }
+        let wanted_levels: Vec<(Side, PriceTicks)> = wanted
+            .iter()
+            .filter_map(|intent| match intent {
+                ExecutionIntent::Submit { order, .. } => level(order),
+                _ => None,
+            })
+            .collect();
+        let mut out = passthrough;
+        for order in resting {
+            if !wanted_levels.contains(&(order.side, order.price)) {
+                let (intent_id, _) = self.next_ids()?;
+                out.push(ExecutionIntent::Cancel {
+                    intent_id,
+                    client_order_id: order.client_order_id,
+                });
+            }
+        }
+        for intent in wanted {
+            let ExecutionIntent::Submit {
+                intent_id,
+                mut order,
+            } = intent
+            else {
+                continue;
+            };
+            let Some(at) = level(&order) else { continue };
+            let held: i64 = resting
+                .iter()
+                .filter(|held| (held.side, held.price) == at)
+                .map(|held| held.remaining.get())
+                .sum();
+            let missing = order.quantity.get().saturating_sub(held);
+            if missing > 0 {
+                order.quantity = QuantityLots::new(missing);
+                out.push(ExecutionIntent::Submit { intent_id, order });
+            }
+        }
+        Ok(out)
+    }
 
     fn metadata(&self) -> AgentModelMetadata {
         AgentModelMetadata {
@@ -1118,9 +1219,42 @@ impl<P: AgentPolicy> ManagedAgent<P> {
         let mut intents = IntentBuffer::with_limit(limit);
         let next = self.policy.on_wake(context, observation, &mut intents)?;
         let expires_at = order_expiry(context.logical_time, next.logical_time)?;
+        let rests = self.policy.rests_quotes();
+        let drained: Vec<ExecutionIntent> = intents.drain().collect();
+        let drained = if rests {
+            let resting: Vec<RestingOrder> = self
+                .execution
+                .snapshot()
+                .orders
+                .values()
+                .filter(|managed| {
+                    matches!(
+                        managed.lifecycle,
+                        OrderLifecycle::PendingSubmit
+                            | OrderLifecycle::Live
+                            | OrderLifecycle::PartiallyFilled
+                    )
+                })
+                .filter_map(|managed| match managed.desired.kind {
+                    OrderKind::Limit { price } | OrderKind::LimitWithPolicy { price, .. } => {
+                        Some(RestingOrder {
+                            client_order_id: managed.desired.client_order_id,
+                            side: managed.desired.side,
+                            price,
+                            remaining: managed.remaining_quantity(),
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            self.policy.reconcile(drained, &resting)?
+        } else {
+            drained
+        };
         let mut actions = ExecutionActionBuffer::with_limit(limit);
-        for mut intent in intents.drain() {
-            if let ExecutionIntent::Submit { order, .. } = &mut intent
+        for mut intent in drained {
+            if !rests
+                && let ExecutionIntent::Submit { order, .. } = &mut intent
                 && let OrderKind::Limit { price } = order.kind
             {
                 order.kind = OrderKind::LimitWithPolicy {
@@ -1279,6 +1413,94 @@ mod tests {
             quoted(PolicyKind::StaticLiquidityProvider, 112)?,
             [100 - spread, 100 + spread]
         );
+        Ok(())
+    }
+
+    fn provider_wake(
+        agent: &mut ManagedAgent<BuiltInPolicy>,
+        at: u64,
+        fundamental: i64,
+    ) -> Result<Vec<ExecutionAction>, AgentError> {
+        let (_, actions) = agent.on_wake(
+            &AgentContext {
+                logical_time: LogicalTimeNs::new(at),
+                current_position: QuantityLots::new(0),
+                remaining_parent_quantity: QuantityLots::new(0),
+            },
+            &AgentObservation {
+                fundamental: PriceTicks::new(fundamental),
+                ..observation()
+            },
+        )?;
+        Ok(actions)
+    }
+
+    #[test]
+    fn a_provider_whose_fundamental_did_not_move_leaves_its_quotes_alone() -> Result<(), AgentError>
+    {
+        let mut agent = ManagedAgent::new(
+            BuiltInPolicy::new(config(PolicyKind::FundamentalLiquidityProvider)),
+            QuarccExecutionEngine::new(ExecutionConfig::default()),
+        );
+        let first = provider_wake(&mut agent, 0, 100)?;
+        assert_eq!(first.len(), 2, "a bid and an offer");
+        // Same fundamental, many wakes later, orders never expire: nothing.
+        for wake in 1..=5 {
+            assert!(provider_wake(&mut agent, wake * 500_000_000, 100)?.is_empty());
+        }
+        // The fundamental moved a tick: both levels move, nothing else.
+        let moved = provider_wake(&mut agent, 3_000_000_000, 101)?;
+        let cancels = moved
+            .iter()
+            .filter(|action| matches!(action, ExecutionAction::Cancel { .. }))
+            .count();
+        let submits = moved
+            .iter()
+            .filter(|action| matches!(action, ExecutionAction::Submit { .. }))
+            .count();
+        assert_eq!((cancels, submits), (2, 2));
+        Ok(())
+    }
+
+    #[test]
+    fn a_partly_filled_level_is_topped_up_not_replaced() -> Result<(), AgentError> {
+        let mut agent = ManagedAgent::new(
+            BuiltInPolicy::new(config(PolicyKind::FundamentalLiquidityProvider)),
+            QuarccExecutionEngine::new(ExecutionConfig::default()),
+        );
+        let first = provider_wake(&mut agent, 0, 100)?;
+        let (local, quantity) = first
+            .iter()
+            .find_map(|action| match action {
+                ExecutionAction::Submit {
+                    local_order_id,
+                    order,
+                    ..
+                } if order.side == Side::Buy => Some((*local_order_id, order.quantity.get())),
+                _ => None,
+            })
+            .ok_or(AgentError::InvalidObservation)?;
+        let filled = 3;
+        agent.on_private_event(&NormalizedVenueReport {
+            report_id: quarcc_execution_engine::ids::ReportId::new(1),
+            source_sequence: Some(1),
+            client_order_id: None,
+            local_order_id: Some(local),
+            venue_order_id: None,
+            leaves_quantity: Some(QuantityLots::new(quantity - filled)),
+            kind: quarcc_execution_engine::normalized_report::VenueReportKind::Fill {
+                last_quantity: QuantityLots::new(filled),
+                cumulative_quantity: QuantityLots::new(filled),
+                price: PriceTicks::new(98),
+            },
+        })?;
+        let next = provider_wake(&mut agent, 500_000_000, 100)?;
+        // One new bid for what was filled; the rest keeps resting.
+        assert_eq!(next.len(), 1);
+        let ExecutionAction::Submit { order, .. } = &next[0] else {
+            return Err(AgentError::InvalidObservation);
+        };
+        assert_eq!((order.side, order.quantity.get()), (Side::Buy, filled));
         Ok(())
     }
 
