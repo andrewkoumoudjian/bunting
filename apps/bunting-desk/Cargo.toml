@@ -18,6 +18,10 @@ name = "bunting-desk"
 path = "src/main.rs"
 
 [dependencies]
+# Stop signals (SIGTERM, SIGINT; Ctrl+C on Windows) quit the app cleanly. Both
+# crates are already in the lock file through GPUI (docs/reference-adoption.md).
+async-signal = "0.2"
+futures-lite = "2"
 bunting-trading-state = { path = "../../packages/bunting-trading-state" }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 # Zed's GPUI (Longbridge's gpui-pre snapshot) plus Longbridge's components,

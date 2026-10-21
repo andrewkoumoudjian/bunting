@@ -836,8 +836,10 @@ dependencies = [
 name = "bunting-desk"
 version = "0.2.0-preview.1"
 dependencies = [
+ "async-signal",
  "bunting-trading-state",
  "clap",
+ "futures-lite",
  "gpui-kit",
  "serde",
  "serde_json",

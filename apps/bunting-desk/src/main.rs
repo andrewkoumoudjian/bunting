@@ -4,10 +4,11 @@
 use bunting_desk::connect::{self, Options};
 use bunting_desk::{Desk, LayoutStore, Workspace};
 use clap::Parser as _;
+use futures_lite::StreamExt as _;
 use gpui_kit::assets::{Assets, icon_assets};
 use gpui_kit::{
-    AppContext as _, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowBounds,
-    WindowOptions, px, size,
+    App, AppContext as _, AssetSource, AsyncApp, Bounds, Result, SharedString, TitlebarOptions,
+    WindowBounds, WindowOptions, px, size,
 };
 use std::borrow::Cow;
 
@@ -33,6 +34,29 @@ impl AssetSource for AppAssets {
     }
 }
 
+/// Quits the app through its normal path when the process is asked to stop
+/// (SIGTERM or SIGINT on Unix, Ctrl+C on Windows), so the session logs out
+/// and the local venue's claim drops instead of the venue running on.
+fn quit_on_signals(cx: &mut App) {
+    #[cfg(unix)]
+    let wanted = [async_signal::Signal::Term, async_signal::Signal::Int];
+    #[cfg(not(unix))]
+    let wanted = [async_signal::Signal::Int];
+    let mut signals = match async_signal::Signals::new(wanted) {
+        Ok(signals) => signals,
+        Err(error) => {
+            eprintln!("bunting-desk: cannot watch for stop signals: {error}");
+            return;
+        }
+    };
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        if signals.next().await.is_some() {
+            cx.update(|cx| cx.quit());
+        }
+    })
+    .detach();
+}
+
 fn main() {
     let options = Options::parse();
     // Connect (or start the local venue) before opening a window, so a
@@ -50,6 +74,7 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             bunting_desk::init(cx);
+            quit_on_signals(cx);
             let Some(venue) = venue.take() else { return };
             let desk = cx.new(|cx| {
                 Desk::start_pump(cx);
