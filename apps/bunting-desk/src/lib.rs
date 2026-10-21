@@ -12,6 +12,7 @@ pub mod actions;
 pub mod appearance;
 pub mod blotter;
 pub mod canvas;
+pub mod chart;
 pub mod connect;
 pub mod deals;
 pub mod desk;
@@ -31,6 +32,7 @@ pub mod workspace;
 
 pub use appearance::{Appearance, AppearanceStore, Density, Metrics};
 pub use canvas::Canvas;
+pub use chart::ChartPanel;
 pub use desk::{Desk, Outbox, Venue};
 pub use layouts::{LayoutStore, Preset, Screen};
 pub use panes::PaneKind;

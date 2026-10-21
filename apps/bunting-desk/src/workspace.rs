@@ -432,7 +432,7 @@ impl Workspace {
         if canvas.has_pending_template() {
             return;
         }
-        let windows = canvas.dump();
+        let windows = canvas.dump(cx);
         let layout_size = canvas.base_size();
         if let Some(screen) = self.screens.get_mut(self.active) {
             screen.windows = Some(windows);
@@ -1038,6 +1038,12 @@ impl Workspace {
         }))
         .on_action(cx.listener(|this, _: &actions::OpenDeals, window, cx| {
             this.add_pane(PaneKind::Deals, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenChart, window, cx| {
+            this.add_pane(PaneKind::Chart, window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &actions::OpenPnl, window, cx| {
+            this.add_pane(PaneKind::Pnl, window, cx);
         }))
         .on_action(
             cx.listener(|this, _: &actions::OpenTransactions, window, cx| {

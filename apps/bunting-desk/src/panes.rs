@@ -2,6 +2,8 @@
 //! the builder that brings panes back from a saved screen (ADR 0051).
 
 use crate::blotter::OrdersPanel;
+use crate::chart::pnl::PnlPanel;
+use crate::chart::{ChartPanel, SavedChart};
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
 use crate::ladder::LadderPanel;
@@ -30,11 +32,13 @@ pub enum PaneKind {
     Notices,
     News,
     Deals,
+    Chart,
     Transactions,
+    Pnl,
 }
 
 impl PaneKind {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::BookTrader,
         Self::LadderTrader,
         Self::OrderEntry,
@@ -46,7 +50,9 @@ impl PaneKind {
         Self::Notices,
         Self::News,
         Self::Deals,
+        Self::Chart,
         Self::Transactions,
+        Self::Pnl,
     ];
 
     /// The name saved layouts use, and the pane's element ID.
@@ -64,6 +70,8 @@ impl PaneKind {
             Self::Notices => "notices",
             Self::News => "news",
             Self::Deals => "deals",
+            Self::Chart => "chart",
+            Self::Pnl => "pnl",
             Self::Transactions => "transactions",
         }
     }
@@ -82,6 +90,8 @@ impl PaneKind {
             Self::Notices => "Notices",
             Self::News => "News",
             Self::Deals => "Tenders & OTC",
+            Self::Chart => "Charting",
+            Self::Pnl => "P&L Chart",
             Self::Transactions => "Transaction Log",
         }
     }
@@ -100,6 +110,8 @@ impl PaneKind {
             Self::Notices => IconName::Bell,
             Self::News => IconName::Info,
             Self::Deals => IconName::Replace,
+            Self::Chart => IconName::Frame,
+            Self::Pnl => IconName::GalleryVerticalEnd,
             Self::Transactions => IconName::FileText,
         }
     }
@@ -123,6 +135,8 @@ impl PaneKind {
             Self::TraderInfo | Self::Notices => (240., 140.),
             Self::News => (300., 180.),
             Self::Deals => (420., 260.),
+            Self::Chart => (360., 240.),
+            Self::Pnl => (320., 200.),
             Self::Transactions => (420., 160.),
         }
     }
@@ -142,6 +156,8 @@ impl PaneKind {
             Self::Notices => (420., 300.),
             Self::News => (560., 420.),
             Self::Deals => (560., 440.),
+            Self::Chart => (720., 480.),
+            Self::Pnl => (640., 400.),
             Self::Transactions => (640., 320.),
         }
     }
@@ -164,6 +180,30 @@ impl PaneKind {
         }
     }
 
+    /// A new pane of this kind on `desk`, restored from its saved
+    /// JSON state where the kind dumps one (Charting today).
+    pub fn build_with_state(
+        self,
+        desk: Entity<Desk>,
+        state: Option<&serde_json::Value>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Arc<dyn BasePanelView> {
+        if self == Self::Chart {
+            let panel = cx.new(|cx| ChartPanel::new(desk, window, cx));
+            if let Some(saved) =
+                state.and_then(|value| serde_json::from_value::<SavedChart>(value.clone()).ok())
+            {
+                panel.update(cx, |panel, cx| {
+                    panel.restore(&saved);
+                    cx.notify();
+                });
+            }
+            return panel_handle(panel);
+        }
+        self.build(desk, window, cx)
+    }
+
     /// A new pane of this kind on `desk`.
     pub fn build(
         self,
@@ -183,6 +223,8 @@ impl PaneKind {
             Self::Notices => panel_handle(cx.new(|cx| NoticesPanel::new(desk, cx))),
             Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
             Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
+            Self::Chart => panel_handle(cx.new(|cx| ChartPanel::new(desk, window, cx))),
+            Self::Pnl => panel_handle(cx.new(|cx| PnlPanel::new(desk, cx))),
             Self::Transactions => panel_handle(cx.new(|cx| TransactionsPanel::new(desk, cx))),
         }
     }

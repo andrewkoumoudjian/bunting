@@ -294,6 +294,7 @@ mod tests {
             z: 0,
             minimised: false,
             maximised: true,
+            state: Some(serde_json::json!({"mode": "security"})),
         }]);
         store.save(&screens, 3).unwrap();
         assert_eq!(store.load(), Some((screens, 3)));
