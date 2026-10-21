@@ -240,6 +240,30 @@ where
     })
 }
 
+/// One short muted line with an info icon whose tooltip carries the
+/// whole explanation, so a note never takes more than a line of a small
+/// window.
+#[must_use]
+pub fn note(
+    id: &'static str,
+    short: impl Into<SharedString>,
+    full: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
+    let full: SharedString = full.into();
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .id(id)
+        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        .test_support()
+        .gap_1()
+        .items_center()
+        .text_size(rem(LABEL_SIZE))
+        .text_color(muted)
+        .child(div().min_w_0().truncate().child(short.into()))
+        .child(Icon::new(IconName::Info).size(px(12.)).flex_shrink_0())
+}
+
 /// An 11 px semibold muted section label.
 #[must_use]
 pub fn section_label(text: impl Into<SharedString>, cx: &App) -> Div {

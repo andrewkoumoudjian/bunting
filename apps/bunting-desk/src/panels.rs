@@ -1804,23 +1804,23 @@ impl Render for PositionsPanel {
         });
         let multi = rows.iter().any(|row| row.multi_venue);
         let assumed = rows.iter().any(|row| !row.contract_size.1);
-        let mut note = String::from(
+        let mut full = String::from(
             "Cost, NLV, realized, unrealized, VWAP and volume are derived from your fills, the books and the trades since you connected, not the venue's own valuation.",
         );
         if assumed {
-            note.push_str(" * Contract size assumed 1.");
+            full.push_str(" * Contract size assumed 1.");
         }
         if multi {
-            note.push_str(
+            full.push_str(
                 " Last, bid and ask name their venue; VWAP and volume cover every venue.",
             );
         }
-        body = body.child(
-            div()
-                .id("positions-note")
-                .test_support()
-                .child(muted(note, cx)),
-        );
+        let short = if assumed {
+            "Derived · contract size assumed 1*"
+        } else {
+            "Derived from your fills and the books"
+        };
+        body = body.child(ui::note("positions-note", short, full, cx));
         let desk = self.desk.clone();
         let table = ui::responsive_table(&portfolio::COLUMNS, move |fitted, _, cx| {
             let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
@@ -1962,12 +1962,14 @@ impl Render for AccountPanel {
                         cx,
                     )),
             )
-            .child(muted(
+            .child(ui::note(
+                "account-pnl-note",
                 if totals.multipliers_known {
-                    "Derived from your fills and the books, not the venue's own valuation."
+                    "Derived from your fills"
                 } else {
-                    "Derived from your fills and the books, not the venue's own valuation; assumes contract size 1."
+                    "Derived · contract size assumed 1"
                 },
+                "Derived from your fills and the books, not the venue's own valuation; contract size is assumed 1 until the venue sends it.",
                 cx,
             ));
         for balance in &account.cash {
@@ -1992,13 +1994,12 @@ impl Render for AccountPanel {
         stats = stats
             .child(ui::section_label("Trading limits", cx))
             .child(
-                div()
-                    .id("account-limits-empty")
-                    .test_support()
-                    .child(muted(
-                        "The venue does not send trading limits yet (gross and net limit per security, and how much of each you use).",
-                        cx,
-                    )),
+                ui::note(
+                    "account-limits-empty",
+                    "The venue sends no limits yet",
+                    "The venue does not send trading limits yet (gross and net limit per security, and how much of each you use).",
+                    cx,
+                ),
             );
         body.child(stats)
     }

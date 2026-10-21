@@ -10,7 +10,7 @@
 
 use crate::desk::Desk;
 use crate::format;
-use crate::panels::{cell, colored, dock_panel, muted, panel_body, signed_color};
+use crate::panels::{cell, colored, dock_panel, panel_body, signed_color};
 use crate::ui::{self, Col};
 use bunting_trading_state::Model;
 use bunting_trading_state::bunting_client::bnp_wire::Side;
@@ -196,7 +196,7 @@ impl Render for TransactionsPanel {
             .listings()
             .iter()
             .any(|info| !model.multiplier(info.listing.instrument_id).1);
-        let note = if assumed {
+        let full = if assumed {
             "Derived from your fills and fees; assumes contract size 1. Other postings, tenders and OTC settlements are not reported yet."
         } else {
             "Derived from your fills and fees. Other postings, tenders and OTC settlements are not reported yet."
@@ -237,7 +237,13 @@ impl Render for TransactionsPanel {
                     .flex_1(),
                 )
         });
-        body.child(muted(note, cx)).child(ui::copy_menu(
+        body.child(ui::note(
+            "transactions-note",
+            "Derived from fills and fees",
+            full,
+            cx,
+        ))
+        .child(ui::copy_menu(
             v_flex()
                 .id("transactions-table")
                 .test_support()
