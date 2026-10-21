@@ -15,6 +15,8 @@ use bunting_market_types::{
     QuantityLots, RunId, VenueId,
 };
 use quarcc_bunting_adapter::{BuntingCommandContext, BuntingExecutionAdapter};
+use quarcc_execution_engine::ids::ActionId;
+use quarcc_execution_engine::lifecycle::OrderLifecycle;
 use quarcc_execution_engine::{
     ExecutionAction, ExecutionConfig, ExecutionSnapshot, QuarccExecutionEngine,
 };
@@ -161,6 +163,9 @@ pub struct RuntimeSnapshot {
     /// restored mid-tick submits these before deciding anything new.
     #[serde(default)]
     pub pending: Vec<PendingAction>,
+    /// Agents retired after an error of their own, in retirement order.
+    #[serde(default)]
+    pub retired: Vec<ParticipantId>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -240,6 +245,10 @@ pub trait RuntimeHost {
     fn run_time(&self, _run_id: RunId) -> Result<Option<LogicalTimeNs>, RuntimeError> {
         Ok(None)
     }
+
+    /// Called once when an agent is retired after an error of its own (the
+    /// market carries on without it). The host reports it to the operator.
+    fn agent_retired(&mut self, _participant_id: ParticipantId, _reason: &str) {}
 }
 
 struct ScheduledAgent {
@@ -250,6 +259,9 @@ struct ScheduledAgent {
     /// The instrument traded, and the listing when the config names a venue.
     instrument: InstrumentId,
     listing: Option<ListingKey>,
+    /// Set when the agent hit an error of its own: it no longer wakes or
+    /// hears reports, and only the cancels of its resting orders are sent.
+    retired: bool,
 }
 
 pub struct DeterministicRuntime {
@@ -259,6 +271,10 @@ pub struct DeterministicRuntime {
     previous_trade: PriceTicks,
     last_trade: PriceTicks,
     pending: VecDeque<(usize, ExecutionAction)>,
+    /// Retired agents in the order they were retired.
+    retirement_order: Vec<ParticipantId>,
+    /// Retirements the host has not yet been told of.
+    announce: Vec<(ParticipantId, String)>,
     /// Last two trades of each listing named by an agent's `venue_id`.
     listing_trades: BTreeMap<ListingKey, (PriceTicks, PriceTicks)>,
     /// One per instrument; caches only, rebuilt from the config after a
@@ -321,6 +337,8 @@ impl DeterministicRuntime {
             agents,
             logical_time: LogicalTimeNs::new(0),
             pending: VecDeque::new(),
+            retirement_order: Vec::new(),
+            announce: Vec::new(),
         })
     }
 
@@ -364,6 +382,7 @@ impl DeterministicRuntime {
                     instrument: configured
                         .instrument_id
                         .unwrap_or(snapshot.config.instrument_id),
+                    retired: snapshot.retired.contains(&configured.participant_id),
                     listing: configured.venue_id.map(|venue| {
                         ListingKey::new(
                             venue,
@@ -385,6 +404,8 @@ impl DeterministicRuntime {
         }
         Ok(Self {
             walkers: walkers_of(&snapshot.config),
+            announce: Vec::new(),
+            retirement_order: snapshot.retired.clone(),
             listing_trades,
             config: snapshot.config,
             agents,
@@ -407,6 +428,7 @@ impl DeterministicRuntime {
             logical_time: self.logical_time,
             previous_trade: self.previous_trade,
             last_trade: self.last_trade,
+            retired: self.retirement_order.clone(),
             listing_trades: self
                 .listing_trades
                 .iter()
@@ -456,23 +478,35 @@ impl DeterministicRuntime {
             if processed >= self.config.max_actions_per_tick {
                 return Err(RuntimeError::ActionBoundExceeded);
             }
+            // A retired agent only gets its cancels out.
+            if self.agents[index].retired && !matches!(action, ExecutionAction::Cancel { .. }) {
+                continue;
+            }
             processed = processed.saturating_add(1);
             let expected_sequence = host.read_state(self.config.run_id, RunState::sequence)?;
             self.logical_time = LogicalTimeNs::new(self.logical_time.get().saturating_add(1));
             let participant_id = self.agents[index].participant_id;
-            let mut command = self.agents[index]
-                .adapter
-                .command_for_action(
-                    &action,
-                    &BuntingCommandContext {
-                        run_id: self.config.run_id,
-                        actor: participant_id,
-                        expected_sequence,
-                        logical_time: self.logical_time,
-                        correlation_id: CorrelationId::new(u128::from(self.logical_time.get())),
-                    },
-                )
-                .map_err(|error| RuntimeError::Adapter(format!("command: {error:?}")))?;
+            let built = self.agents[index].adapter.command_for_action(
+                &action,
+                &BuntingCommandContext {
+                    run_id: self.config.run_id,
+                    actor: participant_id,
+                    expected_sequence,
+                    logical_time: self.logical_time,
+                    correlation_id: CorrelationId::new(u128::from(self.logical_time.get())),
+                },
+            );
+            let mut command = match built {
+                Ok(command) => command,
+                Err(error) => {
+                    // The agent's own action does not convert: the agent is
+                    // at fault, not the venue.
+                    let mut cancels = VecDeque::new();
+                    self.retire(index, format!("command: {error:?}"), &mut cancels);
+                    self.pending.extend(cancels);
+                    continue;
+                }
+            };
             // An agent that names a venue trades that listing; the order
             // still goes through the same sequencer as any other.
             if let (Some(listing_key), CommandPayload::SubmitOrder(order)) =
@@ -490,7 +524,52 @@ impl DeterministicRuntime {
             self.dispatch(&events, &mut reactions)?;
             self.pending.extend(reactions);
         }
+        for (participant_id, reason) in std::mem::take(&mut self.announce) {
+            host.agent_retired(participant_id, &reason);
+        }
         Ok(processed)
+    }
+
+    /// Retires an agent after an error of its own. Its resting orders are
+    /// cancelled through the same sequencer, queued after anything already
+    /// decided: leaving them would strand quotes nobody maintains any more
+    /// (a retired provider's GTC quotes would sit at a stale price for the
+    /// rest of the run). The IDs continue the agent's own sequence, so the
+    /// cancels are deterministic and the host deduplicates them on a replay.
+    fn retire(
+        &mut self,
+        index: usize,
+        reason: String,
+        pending: &mut VecDeque<(usize, ExecutionAction)>,
+    ) {
+        if self.agents[index].retired {
+            return;
+        }
+        self.agents[index].retired = true;
+        let participant_id = self.agents[index].participant_id;
+        self.retirement_order.push(participant_id);
+        self.announce.push((participant_id, reason));
+        let execution = self.agents[index].managed.snapshot().execution;
+        let mut next = execution.next_id;
+        for (local, order) in &execution.orders {
+            if matches!(
+                order.lifecycle,
+                OrderLifecycle::PendingSubmit
+                    | OrderLifecycle::Live
+                    | OrderLifecycle::PartiallyFilled
+                    | OrderLifecycle::Quarantined
+            ) {
+                pending.push_back((
+                    index,
+                    ExecutionAction::Cancel {
+                        action_id: ActionId::new(next),
+                        local_order_id: *local,
+                        venue_order_id: order.venue_order_id.clone(),
+                    },
+                ));
+                next = next.saturating_add(1);
+            }
+        }
     }
 
     /// Takes other participants' commits, wakes due agents into `pending`,
@@ -499,6 +578,7 @@ impl DeterministicRuntime {
         let Some(next_time) = self
             .agents
             .iter()
+            .filter(|agent| !agent.retired)
             .map(|agent| agent.next_wake.logical_time)
             .min()
         else {
@@ -533,7 +613,8 @@ impl DeterministicRuntime {
             .iter()
             .enumerate()
             .filter_map(|(index, agent)| {
-                (agent.next_wake.logical_time <= self.logical_time).then_some(index)
+                (!agent.retired && agent.next_wake.logical_time <= self.logical_time)
+                    .then_some(index)
             })
             .collect::<Vec<_>>();
         for index in due {
@@ -553,19 +634,21 @@ impl DeterministicRuntime {
                 .positions
                 .get(&instrument)
                 .map_or_else(|| QuantityLots::new(0), |position| position.quantity);
-            let (next_wake, actions) = self.agents[index]
-                .managed
-                .on_wake(
-                    &AgentContext {
-                        logical_time: self.logical_time,
-                        current_position: position,
-                        remaining_parent_quantity: self.config.remaining_parent_quantity,
-                    },
-                    &observation,
-                )
-                .map_err(|error| RuntimeError::Agent(format!("wake: {error:?}")))?;
-            self.agents[index].next_wake = next_wake;
-            pending.extend(actions.into_iter().map(|action| (index, action)));
+            let woken = self.agents[index].managed.on_wake(
+                &AgentContext {
+                    logical_time: self.logical_time,
+                    current_position: position,
+                    remaining_parent_quantity: self.config.remaining_parent_quantity,
+                },
+                &observation,
+            );
+            match woken {
+                Ok((next_wake, actions)) => {
+                    self.agents[index].next_wake = next_wake;
+                    pending.extend(actions.into_iter().map(|action| (index, action)));
+                }
+                Err(error) => self.retire(index, format!("wake: {error:?}"), &mut pending),
+            }
         }
         self.pending = pending;
         host.checkpoint(&self.snapshot())
@@ -635,18 +718,38 @@ impl DeterministicRuntime {
         events: &[EventEnvelope],
         pending: &mut VecDeque<(usize, ExecutionAction)>,
     ) -> Result<(), RuntimeError> {
-        for (index, agent) in self.agents.iter_mut().enumerate() {
-            let reports = agent
-                .adapter
-                .normalize_committed_events(agent.participant_id, events)
-                .map_err(|error| RuntimeError::Adapter(format!("reports: {error:?}")))?;
-            for report in reports {
-                let actions = agent
-                    .managed
-                    .on_private_event(&report)
-                    .map_err(|error| RuntimeError::Agent(format!("private event: {error:?}")))?;
-                pending.extend(actions.into_iter().map(|action| (index, action)));
+        for index in 0..self.agents.len() {
+            if self.agents[index].retired {
+                continue;
             }
+            match self.dispatch_one(index, events, pending) {
+                Ok(()) => {}
+                Err(error @ (RuntimeError::Agent(_) | RuntimeError::Adapter(_))) => {
+                    self.retire(index, error.to_string(), pending);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    fn dispatch_one(
+        &mut self,
+        index: usize,
+        events: &[EventEnvelope],
+        pending: &mut VecDeque<(usize, ExecutionAction)>,
+    ) -> Result<(), RuntimeError> {
+        let agent = &mut self.agents[index];
+        let reports = agent
+            .adapter
+            .normalize_committed_events(agent.participant_id, events)
+            .map_err(|error| RuntimeError::Adapter(format!("reports: {error:?}")))?;
+        for report in reports {
+            let actions = agent
+                .managed
+                .on_private_event(&report)
+                .map_err(|error| RuntimeError::Agent(format!("private event: {error:?}")))?;
+            pending.extend(actions.into_iter().map(|action| (index, action)));
         }
         Ok(())
     }
@@ -691,6 +794,7 @@ fn scheduled_agent(
             logical_time: LogicalTimeNs::new(0),
         },
         instrument: instrument_id,
+        retired: false,
         listing: config
             .venue_id
             .map(|venue| ListingKey::new(venue, instrument_id)),
@@ -1035,6 +1139,113 @@ mod tests {
         runtime.advance(&mut host)?;
         resumed.advance(&mut resumed_host)?;
         assert_eq!(runtime.snapshot(), resumed.snapshot());
+        assert_eq!(
+            host.state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?,
+            resumed_host
+                .state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?
+        );
+        Ok(())
+    }
+
+    /// A trade claiming far more lots than agent 11's order holds: a report
+    /// no venue could send, which the agent's execution state refuses.
+    fn impossible_fill(runtime: &DeterministicRuntime) -> Result<Vec<EventEnvelope>, RuntimeError> {
+        let order = runtime.snapshot().agents[1]
+            .managed
+            .execution
+            .orders
+            .keys()
+            .next()
+            .copied()
+            .ok_or(RuntimeError::InvalidSnapshot)?;
+        Ok(vec![EventEnvelope {
+            schema_version: 1,
+            run_id: RunId::new(1),
+            event_id: bunting_market_types::EventId::new(9_000_001),
+            sequence: bunting_market_types::EventSequence::new(9_000_001),
+            logical_time: LogicalTimeNs::new(0),
+            actor: ParticipantId::new(12),
+            command_id: bunting_market_types::CommandId::new(9_000_001),
+            correlation_id: CorrelationId::new(1),
+            causation_sequence: None,
+            payload: EventPayload::TradeExecuted {
+                instrument_id: InstrumentId::new(2),
+                listing_key: Some(ListingKey::new(VenueId::new(1), InstrumentId::new(2))),
+                maker_order_id: bunting_market_types::OrderId::new(order.get()),
+                taker_order_id: bunting_market_types::OrderId::new(1),
+                buyer_id: ParticipantId::new(11),
+                seller_id: ParticipantId::new(12),
+                price: PriceTicks::new(50),
+                quantity: QuantityLots::new(1_000_000),
+                buyer_fee: bunting_market_types::MoneyMinor::new(0),
+                seller_fee: bunting_market_types::MoneyMinor::new(0),
+            },
+        }])
+    }
+
+    #[test]
+    fn an_agent_that_errors_is_retired_and_the_market_carries_on() -> Result<(), RuntimeError> {
+        let (config, mut host) = two_listing_fixture()?;
+        let mut runtime = DeterministicRuntime::new(config)?;
+        runtime.advance(&mut host)?;
+        let open = |runtime: &DeterministicRuntime, index: usize| {
+            runtime.snapshot().agents[index]
+                .managed
+                .execution
+                .orders
+                .values()
+                .filter(|order| order.lifecycle.is_open())
+                .count()
+        };
+        assert_eq!(open(&runtime, 1), 2, "agent 11 quotes both sides");
+        host.elsewhere = impossible_fill(&runtime)?;
+        // The error is the agent's own: the runtime carries on, retires the
+        // agent and cancels its resting orders through the sequencer.
+        runtime.advance(&mut host)?;
+        assert_eq!(runtime.snapshot().retired, vec![ParticipantId::new(11)]);
+        let (bids, asks) = host
+            .state
+            .visible_levels(ListingKey::new(VenueId::new(1), InstrumentId::new(2)))
+            .map_err(|_| RuntimeError::InvalidMarket)?;
+        assert!(bids.is_empty() && asks.is_empty(), "its quotes were pulled");
+        // The others keep quoting for many wakes; the retired one never returns.
+        for _ in 0..4 {
+            runtime.advance(&mut host)?;
+        }
+        let book = |venue: u128, instrument: u128| {
+            host.state
+                .visible_levels(ListingKey::new(
+                    VenueId::new(venue),
+                    InstrumentId::new(instrument),
+                ))
+                .map_err(|_| RuntimeError::InvalidMarket)
+        };
+        assert!(!book(1, 1)?.0.is_empty(), "BNT still quoted");
+        assert!(!book(2, 2)?.0.is_empty(), "QRC on venue 2 still quoted");
+        assert!(book(1, 2)?.0.is_empty(), "the retired agent stays gone");
+        assert_eq!(runtime.snapshot().retired.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_retired_agent_survives_a_snapshot_restore() -> Result<(), RuntimeError> {
+        let (config, mut host) = two_listing_fixture()?;
+        let mut runtime = DeterministicRuntime::new(config)?;
+        runtime.advance(&mut host)?;
+        host.elsewhere = impossible_fill(&runtime)?;
+        runtime.advance(&mut host)?;
+        let mut resumed = DeterministicRuntime::restore(runtime.snapshot())?;
+        assert_eq!(resumed.snapshot(), runtime.snapshot());
+        let mut resumed_host = host.clone();
+        for _ in 0..3 {
+            runtime.advance(&mut host)?;
+            resumed.advance(&mut resumed_host)?;
+        }
+        assert_eq!(resumed.snapshot(), runtime.snapshot());
         assert_eq!(
             host.state
                 .state_hash()

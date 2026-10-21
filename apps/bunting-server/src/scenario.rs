@@ -284,6 +284,13 @@ impl RuntimeHost for Host<'_> {
         )))
     }
 
+    fn agent_retired(&mut self, participant_id: bunting_market_types::ParticipantId, reason: &str) {
+        eprintln!(
+            "bunting-server: built-in agent {} retired, the market carries on: {reason}",
+            participant_id.get()
+        );
+    }
+
     fn checkpoint(&mut self, snapshot: &RuntimeSnapshot) -> Result<(), RuntimeError> {
         let Some(path) = &self.checkpoint else {
             return Ok(());
