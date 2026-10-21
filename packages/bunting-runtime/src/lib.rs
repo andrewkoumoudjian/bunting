@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 
+mod fundamental;
+pub use fundamental::{FundamentalPath, FundamentalWalker, VolatilityRegime};
+
 const AGENT_ID_STRIDE: u128 = 1_000_000;
 /// Orders, open or finished, a built-in agent's QUARCC state remembers.
 const AGENT_MAX_ORDERS: usize = 256;
@@ -49,6 +52,10 @@ pub struct RuntimeConfig {
     pub remaining_parent_quantity: QuantityLots,
     pub max_actions_per_tick: usize,
     pub agents: Vec<RuntimeAgentConfig>,
+    /// How the fundamental moves with the run clock; absent keeps
+    /// `fundamental_price` constant.
+    #[serde(default)]
+    pub fundamental_path: Option<FundamentalPath>,
 }
 
 impl RuntimeConfig {
@@ -58,6 +65,10 @@ impl RuntimeConfig {
             || self.fundamental_price.get() <= 1
             || self.remaining_parent_quantity.get() < 0
             || self.max_actions_per_tick == 0
+            || self
+                .fundamental_path
+                .as_ref()
+                .is_some_and(|path| !path.is_valid(self.fundamental_price))
         {
             return Err(RuntimeError::InvalidConfig);
         }
@@ -192,6 +203,8 @@ pub struct DeterministicRuntime {
     previous_trade: PriceTicks,
     last_trade: PriceTicks,
     pending: VecDeque<(usize, ExecutionAction)>,
+    /// Cache only; rebuilt from the config after a restart.
+    walker: FundamentalWalker,
 }
 
 impl DeterministicRuntime {
@@ -205,6 +218,10 @@ impl DeterministicRuntime {
         Ok(Self {
             previous_trade: config.fundamental_price,
             last_trade: config.fundamental_price,
+            walker: FundamentalWalker::new(
+                config.fundamental_path.clone(),
+                config.fundamental_price,
+            ),
             config,
             agents,
             logical_time: LogicalTimeNs::new(0),
@@ -250,6 +267,10 @@ impl DeterministicRuntime {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
+            walker: FundamentalWalker::new(
+                snapshot.config.fundamental_path.clone(),
+                snapshot.config.fundamental_price,
+            ),
             config: snapshot.config,
             agents,
             logical_time: snapshot.logical_time,
@@ -366,8 +387,10 @@ impl DeterministicRuntime {
         };
         self.logical_time =
             LogicalTimeNs::new(now.get().max(self.logical_time.get().saturating_add(1)));
-        let observation =
-            host.read_state(self.config.run_id, |state| self.observation(state))??;
+        let fundamental = self.walker.at(self.logical_time.get());
+        let observation = host.read_state(self.config.run_id, |state| {
+            self.observation(state, fundamental)
+        })??;
         let due = self
             .agents
             .iter()
@@ -402,14 +425,18 @@ impl DeterministicRuntime {
         host.checkpoint(&self.snapshot())
     }
 
-    fn observation(&self, state: &RunState) -> Result<AgentObservation, RuntimeError> {
+    fn observation(
+        &self,
+        state: &RunState,
+        fundamental: PriceTicks,
+    ) -> Result<AgentObservation, RuntimeError> {
         let key = state
             .listing_key_for_instrument(self.config.instrument_id)
             .map_err(|_| RuntimeError::InvalidMarket)?;
         let (bids, asks) = state
             .visible_levels(key)
             .map_err(|_| RuntimeError::InvalidMarket)?;
-        let fallback_bid = self.config.fundamental_price.get().saturating_sub(1).max(1);
+        let fallback_bid = fundamental.get().saturating_sub(1).max(1);
         let best_bid = bids.first().map_or(fallback_bid, |(price, _)| price.get());
         let best_ask = asks
             .first()
@@ -423,7 +450,7 @@ impl DeterministicRuntime {
             bid_quantity: QuantityLots::new(quantity(&bids)?),
             ask_quantity: QuantityLots::new(quantity(&asks)?),
             last_trade: self.last_trade,
-            fundamental: self.config.fundamental_price,
+            fundamental,
             previous_trade: self.previous_trade,
             observed_volume: QuantityLots::new(quantity(&bids)?.saturating_add(quantity(&asks)?)),
             stress_bps: 0,
@@ -627,6 +654,7 @@ mod tests {
             fundamental_price: PriceTicks::new(100),
             remaining_parent_quantity: QuantityLots::new(1_000),
             max_actions_per_tick: 16,
+            fundamental_path: None,
             agents: vec![RuntimeAgentConfig {
                 kind: PolicyKind::StaticLiquidityProvider,
                 participant_id,
@@ -686,6 +714,72 @@ mod tests {
                 .map_err(|_| RuntimeError::InvalidSnapshot)?
         );
         assert_eq!(uninterrupted.snapshot(), resumed.snapshot());
+        Ok(())
+    }
+
+    fn walking_config() -> Result<(RuntimeConfig, MemoryHost), RuntimeError> {
+        let (mut config, host) = fixture()?;
+        config.fundamental_path = Some(FundamentalPath::RandomWalk {
+            seed: 9,
+            step_ns: 1_000_000_000,
+            annual_volatility_bps: 60_000,
+            trading_days_per_year: 252,
+            run_ns_per_day: 10_000_000_000,
+            regimes: vec![VolatilityRegime {
+                from_ns: 8_000_000_000,
+                annual_volatility_bps: 90_000,
+            }],
+            min_price_ticks: 20,
+            max_price_ticks: 500,
+        });
+        Ok((config, host))
+    }
+
+    #[test]
+    fn a_walking_fundamental_moves_the_quotes_and_survives_a_restart() -> Result<(), RuntimeError> {
+        let (config, mut host) = walking_config()?;
+        let mut uninterrupted = DeterministicRuntime::new(config)?;
+        let key = ListingKey::new(VenueId::new(1), InstrumentId::new(1));
+        let mut best_bids = BTreeSet::new();
+        let mut resumed = None;
+        let mut resumed_host = host.clone();
+        for round in 0..12 {
+            uninterrupted.advance(&mut host)?;
+            if round == 4 {
+                let mut copy = DeterministicRuntime::restore(uninterrupted.snapshot())?;
+                resumed_host = host.clone();
+                copy.advance(&mut resumed_host)?;
+                resumed = Some(copy);
+                uninterrupted.advance(&mut host)?;
+                assert_eq!(
+                    uninterrupted.snapshot(),
+                    resumed
+                        .as_ref()
+                        .map(DeterministicRuntime::snapshot)
+                        .ok_or(RuntimeError::InvalidSnapshot)?
+                );
+                continue;
+            }
+            if let Some(copy) = resumed.as_mut() {
+                copy.advance(&mut resumed_host)?;
+                assert_eq!(uninterrupted.snapshot(), copy.snapshot());
+            }
+            let (bids, _) = host
+                .state
+                .visible_levels(key)
+                .map_err(|_| RuntimeError::InvalidMarket)?;
+            best_bids.extend(bids.iter().map(|(price, _)| price.get()));
+        }
+        assert!(best_bids.len() > 1, "quotes never moved: {best_bids:?}");
+        assert_eq!(
+            host.state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?,
+            resumed_host
+                .state
+                .state_hash()
+                .map_err(|_| RuntimeError::InvalidSnapshot)?
+        );
         Ok(())
     }
 

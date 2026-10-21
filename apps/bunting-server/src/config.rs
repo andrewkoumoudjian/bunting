@@ -330,6 +330,7 @@ impl ServerConfig {
                     fundamental_price: PriceTicks::new(100),
                     remaining_parent_quantity: QuantityLots::new(1_000),
                     max_actions_per_tick: 256,
+                    fundamental_path: None,
                     agents: vec![RuntimeAgentConfig {
                         kind: PolicyKind::StaticLiquidityProvider,
                         participant_id: ParticipantId::new(10),
