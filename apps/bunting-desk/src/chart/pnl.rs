@@ -14,7 +14,9 @@
 #![allow(
     clippy::float_arithmetic,
     clippy::cast_precision_loss,
-    reason = "chart coordinates are f32/f64 by the plot primitives' own API"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "chart coordinates are f32/f64 by the plot primitives' own API; run times are non-negative seconds"
 )]
 
 use super::range::{nice_ticks, run_clock_axis};
@@ -42,43 +44,63 @@ use std::collections::VecDeque;
 const MAX_POINTS: usize = 2_000;
 const DEFAULT_GUTTER: f32 = 52.;
 const AXIS_FONT: f32 = 11.;
+/// Height reserved under the plot for run-time labels.
+const TIME_AXIS_H: f32 = 18.;
+/// Candidate run-time steps for the bottom axis, in seconds.
+const TIME_STEPS_S: [u64; 11] = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
-/// One run of points entirely on one side of zero, with the
-/// interpolated crossing points at its ends: `(positive, points)`
-/// where a point is `(index, value)` in data coordinates. Runs of
-/// exact zeros belong to the run that follows them (or the last
-/// run); a series that never leaves zero is one positive run.
+/// The stepped polyline of `points` (data coordinates), split
+/// into runs of one sign: P&L only changes at events, so each
+/// value holds until the next sample (step-after), and a sign
+/// change happens at that step — the vertical jump passes
+/// through zero at the step's x, never along a diagonal. Each
+/// run is `(positive, polyline)`; consecutive points in a run
+/// always share an x or a y. Runs of exact zeros belong to the
+/// run that follows them; a flat series is one positive run.
 #[must_use]
-pub fn split_at_zero(points: &[(f64, f64)]) -> Vec<(bool, Vec<(f64, f64)>)> {
+pub fn stepped_runs(points: &[(f64, f64)]) -> Vec<(bool, Vec<(f64, f64)>)> {
     let mut runs: Vec<(bool, Vec<(f64, f64)>)> = Vec::new();
     let mut current: Vec<(f64, f64)> = Vec::new();
     let mut sign: Option<bool> = None;
     let mut previous: Option<(f64, f64)> = None;
-    for &point in points {
-        let (_, value) = point;
-        if value != 0. {
-            let positive = value > 0.;
-            match sign {
-                None => sign = Some(positive),
-                Some(held) if held != positive => {
-                    // Close the old run at the crossing and open
-                    // the new one from the same point.
-                    if let Some((px, py)) = previous {
-                        let cross = px + (point.0 - px) * (py / (py - value));
-                        current.push((cross, 0.));
-                        let done = std::mem::replace(&mut current, vec![(cross, 0.)]);
-                        runs.push((held, done));
+    for &(x, value) in points {
+        if let Some((_, prev_value)) = previous {
+            // Hold the previous value up to this sample's x.
+            current.push((x, prev_value));
+            if value != 0. {
+                let positive = value > 0.;
+                match sign {
+                    None => {
+                        if !positive {
+                            // Zeros so far are a flat run of their
+                            // own, not the start of the loss.
+                            let done = std::mem::replace(&mut current, vec![(x, 0.)]);
+                            runs.push((true, done));
+                        }
+                        sign = Some(positive);
                     }
-                    sign = Some(positive);
+                    Some(held) if held != positive => {
+                        // The jump at this x crosses zero: both
+                        // runs own the (x, 0) corner.
+                        current.push((x, 0.));
+                        let done = std::mem::replace(&mut current, vec![(x, 0.)]);
+                        runs.push((held, done));
+                        sign = Some(positive);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+        } else if value != 0. {
+            sign = Some(value > 0.);
         }
-        current.push(point);
-        previous = Some(point);
+        current.push((x, value));
+        previous = Some((x, value));
     }
     if !current.is_empty() {
         runs.push((sign.unwrap_or(true), current));
+    }
+    for (_, run) in &mut runs {
+        run.dedup();
     }
     runs
 }
@@ -150,7 +172,9 @@ pub fn chart_or_empty(id: &'static str, samples: &VecDeque<PnlSample>, cx: &App)
 }
 
 /// The baseline P&L plot. Points are `(run time ns, total P&L in
-/// minor units)`, one per run second from the model.
+/// minor units)`, one per run second from the model, drawn on a
+/// true time scale (a 36-second gap takes 36 seconds of width)
+/// as steps: P&L holds its value between events.
 pub struct PnlChart {
     id: ElementId,
     points: Vec<(u64, f64)>,
@@ -168,6 +192,7 @@ impl PnlChart {
         }
     }
 
+    /// Y domain: the samples' range with zero in it, padded.
     fn extent(&self) -> (f64, f64) {
         let (mut lo, mut hi) = (0_f64, 0_f64);
         for (_, value) in &self.points {
@@ -181,11 +206,19 @@ impl PnlChart {
         (lo - pad, hi + pad)
     }
 
-    fn x_at(&self, index: usize, plot_w: f32) -> f32 {
-        if self.points.len() <= 1 {
-            0.
+    /// X domain in run-time seconds: first to last sample, with a
+    /// breath past the last one.
+    fn time_domain(&self) -> (f64, f64) {
+        let seconds = |ns: u64| ns as f64 / 1_000_000_000.;
+        let Some(first) = self.points.first() else {
+            return (0., 60.);
+        };
+        let last = self.points.last().unwrap_or(first);
+        let (start, end) = (seconds(first.0), seconds(last.0));
+        if end - start < 1. {
+            (start, start + 60.)
         } else {
-            index as f32 / (self.points.len() - 1) as f32 * plot_w
+            (start, end + (end - start) * 0.02 + 1.)
         }
     }
 
@@ -206,7 +239,7 @@ impl Plot for PnlChart {
         _cx: &mut App,
     ) -> Vec<AnyElement> {
         let (lo, hi) = self.extent();
-        let (ticks, _) = nice_ticks(lo, hi, 4);
+        let (ticks, _) = nice_ticks(lo.floor(), hi.ceil(), 4);
         let font = px(Self::axis_font(window));
         let widest = ticks
             .iter()
@@ -226,28 +259,35 @@ impl Plot for PnlChart {
             return None;
         }
         let plot_w = (bounds.size.width.as_f32() - self.gutter).max(1.);
+        let height = (bounds.size.height.as_f32() - TIME_AXIS_H).max(1.);
         let x = position.x.as_f32();
-        if !(0. ..=plot_w).contains(&x) {
+        if !(0.0..=plot_w).contains(&x) {
             return None;
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "x is inside the plot, checked above"
-        )]
-        let index = if self.points.len() <= 1 {
-            0
-        } else {
-            ((x / plot_w) * (self.points.len() - 1) as f32).round() as usize
+        let (start, end) = self.time_domain();
+        let at = start + f64::from(x / plot_w) * (end - start);
+        let seconds: Vec<f64> = self
+            .points
+            .iter()
+            .map(|(ns, _)| *ns as f64 / 1_000_000_000.)
+            .collect();
+        let index = match seconds.binary_search_by(|each| each.total_cmp(&at)) {
+            Ok(index) => index,
+            Err(0) => 0,
+            Err(insert) if insert >= seconds.len() => seconds.len() - 1,
+            Err(insert) => {
+                if at - seconds[insert - 1] <= seconds[insert] - at {
+                    insert - 1
+                } else {
+                    insert
+                }
+            }
         };
-        let height = bounds.size.height.as_f32();
         let (lo, hi) = self.extent();
         let y = ScaleLinear::new([lo, hi], [height, 0.]);
         let value = self.points[index].1;
-        let point_at = point(
-            px(self.x_at(index, plot_w)),
-            px(y.tick(&value).unwrap_or(0.)),
-        );
+        let x_at = ((seconds[index] - start) / (end - start)) as f32 * plot_w;
+        let point_at = point(px(x_at), px(y.tick(&value).unwrap_or(0.)));
         Some(TooltipState::new(index, point_at, vec![point_at]))
     }
 
@@ -277,7 +317,11 @@ impl Plot for PnlChart {
                 .gap(px(8.))
                 .title(format!("{} run time", run_clock_axis(time_ns)))
                 .row(color, "Total P&L", money(value))
-                .cross_line(CrossLine::new(state.cross_line).both())
+                .cross_line(
+                    CrossLine::new(state.cross_line)
+                        .both()
+                        .height((bounds.size.height.as_f32() - TIME_AXIS_H).max(1.)),
+                )
                 .dots(Some(
                     Dot::new(dot)
                         .size(px(6.))
@@ -290,20 +334,18 @@ impl Plot for PnlChart {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one paint pass: grid, split fills and lines, axis, latest tag"
-    )]
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "sample indices become pixel coordinates, far inside f32's range here"
+        reason = "one paint pass: grid, stepped fills and lines, axes, latest tag"
     )]
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let theme = cx.theme();
         let origin = bounds.origin;
-        let height = bounds.size.height.as_f32();
+        let height = (bounds.size.height.as_f32() - TIME_AXIS_H).max(1.);
         let plot_w = (bounds.size.width.as_f32() - self.gutter).max(1.);
         let plot = Bounds::new(origin, size(px(plot_w), px(height)));
         let (lo, hi) = self.extent();
         let y = ScaleLinear::new([lo, hi], [height, 0.]);
+        let (start, end) = self.time_domain();
+        let x_at = |seconds: f64| ((seconds - start) / (end - start)) as f32 * plot_w;
         let axis_font = Self::axis_font(window);
         let mut labels: Vec<Text> = Vec::new();
 
@@ -311,7 +353,7 @@ impl Plot for PnlChart {
             .points
             .last()
             .map(|(_, last)| y.tick(last).unwrap_or(0.));
-        let (ticks, _) = nice_ticks(lo, hi, 4);
+        let (ticks, _) = nice_ticks(lo.floor(), hi.ceil(), 4);
         Grid::new()
             .y(ticks.iter().map(|tick| y.tick(tick).unwrap_or(0.)))
             .stroke(theme.chart_grid)
@@ -336,7 +378,33 @@ impl Plot for PnlChart {
             );
         }
 
-        // Zero line, then the split fills and lines around it.
+        // Run-time labels along the bottom, on nice whole steps.
+        let span = end - start;
+        let sample = SharedString::from(run_clock_axis((end as u64) * 1_000_000_000));
+        let label_w = measure_text_width(&sample, px(axis_font), window);
+        let step_s = TIME_STEPS_S
+            .into_iter()
+            .find(|step| (*step as f32 / span as f32) * plot_w >= label_w + 8.)
+            .unwrap_or(3600) as f64;
+        let mut at = (start / step_s).ceil() * step_s;
+        while at <= end {
+            let text = run_clock_axis((at as u64) * 1_000_000_000);
+            let half =
+                measure_text_width(&SharedString::from(text.clone()), px(axis_font), window) / 2.;
+            let centered = x_at(at).clamp(half, (plot_w - half).max(half));
+            labels.push(
+                Text::new(
+                    text,
+                    point(px(centered), px(height + 3.)),
+                    theme.muted_foreground,
+                )
+                .font_size(px(axis_font))
+                .align(gpui_kit::TextAlign::Center),
+            );
+            at += step_s;
+        }
+
+        // Zero line, then the stepped fills and lines around it.
         let zero_y = y.tick(&0.).unwrap_or(height);
         window.paint_quad(fill(
             Bounds::new(
@@ -345,13 +413,12 @@ impl Plot for PnlChart {
             ),
             theme.muted_foreground.opacity(0.7),
         ));
-        let indexed: Vec<(f64, f64)> = self
+        let timed: Vec<(f64, f64)> = self
             .points
             .iter()
-            .enumerate()
-            .map(|(index, (_, value))| (index as f64, *value))
+            .map(|(ns, value)| (*ns as f64 / 1_000_000_000., *value))
             .collect();
-        for (positive, run) in split_at_zero(&indexed) {
+        for (positive, run) in stepped_runs(&timed) {
             if run.is_empty() {
                 continue;
             }
@@ -362,14 +429,7 @@ impl Plot for PnlChart {
             };
             let pixels: Vec<(f32, f32)> = run
                 .iter()
-                .map(|(index, value)| {
-                    let x = if self.points.len() <= 1 {
-                        0.
-                    } else {
-                        (*index as f32 / (self.points.len() - 1) as f32) * plot_w
-                    };
-                    (x, y.tick(value).unwrap_or(zero_y))
-                })
+                .map(|(seconds, value)| (x_at(*seconds), y.tick(value).unwrap_or(zero_y)))
                 .collect();
             Area::new()
                 .data(pixels.clone())
@@ -390,12 +450,13 @@ impl Plot for PnlChart {
                 .paint(&plot, window);
         }
 
-        // Latest value tag on the axis.
+        // Latest value tag on the axis, text in the fill's own
+        // contrasting foreground token.
         if let Some((_, last)) = self.points.last() {
-            let color = if *last < 0. {
-                theme.chart_bearish
+            let (color, text_color) = if *last < 0. {
+                (theme.chart_bearish, theme.danger_foreground)
             } else {
-                theme.chart_bullish
+                (theme.chart_bullish, theme.success_foreground)
             };
             let last_y = last_tag_y.unwrap_or(zero_y);
             let tag_h = axis_font + 4.;
@@ -413,7 +474,7 @@ impl Plot for PnlChart {
                 Text::new(
                     money(*last),
                     point(px(plot_w + self.gutter / 2.), px(last_y - axis_font / 2.)),
-                    theme.foreground,
+                    text_color,
                 )
                 .font_size(px(axis_font))
                 .align(gpui_kit::TextAlign::Center),
@@ -541,49 +602,68 @@ pub fn portfolio_section(model: &Model, chart_h: f32, cx: &App) -> Div {
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
-    reason = "fixtures use integers and exact halves, so equality is the assertion"
+    reason = "fixtures use whole seconds and values, so equality is the assertion"
 )]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_series_that_never_crosses_is_one_run() {
+    fn a_series_that_never_crosses_is_one_stepped_run() {
         let points = [(0., 1.), (1., 3.), (2., 2.)];
-        assert_eq!(split_at_zero(&points), vec![(true, points.to_vec())]);
-        let points = [(0., -1.), (1., -3.)];
-        assert_eq!(split_at_zero(&points), vec![(false, points.to_vec())]);
-        assert!(split_at_zero(&[]).is_empty());
+        assert_eq!(
+            stepped_runs(&points),
+            vec![(true, vec![(0., 1.), (1., 1.), (1., 3.), (2., 3.), (2., 2.)])]
+        );
+        assert!(stepped_runs(&[]).is_empty());
     }
 
     #[test]
-    fn crossings_are_interpolated_and_shared_by_both_runs() {
-        // +2 at 0 to -2 at 2 crosses zero at 1; back up to +2 at 4
-        // crosses at 3.
-        let points = [(0., 2.), (2., -2.), (4., 2.)];
+    fn sign_changes_happen_at_the_step_never_on_a_diagonal() {
+        // The review case: flat at zero, then the first fill at
+        // 36 s. The line holds 0 to 36, then jumps — no ramp.
+        let points = [(0., 0.), (36., -25.), (60., -25.)];
+        let runs = stepped_runs(&points);
         assert_eq!(
-            split_at_zero(&points),
+            runs,
             vec![
-                (true, vec![(0., 2.), (1., 0.)]),
-                (false, vec![(1., 0.), (2., -2.), (3., 0.)]),
-                (true, vec![(3., 0.), (4., 2.)]),
+                (true, vec![(0., 0.), (36., 0.)]),
+                (false, vec![(36., 0.), (36., -25.), (60., -25.)]),
+            ]
+        );
+        for (_, run) in &runs {
+            for pair in run.windows(2) {
+                assert!(
+                    pair[0].0 == pair[1].0 || pair[0].1 == pair[1].1,
+                    "every segment is horizontal or vertical: {pair:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crossings_share_the_zero_corner_at_the_step() {
+        let points = [(0., 10.), (10., -5.), (20., 5.)];
+        assert_eq!(
+            stepped_runs(&points),
+            vec![
+                (true, vec![(0., 10.), (10., 10.), (10., 0.)]),
+                (false, vec![(10., 0.), (10., -5.), (20., -5.), (20., 0.)]),
+                (true, vec![(20., 0.), (20., 5.)]),
             ]
         );
     }
 
     #[test]
-    fn a_point_on_zero_stays_with_its_run() {
-        let points = [(0., 1.), (1., 0.), (2., -1.)];
-        let runs = split_at_zero(&points);
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0], (true, vec![(0., 1.), (1., 0.), (1., 0.)]));
-        assert_eq!(runs[1], (false, vec![(1., 0.), (2., -1.)]));
-    }
-
-    #[test]
-    fn leading_zeros_take_the_following_sign_and_flat_is_positive() {
+    fn leading_zeros_are_a_flat_run_before_the_first_step() {
         let points = [(0., 0.), (1., 0.), (2., -4.)];
-        assert_eq!(split_at_zero(&points), vec![(false, points.to_vec())]);
+        assert_eq!(
+            stepped_runs(&points),
+            vec![
+                (true, vec![(0., 0.), (1., 0.), (2., 0.)]),
+                (false, vec![(2., 0.), (2., -4.)]),
+            ]
+        );
         let flat = [(0., 0.), (1., 0.)];
-        assert_eq!(split_at_zero(&flat), vec![(true, flat.to_vec())]);
+        assert_eq!(stepped_runs(&flat), vec![(true, vec![(0., 0.), (1., 0.)])]);
     }
 }

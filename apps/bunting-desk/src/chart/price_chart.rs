@@ -538,9 +538,11 @@ impl Plot for PriceChart {
             // Last price: dashed line and its filled gutter tag.
             if let Some(last) = self.bars.last() {
                 let prev = self.bars.get(self.bars.len().saturating_sub(2));
-                let color = match prev {
-                    Some(prev) if last.close < prev.close => theme.chart_bearish,
-                    _ => theme.chart_bullish,
+                let down = prev.is_some_and(|prev| last.close < prev.close);
+                let (color, tag_text) = if down {
+                    (theme.chart_bearish, theme.danger_foreground)
+                } else {
+                    (theme.chart_bullish, theme.success_foreground)
                 };
                 let last_y = last_tag_y.unwrap_or(0.);
                 Grid::new()
@@ -563,7 +565,7 @@ impl Plot for PriceChart {
                             px(plot_w + self.gutter / 2.),
                             px(price_pane.top + last_y - axis_font / 2.),
                         ),
-                        theme.foreground,
+                        tag_text,
                     )
                     .font_size(px(axis_font))
                     .align(TextAlign::Center),
