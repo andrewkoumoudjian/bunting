@@ -136,9 +136,28 @@ impl ViewRange {
     }
 }
 
+/// The 1/2/5 × 10ⁿ step that puts about `target` ticks across
+/// `span`.
+#[must_use]
+pub fn nice_step(span: f64, target: usize) -> f64 {
+    if !span.is_finite() || span <= 0. || target == 0 {
+        return 1.;
+    }
+    let raw = span / target.max(1) as f64;
+    let magnitude = 10_f64.powf(raw.log10().floor());
+    [1., 2., 5., 10.]
+        .into_iter()
+        .map(|factor| factor * magnitude)
+        .find(|step| *step >= raw)
+        .unwrap_or(10. * magnitude)
+}
+
 /// Nice axis ticks inside `[min, max]`: steps of 1, 2 or 5 × 10ⁿ,
 /// about `target` of them, plus the decimal places their labels
-/// need. An empty span yields the single value.
+/// need. An empty span yields the single value. A wholly
+/// integral range (prices in ticks, money in minor units) never
+/// steps below 1: a 98–100 market is labelled 98/99/100, never
+/// 97.6/98.4 — ticks are whole by definition.
 #[must_use]
 pub fn nice_ticks(min: f64, max: f64, target: usize) -> (Vec<f64>, usize) {
     if !min.is_finite() || !max.is_finite() || target == 0 {
@@ -148,13 +167,10 @@ pub fn nice_ticks(min: f64, max: f64, target: usize) -> (Vec<f64>, usize) {
     if max - min <= 0. {
         return (vec![min], decimals_for(1.));
     }
-    let raw = (max - min) / target.max(1) as f64;
-    let magnitude = 10_f64.powf(raw.log10().floor());
-    let step = [1., 2., 5., 10.]
-        .into_iter()
-        .map(|factor| factor * magnitude)
-        .find(|step| *step >= raw)
-        .unwrap_or(10. * magnitude);
+    let mut step = nice_step(max - min, target);
+    if min.fract() == 0. && max.fract() == 0. && step < 1. {
+        step = 1.;
+    }
     let decimals = decimals_for(step);
     let first = (min / step).ceil() * step;
     let mut ticks = Vec::new();
@@ -344,6 +360,10 @@ mod tests {
         assert_eq!(decimals, 0);
         let (ticks, decimals) = nice_ticks(-3., 7., 5);
         assert_eq!(ticks, vec![-2., 0., 2., 4., 6.]);
+        assert_eq!(decimals, 0);
+        // Integral ranges never step below a whole tick.
+        let (ticks, decimals) = nice_ticks(98., 100., 6);
+        assert_eq!(ticks, vec![98., 99., 100.]);
         assert_eq!(decimals, 0);
         let (ticks, decimals) = nice_ticks(0., 0.9, 4);
         assert_eq!(ticks, vec![0., 0.5]);

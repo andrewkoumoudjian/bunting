@@ -131,3 +131,38 @@ nit from that review is fixed in `ac7e427`. Commits from
 - Portfolio rows, Trader Info P&L section and the Transaction
   Log's running P&L consume the same trading-state APIs from
   the integration branch; nothing chart-side is left for them.
+
+## Coordinator screenshot review round (same day, after `914306f`)
+
+Live screenshots with two desks trading against the local venue
+approved `55cfc3c` and sent back eight fixes, landed as:
+
+- `306ad59` (model) the P&L series opens with a zero sample at
+  run time 0 (the first fill's figure no longer reads back to
+  the start), and samples mark from the last two-sided touch:
+  an agent re-quoting left a one-sided book for an instant and
+  sampling that instant (live mark falling back to the last
+  trade) spiked the series. Also fixes a clippy lint in the
+  merged Order Entry preselect.
+- `655a301` integral ranges never step below a whole tick in
+  `nice_ticks` (98/99/100, not 97.6/98.4); price domain pads at
+  least a quarter-range/one step each side and never shows
+  under a four-tick range; volume gets 15% headroom; candle
+  bodies cap at 14 px with ~30% gap past a 20 px step.
+- `74a8543` P&L x is true run time with whole-step run-clock
+  labels, and the line/fill are step-after (`stepped_runs`:
+  sign changes at the step's vertical through zero, never a
+  diagonal — P&L only changes at events, so the flat zero
+  before the first fill no longer ramps). Latest-value tags on
+  both charts use the fills' own contrasting tokens
+  (success/danger foreground).
+- This commit: Portfolio's P&L region scrolls when the window
+  is too short for stats + chart + a usable table (chart yields
+  first, table keeps at least 96 px), and the Trading template
+  gives Portfolio the full-height bottom-right column (Fills
+  and Trader Info stack in the middle column).
+
+`tools/check_desk.sh` green before each (113 tests at the end:
+58 lib incl. the new unit tests, 5 chart window, 17 panes,
+24 workspace, 9 appearance). One appearance test flaked once
+under parallel load and passed isolated and on re-run.
