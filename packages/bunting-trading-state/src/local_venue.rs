@@ -36,7 +36,7 @@ use rcgen::{
 };
 use serde_json::{Value, json};
 use std::ffi::OsString;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -620,17 +620,15 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-fn port_accepts(port: u16) -> bool {
-    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
-}
-
 /// Whether the PID in the record is still the server this venue started:
-/// alive, its recorded BNP port accepts connections, and — where the
-/// command line can be read (Linux `/proc`) — it names this venue's
-/// configuration. A process that fails any check is never signalled.
+/// alive and — where the command line can be read (Linux `/proc`) — it
+/// names this venue's configuration. There is deliberately no connection
+/// probe: a bare TCP connect to the BNP port fails the venue's TLS
+/// handshake and is logged as an error. Readiness after a start is the
+/// client's own BNP connect-and-retry. A process that fails any check is
+/// never signalled.
 fn process_is_our_server(record: &VenueRecord, directory: &Path) -> bool {
-    if !pid_alive(record.pid) || !port_accepts(record.bnp_port) {
+    if !pid_alive(record.pid) {
         return false;
     }
     #[cfg(target_os = "linux")]
@@ -1294,8 +1292,8 @@ mod tests {
             program: PathBuf::from("bunting"),
             arguments: vec!["server".into()],
         };
-        // A PID that cannot be ours: this test process is alive but is
-        // not listening on the venue's BNP port, so it must never be
+        // A PID that cannot be ours: this test process is alive but its
+        // command line does not name the venue's server.json, so it must never be
         // treated as the server (and never signalled).
         let written = write_venue_record(&directory, std::process::id(), &prepared, &program)
             .map_err(|e| e.to_string())?;
@@ -1303,6 +1301,9 @@ mod tests {
         assert_eq!(read.pid, std::process::id());
         assert_eq!(read.bnp_port, prepared.bnp_port);
         assert_eq!(read.nonce, written.nonce);
+        // Alive, but not running this venue's configuration. Only where the
+        // command line can be read (Linux) is that distinction available.
+        #[cfg(target_os = "linux")]
         assert!(!process_is_our_server(&read, &directory));
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
