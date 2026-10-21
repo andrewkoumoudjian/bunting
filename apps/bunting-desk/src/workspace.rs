@@ -1012,6 +1012,9 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &actions::OpenDeals, window, cx| {
             this.add_pane(PaneKind::Deals, window, cx);
         }))
+        .on_action(cx.listener(|this, _: &actions::OpenChart, window, cx| {
+            this.add_pane(PaneKind::Chart, window, cx);
+        }))
         .on_action(cx.listener(|this, _: &actions::CancelAll, _, cx| {
             this.desk.update(cx, Desk::cancel_all);
         }))
