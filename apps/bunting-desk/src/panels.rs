@@ -20,6 +20,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, WindowExt as _,
     h_flex, v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, ClickEvent, Context, Div, Entity, EventEmitter,
     FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
@@ -42,10 +43,10 @@ const ORDER_DEPTH: usize = 16;
 const MAX_VENUE_COLUMNS: usize = 6;
 /// One side of an order-by-order book. Numbers right-align with their
 /// headers; the broker is an identifier and stays left. As a card
-/// narrows the broker drops first, then the quantity ahead (both
-/// priority 0, the rightmost first), before anything clips.
+/// narrows, place, ahead and broker (priority 0, the rightmost
+/// first) drop whole before anything clips; qty and price stay.
 pub const ORDER_COLUMNS: [Col; 5] = [
-    Col::right("place", 44.),
+    Col::right("place", 44.).priority(0),
     Col::right("ahead", 52.).priority(0),
     Col::right("qty", 52.).priority(2),
     Col::right("price", 60.).priority(2),
@@ -57,12 +58,23 @@ pub const LEVEL_COLUMNS: [Col; 3] = [
     Col::right("qty", 60.).priority(2),
     Col::right("price", 68.).priority(2),
 ];
-/// A venue card's least width: both sides' essential columns (place,
-/// qty, price / qty, price), the gap between them, padding and border.
-/// Wider cards fit more columns back in; the books scroll sideways
-/// below this.
-const ORDER_CARD_WIDTH: f32 = 400.;
-const LEVEL_CARD_WIDTH: f32 = 300.;
+/// A venue card's least width for `depth`: both sides' kept-longest
+/// (priority 2) columns, the gap between the sides, padding and
+/// border. Cards narrower than this cannot show qty and price on
+/// both sides, so the panel stacks venues instead of clipping.
+#[allow(clippy::float_arithmetic, reason = "logical pixel widths")]
+fn essential_card_width(depth: Depth, side_gap: f32) -> f32 {
+    let cols: &[Col] = match depth {
+        Depth::Orders => &ORDER_COLUMNS,
+        Depth::Levels => &LEVEL_COLUMNS,
+    };
+    let side: f32 = cols
+        .iter()
+        .filter(|col| col.priority >= 2)
+        .map(|col| col.min_width)
+        .sum();
+    2. * side + side_gap + 2. * ui::PANE_PADDING + 2.
+}
 
 /// The boilerplate every dock panel shares.
 macro_rules! dock_panel {
@@ -181,6 +193,9 @@ pub struct BooksPanel {
     card_widths: std::rc::Rc<
         std::cell::RefCell<std::collections::HashMap<Listing, std::rc::Rc<std::cell::Cell<f32>>>>,
     >,
+    /// The pane's measured content width: decides whether venue
+    /// cards sit side by side or stack.
+    pane_width: std::rc::Rc<std::cell::Cell<f32>>,
     _observe: Subscription,
 }
 
@@ -205,7 +220,21 @@ impl BooksPanel {
             card_widths: std::rc::Rc::new(
                 std::cell::RefCell::new(std::collections::HashMap::new()),
             ),
+            pane_width: std::rc::Rc::new(std::cell::Cell::new(0.)),
         }
+    }
+
+    /// Side by side while every venue card keeps its qty and price
+    /// columns; stacked (and thus wider, so more columns fit back
+    /// in) once they cannot. Unmeasured keeps the row for the first
+    /// frame.
+    #[allow(clippy::float_arithmetic, reason = "logical pixel widths")]
+    fn venues_stack(&self, venues: usize, cx: &App) -> bool {
+        let pane_w = self.pane_width.get();
+        let essential = essential_card_width(self.depth, f32::from(ui::rem_size(cx)) * 0.75);
+        let needed = venues as f32 * essential
+            + venues.saturating_sub(1) as f32 * f32::from(ui::rem_size(cx)) * 0.5;
+        pane_w > 0. && pane_w < needed
     }
 
     fn depth_segment(&self, depth: Depth) -> Button {
@@ -364,7 +393,10 @@ impl Render for BooksPanel {
         let instruments = desk.instruments();
         let instrument = desk.instrument();
         let chosen = desk.listing();
-        let mut body = panel_body("books", &self.focus);
+        let mut body = panel_body("books", &self.focus).child(ui::width_probe(
+            cx.entity().downgrade(),
+            self.pane_width.clone(),
+        ));
         if instruments.is_empty() {
             return body.child(ui::empty_state(
                 "books-empty",
@@ -426,9 +458,14 @@ impl Render for BooksPanel {
             .map(|info| info.listing)
             .collect();
         self.observe_books(&listings, cx);
-        let mut columns = h_flex().w_full().gap_2().items_start();
+        let stacked = self.venues_stack(listings.len(), cx);
+        let mut columns = if stacked {
+            v_flex().w_full().gap_2()
+        } else {
+            h_flex().w_full().gap_2().items_start()
+        };
         for listing in &listings {
-            columns = columns.child(self.book_column(*listing, chosen, window, cx));
+            columns = columns.child(self.book_column(*listing, chosen, stacked, window, cx));
         }
         if let Some(problem) = &self.problem {
             body = body.child(
@@ -445,7 +482,7 @@ impl Render for BooksPanel {
                 .id("books-scroll")
                 .flex_1()
                 .min_h_0()
-                .overflow_scroll()
+                .overflow_y_scroll()
                 .child(columns),
         )
     }
@@ -541,6 +578,7 @@ impl BooksPanel {
         &self,
         listing: Listing,
         chosen: Option<Listing>,
+        stacked: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -583,12 +621,8 @@ impl BooksPanel {
         let selected = chosen == Some(listing);
         let venue_id = listing.venue_id;
         let border = if selected { theme.ring } else { theme.border };
-        // Room for both sides, the gap between them and the padding, so a
-        // narrow pane scrolls sideways instead of overlapping the sides.
-        let card_width = match self.depth {
-            Depth::Orders => ORDER_CARD_WIDTH,
-            Depth::Levels => LEVEL_CARD_WIDTH,
-        };
+        // The least width at which both sides keep qty and price.
+        let card_width = essential_card_width(self.depth, f32::from(ui::rem_size(cx)) * 0.75);
         // The card's 28 px header: venue, feed state as a dot and word,
         // the measured ages in muted tabular text, and the spread.
         let mut card_header = h_flex()
@@ -633,10 +667,11 @@ impl BooksPanel {
         let mut column = v_flex()
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
-            .flex_1()
+            .when(stacked, |column| column.w_full())
+            .when(!stacked, |column| {
+                column.flex_1().min_w(px(card_width)).max_w(px(640.))
+            })
             .flex_shrink_0()
-            .min_w(px(card_width))
-            .max_w(px(640.))
             .p(px(ui::PANE_PADDING))
             .gap_1()
             .border_1()
