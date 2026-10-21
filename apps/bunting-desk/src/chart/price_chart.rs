@@ -257,6 +257,14 @@ impl PriceChart {
                     take(value);
                 }
             }
+            // Overlay lines share the price axis (another venue of
+            // the same instrument, or line mode), so their values
+            // widen the extent instead of clipping.
+            for series in &self.others {
+                for value in &series.values {
+                    take(*value);
+                }
+            }
         }
         if lo > hi {
             return (0., 1.);
@@ -536,6 +544,11 @@ impl Plot for PriceChart {
             }
             if let Some(ema) = &self.ema {
                 line(ema, theme.muted_foreground, price_pane, &y, window);
+            }
+            // Overlay series (another venue of the same
+            // instrument) as lines on this price axis.
+            for series in &self.others {
+                line(&series.values, series.color, price_pane, &y, window);
             }
             // Last price: dashed line and its filled gutter tag.
             if let Some(last) = self.bars.last() {

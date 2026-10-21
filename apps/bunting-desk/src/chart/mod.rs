@@ -397,19 +397,25 @@ impl ChartPanel {
         self.view
     }
 
-    /// Whether two or more series with data put the price pane in
-    /// comparison (percent-change) mode.
+    /// Comparison (percent-change) mode: only between different
+    /// instruments. Another venue of the same instrument overlays
+    /// as a line on the price axis instead — percent from each
+    /// venue's own first bar would read differently at the same
+    /// price.
     #[must_use]
     pub fn comparison(&self, cx: &App) -> bool {
-        self.series.len() > 1
-            && self.series.iter().skip(1).any(|choice| {
-                !self
+        let Some(primary) = self.series.first() else {
+            return false;
+        };
+        self.series.iter().skip(1).any(|choice| {
+            choice.listing.instrument_id != primary.listing.instrument_id
+                && !self
                     .desk
                     .read(cx)
                     .model()
                     .bars(choice.listing, self.bar_ns())
                     .is_empty()
-            })
+        })
     }
 
     // ---- changing the series -------------------------------------------
@@ -427,22 +433,27 @@ impl ChartPanel {
         true
     }
 
-    /// Adds every venue's listing of `instrument`, each as its own
-    /// series: a security on two venues is two series labelled by
-    /// venue, never one merged line.
+    /// Adds `instrument`'s next listing not yet charted, in venue
+    /// order: the first add charts venue 1, adding the security
+    /// again overlays its next venue. Each venue stays its own
+    /// labelled series, never merged.
     fn add_instrument(&mut self, instrument: &Instrument, cx: &mut Context<Self>) {
-        for info in &instrument.listings {
-            let already = self
-                .series
-                .iter()
-                .any(|choice| choice.listing == info.listing);
-            if !already && !self.push_series(info.listing) {
-                self.problem = Some(format!(
-                    "{MAX_SERIES} series at most; {} venue {} left off",
-                    instrument.symbol, info.listing.venue_id
-                ));
-                break;
-            }
+        let mut listings: Vec<Listing> = instrument
+            .listings
+            .iter()
+            .map(|info| info.listing)
+            .collect();
+        listings.sort_by_key(|listing| listing.venue_id);
+        let next = listings
+            .into_iter()
+            .find(|listing| !self.series.iter().any(|choice| choice.listing == *listing));
+        if let Some(listing) = next
+            && !self.push_series(listing)
+        {
+            self.problem = Some(format!(
+                "{MAX_SERIES} series at most; {} venue {} left off",
+                instrument.symbol, listing.venue_id
+            ));
         }
         self.seeded = true;
         cx.notify();
@@ -478,14 +489,20 @@ impl ChartPanel {
     }
 
     /// The first time the window can, it charts the desk's current
-    /// instrument, so opening it over a live market draws at once.
+    /// instrument — one series, its venue-1 (or first) listing —
+    /// so opening it over a live market draws candles at once.
     fn seed(&mut self, cx: &mut Context<Self>) {
         if self.seeded || !self.series.is_empty() {
             return;
         }
         if let Some(instrument) = self.desk.read(cx).instrument() {
-            for info in &instrument.listings {
-                self.push_series(info.listing);
+            if let Some(first) = instrument
+                .listings
+                .iter()
+                .map(|info| info.listing)
+                .min_by_key(|listing| listing.venue_id)
+            {
+                self.push_series(first);
             }
             self.seeded = true;
         }
@@ -910,7 +927,12 @@ impl ChartPanel {
                 others.push((*choice, aligned));
             }
         }
-        let comparison = !others.is_empty();
+        // Percent comparison only between different instruments;
+        // another venue of the primary's instrument stays a line
+        // on the price axis.
+        let comparison = others
+            .iter()
+            .any(|(choice, _)| choice.listing.instrument_id != primary.listing.instrument_id);
         let mut chart = PriceChart::new(
             SharedString::from(format!(
                 "price-{}-{}",
@@ -948,6 +970,16 @@ impl ChartPanel {
             }
             chart = chart.others(lines);
         } else {
+            chart = chart.others(
+                others
+                    .iter()
+                    .map(|(choice, aligned)| OtherSeries {
+                        name: SharedString::from(venue_suffix(choice)),
+                        values: slice(aligned),
+                        color: series_color(choice.color, cx),
+                    })
+                    .collect(),
+            );
             if self.indicators.ma {
                 chart = chart.ma(Some(slice(&sma(&closes, MA_PERIOD))));
             }
