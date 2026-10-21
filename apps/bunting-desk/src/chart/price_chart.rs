@@ -19,7 +19,9 @@
     reason = "chart coordinates are f32/f64 by the plot primitives' own API"
 )]
 
-use super::range::{format_tick, nice_step, nice_ticks, pick_time_step, run_clock_axis};
+use super::range::{
+    format_tick, keep_clear, nice_step, nice_ticks, pick_time_step, run_clock_axis,
+};
 use bunting_trading_state::Bar as MarketBar;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::plot::label::{Text, measure_text_width};
@@ -676,24 +678,53 @@ impl Plot for PriceChart {
             let sample = SharedString::from(run_clock_axis(last.start_ns));
             let label_w = measure_text_width(&sample, px(axis_font), window);
             let step_ns = pick_time_step(bar_ns.max(1), step, label_w);
+            // The crosshair's time tag (drawn below) also claims
+            // its box; labels under it stand down.
+            let time_tag = self.hovered.as_ref().and_then(|state| {
+                let bar = self.bars.get(state.index)?;
+                let width = measure_text_width(
+                    &SharedString::from(run_clock_axis(bar.start_ns)),
+                    px(axis_font),
+                    window,
+                ) + 8.;
+                let left = (center(state.index) - width / 2.).clamp(0., (plot_w - width).max(0.));
+                Some((left, left + width))
+            });
+            let mut candidates: Vec<(f32, f32, String)> = Vec::new();
             for (index, bar) in self.bars.iter().enumerate() {
                 if bar.start_ns % step_ns != 0 {
                     continue;
                 }
                 let text = run_clock_axis(bar.start_ns);
-                let half =
-                    measure_text_width(&SharedString::from(text.clone()), px(axis_font), window)
-                        / 2.;
+                let width =
+                    measure_text_width(&SharedString::from(text.clone()), px(axis_font), window);
+                let half = width / 2.;
                 let x_at = center(index).clamp(half, (plot_w - half).max(half));
-                labels.push(
-                    Text::new(
-                        text,
-                        point(px(x_at), px(layout.axis_top + 3.)),
-                        theme.muted_foreground,
-                    )
-                    .font_size(px(axis_font))
-                    .align(TextAlign::Center),
-                );
+                if time_tag.is_some_and(|(left, right)| x_at + half > left && x_at - half < right) {
+                    continue;
+                }
+                candidates.push((x_at, width, text));
+            }
+            // The clamped first label must not eat the second
+            // label's gap: drop whatever would touch its neighbour.
+            let keep = keep_clear(
+                &candidates
+                    .iter()
+                    .map(|(x_at, width, _)| (*x_at, *width))
+                    .collect::<Vec<_>>(),
+            );
+            for ((x_at, _, text), draws) in candidates.into_iter().zip(keep) {
+                if draws {
+                    labels.push(
+                        Text::new(
+                            text,
+                            point(px(x_at), px(layout.axis_top + 3.)),
+                            theme.muted_foreground,
+                        )
+                        .font_size(px(axis_font))
+                        .align(TextAlign::Center),
+                    );
+                }
             }
         }
 

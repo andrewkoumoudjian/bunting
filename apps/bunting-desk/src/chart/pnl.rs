@@ -19,7 +19,7 @@
     reason = "chart coordinates are f32/f64 by the plot primitives' own API; run times are non-negative seconds"
 )]
 
-use super::range::{nice_ticks, run_clock_axis};
+use super::range::{nice_ticks, run_clock_axis, time_axis_labels};
 use crate::desk::Desk;
 use crate::ui;
 use bunting_trading_state::{Model, PnlSample, PnlTotals};
@@ -46,8 +46,6 @@ const DEFAULT_GUTTER: f32 = 52.;
 const AXIS_FONT: f32 = 11.;
 /// Height reserved under the plot for run-time labels.
 const TIME_AXIS_H: f32 = 18.;
-/// Candidate run-time steps for the bottom axis, in seconds.
-const TIME_STEPS_S: [u64; 11] = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
 /// The stepped polyline of `points` (data coordinates), split
 /// into runs of one sign: P&L only changes at events, so each
@@ -378,30 +376,20 @@ impl Plot for PnlChart {
             );
         }
 
-        // Run-time labels along the bottom, on nice whole steps.
-        let span = end - start;
+        // Run-time labels along the bottom, placed so no two can
+        // overlap whatever the span (range::time_axis_labels).
         let sample = SharedString::from(run_clock_axis((end as u64) * 1_000_000_000));
         let label_w = measure_text_width(&sample, px(axis_font), window);
-        let step_s = TIME_STEPS_S
-            .into_iter()
-            .find(|step| (*step as f32 / span as f32) * plot_w >= label_w + 8.)
-            .unwrap_or(3600) as f64;
-        let mut at = (start / step_s).ceil() * step_s;
-        while at <= end {
-            let text = run_clock_axis((at as u64) * 1_000_000_000);
-            let half =
-                measure_text_width(&SharedString::from(text.clone()), px(axis_font), window) / 2.;
-            let centered = x_at(at).clamp(half, (plot_w - half).max(half));
+        for (at, centered) in time_axis_labels(start, end, plot_w, label_w) {
             labels.push(
                 Text::new(
-                    text,
+                    run_clock_axis((at as u64) * 1_000_000_000),
                     point(px(centered), px(height + 3.)),
                     theme.muted_foreground,
                 )
                 .font_size(px(axis_font))
                 .align(gpui_kit::TextAlign::Center),
             );
-            at += step_s;
         }
 
         // Zero line, then the stepped fills and lines around it.

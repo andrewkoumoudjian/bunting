@@ -5,7 +5,9 @@
 #![allow(
     clippy::float_arithmetic,
     clippy::cast_precision_loss,
-    reason = "chart coordinates and bar counts are f64 by the plot primitives' own API"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "chart coordinates and bar counts are f64 by the plot primitives' own API; run times are non-negative"
 )]
 
 use bunting_trading_state::{BAR_SIZES_NS, FINEST_BAR_NS};
@@ -233,6 +235,71 @@ pub fn pick_time_step(bar_ns: u64, band_px: f32, label_px: f32) -> u64 {
     step_s.div_ceil(bar_seconds) * bar_ns.max(FINEST_BAR_NS)
 }
 
+/// Time-axis labels for a continuous time scale: `(at seconds,
+/// label centre px)` pairs whose boxes — `label_px` wide,
+/// centred on the label's instant and clamped inside the plot —
+/// never overlap, whatever the span. The step is the smallest
+/// whole step leaving 8 px between neighbours; after clamping,
+/// any label that would still touch its predecessor is dropped,
+/// so the guarantee does not depend on the measurement being
+/// exact. (Coordinator screenshot: `0:000:05` — the first label,
+/// clamped in from the left edge, ate the gap to the second.)
+#[must_use]
+pub fn time_axis_labels(start_s: f64, end_s: f64, plot_w: f32, label_px: f32) -> Vec<(f64, f32)> {
+    let span = end_s - start_s;
+    if !span.is_finite() || span <= 0. || plot_w <= 0. {
+        return Vec::new();
+    }
+    let px_per_s = f64::from(plot_w) / span;
+    let needed = f64::from(label_px + 8.);
+    let mut step_s = TIME_STEPS_S
+        .into_iter()
+        .map(|step| step as f64)
+        .find(|step| step * px_per_s >= needed)
+        .unwrap_or_else(|| {
+            let mut step = 3600_f64;
+            while step * px_per_s < needed {
+                step *= 2.;
+            }
+            step
+        });
+    if step_s <= 0. {
+        step_s = span;
+    }
+    let half = label_px / 2.;
+    let mut placed: Vec<(f64, f32)> = Vec::new();
+    let mut last_right = f32::MIN;
+    let mut at = (start_s / step_s).ceil() * step_s;
+    while at <= end_s {
+        let center =
+            (((at - start_s) / span) as f32 * plot_w).clamp(half, (plot_w - half).max(half));
+        if center - half >= last_right + 2. {
+            placed.push((at, center));
+            last_right = center + half;
+        }
+        at += step_s;
+    }
+    placed
+}
+
+/// Greedy non-overlap for labels whose centres are already
+/// chosen (the price chart's per-bar labels): returns which
+/// candidates `(centre px, width px)` to draw so no two boxes
+/// touch. The first candidate always draws.
+#[must_use]
+pub fn keep_clear(candidates: &[(f32, f32)]) -> Vec<bool> {
+    let mut keep = Vec::with_capacity(candidates.len());
+    let mut last_right = f32::MIN;
+    for &(center, width) in candidates {
+        let draws = center - width / 2. >= last_right + 2.;
+        if draws {
+            last_right = center + width / 2.;
+        }
+        keep.push(draws);
+    }
+    keep
+}
+
 /// A run-clock instant for the axis: `m:ss`, or `h:mm:ss` once the
 /// run passes an hour.
 #[must_use]
@@ -381,6 +448,54 @@ mod tests {
         assert_eq!(pick_time_step(SEC, 8., 30.), 5 * SEC);
         // A 1 min bar never labels inside itself.
         assert_eq!(pick_time_step(60 * SEC, 10., 10.), 120 * SEC);
+    }
+
+    #[test]
+    fn time_axis_labels_never_overlap_at_any_span_or_width() {
+        for &(start, end) in &[(0., 5.), (0., 41.), (0., 300.), (120., 3600.), (0., 86400.)] {
+            for &plot_w in &[80., 300., 1200.] {
+                for &label_w in &[18., 26., 40.] {
+                    let placed = time_axis_labels(start, end, plot_w, label_w);
+                    assert!(!placed.is_empty(), "some label always fits");
+                    for pair in placed.windows(2) {
+                        let left_right = pair[0].1 + label_w / 2.;
+                        let right_left = pair[1].1 - label_w / 2.;
+                        assert!(
+                            right_left >= left_right + 2.,
+                            "span {start}..{end} w={plot_w} label={label_w}: {pair:?}"
+                        );
+                    }
+                    for &(_, center) in &placed {
+                        assert!(
+                            center - label_w / 2. >= 0. && center + label_w / 2. <= plot_w + 0.01,
+                            "labels stay inside the plot"
+                        );
+                    }
+                }
+            }
+        }
+        // The reviewed collision: ~40 s of history on a narrow
+        // plot must not print 0:00 and 0:05 into each other.
+        let placed = time_axis_labels(0., 41., 300., 26.);
+        let labels: Vec<String> = placed
+            .iter()
+            .map(|(at, _)| run_clock_axis((*at as u64) * SEC))
+            .collect();
+        assert_eq!(labels.first().map(String::as_str), Some("0:00"));
+        assert_eq!(
+            labels.get(1).map(String::as_str),
+            Some("0:10"),
+            "0:05 is dropped rather than colliding: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn keep_clear_drops_labels_that_would_touch() {
+        assert_eq!(
+            keep_clear(&[(10., 20.), (24., 20.), (60., 20.), (72., 20.)]),
+            vec![true, false, true, false]
+        );
+        assert!(keep_clear(&[]).is_empty());
     }
 
     #[test]
