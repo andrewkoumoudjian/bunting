@@ -534,6 +534,9 @@ struct VenueRecord {
     bnp_port: u16,
     fix_port: u16,
     nonce: String,
+    /// The server program as started (from `venue.json`); its file name
+    /// is checked against the live process off Linux.
+    program: String,
 }
 
 fn read_venue_record(directory: &Path) -> Option<VenueRecord> {
@@ -544,6 +547,7 @@ fn read_venue_record(directory: &Path) -> Option<VenueRecord> {
         bnp_port: u16::try_from(value["bnp_port"].as_u64()?).ok()?,
         fix_port: u16::try_from(value["fix_port"].as_u64()?).ok()?,
         nonce: value["nonce"].as_str()?.to_owned(),
+        program: value["program"].as_str().unwrap_or_default().to_owned(),
     })
 }
 
@@ -570,6 +574,7 @@ fn write_venue_record(
         bnp_port: prepared.bnp_port,
         fix_port: prepared.fix_port,
         nonce: run_nonce(),
+        program: program.program.to_string_lossy().into_owned(),
     };
     let value = json!({
         "pid": record.pid,
@@ -639,8 +644,60 @@ fn process_is_our_server(record: &VenueRecord, directory: &Path) -> bool {
             return text.contains(&config);
         }
     }
-    let _ = directory;
-    true
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = directory;
+        // PIDs are recycled (Windows aggressively): never signal a process
+        // whose image name cannot be read and matched to the server program.
+        process_image_name(record.pid)
+            .is_some_and(|actual| image_names_match(&record.program, &actual))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = directory;
+        false
+    }
+}
+
+/// Whether the recorded server program and a live process's image name
+/// denote the same executable: file names compare, ignoring directories,
+/// a Windows `.exe` suffix and case (Windows and macOS file systems are
+/// case-insensitive by default).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn image_names_match(recorded: &str, actual: &str) -> bool {
+    fn base(text: &str) -> String {
+        let name = text.rsplit(['/', '\\']).next().unwrap_or(text).trim();
+        let lower = name.to_lowercase();
+        lower.strip_suffix(".exe").unwrap_or(&lower).to_owned()
+    }
+    let (recorded, actual) = (base(recorded), base(actual));
+    !recorded.is_empty() && recorded == actual
+}
+
+/// The image name of a live process, where the platform can tell
+/// (`ps` on macOS and other Unix, `tasklist` on Windows).
+#[cfg(not(target_os = "linux"))]
+fn process_image_name(pid: u32) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        // "image.exe","1234","Console","1","12,345 K"
+        let line = text.lines().find(|line| line.starts_with('"'))?;
+        Some(line.trim_start_matches('"').split('"').next()?.to_owned())
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()?;
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
 }
 
 /// Stops a server known to be ours: polite first, then forced.
@@ -1307,6 +1364,18 @@ mod tests {
         assert!(!process_is_our_server(&read, &directory));
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
+    }
+
+    #[test]
+    fn a_process_image_name_must_match_the_recorded_server_program() {
+        assert!(image_names_match("/usr/local/bin/bunting", "bunting"));
+        assert!(image_names_match("bunting", "/Applications/x/bunting"));
+        assert!(image_names_match("C:\\bunting\\Bunting.exe", "bunting.exe"));
+        assert!(image_names_match("bunting", "BUNTING.EXE"));
+        assert!(!image_names_match("bunting", "chrome.exe"));
+        assert!(!image_names_match("bunting", "bunting-desk"));
+        assert!(!image_names_match("bunting", ""));
+        assert!(!image_names_match("", ""));
     }
 
     #[test]
