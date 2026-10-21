@@ -19,7 +19,7 @@
     reason = "chart coordinates are f32/f64 by the plot primitives' own API"
 )]
 
-use super::range::{format_tick, nice_ticks, pick_time_step, run_clock_axis};
+use super::range::{format_tick, nice_step, nice_ticks, pick_time_step, run_clock_axis};
 use bunting_trading_state::Bar as MarketBar;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::plot::label::{Text, measure_text_width};
@@ -43,8 +43,21 @@ const TIME_AXIS_H: f32 = 18.;
 /// Design sizes at the base font (see `crate::ui::rem`).
 const AXIS_FONT: f32 = 11.;
 const LEGEND_FONT: f32 = 12.;
-/// Widest candle body, as in the component charts.
-const MAX_BODY: f32 = 30.;
+/// Widest candle body. Past a 20 px step the body stops
+/// growing and the gap takes the rest, so a handful of bars on a
+/// wide window read as candles, not blocks.
+const MAX_BODY: f32 = 14.;
+
+/// Candle body width for a band step: the step minus a small
+/// gap, capped at [`MAX_BODY`] with about 30% gap once steps
+/// pass 20 px.
+fn body_width(step: f32) -> f32 {
+    if step > 20. {
+        (step * 0.7).min(MAX_BODY)
+    } else {
+        (step - 1.5).clamp(1., MAX_BODY)
+    }
+}
 
 /// One more series drawn over the price pane, already aligned to
 /// the primary bars (closes, or percent changes in comparison).
@@ -246,12 +259,25 @@ impl PriceChart {
         if lo > hi {
             return (0., 1.);
         }
-        if (hi - lo).abs() < f64::EPSILON {
-            let pad = (hi.abs() * 0.01).max(0.5);
-            return (lo - pad, hi + pad);
+        // Headroom (coordinator screenshot review): at least a
+        // quarter of the range — or one tick step, if more —
+        // empty above the high and below the low, and never less
+        // than a four-tick range on screen, so a 98–100 market
+        // does not fill the pane edge to edge.
+        let span = hi - lo;
+        if span.abs() < f64::EPSILON {
+            return (lo - 2., hi + 2.);
         }
-        let pad = (hi - lo) * 0.06;
-        (lo - pad, hi + pad)
+        let step = nice_step(span, 6);
+        let pad = (span * 0.25).max(step);
+        let (mut lo, mut hi) = (lo - pad, hi + pad);
+        let min_span = if self.comparison { step * 4. } else { 4. };
+        if hi - lo < min_span {
+            let mid = f64::midpoint(lo, hi);
+            lo = mid - min_span / 2.;
+            hi = mid + min_span / 2.;
+        }
+        (lo, hi)
     }
 
     fn axis_font(window: &Window) -> f32 {
@@ -277,7 +303,7 @@ impl Plot for PriceChart {
         _cx: &mut App,
     ) -> Vec<AnyElement> {
         let (lo, hi) = self.extent();
-        let (ticks, decimals) = nice_ticks(lo, hi, 6);
+        let (ticks, decimals) = nice_ticks(lo.floor(), hi.ceil(), 6);
         let font = px(Self::axis_font(window));
         let widest = ticks
             .iter()
@@ -380,7 +406,7 @@ impl Plot for PriceChart {
             |label_y: f32, tag_y: f32| (label_y - tag_y).abs() < f32::midpoint(axis_font, tag_h);
 
         // ---- price pane: grid, marks -----------------------------------
-        let (ticks, decimals) = nice_ticks(lo, hi, 6);
+        let (ticks, decimals) = nice_ticks(lo.floor(), hi.ceil(), 6);
         Grid::new()
             .y(ticks.iter().map(|tick| y.tick(tick).unwrap_or(0.)))
             .stroke(theme.chart_grid)
@@ -444,7 +470,7 @@ impl Plot for PriceChart {
                 line(&series.values, series.color, price_pane, &y, window);
             }
         } else if self.candles {
-            let body_w = (step - 1.5).clamp(1., MAX_BODY);
+            let body_w = body_width(step);
             for (index, bar) in self.bars.iter().enumerate() {
                 let color = if bar.close >= bar.open {
                     theme.chart_bullish
@@ -561,8 +587,9 @@ impl Plot for PriceChart {
             .map(|bar| bar.volume)
             .fold(0_i128, i128::max);
         if max_volume > 0 {
-            let volume_y = ScaleLinear::new([0_f64, max_volume as f64], [volume_pane.height, 0.]);
-            let body_w = (step - 1.5).clamp(1., MAX_BODY);
+            let volume_y =
+                ScaleLinear::new([0_f64, max_volume as f64 * 1.15], [volume_pane.height, 0.]);
+            let body_w = body_width(step);
             for (index, bar) in self.bars.iter().enumerate() {
                 let base = if bar.close >= bar.open {
                     theme.chart_bullish
@@ -860,5 +887,53 @@ impl IntoElement for PriceChart {
 
     fn into_element(self) -> Self::Element {
         PlotElement::new(self)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "fixtures use whole pixels and ticks, so equality is the assertion"
+)]
+mod tests {
+    use super::*;
+
+    fn bar(price: i64) -> MarketBar {
+        MarketBar {
+            start_ns: 0,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: 1,
+        }
+    }
+
+    #[test]
+    fn bodies_cap_and_leave_a_gap_on_wide_steps() {
+        assert_eq!(body_width(10.), 8.5);
+        assert_eq!(body_width(20.), 14.);
+        assert_eq!(body_width(60.), 14.);
+        assert_eq!(body_width(2.), 1.);
+    }
+
+    #[test]
+    fn a_two_tick_market_gets_headroom_and_a_four_tick_range() {
+        let chart = PriceChart::new(
+            "extent-test",
+            vec![bar(98), bar(100), bar(99)],
+            Rc::new(Cell::new(56.)),
+        );
+        let (lo, hi) = chart.extent();
+        assert!(hi - lo >= 4., "range {lo}..{hi}");
+        assert!(lo < 98. && hi > 100., "headroom both sides: {lo}..{hi}");
+        // Candles occupy at most the middle ~60% of the pane.
+        assert!((100. - 98.) / (hi - lo) <= 0.6);
+    }
+
+    #[test]
+    fn a_single_price_still_gets_a_range() {
+        let chart = PriceChart::new("extent-one", vec![bar(100)], Rc::new(Cell::new(56.)));
+        assert_eq!(chart.extent(), (98., 102.));
     }
 }
