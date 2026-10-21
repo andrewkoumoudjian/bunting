@@ -503,25 +503,39 @@ impl Focusable for PnlPanel {
     }
 }
 
-/// The Portfolio window's P&L section content (chart at a fixed
-/// height), for `panels::PositionsPanel` to place under its
-/// collapsible header.
+/// Chart height for a Portfolio P&L section offered
+/// `region_h` pixels (stats and gaps already accounted): three
+/// fifths of what remains, at most the section's 140 px design
+/// height.
 #[must_use]
-pub fn portfolio_section(model: &Model, cx: &App) -> Div {
-    v_flex()
-        .size_full()
-        .min_h_0()
-        .gap(px(ui::PANE_GAP))
-        .child(stats_row("pf-pnl", model.pnl_totals(), cx))
-        .child(
+pub fn portfolio_chart_h(region_h: f32) -> f32 {
+    ((region_h - 59.).max(0.) * 0.6).min(140.)
+}
+
+/// The Portfolio window's P&L section content, for
+/// `panels::PositionsPanel` to place under its collapsible
+/// header. `chart_h` is the height the window can spare for the
+/// chart (the panel measures its region): below 24 px the stats
+/// stand alone rather than crush the holdings table.
+#[must_use]
+pub fn portfolio_section(model: &Model, chart_h: f32, cx: &App) -> Div {
+    let mut section =
+        v_flex()
+            .w_full()
+            .gap(px(ui::PANE_GAP))
+            .child(stats_row("pf-pnl", model.pnl_totals(), cx));
+    if chart_h >= 24. {
+        section = section.child(
             div()
                 .id("pf-pnl-chart")
                 .test_support()
                 .w_full()
-                .flex_1()
-                .min_h_0()
+                .h(px(chart_h))
+                .flex_shrink(0.)
                 .child(chart_or_empty("pf-pnl", model.pnl_series(), cx)),
-        )
+        );
+    }
+    section
 }
 
 #[cfg(test)]

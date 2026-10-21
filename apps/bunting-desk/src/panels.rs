@@ -1875,53 +1875,60 @@ impl Render for PositionsPanel {
                         })),
                 ),
         );
-        if self.pnl_open {
-            // A bounded flex share: ~140 px of chart under the stats
-            // when the window has room, yielding to the table when
-            // it does not.
-            body = body.child(
-                div()
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .max_h(px(196.))
-                    .child(crate::chart::pnl::portfolio_section(model, cx)),
-            );
-        }
-        let desk = self.desk.clone();
-        let table = ui::responsive_table(&portfolio::COLUMNS, move |fitted, _, cx| {
-            let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
-            let mut list = v_flex()
-                .id("positions-rows")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll();
-            for row in &rows {
-                let texts = row.texts();
-                let cells = (0..texts.len())
-                    .map(|index| portfolio_cell(row, &texts, index, cx))
-                    .collect();
-                list = list.child(
-                    div()
-                        .id(SharedString::from(format!("position-{}", row.symbol)))
+        // The P&L section and the holdings table share what is
+        // left, measured here: ~140 px of chart under the stats
+        // when the window has room, less (or stats alone) when it
+        // does not, and the table always keeps the rest.
+        let pnl_open = self.pnl_open;
+        let region_desk = self.desk.clone();
+        body.child(
+            gpui_kit::container_query(move |size, _, cx| {
+                let model = region_desk.read(cx).model();
+                let rows = portfolio::rows(model);
+                let chart_h = crate::chart::pnl::portfolio_chart_h(size.height.as_f32());
+                let copy_desk = region_desk.clone();
+                let mut region = v_flex().size_full().gap(px(ui::PANE_GAP));
+                if pnl_open {
+                    region = region.child(crate::chart::pnl::portfolio_section(model, chart_h, cx));
+                }
+                let table = ui::responsive_table(&portfolio::COLUMNS, move |fitted, _, cx| {
+                    let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));
+                    let mut list = v_flex()
+                        .id("positions-rows")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll();
+                    for row in &rows {
+                        let texts = row.texts();
+                        let cells = (0..texts.len())
+                            .map(|index| portfolio_cell(row, &texts, index, cx))
+                            .collect();
+                        list = list.child(
+                            div()
+                                .id(SharedString::from(format!("position-{}", row.symbol)))
+                                .test_support()
+                                .child(ui::table_row(fitted, cells, cx)),
+                        );
+                    }
+                    table = table.child(list);
+                    table
+                });
+                region.child(ui::copy_menu(
+                    v_flex()
+                        .id("positions-table")
                         .test_support()
-                        .child(ui::table_row(fitted, cells, cx)),
-                );
-            }
-            table = table.child(list);
-            table
-        });
-        body.child(ui::copy_menu(
-            v_flex()
-                .id("positions-table")
-                .test_support()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .child(table),
-            desk,
-            std::rc::Rc::new(|desk: &Desk| portfolio::copy_text(desk.model())),
-        ))
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(table),
+                    copy_desk,
+                    std::rc::Rc::new(|desk: &Desk| portfolio::copy_text(desk.model())),
+                ))
+            })
+            .w_full()
+            .flex_1()
+            .min_h_0(),
+        )
     }
 }
 
