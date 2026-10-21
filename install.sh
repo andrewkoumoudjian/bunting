@@ -38,12 +38,13 @@ curl -fsSL "$base_url/SHA256SUMS" -o "$temporary/SHA256SUMS"
 
 # Whether the release lists this file (older releases lack the app bundles).
 published() {
-  awk -v name="$1" '$2 == name {found = 1} END {exit !found}' "$temporary/SHA256SUMS"
+  awk -v name="$1" '$2 == name || $2 == "./" name {found = 1} END {exit !found}' "$temporary/SHA256SUMS"
 }
 
 # Downloads one release file into $temporary and checks it against SHA256SUMS.
 fetch() {
-  expected=$(awk -v name="$1" '$2 == name {print $1}' "$temporary/SHA256SUMS")
+  # Releases up to v0.2.0 listed files as `./name`.
+  expected=$(awk -v name="$1" '$2 == name || $2 == "./" name {print $1; exit}' "$temporary/SHA256SUMS")
   if [ -z "$expected" ]; then
     echo "Release checksum for $1 is missing." >&2
     exit 1

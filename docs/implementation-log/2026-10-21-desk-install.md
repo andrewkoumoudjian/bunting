@@ -62,6 +62,26 @@ Status: **Current.** Owner, 2026-10-21: "please make the installation easier
 - **Not verified locally:** the macOS and Windows bundles. They are built
   and checked only on GitHub's runners, by the bundle job.
 
+## After publishing v0.2.0
+
+- **Installer bug found against the live release.** The publish job wrote
+  `SHA256SUMS` entries as `./name`, so `install.sh` reported "Release
+  checksum … is missing". This was also true of `v0.2.0-preview.1`: the
+  one-line installer had never worked against a published release.
+  - The `v0.2.0` `SHA256SUMS` asset was re-uploaded with bare names (same
+    hashes).
+  - The workflow now writes bare names.
+  - `install.sh` accepts both forms.
+- **Verified** with the installer from `main` against the live release
+  (into a scratch prefix):
+  - it installed `bunting`, `bunting-trader`, `bunting-desk 0.2.0`, the
+    launcher entry and the icon;
+  - the installed app, opened with no flags, started the practice venue
+    and joined as Participant 1;
+  - closing it stopped the venue.
+  - `v0.2.0-preview.1` also installs with the fixed installer.
+- `bunting --version` is not a recognised argument (pre-existing). Open.
+
 ## Remaining
 
 - The macOS app is not notarized. A disk image downloaded in a browser
