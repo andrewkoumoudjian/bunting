@@ -1,15 +1,16 @@
 //! Every kind of pane a canvas window can hold, any number of times, and
 //! the builder that brings panes back from a saved screen (ADR 0051).
 
+use crate::blotter::OrdersPanel;
 use crate::chart::ChartPanel;
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
 use crate::ladder::LadderPanel;
 use crate::news::NewsPanel;
 use crate::panels::{
-    AccountPanel, BooksPanel, FillsPanel, NoticesPanel, OrdersPanel, PositionsPanel, TicketPanel,
-    TradesPanel,
+    AccountPanel, BooksPanel, FillsPanel, NoticesPanel, PositionsPanel, TicketPanel, TradesPanel,
 };
+use crate::transactions::TransactionsPanel;
 use gpui_kit::component::IconName;
 use gpui_kit::component::dock::{BasePanelView, panel_handle};
 use gpui_kit::{App, AppContext as _, Entity, Window};
@@ -31,10 +32,11 @@ pub enum PaneKind {
     News,
     Deals,
     Chart,
+    Transactions,
 }
 
 impl PaneKind {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::BookTrader,
         Self::LadderTrader,
         Self::OrderEntry,
@@ -47,6 +49,7 @@ impl PaneKind {
         Self::News,
         Self::Deals,
         Self::Chart,
+        Self::Transactions,
     ];
 
     /// The name saved layouts use, and the pane's element ID.
@@ -65,6 +68,7 @@ impl PaneKind {
             Self::News => "news",
             Self::Deals => "deals",
             Self::Chart => "chart",
+            Self::Transactions => "transactions",
         }
     }
 
@@ -83,6 +87,7 @@ impl PaneKind {
             Self::News => "News",
             Self::Deals => "Tenders & OTC",
             Self::Chart => "Charting",
+            Self::Transactions => "Transaction Log",
         }
     }
 
@@ -101,6 +106,7 @@ impl PaneKind {
             Self::News => IconName::Info,
             Self::Deals => IconName::Replace,
             Self::Chart => IconName::Frame,
+            Self::Transactions => IconName::FileText,
         }
     }
 
@@ -124,6 +130,7 @@ impl PaneKind {
             Self::News => (300., 180.),
             Self::Deals => (420., 260.),
             Self::Chart => (360., 240.),
+            Self::Transactions => (420., 160.),
         }
     }
 
@@ -143,6 +150,7 @@ impl PaneKind {
             Self::News => (560., 420.),
             Self::Deals => (560., 440.),
             Self::Chart => (720., 480.),
+            Self::Transactions => (640., 320.),
         }
     }
 
@@ -150,10 +158,18 @@ impl PaneKind {
     /// carries the instrument chip.
     #[must_use]
     pub const fn follows_instrument(self) -> bool {
-        matches!(
-            self,
-            Self::BookTrader | Self::LadderTrader | Self::OrderEntry | Self::Tape
-        )
+        matches!(self, Self::BookTrader | Self::LadderTrader | Self::Tape)
+    }
+
+    /// An extra action this kind wears in its window frame: its icon and
+    /// tooltip. Order Entry has RIT's "+", which opens another beside it
+    /// (the close button is RIT's "−").
+    #[must_use]
+    pub const fn frame_action(self) -> Option<(IconName, &'static str)> {
+        match self {
+            Self::OrderEntry => Some((IconName::Plus, "Another Order Entry window")),
+            _ => None,
+        }
     }
 
     /// A new pane of this kind on `desk`.
@@ -176,6 +192,7 @@ impl PaneKind {
             Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
             Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
             Self::Chart => panel_handle(cx.new(|cx| ChartPanel::new(desk, window, cx))),
+            Self::Transactions => panel_handle(cx.new(|cx| TransactionsPanel::new(desk, cx))),
         }
     }
 }

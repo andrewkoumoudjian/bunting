@@ -14,11 +14,20 @@ later and its book is older by the time you see it.
 bunting tui --local
 ```
 
-This starts a private venue (the same `bunting server` a host runs) with
-fresh certificates in `$XDG_STATE_HOME/bunting/local-venue`, and connects to
-it. Built-in agents quote BNT on venue 1; QRC is listed on venue 1 and on
-venue 2, two milliseconds away. Use `--venue-dir` to keep the files
-elsewhere and `--server-bin` to run another `bunting` or `bunting-server`.
+This joins the shared practice venue on your machine (the same
+`bunting server` a host runs) with certificates in
+`$XDG_STATE_HOME/bunting/local-venue`. The first `--local` client starts
+the venue; every desk or terminal after it joins the same market. The
+venue is a market, not a solo sandbox: it has eight funded participant
+identities, and each client claims the next free one (the header shows
+"Participant N · local venue"), or a specific one with
+`--participant N`. Run three desks with `--local` and they trade with
+each other; closing one leaves the market running, and the last client
+to leave stops the server. Built-in agents quote BNT on venue 1; QRC is
+listed on venue 1 and on venue 2, two milliseconds away. Use
+`--venue-dir` to keep the files elsewhere (a different directory is a
+different local market) and `--server-bin` to run another `bunting` or
+`bunting-server`.
 
 ## Connect to a hosted venue
 

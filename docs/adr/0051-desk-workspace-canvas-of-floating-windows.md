@@ -1,7 +1,12 @@
 # ADR 0051: Desk workspace: a canvas of floating windows, user themes and a command line
 
-- **Status: Accepted Target (2026-10-20).** Nothing here is built yet; the
-  implementation log records each slice (U1 to U4 below) as it lands.
+- **Status: Accepted, partly implemented (2026-10-20).** U1 (frame,
+  canvas of floating windows, screens v4 with reflow) and U2 (design
+  system, Dark and Light themes, user themes, font size and density,
+  restyled panes) are built: `docs/implementation-log/2026-10-20-desk-slice-u1.md`
+  and `...-u2.md`. U3 (command line, link groups) and U4 (RIT parity
+  beyond ADR 0050, per `docs/specs/rit-desk-window-parity.md`) remain
+  Target.
   Supersedes ADR 0050 decision 6 *in part*: the `DockArea` workspace, its
   presets and the sidebar/top-bar arrangement. ADR 0050's pane kinds,
   saved named workspaces, one-click Book Trader and Ladder Trader

@@ -16,6 +16,29 @@ date.
   - Long notices truncate.
   - Book Trader columns fit narrow windows.
 
+## Findings from the first multi-desk run (2026-10-20, three desks, one shared venue)
+
+- **Working:**
+  - three desks claimed participants 1, 2 and 3 on one server;
+  - all three saw the same book;
+  - a one-click bid rested, marked "you", with an order trip of 1.6 ms.
+- **Blocking practicality: humans cannot trade with each other.**
+  - Desk 2's market sell was refused with "insufficient inventory": BNT
+    is not shortable and local participants start with no position.
+  - Fix: give local participants starting positions (an endowment), or
+    make the practice instruments shortable within limits.
+- **Portfolio and Trader Info are stale.** They showed the account
+  snapshot from connection time ("committed sequence 78, received 83 s
+  ago", open buy 0 with a 100-lot bid resting). The account must refresh
+  after fills and order changes.
+- **Truncated statuses.** The Blotter status "rejected: insufficient in…"
+  truncates with no tooltip; the rejection reason must be readable.
+- **Unrealistic price path.** BNT drifted from 100 to 240 in about 90
+  seconds. The momentum agent dominates, so the scenario needs a
+  mean-reverting fundamental (see `rit-case-primitives.md` §7).
+- **Log noise.** The join probe's bare TCP connect is logged by the venue
+  as "BNP TLS handshake failed".
+
 ## Next
 
 **Binding contract:** `docs/specs/rit-desk-window-parity.md` (owner,
@@ -100,6 +123,22 @@ are ordered steps toward that contract.
    - A desk killed by a signal leaves its local `bunting server` child
      running. Stop the child when the parent dies, for example with
      `PR_SET_PDEATHSIG` on Linux, and handle the platform equivalents.
+
+## Engine: RIT case primitives
+
+Owner, 2026-10-20: "make sure that our app will have ALL of the proper
+primitives so that we can run all of those cases simulations." The
+contract is `docs/specs/rit-case-primitives.md`. Six engine features, each
+with its own ADR then slice, in this order:
+
+1. settlement and close-out, plus portfolio limits;
+2. the fines framework and tender kinds;
+3. options settlement and the Black-Scholes market maker;
+4. converters and FX;
+5. roles, endowments, forwards and the price authority;
+6. sub-heats and RITC scoring.
+
+Each step ends with a playable case scenario run with several desks.
 
 ## Later
 

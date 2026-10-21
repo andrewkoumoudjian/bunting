@@ -13,8 +13,9 @@
 //! - [`OrderTicket`] is an order before it is sent, venue included.
 //! - [`Session`] (native) keeps a `bunting_client::Client` connected and
 //!   turns it into [`SessionEvent`]s.
-//! - [`local_venue`] (native) starts a private `bunting server` on this
-//!   machine for practice; apps connect to it exactly as to a hosted venue.
+//! - [`local_venue`] (native) runs the shared practice venue on this
+//!   machine: one detached `bunting server` with eight participant
+//!   identities that every local app joins, exactly as a hosted venue.
 
 mod model;
 mod ticket;

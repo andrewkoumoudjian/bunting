@@ -317,6 +317,48 @@ impl Canvas {
         id
     }
 
+    /// Opens another window of window `id`'s kind next to it: to its
+    /// right when there is room, else cascaded from it.
+    pub fn open_beside(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.window(id) else {
+            return;
+        };
+        let kind = source.kind;
+        let from = self.display_rect(source);
+        let canvas = self.canvas_rect().inset(GUTTER);
+        let (def_w, def_h) = kind.default_size();
+        let (min_w, min_h) = kind.min_size();
+        let w = def_w.min(from.w).max(min_w).min(canvas.w);
+        let h = from.h.max(min_h).min(canvas.h);
+        let _ = def_h;
+        let x = from.right() + GUTTER;
+        if x + w <= canvas.right() {
+            let rect = Rect::new(x, from.y, w, h);
+            let new = self.push(kind, rect, window, cx);
+            self.focus_window(new, window, cx);
+            self.rebase();
+            self.changed(cx);
+        } else {
+            self.focus_window(id, window, cx);
+            self.open(kind, window, cx);
+        }
+    }
+
+    /// Closes every window. Each goes onto the bounded reopen stack, so
+    /// Reopen closed window brings the last ones back.
+    pub fn close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self.windows.iter().map(|win| win.id).collect();
+        for id in ids {
+            self.close_window(id, window, cx);
+        }
+    }
+
+    /// How many windows are open.
+    #[must_use]
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
     /// Places fractional template windows on the current canvas and
     /// reports the edit.
     pub fn place_fractions(
