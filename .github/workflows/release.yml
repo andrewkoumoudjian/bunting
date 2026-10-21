@@ -180,6 +180,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Native artifacts keep their `dist/` and `target/wheels/` folders, so
+      # the merged download nests directories; `gh release create dist/*`
+      # cannot upload a directory (v0.2.0-preview.1 failed on `dist/dist`).
+      - name: Flatten downloaded artifacts
+        run: |
+          find dist -mindepth 2 -type f -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -empty -delete
       - name: Create checksums
         working-directory: dist
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
