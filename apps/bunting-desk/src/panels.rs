@@ -1010,7 +1010,7 @@ impl TicketPanel {
         let instrument = self.instrument(cx)?;
         self.listing
             .filter(|listing| listing.instrument_id == instrument.instrument_id)
-            .or_else(|| match instrument.listings.as_slice() {
+            .or(match instrument.listings.as_slice() {
                 [only] => Some(only.listing),
                 _ => None,
             })

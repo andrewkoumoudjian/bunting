@@ -392,3 +392,86 @@ fn money_pnl_is_tick_lots_times_the_multiplier_minus_fees() {
             .is_some_and(|sample| sample.multipliers_known)
     );
 }
+
+#[test]
+fn the_pnl_series_is_zero_until_the_first_fill() {
+    let mut model = model_with_listings();
+    // The first fill lands at run time 36 s (its stamp says so).
+    model.series_stamp(36 * SEC, 0);
+    fill(&mut model, NEAR, Side::Buy, 100, 10, 10, 1, 0);
+    let samples: Vec<(u64, i128)> = model
+        .pnl_series()
+        .iter()
+        .map(|sample| (sample.time_ns, sample.total))
+        .collect();
+    assert_eq!(
+        samples,
+        vec![(0, 0), (36 * SEC, -10)],
+        "zero at run start, then the fill's own figure — never backfilled"
+    );
+    assert!(
+        model
+            .pnl_series()
+            .front()
+            .is_some_and(|s| s.multipliers_known)
+    );
+}
+
+/// The primary listing's book with only an ask side, as while an
+/// agent re-quotes.
+fn one_sided(model: &mut Model, listing: Listing, ask: i64) {
+    let mut book = FeedBook::new(1);
+    let applied = book.apply(&ServerMessage::MarketSnapshot {
+        request_id: 1,
+        listing,
+        next_report: 1,
+        bids: Vec::new(),
+        asks: vec![Level {
+            price: ask,
+            quantity: 10,
+        }],
+    });
+    assert!(applied.is_ok(), "snapshot applies");
+    model.feeds.insert(
+        listing,
+        Feed {
+            request_id: 1,
+            book,
+            order_by_order: false,
+            state: FeedState::Live,
+            updates: 0,
+            gaps: 0,
+            last_message_us: None,
+        },
+    );
+}
+
+#[test]
+fn samples_mark_from_the_last_two_sided_book_not_a_requote_instant() {
+    let mut model = model_with_listings();
+    touch(&mut model, NEAR, 99, 101);
+    model.series_stamp(0, 0);
+    // Long 10 at 100, marked at the 99 bid: -10.
+    fill(&mut model, NEAR, Side::Buy, 100, 10, 0, 1, 0);
+
+    // A trade at 90, then the bid vanishes (a re-quote): the live
+    // mark falls back to that trade, but the second's sample must
+    // keep the last two-sided bid.
+    model.series_trade(NEAR, 90, 1, 200_000);
+    one_sided(&mut model, NEAR, 101);
+    model.series_stamp(SEC, 1_000_000);
+    model.series_sample(1_000_000);
+    assert_eq!(
+        model.pnl_totals().unrealized,
+        -100,
+        "the live figure does use the fallback mark"
+    );
+
+    // Two-sided again at 97: the next sample marks there.
+    touch(&mut model, NEAR, 97, 99);
+    model.series_stamp(2 * SEC, 2_000_000);
+    model.series_sample(2_000_000);
+
+    let totals: Vec<i128> = model.pnl_series().iter().map(|s| s.total).collect();
+    assert_eq!(totals, vec![-10, -10, -30]);
+}

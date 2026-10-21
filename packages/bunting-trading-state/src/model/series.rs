@@ -380,6 +380,11 @@ pub(super) struct SeriesState {
     /// Contract multipliers by instrument, once BNP carries them
     /// (the reference-data gap); empty today.
     multipliers: BTreeMap<u128, i64>,
+    /// The last two-sided touch (bid, ask) per instrument with a
+    /// book, refreshed while sampling: agents re-quoting leave a
+    /// one-sided or thinned book for an instant, and sampling that
+    /// instant spikes the series. Samples mark from here instead.
+    sampled_marks: BTreeMap<u128, (i64, i64)>,
     samples: VecDeque<PnlSample>,
 }
 
@@ -512,8 +517,41 @@ impl Model {
         }
     }
 
+    /// [`Self::pnl_totals`] with each open position marked from
+    /// the last two-sided book the sampler saw, when it has one:
+    /// what the samples record, so a momentarily one-sided book
+    /// (an agent re-quoting) cannot spike the series.
+    fn sampled_totals(&self) -> PnlTotals {
+        let mut totals = self.pnl_totals();
+        // Recompute unrealized from the sampled marks.
+        let mut unrealized: i128 = 0;
+        for (instrument_id, book) in &self.series.books {
+            if book.position == 0 {
+                continue;
+            }
+            let (multiplier, _) = self.multiplier(*instrument_id);
+            let mark = self
+                .series
+                .sampled_marks
+                .get(instrument_id)
+                .map(|(bid, ask)| if book.position > 0 { *bid } else { *ask })
+                .or_else(|| self.mark(*instrument_id, book.position));
+            if let Some(mark) = mark
+                && let Some(open) = book.unrealized_tick_lots(mark)
+            {
+                unrealized = unrealized.saturating_add(open.saturating_mul(i128::from(multiplier)));
+            }
+        }
+        totals.unrealized = unrealized;
+        totals.total = totals.realized.saturating_add(unrealized);
+        totals
+    }
+
     /// Total derived P&L sampled on the run clock, oldest first: at
     /// most one sample per [`PNL_SAMPLE_NS`], [`MAX_PNL_SAMPLES`] kept.
+    /// The first sample is preceded by a zero at run time 0 —
+    /// before the first fill this participant's P&L is 0, and the
+    /// first fill's figure must not be read back to the start.
     #[must_use]
     pub const fn pnl_series(&self) -> &VecDeque<PnlSample> {
         &self.series.samples
@@ -633,8 +671,33 @@ impl Model {
         if self.series.books.is_empty() {
             return;
         }
+        // Refresh the two-sided marks first: this runs on every
+        // tick, so by the time a second's sample settles it holds
+        // that second's last two-sided touch.
+        let mut two_sided: Vec<(u128, i64, i64)> = Vec::new();
+        for instrument_id in self.series.books.keys() {
+            if let Some(listing) = self.primary_listing(*instrument_id)
+                && let Some(feed) = self.feeds.get(&listing)
+                && let (Some(bid), Some(ask)) = (feed.book.best_bid(), feed.book.best_ask())
+            {
+                two_sided.push((*instrument_id, bid.price, ask.price));
+            }
+        }
+        for (instrument_id, bid, ask) in two_sided {
+            self.series.sampled_marks.insert(instrument_id, (bid, ask));
+        }
         let time_ns = self.series.clock.now_ns(now_us);
-        let totals = self.pnl_totals();
+        // Before the first fill the participant's P&L is zero; say
+        // so at run time 0 rather than letting the first sample
+        // read as the value since the run began.
+        if self.series.samples.is_empty() && time_ns >= PNL_SAMPLE_NS {
+            self.series.samples.push_back(PnlSample {
+                time_ns: 0,
+                total: 0,
+                multipliers_known: true,
+            });
+        }
+        let totals = self.sampled_totals();
         if let Some(last) = self.series.samples.back_mut()
             && last.time_ns / PNL_SAMPLE_NS == time_ns / PNL_SAMPLE_NS
         {
