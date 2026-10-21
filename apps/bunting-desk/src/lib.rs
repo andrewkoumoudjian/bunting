@@ -10,6 +10,7 @@
 
 pub mod actions;
 pub mod appearance;
+pub mod blotter;
 pub mod canvas;
 pub mod connect;
 pub mod deals;
@@ -24,6 +25,7 @@ pub mod panels;
 pub mod panes;
 pub mod portfolio;
 pub mod theme;
+pub mod transactions;
 pub mod ui;
 pub mod workspace;
 

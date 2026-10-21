@@ -219,7 +219,7 @@ pub fn copy_to_clipboard(text: String, cx: &mut App) {
 pub fn copy_menu<E>(
     table: E,
     desk: gpui_kit::Entity<Desk>,
-    text: fn(&Desk) -> String,
+    text: std::rc::Rc<dyn Fn(&Desk) -> String>,
 ) -> ContextMenu<E>
 where
     E: gpui_kit::InteractiveElement
@@ -230,6 +230,7 @@ where
 {
     table.context_menu(move |menu, _, _| {
         let desk = desk.clone();
+        let text = text.clone();
         menu.item(
             PopupMenuItem::new("Copy to clipboard").on_click(move |_, _, cx| {
                 let copied = text(desk.read(cx));

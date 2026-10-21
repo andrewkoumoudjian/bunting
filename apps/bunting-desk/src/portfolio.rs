@@ -38,6 +38,9 @@ pub const COLUMNS: [Col; 16] = [
 /// Why the Type column is empty.
 pub const TYPE_GAP: &str = "The venue does not send the instrument type yet (stock, future, option): BNP reference data gap";
 
+/// A price and the venue that supplied it.
+pub type Quote = Option<(i64, u128)>;
+
 /// One security's row.
 #[derive(Clone, Debug)]
 pub struct Row {
@@ -70,7 +73,8 @@ pub struct Row {
 }
 
 /// A price, with its venue when the security trades on several.
-fn priced(value: Option<(i64, u128)>, multi_venue: bool) -> String {
+#[must_use]
+pub fn priced(value: Option<(i64, u128)>, multi_venue: bool) -> String {
     value.map_or_else(
         || "—".to_owned(),
         |(price, venue)| {
@@ -168,6 +172,45 @@ fn last_trade(model: &Model, instrument_id: u128) -> (Option<(i64, u128)>, Optio
     )
 }
 
+/// How many venues list `instrument_id`.
+#[must_use]
+pub fn venue_count(model: &Model, instrument_id: u128) -> usize {
+    model
+        .listings()
+        .iter()
+        .filter(|info| info.listing.instrument_id == instrument_id)
+        .count()
+}
+
+/// The best bid and best ask for `instrument_id` across its venues'
+/// direct feeds, each with the venue that supplied it. Books are never
+/// merged: this picks one venue's level for each side.
+#[must_use]
+pub fn touch(model: &Model, instrument_id: u128) -> (Quote, Quote) {
+    let mut bid: Option<(i64, u128)> = None;
+    let mut ask: Option<(i64, u128)> = None;
+    for info in model
+        .listings()
+        .iter()
+        .filter(|info| info.listing.instrument_id == instrument_id)
+    {
+        let Some(feed) = model.feed(info.listing) else {
+            continue;
+        };
+        if let Some(level) = feed.book.best_bid()
+            && bid.is_none_or(|(price, _)| level.price > price)
+        {
+            bid = Some((level.price, info.listing.venue_id));
+        }
+        if let Some(level) = feed.book.best_ask()
+            && ask.is_none_or(|(price, _)| level.price < price)
+        {
+            ask = Some((level.price, info.listing.venue_id));
+        }
+    }
+    (bid, ask)
+}
+
 /// Every listed security's row, in listing order.
 #[must_use]
 pub fn rows(model: &Model) -> Vec<Row> {
@@ -184,23 +227,10 @@ pub fn rows(model: &Model) -> Vec<Row> {
                     .find(|position| position.instrument_id == id)
             });
             let position = account.map(|_| held.map_or(0, |held| held.position));
-            let mut bid: Option<(i64, u128)> = None;
-            let mut ask: Option<(i64, u128)> = None;
+            let (bid, ask) = touch(model, id);
             let mut volume: i128 = 0;
             let mut weighted: i128 = 0;
             for info in &instrument.listings {
-                if let Some(feed) = model.feed(info.listing) {
-                    if let Some(level) = feed.book.best_bid()
-                        && bid.is_none_or(|(price, _)| level.price > price)
-                    {
-                        bid = Some((level.price, info.listing.venue_id));
-                    }
-                    if let Some(level) = feed.book.best_ask()
-                        && ask.is_none_or(|(price, _)| level.price < price)
-                    {
-                        ask = Some((level.price, info.listing.venue_id));
-                    }
-                }
                 let traded = model.market_volume(info.listing);
                 if let Some(vwap) = model.market_vwap(info.listing) {
                     weighted = weighted.saturating_add(i128::from(vwap).saturating_mul(traded));

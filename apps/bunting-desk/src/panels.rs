@@ -11,8 +11,7 @@ use crate::ui::{self, Col};
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Listing, Side};
 use bunting_trading_state::{
-    Connection, FeedState, Instrument, NoticeLevel, OrderStatus, OrderTicket, TicketKind,
-    TicketTif, TradePrint,
+    Connection, FeedState, Instrument, NoticeLevel, OrderTicket, TicketKind, TicketTif, TradePrint,
 };
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
@@ -412,6 +411,7 @@ impl Render for BooksPanel {
         let Some(instrument) = instrument else {
             return body;
         };
+        body = body.child(position_strip(&self.desk, instrument.instrument_id, cx));
         if let Some(halted) = halted_notice(&self.desk, &instrument, cx) {
             body = body.child(halted);
         }
@@ -445,6 +445,41 @@ impl Render for BooksPanel {
                 .child(columns),
         )
     }
+}
+
+/// RIT's header on the Book Trader: your position and its cost in the
+/// instrument shown. The cost is derived from your fills.
+fn position_strip(desk: &Entity<Desk>, instrument_id: u128, cx: &App) -> impl IntoElement {
+    let model = desk.read(cx).model();
+    let position = model.account().map(|account| {
+        account
+            .positions
+            .iter()
+            .find(|each| each.instrument_id == instrument_id)
+            .map_or(0, |each| each.position)
+            + model.unreported_position(instrument_id)
+    });
+    let cost = model.cost(instrument_id);
+    h_flex()
+        .id("books-position")
+        .test_support()
+        .gap_4()
+        .items_start()
+        .child(ui::stat_colored(
+            "Position",
+            position.map_or_else(|| "–".to_owned(), |value| format::grouped(value.into())),
+            signed_color(position.unwrap_or(0).into(), cx),
+            cx,
+        ))
+        .child(ui::tipped(
+            "books-cost-tip",
+            "Volume-weighted average price of your current position, derived from your fills",
+            ui::stat(
+                "Cost",
+                cost.map_or_else(|| "–".to_owned(), |price| price.to_string()),
+                cx,
+            ),
+        ))
 }
 
 /// A line saying `instrument` is halted, while it is.
@@ -1343,19 +1378,6 @@ const TAPE_COLUMNS: [Col; 5] = [
     Col::right("qty", 56.).priority(2),
 ];
 
-const BLOTTER_COLUMNS: [Col; 10] = [
-    Col::left("venue", 72.),
-    Col::left("symbol", 64.).priority(2),
-    Col::left("side", 48.).priority(2),
-    Col::right("qty", 56.).priority(2),
-    Col::right("price", 72.).priority(2),
-    Col::right("left", 56.),
-    Col::left("status", 130.).priority(2),
-    Col::left("queue", 110.).priority(0),
-    Col::right("answer", 72.).priority(0),
-    Col::center("", 72.).priority(2),
-];
-
 const FILL_COLUMNS: [Col; 8] = [
     Col::right("run time", 80.),
     Col::left("venue", 72.),
@@ -1567,104 +1589,6 @@ impl Render for TradesPanel {
     }
 }
 
-// ---- orders --------------------------------------------------------------------
-
-reader_panel!(OrdersPanel);
-dock_panel!(OrdersPanel, "orders", "Blotter");
-
-impl Render for OrdersPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.desk.read(cx).model().orders().len();
-        if count == 0 {
-            return panel_body("orders", &self.focus).child(ui::empty_state(
-                "orders-empty",
-                IconName::Inbox,
-                "No open orders",
-                None,
-                cx,
-            ));
-        }
-        let desk = self.desk.clone();
-        let cancel = window.listener_for(&self.desk, |desk, id: &u64, _, cx| desk.cancel(*id, cx));
-        let cancel = std::rc::Rc::new(cancel);
-        panel_body("orders", &self.focus).child(ui::responsive_table(
-            &BLOTTER_COLUMNS,
-            move |fitted, _, cx| {
-                let fitted: Vec<ui::Fit> = fitted.to_vec();
-                v_flex()
-                    .size_full()
-                    .child(ui::table_head(&fitted, cx))
-                    .child(
-                        uniform_list("order-rows", count, move |range, _, cx| {
-                            let desk = desk.read(cx);
-                            let model = desk.model();
-                            let orders = model.orders();
-                            range
-                                .filter_map(|index| {
-                                    orders.get(orders.len().checked_sub(index + 1)?)
-                                })
-                                .map(|order| {
-                                    let color = side_color(order.side, cx);
-                                    let id = order.client_order_id;
-                                    let action = if matches!(
-                                        order.status,
-                                        OrderStatus::New | OrderStatus::Resting
-                                    ) && id != 0
-                                    {
-                                        let cancel = cancel.clone();
-                                        Button::new(SharedString::from(format!("cancel-{id}")))
-                                            .label("Cancel")
-                                            .xsmall()
-                                            .on_click(move |_, window, cx| cancel(&id, window, cx))
-                                            .into_any_element()
-                                    } else {
-                                        cell("")
-                                    };
-                                    ui::table_row(
-                                        &fitted,
-                                        vec![
-                                            cell(format::venue(order.listing)),
-                                            cell(
-                                                model
-                                                    .symbol(order.listing)
-                                                    .unwrap_or("?")
-                                                    .to_owned(),
-                                            ),
-                                            colored(format::side(order.side), color),
-                                            cell(order.quantity.to_string()),
-                                            cell(format::price(order.price)),
-                                            cell(order.remaining.to_string()),
-                                            cell(order.status.label()),
-                                            cell(model.queue_place(order).map_or_else(
-                                                String::new,
-                                                |place| {
-                                                    format!(
-                                                        "#{} · {} ahead",
-                                                        place.position_at_price,
-                                                        place.quantity_ahead
-                                                    )
-                                                },
-                                            )),
-                                            cell(
-                                                order
-                                                    .answer_us
-                                                    .map(format::duration)
-                                                    .unwrap_or_default(),
-                                            ),
-                                            action,
-                                        ],
-                                        cx,
-                                    )
-                                })
-                                .collect()
-                        })
-                        .flex_1(),
-                    )
-            },
-        ))
-    }
-}
-
 // ---- fills ----------------------------------------------------------------------
 
 reader_panel!(FillsPanel);
@@ -1858,7 +1782,7 @@ impl Render for PositionsPanel {
                 .w_full()
                 .child(table),
             desk,
-            |desk| portfolio::copy_text(desk.model()),
+            std::rc::Rc::new(|desk: &Desk| portfolio::copy_text(desk.model())),
         ))
     }
 }
@@ -1869,7 +1793,7 @@ reader_panel!(AccountPanel);
 dock_panel!(AccountPanel, "account", "Trader Info");
 
 /// The colour of a signed money figure: bullish above zero, bearish below.
-fn signed_color(value: i128, cx: &App) -> Hsla {
+pub(crate) fn signed_color(value: i128, cx: &App) -> Hsla {
     let theme = cx.theme();
     match value.cmp(&0) {
         std::cmp::Ordering::Greater => theme.chart_bullish,
