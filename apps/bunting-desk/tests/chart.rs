@@ -636,9 +636,8 @@ fn portfolio_and_the_pnl_window_show_the_same_derived_figures(cx: &mut TestAppCo
     assert_eq!(totals.realized, 11);
     assert!(!totals.multipliers_known, "BNP sends no contract size yet");
 
-    // The template's Portfolio window is short: the stats show
-    // and the holdings table keeps its space.
     assert!(visible(&fixture, cx, "pf-pnl-realized"), "the P&L stats");
+    assert!(visible(&fixture, cx, "pf-pnl-chart"), "the P&L chart");
     assert!(
         visible(&fixture, cx, "positions-table"),
         "holdings stay visible"
@@ -653,17 +652,6 @@ fn portfolio_and_the_pnl_window_show_the_same_derived_figures(cx: &mut TestAppCo
         visible(&fixture, cx, "pf-pnl-realized"),
         "and expands again"
     );
-    // A full-size Portfolio window has room for the chart itself.
-    let workspace = fixture.workspace.clone().expect("a workspace root");
-    cx.update_window(fixture.window.into(), |_, window, cx| {
-        workspace.update(cx, |workspace, cx| {
-            workspace.add_pane(PaneKind::Portfolio, window, cx);
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert!(visible(&fixture, cx, "pf-pnl-chart"), "the P&L chart");
-
     let workspace = fixture.workspace.clone().expect("a workspace root");
     cx.update_window(fixture.window.into(), |_, window, cx| {
         workspace.update(cx, |workspace, cx| {

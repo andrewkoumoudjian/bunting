@@ -52,9 +52,11 @@ impl Preset {
                 (PaneKind::OrderEntry, at(0.52, 0., 0.24, 0.54)),
                 (PaneKind::Tape, at(0.76, 0., 0.24, 0.54)),
                 (PaneKind::Blotter, at(0., 0.54, 0.40, 0.46)),
-                (PaneKind::Fills, at(0.40, 0.54, 0.30, 0.46)),
-                (PaneKind::Portfolio, at(0.70, 0.54, 0.30, 0.23)),
-                (PaneKind::TraderInfo, at(0.70, 0.77, 0.30, 0.23)),
+                (PaneKind::Fills, at(0.40, 0.54, 0.30, 0.23)),
+                // Portfolio takes the full-height bottom-right
+                // column: its P&L section needs the room.
+                (PaneKind::Portfolio, at(0.70, 0.54, 0.30, 0.46)),
+                (PaneKind::TraderInfo, at(0.40, 0.77, 0.30, 0.23)),
             ],
             Self::MarketMaking => vec![
                 (PaneKind::BookTrader, at(0., 0., 0.52, 0.50)),

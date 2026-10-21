@@ -1894,7 +1894,17 @@ impl Render for PositionsPanel {
                 let rows = portfolio::rows(model);
                 let chart_h = crate::chart::pnl::portfolio_chart_h(size.height.as_f32());
                 let copy_desk = region_desk.clone();
-                let mut region = v_flex().size_full().gap(px(ui::PANE_GAP));
+                // The region scrolls when the window is too short
+                // for stats, chart and a usable table: the chart
+                // has already yielded (see portfolio_chart_h),
+                // and what still does not fit is reachable by
+                // scrolling instead of being clipped away.
+                let mut region = v_flex()
+                    .id("positions-scroll")
+                    .test_support()
+                    .size_full()
+                    .overflow_y_scroll()
+                    .gap(px(ui::PANE_GAP));
                 if pnl_open {
                     region = region.child(crate::chart::pnl::portfolio_section(model, chart_h, cx));
                 }
@@ -1925,7 +1935,7 @@ impl Render for PositionsPanel {
                         .id("positions-table")
                         .test_support()
                         .flex_1()
-                        .min_h_0()
+                        .min_h(px(96.))
                         .w_full()
                         .child(table),
                     copy_desk,
