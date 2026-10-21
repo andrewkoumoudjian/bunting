@@ -299,4 +299,10 @@ jobs:
             '' \
             'See the repository README and docs/deployment.md for configuration and platform details.' \
             > release-notes.md
-          gh release create "$tag" dist/* --verify-tag --notes-file release-notes.md --title "Bunting $tag"
+          # A tag with a suffix (v0.2.0-preview.1) is a pre-release; a plain
+          # version is the latest release, which install.sh installs.
+          case "$tag" in
+            *-*) channel=--prerelease ;;
+            *) channel=--latest ;;
+          esac
+          gh release create "$tag" dist/* --verify-tag "$channel" --notes-file release-notes.md --title "Bunting $tag"

@@ -58,6 +58,7 @@ Status: **Current.** Owner, 2026-10-21: "please make the installation easier
   - with a release that lists no app bundle, it printed a message and
     exited 0.
 - **`tools/check_desk.sh`:** 119 tests passed, 0 failed.
+- **Released as `v0.2.0`** (owner, 2026-10-21: "make the release real release"): the desk, `bunting` and `bunting-trader` report 0.2.0, and a plain version tag is published as the latest release so `install.sh` finds it.
 - **Not verified locally:** the macOS and Windows bundles. They are built
   and checked only on GitHub's runners, by the bundle job.
 
