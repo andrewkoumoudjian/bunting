@@ -39,6 +39,26 @@ date.
 - **Log noise.** The join probe's bare TCP connect is logged by the venue
   as "BNP TLS handshake failed".
 
+## Second multi-desk run (2026-10-20, after `a2d8127`)
+
+- **Fixed:**
+  - Desk 1 bought 10 QRC @ 100 and desk 2 sold short into it at market.
+  - Both Portfolios updated within a second: +10 and −10 at a cost of
+    100.
+  - The book shows about 6 levels and 360–440 lots a side, and BNT
+    holds at 99–100.
+- **Open:**
+  - **The price is pinned, not lively.** No existing agent kind trades
+    toward a moving fundamental. A seeded random-walk fundamental agent
+    (RIT LT3-style, `rit-case-primitives.md` §7) is the next agent
+    slice.
+  - **Signals skip the venue shutdown.** A desk stopped by SIGTERM or
+    SIGINT skips the last-client shutdown, so the venue keeps running.
+    The desk should handle those signals by quitting the app cleanly.
+  - **Latency under load.** One desk measured an 85 ms order trip while
+    another measured 7 ms, under heavy CPU load from builds. Re-measure
+    on an idle machine before calling it a bug.
+
 ## Next
 
 **Binding contract:** `docs/specs/rit-desk-window-parity.md` (owner,
