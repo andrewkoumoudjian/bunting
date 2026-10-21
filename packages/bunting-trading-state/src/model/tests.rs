@@ -922,3 +922,124 @@ fn tenders_keep_the_latest_committed_state() -> Result<(), &'static str> {
     assert_eq!(model.tenders()[0].info.status, TenderStatus::Accepted);
     Ok(())
 }
+
+fn answer_startup_account(model: &mut Model, now: u64) {
+    message(
+        model,
+        ServerMessage::Account {
+            request_id: 3,
+            run_sequence: 10,
+            cash: Vec::new(),
+            positions: Vec::new(),
+        },
+        now,
+    );
+}
+
+#[test]
+fn an_accepted_order_makes_the_account_stale_and_the_next_tick_reloads_it() {
+    let (mut model, _, _) = connected();
+    answer_startup_account(&mut model, 1_000);
+    assert!(model.tick(100_000).is_empty(), "nothing changed yet");
+    message(
+        &mut model,
+        ServerMessage::OrderAccepted {
+            stamp: stamp(11),
+            client_order_id: 1_000,
+            order_id: 77,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 100,
+            price: Some(100),
+        },
+        150_000,
+    );
+    // Inside the 250 ms throttle: not yet.
+    assert!(model.tick(200_000).is_empty());
+    assert!(matches!(
+        model.tick(300_000).as_slice(),
+        [ClientMessage::AccountRequest { .. }]
+    ));
+    // In flight: no second request while it is unanswered.
+    assert!(model.tick(600_000).is_empty());
+}
+
+#[test]
+fn rejects_cancels_and_deals_each_make_the_account_stale() {
+    let events = [
+        ServerMessage::OrderRejected {
+            stamp: stamp(11),
+            client_order_id: 1_000,
+            reason: RejectReason::InsufficientInventory,
+        },
+        ServerMessage::OrderCanceled {
+            stamp: stamp(11),
+            client_order_id: 1_000,
+            order_id: 77,
+            remaining: 6,
+            reason: CancelReason::Expired,
+        },
+        ServerMessage::DealDone {
+            request_id: 5,
+            run_sequence: 11,
+        },
+    ];
+    for event in events {
+        let (mut model, _, _) = connected();
+        answer_startup_account(&mut model, 1_000);
+        message(&mut model, event.clone(), 150_000);
+        assert!(
+            matches!(
+                model.tick(300_000).as_slice(),
+                [ClientMessage::AccountRequest { .. }]
+            ),
+            "{event:?} should reload the account"
+        );
+    }
+}
+
+#[test]
+fn an_account_answer_older_than_an_order_event_leaves_it_stale() {
+    let (mut model, _, _) = connected();
+    message(
+        &mut model,
+        ServerMessage::OrderAccepted {
+            stamp: stamp(12),
+            client_order_id: 1_000,
+            order_id: 77,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 100,
+            price: Some(100),
+        },
+        100,
+    );
+    // The start-up answer reflects sequence 10, before the acceptance.
+    answer_startup_account(&mut model, 1_000);
+    assert!(matches!(
+        model.tick(300_000).as_slice(),
+        [ClientMessage::AccountRequest { .. }]
+    ));
+}
+
+#[test]
+fn a_connected_model_reloads_the_account_every_two_seconds_as_a_backstop() {
+    let (mut model, _, _) = connected();
+    answer_startup_account(&mut model, 1_000);
+    assert!(model.tick(1_000_000).is_empty());
+    assert!(model.tick(1_900_000).is_empty());
+    assert!(matches!(
+        model.tick(2_100_000).as_slice(),
+        [ClientMessage::AccountRequest { .. }]
+    ));
+    // Unanswered, the request is not repeated until it times out.
+    assert!(model.tick(4_000_000).is_empty());
+    // Disconnected: no requests at all.
+    model.apply(
+        SessionEvent::Disconnected {
+            reason: "gone".to_owned(),
+        },
+        4_100_000,
+    );
+    assert!(model.tick(9_000_000).is_empty());
+}

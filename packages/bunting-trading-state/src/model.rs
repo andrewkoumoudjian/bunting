@@ -42,6 +42,10 @@ pub const MAX_NOTICES: usize = 256;
 pub const ROUND_TRIP_WINDOW: usize = 32;
 /// Least time between two account reloads, in microseconds.
 const ACCOUNT_REFRESH_US: u64 = 250_000;
+/// While connected, the account is reloaded at least this often even when
+/// no event marked it stale: a backstop for any change not announced as an
+/// event, in microseconds.
+const ACCOUNT_BACKSTOP_US: u64 = 2_000_000;
 /// An account request unanswered this long is given up, in microseconds.
 const ACCOUNT_TIMEOUT_US: u64 = 5_000_000;
 
@@ -315,6 +319,9 @@ pub struct Model {
     kill_switch: bool,
     notices: VecDeque<Notice>,
     last_sequence: u64,
+    /// Newest private event that changes cash, reservations or open
+    /// quantities; an account answer older than it is already stale.
+    account_event_sequence: u64,
     next_request_id: u32,
     next_client_order_id: u64,
     run: run::RunState,
@@ -348,6 +355,7 @@ impl Model {
             kill_switch: false,
             notices: VecDeque::new(),
             last_sequence: 0,
+            account_event_sequence: 0,
             next_request_id: 1,
             next_client_order_id: first_client_order_id.max(1),
             run: run::RunState::default(),
@@ -640,8 +648,9 @@ impl Model {
         );
     }
 
-    /// Periodic work: reloads the account after fills, at most every
-    /// 250 ms, and samples the derived P&L series for this instant.
+    /// Periodic work: reloads the account after any event that changes
+    /// cash, reservations or open quantities (at most every 250 ms) and, as
+    /// a backstop, every 2 s while connected, and samples the derived P&L series for this instant.
     pub fn tick(&mut self, now_us: u64) -> Vec<ClientMessage> {
         self.series_sample(now_us);
         if let Some((_, sent)) = self.account_request
@@ -652,7 +661,14 @@ impl Model {
         let due = self
             .last_account_request_us
             .is_none_or(|last| now_us.saturating_sub(last) >= ACCOUNT_REFRESH_US);
-        if self.account_dirty && self.account_request.is_none() && due && self.is_connected() {
+        let stale = self
+            .last_account_request_us
+            .is_none_or(|last| now_us.saturating_sub(last) >= ACCOUNT_BACKSTOP_US);
+        if (self.account_dirty || stale)
+            && self.account_request.is_none()
+            && due
+            && self.is_connected()
+        {
             return self.request_account(now_us);
         }
         Vec::new()
@@ -731,6 +747,19 @@ impl Model {
         if let Some(stamp) = message.stamp() {
             self.last_sequence = self.last_sequence.max(stamp.sequence);
             self.series_stamp(stamp.logical_time_ns, now_us);
+            if matches!(
+                message,
+                ServerMessage::OrderAccepted { .. }
+                    | ServerMessage::OrderRejected { .. }
+                    | ServerMessage::OrderRested { .. }
+                    | ServerMessage::OrderReduced { .. }
+                    | ServerMessage::OrderDone { .. }
+                    | ServerMessage::OrderCanceled { .. }
+                    | ServerMessage::Tender { .. }
+                    | ServerMessage::Negotiation { .. }
+            ) {
+                self.account_event_sequence = self.account_event_sequence.max(stamp.sequence);
+            }
         }
         match message {
             ServerMessage::Listings { listings, .. } => {
@@ -782,6 +811,8 @@ impl Model {
                     row.status = OrderStatus::New;
                 }
                 self.answered(client_order_id, now_us);
+                // Acceptance reserves cash or inventory and opens quantity.
+                self.account_dirty = true;
             }
             ServerMessage::OrderRejected {
                 stamp,
@@ -795,6 +826,7 @@ impl Model {
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
                 self.answered(client_order_id, now_us);
+                self.account_dirty = true;
                 self.notice(
                     now_us,
                     NoticeLevel::Warning,
@@ -818,6 +850,7 @@ impl Model {
                     row.reference = reference;
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
+                self.account_dirty = true;
             }
             ServerMessage::OrderReduced {
                 stamp,
@@ -837,6 +870,7 @@ impl Model {
                     row.reference = reference;
                     row.sequence = row.sequence.max(stamp.sequence);
                 }
+                self.account_dirty = true;
                 if lost_priority {
                     self.notice(
                         now_us,
@@ -963,11 +997,13 @@ impl Model {
                 {
                     self.account_request = None;
                 }
-                // Fills applied after this answer still need a reload.
-                self.account_dirty = self
-                    .fills
-                    .back()
-                    .is_some_and(|fill| fill.sequence > run_sequence);
+                // Fills and order changes applied after this answer still
+                // need a reload.
+                self.account_dirty = self.account_event_sequence > run_sequence
+                    || self
+                        .fills
+                        .back()
+                        .is_some_and(|fill| fill.sequence > run_sequence);
                 self.series_account(&positions, run_sequence);
                 self.account = Some(AccountView {
                     run_sequence,
@@ -995,7 +1031,19 @@ impl Model {
             | ServerMessage::Deals { .. }
             | ServerMessage::RunStatus { .. }
             | ServerMessage::ListingHalt { .. }
-            | ServerMessage::News { .. }) => self.run_message(run, now_us),
+            | ServerMessage::News { .. }) => {
+                // A settled deal or a tender or OTC change moves cash and
+                // positions.
+                if matches!(
+                    run,
+                    ServerMessage::DealDone { .. }
+                        | ServerMessage::Tender { .. }
+                        | ServerMessage::Negotiation { .. }
+                ) {
+                    self.account_dirty = true;
+                }
+                self.run_message(run, now_us);
+            }
         }
         Vec::new()
     }

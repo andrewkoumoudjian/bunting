@@ -36,7 +36,7 @@ use rcgen::{
 };
 use serde_json::{Value, json};
 use std::ffi::OsString;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -534,6 +534,10 @@ struct VenueRecord {
     bnp_port: u16,
     fix_port: u16,
     nonce: String,
+    /// The server program as started (from `venue.json`); its file name
+    /// is checked against the live process off Linux.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    program: String,
 }
 
 fn read_venue_record(directory: &Path) -> Option<VenueRecord> {
@@ -544,6 +548,7 @@ fn read_venue_record(directory: &Path) -> Option<VenueRecord> {
         bnp_port: u16::try_from(value["bnp_port"].as_u64()?).ok()?,
         fix_port: u16::try_from(value["fix_port"].as_u64()?).ok()?,
         nonce: value["nonce"].as_str()?.to_owned(),
+        program: value["program"].as_str().unwrap_or_default().to_owned(),
     })
 }
 
@@ -570,6 +575,7 @@ fn write_venue_record(
         bnp_port: prepared.bnp_port,
         fix_port: prepared.fix_port,
         nonce: run_nonce(),
+        program: program.program.to_string_lossy().into_owned(),
     };
     let value = json!({
         "pid": record.pid,
@@ -620,17 +626,15 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-fn port_accepts(port: u16) -> bool {
-    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
-}
-
 /// Whether the PID in the record is still the server this venue started:
-/// alive, its recorded BNP port accepts connections, and — where the
-/// command line can be read (Linux `/proc`) — it names this venue's
-/// configuration. A process that fails any check is never signalled.
+/// alive and — where the command line can be read (Linux `/proc`) — it
+/// names this venue's configuration. There is deliberately no connection
+/// probe: a bare TCP connect to the BNP port fails the venue's TLS
+/// handshake and is logged as an error. Readiness after a start is the
+/// client's own BNP connect-and-retry. A process that fails any check is
+/// never signalled.
 fn process_is_our_server(record: &VenueRecord, directory: &Path) -> bool {
-    if !pid_alive(record.pid) || !port_accepts(record.bnp_port) {
+    if !pid_alive(record.pid) {
         return false;
     }
     #[cfg(target_os = "linux")]
@@ -641,8 +645,60 @@ fn process_is_our_server(record: &VenueRecord, directory: &Path) -> bool {
             return text.contains(&config);
         }
     }
-    let _ = directory;
-    true
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = directory;
+        // PIDs are recycled (Windows aggressively): never signal a process
+        // whose image name cannot be read and matched to the server program.
+        process_image_name(record.pid)
+            .is_some_and(|actual| image_names_match(&record.program, &actual))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = directory;
+        false
+    }
+}
+
+/// Whether the recorded server program and a live process's image name
+/// denote the same executable: file names compare, ignoring directories,
+/// a Windows `.exe` suffix and case (Windows and macOS file systems are
+/// case-insensitive by default).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn image_names_match(recorded: &str, actual: &str) -> bool {
+    fn base(text: &str) -> String {
+        let name = text.rsplit(['/', '\\']).next().unwrap_or(text).trim();
+        let lower = name.to_lowercase();
+        lower.strip_suffix(".exe").unwrap_or(&lower).to_owned()
+    }
+    let (recorded, actual) = (base(recorded), base(actual));
+    !recorded.is_empty() && recorded == actual
+}
+
+/// The image name of a live process, where the platform can tell
+/// (`ps` on macOS and other Unix, `tasklist` on Windows).
+#[cfg(not(target_os = "linux"))]
+fn process_image_name(pid: u32) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        // "image.exe","1234","Console","1","12,345 K"
+        let line = text.lines().find(|line| line.starts_with('"'))?;
+        Some(line.trim_start_matches('"').split('"').next()?.to_owned())
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()?;
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
 }
 
 /// Stops a server known to be ours: polite first, then forced.
@@ -942,10 +998,15 @@ impl Drop for LocalVenue {
 
 fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
     let link = |a: &str, b: &str, latency_us: u64| json!({"between": [a, b], "latency_us": latency_us, "jitter_us": latency_us / 20});
-    let agent = |kind: &str, participant_id: u128, seed: u64| {
+    let agent = |kind: &str,
+                 participant_id: u128,
+                 seed: u64,
+                 base_quantity: u64,
+                 spread_ticks: u64,
+                 wake_ms: u64| {
         json!({
-            "kind": kind, "participant_id": participant_id, "base_quantity": 5,
-            "spread_ticks": 2, "inventory_target": 0, "wake_interval_ns": 500_000_000_u64,
+            "kind": kind, "participant_id": participant_id, "base_quantity": base_quantity,
+            "spread_ticks": spread_ticks, "inventory_target": 0, "wake_interval_ns": wake_ms * 1_000_000,
             "seed": seed, "max_intents_per_wake": 4
         })
     };
@@ -1026,9 +1087,14 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
                 "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
                 "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
                 "agents": [
-                    agent("static_liquidity_provider", 10, 42),
-                    agent("zero_intelligence_noise", 11, 43),
-                    agent("long_momentum", 12, 44)
+                    agent("static_liquidity_provider", 10, 42, 40, 1, 500),
+                    agent("static_liquidity_provider", 13, 45, 40, 2, 500),
+                    agent("static_liquidity_provider", 14, 46, 40, 3, 500),
+                    agent("static_liquidity_provider", 15, 47, 40, 4, 500),
+                    agent("static_liquidity_provider", 16, 48, 40, 5, 500),
+                    agent("zero_intelligence_noise", 11, 43, 10, 4, 500),
+                    agent("mean_reversion", 12, 44, 5, 2, 500),
+                    agent("fully_informed", 18, 50, 40, 2, 500)
                 ]
             }
         }
@@ -1294,8 +1360,8 @@ mod tests {
             program: PathBuf::from("bunting"),
             arguments: vec!["server".into()],
         };
-        // A PID that cannot be ours: this test process is alive but is
-        // not listening on the venue's BNP port, so it must never be
+        // A PID that cannot be ours: this test process is alive but its
+        // command line does not name the venue's server.json, so it must never be
         // treated as the server (and never signalled).
         let written = write_venue_record(&directory, std::process::id(), &prepared, &program)
             .map_err(|e| e.to_string())?;
@@ -1303,9 +1369,59 @@ mod tests {
         assert_eq!(read.pid, std::process::id());
         assert_eq!(read.bnp_port, prepared.bnp_port);
         assert_eq!(read.nonce, written.nonce);
+        // Alive, but not running this venue's configuration. Only where the
+        // command line can be read (Linux) is that distinction available.
+        #[cfg(target_os = "linux")]
         assert!(!process_is_our_server(&read, &directory));
         let _ = std::fs::remove_dir_all(&directory);
         Ok(())
+    }
+
+    #[test]
+    fn every_built_in_agent_trades_as_a_funded_scenario_participant() -> Result<(), String> {
+        let scenario: Value = serde_json::from_str(SCENARIO).map_err(|e| e.to_string())?;
+        let participants = scenario["participants"]
+            .as_object()
+            .ok_or("scenario participants")?;
+        let config = server_config(1, 2, &["0123456789abcdef0123456789abcdef"]);
+        let agents = config["runtime"]["scheduler"]["agents"]
+            .as_array()
+            .ok_or("agents")?;
+        // Liquidity at several price levels, so a 100-lot market order fills.
+        let providers = agents
+            .iter()
+            .filter(|agent| agent["kind"] == json!("static_liquidity_provider"))
+            .count();
+        assert!(providers >= 5, "{providers} liquidity providers");
+        let mut ids = Vec::new();
+        for agent in agents {
+            let id = agent["participant_id"].as_u64().ok_or("participant_id")?;
+            assert!(
+                participants.contains_key(&id.to_string()),
+                "agent participant {id} is in the scenario"
+            );
+            assert!(
+                u128::from(id) > LAST_PARTICIPANT,
+                "agent {id} is not a desk seat"
+            );
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), agents.len(), "one participant per agent");
+        Ok(())
+    }
+
+    #[test]
+    fn a_process_image_name_must_match_the_recorded_server_program() {
+        assert!(image_names_match("/usr/local/bin/bunting", "bunting"));
+        assert!(image_names_match("bunting", "/Applications/x/bunting"));
+        assert!(image_names_match("C:\\bunting\\Bunting.exe", "bunting.exe"));
+        assert!(image_names_match("bunting", "BUNTING.EXE"));
+        assert!(!image_names_match("bunting", "chrome.exe"));
+        assert!(!image_names_match("bunting", "bunting-desk"));
+        assert!(!image_names_match("bunting", ""));
+        assert!(!image_names_match("", ""));
     }
 
     #[test]
