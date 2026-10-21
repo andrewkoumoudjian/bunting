@@ -448,6 +448,19 @@ impl Model {
             .and_then(PnlBook::cost_ticks)
     }
 
+    /// The open position's exact average cost as `(tick-lots,
+    /// lots)`: their quotient is the volume-weighted price in
+    /// ticks, unrounded. `None` when the cost is unknown (the
+    /// lots were filled before this client connected) or flat.
+    #[must_use]
+    pub fn average_cost(&self, instrument_id: u128) -> Option<(i128, i64)> {
+        let book = self.series.books.get(&instrument_id)?;
+        if !book.cost_known || book.position == 0 {
+            return None;
+        }
+        Some((book.cost_tick_lots, book.position))
+    }
+
     /// The contract multiplier that turns `instrument_id`'s
     /// tick-lots into minor currency units, and whether it is known.
     /// BNP v1 carries no instrument reference data (the gap in

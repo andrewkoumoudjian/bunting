@@ -449,6 +449,38 @@ fn each_venue_book_is_shown_on_its_own_and_an_order_goes_to_the_chosen_venue(
 }
 
 #[gpui_kit::test]
+fn both_venues_best_asks_fit_inside_the_book_trader_window(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(&fixture, cx);
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let books = window.find("books").bounds();
+        for venue in [1, 2] {
+            let card = window.find(format!("venue-{venue}")).bounds();
+            assert!(
+                card.right() <= books.right() + px(1.),
+                "venue {venue} card {card:?} inside the pane {books:?}"
+            );
+            // Venue 1 shows price levels, venue 2 order by order:
+            // the best ask is the first ask row on each.
+            let ask = if venue == 1 {
+                "ask-1-0".to_owned()
+            } else {
+                "ask-order-2-0".to_owned()
+            };
+            let row = window.find(ask.clone());
+            assert!(row.visible(), "{ask} visible");
+            assert!(
+                row.bounds().right() <= card.right() + px(1.),
+                "best ask row {ask} {:?} inside its card {card:?}",
+                row.bounds()
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn a_resting_order_can_be_canceled_from_the_orders_panel(cx: &mut TestAppContext) {
     let fixture = open(cx);
     connect_with_books(&fixture, cx);

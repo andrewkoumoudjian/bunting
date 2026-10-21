@@ -708,7 +708,7 @@ fn the_portfolio_row_derives_from_fills_and_books(cx: &mut TestAppContext) {
     let row = &rows[0];
     assert_eq!(row.symbol, "BNT");
     assert_eq!(row.position, Some(6));
-    assert_eq!(row.cost, Some(100));
+    assert_eq!(row.cost.as_deref(), Some("100.0"));
     // 4 lots closed at +3 each, less the net fee of 1: 12 - 2 + 1.
     assert_eq!(row.realized, 11);
     // Best bid 99 on both venues: (99 - 100) x 6 lots.

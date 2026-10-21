@@ -384,12 +384,8 @@ fn panel(fixture: &Fixture) -> &Entity<ChartPanel> {
 fn scripted_trades_become_bars_on_the_chart(cx: &mut TestAppContext) {
     let fixture = open_panel(cx);
     let feeds = connect(&fixture, cx);
-    // Seeded with BNT on both venues; drop Venue 2 for one series.
-    assert_eq!(
-        panel(&fixture).read_with(cx, |panel, _| panel.listings()),
-        vec![NEAR, FAR]
-    );
-    click(&fixture, cx, "chart-remove-2-7");
+    // Opens with one series: the selected security's venue-1
+    // listing, even though BNT trades on two venues.
     assert_eq!(
         panel(&fixture).read_with(cx, |panel, _| panel.listings()),
         vec![NEAR]
@@ -485,7 +481,6 @@ fn double_click_plot(fixture: &Fixture, cx: &mut TestAppContext) {
 fn the_wheel_zooms_a_drag_pans_and_a_double_click_follows_again(cx: &mut TestAppContext) {
     let fixture = open_panel(cx);
     let feeds = connect(&fixture, cx);
-    click(&fixture, cx, "chart-remove-2-7");
     let (mut sequence, mut report) = (0_u64, 0_u64);
     script_bars(
         &fixture,
@@ -548,7 +543,6 @@ fn the_wheel_zooms_a_drag_pans_and_a_double_click_follows_again(cx: &mut TestApp
 fn a_second_security_switches_the_pane_to_comparison(cx: &mut TestAppContext) {
     let fixture = open_panel(cx);
     let feeds = connect(&fixture, cx);
-    click(&fixture, cx, "chart-remove-2-7");
     let (mut sequence, mut report) = (0_u64, 0_u64);
     script_bars(
         &fixture,
@@ -590,6 +584,56 @@ fn a_second_security_switches_the_pane_to_comparison(cx: &mut TestAppContext) {
     assert!(
         visible(&fixture, cx, "chart-chip-1-9"),
         "XYZ has its own chip"
+    );
+}
+
+#[gpui_kit::test]
+fn another_venue_of_the_same_security_overlays_on_the_price_axis(cx: &mut TestAppContext) {
+    let fixture = open_panel(cx);
+    let feeds = connect(&fixture, cx);
+    assert_eq!(
+        panel(&fixture).read_with(cx, |panel, _| panel.listings()),
+        vec![NEAR],
+        "venue 1 only on open"
+    );
+    let (mut sequence, mut report) = (0_u64, 0_u64);
+    script_bars(
+        &fixture,
+        cx,
+        &feeds,
+        NEAR,
+        12,
+        5,
+        100,
+        &mut sequence,
+        &mut report,
+    );
+    script_bars(
+        &fixture,
+        cx,
+        &feeds,
+        FAR,
+        12,
+        5,
+        101,
+        &mut sequence,
+        &mut report,
+    );
+    click(&fixture, cx, "chart-add");
+    click_menu_item(&fixture, cx, "BNT");
+    assert_eq!(
+        panel(&fixture).read_with(cx, |panel, _| panel.listings()),
+        vec![NEAR, FAR],
+        "adding BNT again overlays venue 2"
+    );
+    assert!(
+        !panel(&fixture).read_with(cx, ChartPanel::comparison),
+        "same instrument: no percent normalisation"
+    );
+    assert!(visible(&fixture, cx, "chart-price"), "candles stay");
+    assert!(
+        visible(&fixture, cx, "chart-chip-2-7"),
+        "venue 2 has its chip"
     );
 }
 
@@ -755,6 +799,9 @@ fn chart_state_survives_a_saved_screen_round_trip(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
+    // Overlay venue 2 so the saved state holds two series.
+    click(&fixture, cx, "chart-add");
+    click_menu_item(&fixture, cx, "BNT");
     cx.run_until_parked();
     let saved = canvas.read_with(cx, bunting_desk::Canvas::dump);
     let chart = saved
@@ -766,7 +813,7 @@ fn chart_state_survives_a_saved_screen_round_trip(cx: &mut TestAppContext) {
     assert_eq!(
         state["listings"],
         serde_json::json!([["1", "7"], ["2", "7"]]),
-        "the seeded venues are saved as their own series"
+        "each venue is saved as its own series"
     );
 
     let (_fixture, canvas) = open_canvas(cx, Some(&saved));

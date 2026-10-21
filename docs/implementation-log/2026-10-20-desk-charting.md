@@ -166,3 +166,27 @@ approved `55cfc3c` and sent back eight fixes, landed as:
 58 lib incl. the new unit tests, 5 chart window, 17 panes,
 24 workspace, 9 appearance). One appearance test flaked once
 under parallel load and passed isolated and on re-run.
+
+## Review round 3 (2026-10-20, after fast-forwarding `integrate/desk-u1-u2` = `adf35a3`)
+
+- `b1d5a1b` — P&L/price time-axis labels cannot overlap at any
+  span: `range::time_axis_labels` (step chosen for label width,
+  greedy drop after clamping) and `range::keep_clear`; property
+  test over spans 5 s..24 h × plot/label widths.
+- `91efdce` (+`67623e0` lint fixes) — Book Trader venue cards:
+  place is priority 0 like ahead/broker, and the panel stacks
+  venue cards when every card cannot keep qty+price, instead of
+  clipping the far venue in a sideways scroll. Test at template
+  size: every card and its best-ask row inside the window.
+- `b1a741a` — `Model::average_cost` (exact tick-lots/lots) and
+  `format::average_price` (one decimal, two when needed) in the
+  Portfolio cost column, Book Trader Cost header and Ladder.
+- Charting opens single-series (venue-1, candles); adding the
+  same instrument again overlays its next venue as a line on
+  the price axis; percent comparison only across instruments.
+
+Checks: `tools/check_desk.sh` exit 0 before each commit (118
+tests: 61 lib, 9, 6 chart, 17 panes, 25 workspace);
+`cargo test --locked -p bunting-trading-state` 44 passed and
+clippy clean for the average-cost commit. Visual acceptance of
+this round is the coordinator's screenshots.
