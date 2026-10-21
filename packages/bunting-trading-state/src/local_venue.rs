@@ -996,6 +996,21 @@ impl Drop for LocalVenue {
     }
 }
 
+/// BNT's fundamental is a seeded random walk on the run clock (one run
+/// second per second): 40% annualised volatility over a 60 s "trading day"
+/// (a 15120 s year), about 8% (one sigma) over the first five minutes,
+/// doubling to 80% from the fifth minute so the regime change shows on a
+/// chart.
+fn bnt_fundamental_path() -> Value {
+    json!({
+        "kind": "random_walk", "seed": 20_261_020_u64, "step_ns": 500_000_000_u64,
+        "annual_volatility_bps": 4000, "trading_days_per_year": 252,
+        "run_ns_per_day": 60_000_000_000_u64,
+        "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": 8000}],
+        "min_price_ticks": 1, "max_price_ticks": 1_000_000
+    })
+}
+
 fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
     let link = |a: &str, b: &str, latency_us: u64| json!({"between": [a, b], "latency_us": latency_us, "jitter_us": latency_us / 20});
     let agent = |kind: &str,
@@ -1086,24 +1101,13 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
             "scheduler": {
                 "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
                 "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
-                // BNT's fundamental is a seeded random walk on the run clock
-                // (one run second per second): 40% annualised volatility
-                // over a 60 s "trading day" (a 15120 s year), about 8% (one
-                // sigma) over the first five minutes, doubling to 80% from
-                // the fifth minute so the regime change shows on a chart.
-                "fundamental_path": {
-                    "kind": "random_walk", "seed": 20_261_020_u64, "step_ns": 500_000_000_u64,
-                    "annual_volatility_bps": 4000, "trading_days_per_year": 252,
-                    "run_ns_per_day": 60_000_000_000_u64,
-                    "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": 8000}],
-                    "min_price_ticks": 1, "max_price_ticks": 1_000_000
-                },
+                "fundamental_path": bnt_fundamental_path(),
                 "agents": [
-                    agent("static_liquidity_provider", 10, 42, 40, 1, 500),
-                    agent("static_liquidity_provider", 13, 45, 40, 2, 500),
-                    agent("static_liquidity_provider", 14, 46, 40, 3, 500),
-                    agent("static_liquidity_provider", 15, 47, 40, 4, 500),
-                    agent("static_liquidity_provider", 16, 48, 40, 5, 500),
+                    agent("fundamental_liquidity_provider", 10, 42, 40, 1, 500),
+                    agent("fundamental_liquidity_provider", 13, 45, 40, 2, 500),
+                    agent("fundamental_liquidity_provider", 14, 46, 40, 3, 500),
+                    agent("fundamental_liquidity_provider", 15, 47, 40, 4, 500),
+                    agent("fundamental_liquidity_provider", 16, 48, 40, 5, 500),
                     agent("zero_intelligence_noise", 11, 43, 10, 4, 500),
                     agent("mean_reversion", 12, 44, 5, 2, 500),
                     agent("fully_informed", 18, 50, 40, 2, 500)

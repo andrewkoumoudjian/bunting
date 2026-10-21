@@ -267,6 +267,7 @@ mod tests {
 
     /// Annualised standard deviation of per-step log returns, in bps,
     /// measured on a very high price so tick rounding is negligible.
+    #[allow(clippy::float_arithmetic, clippy::cast_precision_loss)]
     fn realised_bps(path: FundamentalPath, from: u64, to: u64) -> f64 {
         let mut walker = FundamentalWalker::new(Some(path), PriceTicks::new(500_000_000));
         let prices: Vec<f64> = (from..=to)

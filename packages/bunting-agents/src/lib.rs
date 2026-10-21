@@ -312,13 +312,16 @@ impl BuiltInPolicy {
         observation: &AgentObservation,
         output: &mut IntentBuffer,
     ) -> Result<(), AgentError> {
-        // Quote around the observed fundamental, which a run can move on a
-        // deterministic path. Not the book's mid: the book holds this
-        // agent's own quotes, and centering on them would ratchet the price
-        // a tick each wake while inventory skews the quotes. The last trade
-        // serves only when no fundamental is observed, the book mid only
-        // before any trade.
-        let mid = if observation.fundamental.get() > 0 {
+        // A fundamental liquidity provider quotes around the observed
+        // fundamental, which a run can move on a deterministic path. Every
+        // other market maker quotes around the last trade, not the book's
+        // mid: the book holds this agent's own quotes, and centering on
+        // them would ratchet the price a tick each wake while inventory
+        // skews the quotes. The book mid serves only before any trade.
+        let follows_fundamental = self.state.config.kind
+            == PolicyKind::FundamentalLiquidityProvider
+            && observation.fundamental.get() > 0;
+        let mid = if follows_fundamental {
             observation.fundamental.get()
         } else if observation.last_trade.get() > 0 {
             observation.last_trade.get()
@@ -1234,9 +1237,9 @@ mod tests {
 
     #[test]
     fn liquidity_provider_quotes_follow_the_moving_fundamental() -> Result<(), AgentError> {
-        let quoted = |fundamental: i64| -> Result<Vec<i64>, AgentError> {
+        let quoted = |kind: PolicyKind, fundamental: i64| -> Result<Vec<i64>, AgentError> {
             let mut agent = ManagedAgent::new(
-                BuiltInPolicy::new(config(PolicyKind::StaticLiquidityProvider)),
+                BuiltInPolicy::new(config(kind)),
                 QuarccExecutionEngine::new(ExecutionConfig::default()),
             );
             let (_, actions) = agent.on_wake(
@@ -1257,19 +1260,25 @@ mod tests {
                 };
                 match order.kind {
                     OrderKind::Limit { price } | OrderKind::LimitWithPolicy { price, .. } => {
-                        prices.push(price.get())
+                        prices.push(price.get());
                     }
-                    _ => return Err(AgentError::InvalidObservation),
+                    OrderKind::Market => return Err(AgentError::InvalidObservation),
                 }
             }
             prices.sort_unstable();
             Ok(prices)
         };
-        let spread = config(PolicyKind::StaticLiquidityProvider).spread_ticks;
+        let follower = PolicyKind::FundamentalLiquidityProvider;
+        let spread = config(follower).spread_ticks;
         // Last trade stays at 100: only the fundamental moves the quotes.
-        assert_eq!(quoted(100)?, [100 - spread, 100 + spread]);
-        assert_eq!(quoted(112)?, [112 - spread, 112 + spread]);
-        assert_eq!(quoted(90)?, [90 - spread, 90 + spread]);
+        assert_eq!(quoted(follower, 100)?, [100 - spread, 100 + spread]);
+        assert_eq!(quoted(follower, 112)?, [112 - spread, 112 + spread]);
+        assert_eq!(quoted(follower, 90)?, [90 - spread, 90 + spread]);
+        // The static provider keeps quoting around the last trade.
+        assert_eq!(
+            quoted(PolicyKind::StaticLiquidityProvider, 112)?,
+            [100 - spread, 100 + spread]
+        );
         Ok(())
     }
 
