@@ -1086,6 +1086,18 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
             "scheduler": {
                 "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
                 "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
+                // BNT's fundamental is a seeded random walk on the run clock
+                // (one run second per second): 40% annualised volatility
+                // over a 60 s "trading day" (a 15120 s year), about 8% (one
+                // sigma) over the first five minutes, doubling to 80% from
+                // the fifth minute so the regime change shows on a chart.
+                "fundamental_path": {
+                    "kind": "random_walk", "seed": 20_261_020_u64, "step_ns": 500_000_000_u64,
+                    "annual_volatility_bps": 4000, "trading_days_per_year": 252,
+                    "run_ns_per_day": 60_000_000_000_u64,
+                    "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": 8000}],
+                    "min_price_ticks": 1, "max_price_ticks": 1_000_000
+                },
                 "agents": [
                     agent("static_liquidity_provider", 10, 42, 40, 1, 500),
                     agent("static_liquidity_provider", 13, 45, 40, 2, 500),
