@@ -10,7 +10,7 @@
       "currency": 1,
       "kind": "equity",
       "multiplier": 1,
-      "shortable": false,
+      "shortable": true,
       "opening_mark": 100
     },
     {
@@ -19,7 +19,7 @@
       "currency": 1,
       "kind": "equity",
       "multiplier": 1,
-      "shortable": false,
+      "shortable": true,
       "opening_mark": 100
     }
   ],
