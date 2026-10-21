@@ -9,8 +9,8 @@
 //! in the scenario, and every `--local` client on the machine joins the
 //! one running venue as the next free participant (see
 //! [`join_or_start`]). Two desks, or a desk and a terminal, started with
-//! `--local` therefore trade with each other. The built-in agents
-//! (participants 10, 11, 12) quote as before.
+//! `--local` therefore trade with each other. Built-in agents (participants
+//! 10 to 43) quote every book.
 //!
 //! The FIX roster lists all eight participants with distinct target comp
 //! IDs (`TRADER1`…`TRADER8`) so a participant's own FIX program can sit
@@ -18,10 +18,15 @@
 //!
 //! Venue 1 sits with the trader and venue 2 is 2 ms away (ADR 0035
 //! virtual distance, both ways), so the trader feels the distance when
-//! choosing where to send an order. BNT is listed on venue 1, where the
-//! built-in agents quote it; QRC is listed on both venues with no agents.
-//! BNT is not listed on venue 2 yet because the built-in agent runtime
-//! resolves an instrument to a single listing.
+//! choosing where to send an order. BNT and QRC are each listed on both
+//! venues. Every one of the four listings has its own set of eight
+//! built-in agents (five liquidity providers, noise, mean reversion and an
+//! informed trader), each trading its own listing: an agent names its
+//! venue and instrument and submits through the same sequencer as anyone
+//! else. The two listings of an instrument share one random-walk
+//! fundamental (BNT and QRC walk separately) and keep independent books,
+//! so the venue is a real choice and a price difference between the two
+//! can be traded.
 //!
 //! Lifetime: the server runs detached from the client that started it.
 //! Each client holds an advisory lock claiming its participant number;
@@ -996,35 +1001,84 @@ impl Drop for LocalVenue {
     }
 }
 
-/// BNT's fundamental is a seeded random walk on the run clock (one run
-/// second per second): 40% annualised volatility over a 60 s "trading day"
-/// (a 15120 s year), about 8% (one sigma) over the first five minutes,
-/// doubling to 80% from the fifth minute so the regime change shows on a
-/// chart.
-fn bnt_fundamental_path() -> Value {
+/// A seeded random walk on the run clock (one run second per second): the
+/// base annualised volatility over a 60 s "trading day" (a 15120 s year),
+/// and double that from the fifth minute so the regime change shows on a
+/// chart. At 40% base that is about 8% (one sigma) over the first five
+/// minutes.
+fn fundamental_path(seed: u64, base_bps: u32) -> Value {
     json!({
-        "kind": "random_walk", "seed": 20_261_020_u64, "step_ns": 500_000_000_u64,
-        "annual_volatility_bps": 4000, "trading_days_per_year": 252,
+        "kind": "random_walk", "seed": seed, "step_ns": 500_000_000_u64,
+        "annual_volatility_bps": base_bps, "trading_days_per_year": 252,
         "run_ns_per_day": 60_000_000_000_u64,
-        "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": 8000}],
+        "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": base_bps * 2}],
         "min_price_ticks": 1, "max_price_ticks": 1_000_000
+    })
+}
+
+/// The built-in agents of one listing: five fundamental liquidity
+/// providers at spreads 1 to 5, noise, mean reversion and an informed
+/// trader, with participant IDs in `ids` (providers first).
+fn book_agents(ids: [u128; 8], instrument: u128, venue: u128) -> Vec<Value> {
+    const SHAPE: [(&str, u64, u64, u64); 8] = [
+        ("fundamental_liquidity_provider", 40, 1, 500),
+        ("fundamental_liquidity_provider", 40, 2, 500),
+        ("fundamental_liquidity_provider", 40, 3, 500),
+        ("fundamental_liquidity_provider", 40, 4, 500),
+        ("fundamental_liquidity_provider", 40, 5, 500),
+        ("zero_intelligence_noise", 10, 4, 500),
+        ("mean_reversion", 5, 2, 500),
+        ("fully_informed", 40, 2, 500),
+    ];
+    SHAPE
+        .iter()
+        .zip(ids)
+        .map(|((kind, base_quantity, spread_ticks, wake_ms), id)| {
+            json!({
+                "kind": kind, "participant_id": id, "base_quantity": base_quantity,
+                "spread_ticks": spread_ticks, "inventory_target": 0,
+                "wake_interval_ns": wake_ms * 1_000_000,
+                "seed": u64::try_from(id).unwrap_or(0) + 32, "max_intents_per_wake": 4,
+                "instrument_id": instrument, "venue_id": venue
+            })
+        })
+        .collect()
+}
+
+/// Every built-in agent: BNT and QRC each get a full set on venue 1 and on
+/// venue 2. The two listings of an instrument share one fundamental (so
+/// the venue is a real choice and an arbitrage stays possible) and keep
+/// independent books.
+fn practice_agents() -> Vec<Value> {
+    let mut agents = book_agents([10, 13, 14, 15, 16, 11, 12, 18], 1, 1);
+    agents.extend(book_agents([36, 37, 38, 39, 40, 41, 42, 43], 1, 2));
+    agents.extend(book_agents([20, 21, 22, 23, 24, 25, 26, 27], 2, 1));
+    agents.extend(book_agents([28, 29, 30, 31, 32, 33, 34, 35], 2, 2));
+    agents
+}
+
+/// The `runtime` section of the server configuration: the built-in agents
+/// and the fundamentals they follow. Public so the server's tests run the
+/// same market the desk starts.
+#[must_use]
+pub fn practice_runtime() -> Value {
+    json!({
+        "wall_tick_ms": 100,
+        "scheduler": {
+            "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
+            "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
+            "fundamental_path": fundamental_path(20_261_020, 4000),
+            "other_instruments": [{
+                "instrument_id": 2, "fundamental_price": 100,
+                "fundamental_path": fundamental_path(20_261_021, 5000)
+            }],
+            "agents": practice_agents()
+        }
     })
 }
 
 fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
     let link = |a: &str, b: &str, latency_us: u64| json!({"between": [a, b], "latency_us": latency_us, "jitter_us": latency_us / 20});
-    let agent = |kind: &str,
-                 participant_id: u128,
-                 seed: u64,
-                 base_quantity: u64,
-                 spread_ticks: u64,
-                 wake_ms: u64| {
-        json!({
-            "kind": kind, "participant_id": participant_id, "base_quantity": base_quantity,
-            "spread_ticks": spread_ticks, "inventory_target": 0, "wake_interval_ns": wake_ms * 1_000_000,
-            "seed": seed, "max_intents_per_wake": 4
-        })
-    };
     // FIX for a participant's own program beside any desk; the apps use
     // BNP. Every participant is listed with its own target comp ID, and
     // its password is derived from its certificate fingerprint, so it is
@@ -1096,24 +1150,7 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
         },
         "admin": null,
         "scenario": {"path": "scenario.json", "run_id": 1, "iteration_id": 1},
-        "runtime": {
-            "wall_tick_ms": 100,
-            "scheduler": {
-                "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
-                "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
-                "fundamental_path": bnt_fundamental_path(),
-                "agents": [
-                    agent("fundamental_liquidity_provider", 10, 42, 40, 1, 500),
-                    agent("fundamental_liquidity_provider", 13, 45, 40, 2, 500),
-                    agent("fundamental_liquidity_provider", 14, 46, 40, 3, 500),
-                    agent("fundamental_liquidity_provider", 15, 47, 40, 4, 500),
-                    agent("fundamental_liquidity_provider", 16, 48, 40, 5, 500),
-                    agent("zero_intelligence_noise", 11, 43, 10, 4, 500),
-                    agent("mean_reversion", 12, 44, 5, 2, 500),
-                    agent("fully_informed", 18, 50, 40, 2, 500)
-                ]
-            }
-        }
+        "runtime": practice_runtime()
     })
 }
 
@@ -1406,7 +1443,7 @@ mod tests {
         // Liquidity at several price levels, so a 100-lot market order fills.
         let providers = agents
             .iter()
-            .filter(|agent| agent["kind"] == json!("static_liquidity_provider"))
+            .filter(|agent| agent["kind"] == json!("fundamental_liquidity_provider"))
             .count();
         assert!(providers >= 5, "{providers} liquidity providers");
         let mut ids = Vec::new();
