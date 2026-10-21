@@ -262,3 +262,54 @@ fn the_open_order_limit_refuses_before_anything_is_sent() {
     assert!(output.as_slice().is_empty());
     assert_eq!(engine.snapshot(), before);
 }
+
+#[test]
+fn a_cancel_rejected_because_the_order_already_filled_waits_for_the_fill() {
+    // The venue matched the order against an incoming taker while our
+    // cancel was in flight: the cancel is rejected as unknown before the
+    // fill report reaches us. Seen live on the practice venue, where the
+    // reject used to stop the whole runtime.
+    let mut engine = QuarccExecutionEngine::new(ExecutionConfig::default());
+    let local = submit(&mut engine, 1);
+    let mut output = ExecutionActionBuffer::with_limit(16);
+    engine
+        .apply_venue_report(&report(2, 1, "V1", VenueReportKind::Accepted), &mut output)
+        .unwrap();
+    engine
+        .submit_intent(
+            ExecutionIntent::Cancel {
+                intent_id: IntentId::new(10),
+                client_order_id: ClientOrderId::new(1),
+            },
+            &mut output,
+        )
+        .unwrap();
+    assert_eq!(
+        engine.order(local).unwrap().lifecycle,
+        OrderLifecycle::PendingCancel
+    );
+    let rejected = report(
+        3,
+        1,
+        "V1",
+        VenueReportKind::Rejected {
+            reason: "UnknownOrder".to_owned(),
+        },
+    );
+    engine.apply_venue_report(&rejected, &mut output).unwrap();
+    assert_eq!(engine.order(local).unwrap().lifecycle, OrderLifecycle::Live);
+    let fill = report(
+        4,
+        1,
+        "V1",
+        VenueReportKind::Fill {
+            last_quantity: QuantityLots::new(10),
+            cumulative_quantity: QuantityLots::new(10),
+            price: PriceTicks::new(100),
+        },
+    );
+    engine.apply_venue_report(&fill, &mut output).unwrap();
+    let order = engine.order(local).unwrap();
+    assert_eq!(order.lifecycle, OrderLifecycle::Filled);
+    assert_eq!(order.filled_quantity, QuantityLots::new(10));
+}

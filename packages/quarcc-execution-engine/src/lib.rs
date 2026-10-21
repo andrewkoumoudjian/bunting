@@ -435,7 +435,13 @@ impl QuarccExecutionEngine {
                     .ok_or(ExecutionError::UnknownLocalOrder(local))?
                     .lifecycle = OrderLifecycle::Cancelled;
             }
-            VenueReportKind::CancelRejected { .. }
+            // A venue that rejects the cancel command itself (Bunting's
+            // `OrderRejected { UnknownOrder }`) reports `Rejected`. While a
+            // cancel is pending that is the cancel's rejection: the order
+            // filled or left the book before the cancel arrived, and its
+            // fill can reach us after this reject. Hold the order as it was
+            // so that fill still applies.
+            VenueReportKind::CancelRejected { .. } | VenueReportKind::Rejected { .. }
                 if lifecycle == OrderLifecycle::PendingCancel =>
             {
                 let order = self
