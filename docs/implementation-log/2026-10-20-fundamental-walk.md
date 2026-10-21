@@ -80,3 +80,30 @@ See the commit message of the closing commit for the gate counts.
 - News-linked jumps and a published fundamental for close-out marks (spec
   section 7 rows stay Partial / Missing).
 - The desk signal path needs a live check on a machine with a display.
+
+## Agents on every listing (2026-10-21)
+
+Owner report: "my trades don't get filled". Only BNT on venue 1 had agents;
+QRC (venues 1 and 2) was empty, because the runtime had one `instrument_id`
+and resolved an instrument to a single listing.
+
+- `RuntimeAgentConfig` gains optional `instrument_id` and `venue_id`
+  (`serde` default `None`: existing configs and snapshots behave as before).
+  An agent that names a venue submits `SubmitOrderAtListing` for that
+  listing through the same sequencer; an agent on an instrument other than
+  the scheduler's must name a venue. `RuntimeConfig.other_instruments`
+  gives each further instrument its own `fundamental_price` and
+  `fundamental_path` (its own seed), shared by all listings of the
+  instrument. Last-trade tracking is per listing and checkpointed
+  (`RuntimeSnapshot.listing_trades`, `serde` default).
+- The server's startup check requires each agent's listing to exist.
+- Local venue: BNT and QRC each have the eight-agent set (five fundamental
+  providers, noise, mean reversion, informed) on venue 1 and venue 2
+  (participants 10-43), with initial inventory and the existing shortable
+  instruments. BNT is now listed on venue 2.
+- Tests: `agents_on_two_listings_each_quote_their_own_book` (runtime, with a
+  snapshot restore), `an_agent_on_another_instrument_must_name_a_venue`, and
+  `apps/bunting-server/tests/local_practice_agents.rs` (real server on the
+  practice agent configuration: a QRC market buy on venue 2 fills, a limit at
+  the touch fills on all four listings, and the journal replays to the same
+  state hash).

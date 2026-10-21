@@ -969,7 +969,7 @@ mod tests {
                 spread_ticks: 2,
                 inventory_target: QuantityLots::new(0),
                 wake_interval_ns: 1_000_000_000,
-                seed: participant as u64,
+                seed: u64::try_from(participant).unwrap_or(0),
                 max_intents_per_wake: 4,
                 instrument_id: instrument.map(InstrumentId::new),
                 venue_id: venue.map(VenueId::new),

@@ -66,6 +66,12 @@ fn the_practice_venue_keeps_running_while_its_agents_quote() -> Result<(), Strin
     })?;
     edit(&prepared.config_path, |config| {
         config["runtime"]["wall_tick_ms"] = Value::from(5);
+        // This is a 20x stress of one book: keep BNT on venue 1's agents so
+        // an unoptimized build can keep up with the 5 ms tick.
+        if let Some(agents) = config["runtime"]["scheduler"]["agents"].as_array_mut() {
+            agents.retain(|agent| agent["instrument_id"] == 1 && agent["venue_id"] == 1);
+        }
+        config["runtime"]["scheduler"]["other_instruments"] = Value::Array(Vec::new());
     })?;
     let config = ServerConfig::from_file(&prepared.config_path).map_err(|e| e.to_string())?;
     let server = std::thread::spawn(move || bunting_server::runtime::run(&config));
