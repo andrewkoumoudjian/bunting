@@ -605,7 +605,7 @@ fn panes(fixture: &Fixture, cx: &mut TestAppContext) -> Vec<String> {
         workspace
             .canvas()
             .read(cx)
-            .dump()
+            .dump(cx)
             .into_iter()
             .map(|saved| saved.kind)
             .collect()
@@ -619,7 +619,7 @@ fn saved_windows(
 ) -> Vec<bunting_desk::canvas::SavedWindow> {
     fixture
         .workspace
-        .read_with(cx, |workspace, cx| workspace.canvas().read(cx).dump())
+        .read_with(cx, |workspace, cx| workspace.canvas().read(cx).dump(cx))
 }
 
 #[gpui_kit::test]
@@ -1214,7 +1214,7 @@ fn tile_arranges_the_windows_in_a_grid(cx: &mut TestAppContext) {
     press(&fixture, cx, "secondary-alt-t");
     let (size, saved) = fixture.workspace.read_with(cx, |workspace, cx| {
         let canvas = workspace.canvas().read(cx);
-        (canvas.size(), canvas.dump())
+        (canvas.size(), canvas.dump(cx))
     });
     let expected = bunting_desk::canvas::geometry::tile(
         saved.len(),
@@ -1309,7 +1309,7 @@ fn open_canvas(
 #[allow(clippy::float_arithmetic, reason = "expected edges in logical pixels")]
 fn a_template_waits_for_the_first_painted_bounds(cx: &mut TestAppContext) {
     let (_, canvas) = open_canvas(cx, None, None);
-    let saved = canvas.read_with(cx, |canvas, _| canvas.dump());
+    let saved = canvas.read_with(cx, bunting_desk::Canvas::dump);
     assert_eq!(saved.len(), 7, "the Trading template's windows");
     let rightmost = saved
         .iter()
@@ -1342,6 +1342,7 @@ fn a_screen_from_a_larger_canvas_reflows_to_this_one(cx: &mut TestAppContext) {
             z: 0,
             minimised: false,
             maximised: false,
+            state: None,
         },
         SavedWindow {
             kind: "tape".to_owned(),
@@ -1349,6 +1350,7 @@ fn a_screen_from_a_larger_canvas_reflows_to_this_one(cx: &mut TestAppContext) {
             z: 1,
             minimised: false,
             maximised: false,
+            state: None,
         },
     ];
     let (window, canvas) = open_canvas(cx, Some(&saved), Some((2560., 1440.)));
@@ -1357,7 +1359,7 @@ fn a_screen_from_a_larger_canvas_reflows_to_this_one(cx: &mut TestAppContext) {
         canvas.read_with(cx, |canvas, _| canvas.base_size()),
         Some((2560., 1440.))
     );
-    assert_eq!(canvas.read_with(cx, |canvas, _| canvas.dump()), saved);
+    assert_eq!(canvas.read_with(cx, bunting_desk::Canvas::dump), saved);
     // Live, the tape window sits on this canvas's right gutter.
     let tape = canvas
         .read_with(cx, |canvas, _| {
@@ -1394,6 +1396,7 @@ fn shrinking_below_minimums_and_growing_back_restores_the_base(cx: &mut TestAppC
             z: 0,
             minimised: false,
             maximised: false,
+            state: None,
         },
         SavedWindow {
             kind: "tape".to_owned(),
@@ -1401,6 +1404,7 @@ fn shrinking_below_minimums_and_growing_back_restores_the_base(cx: &mut TestAppC
             z: 1,
             minimised: false,
             maximised: false,
+            state: None,
         },
     ];
     let (window, canvas) = open_canvas(cx, Some(&saved), Some((1600., 940.)));
@@ -1438,7 +1442,7 @@ fn shrinking_below_minimums_and_growing_back_restores_the_base(cx: &mut TestAppC
         "minimum width forced at 700px: {shrunk:?}"
     );
     assert_eq!(
-        canvas.read_with(cx, |canvas, _| canvas.dump()),
+        canvas.read_with(cx, bunting_desk::Canvas::dump),
         saved,
         "the base layout did not drift while shrunk"
     );

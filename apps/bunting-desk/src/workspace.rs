@@ -432,7 +432,7 @@ impl Workspace {
         if canvas.has_pending_template() {
             return;
         }
-        let windows = canvas.dump();
+        let windows = canvas.dump(cx);
         let layout_size = canvas.base_size();
         if let Some(screen) = self.screens.get_mut(self.active) {
             screen.windows = Some(windows);

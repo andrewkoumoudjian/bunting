@@ -2,7 +2,7 @@
 //! the builder that brings panes back from a saved screen (ADR 0051).
 
 use crate::blotter::OrdersPanel;
-use crate::chart::ChartPanel;
+use crate::chart::{ChartPanel, SavedChart};
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
 use crate::ladder::LadderPanel;
@@ -170,6 +170,30 @@ impl PaneKind {
             Self::OrderEntry => Some((IconName::Plus, "Another Order Entry window")),
             _ => None,
         }
+    }
+
+    /// A new pane of this kind on `desk`, restored from its saved
+    /// JSON state where the kind dumps one (Charting today).
+    pub fn build_with_state(
+        self,
+        desk: Entity<Desk>,
+        state: Option<&serde_json::Value>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Arc<dyn BasePanelView> {
+        if self == Self::Chart {
+            let panel = cx.new(|cx| ChartPanel::new(desk, window, cx));
+            if let Some(saved) =
+                state.and_then(|value| serde_json::from_value::<SavedChart>(value.clone()).ok())
+            {
+                panel.update(cx, |panel, cx| {
+                    panel.restore(&saved);
+                    cx.notify();
+                });
+            }
+            return panel_handle(panel);
+        }
+        self.build(desk, window, cx)
     }
 
     /// A new pane of this kind on `desk`.

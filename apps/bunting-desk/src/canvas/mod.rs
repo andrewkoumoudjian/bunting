@@ -25,10 +25,10 @@ use crate::panes::PaneKind;
 use crate::theme;
 use geometry::{Edge, GUTTER, Guide, Point, Rect};
 use gpui_kit::component::button::Button;
-use gpui_kit::component::dock::BasePanelView;
+use gpui_kit::component::dock::{BasePanelView, PanelInfo};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, Context, Div, Entity, EventEmitter, FontWeight, InteractiveElement as _,
+    AnyElement, App, Context, Div, Entity, EventEmitter, FontWeight, InteractiveElement as _,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
     Pixels, Point as GpuiPoint, Render, SharedString, Styled as _, TestSupportExt as _, Window,
     canvas as paint_canvas, div, prelude::*, px,
@@ -47,8 +47,10 @@ const CASCADE_STEP: f32 = 28.;
 /// Closed windows kept for reopen.
 const MAX_CLOSED: usize = 16;
 
-/// One window's saved form: rebuilt with `PaneKind::from_name` + `build`.
-/// Panes dump no custom state, so kind and geometry are the whole record.
+/// One window's saved form: rebuilt with `PaneKind::from_name` +
+/// `build_with_state`. `state` is the pane's own JSON from its
+/// dock `dump` (the Charting window is the first pane with any);
+/// layout-v4 files written before it simply have no field.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SavedWindow {
     pub kind: String,
@@ -56,6 +58,8 @@ pub struct SavedWindow {
     pub z: usize,
     pub minimised: bool,
     pub maximised: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<serde_json::Value>,
 }
 
 /// What the sidebar's Windows list shows about one window.
@@ -207,7 +211,7 @@ impl Canvas {
                 ordered.sort_by_key(|each| each.z);
                 for each in ordered {
                     if let Some(kind) = PaneKind::from_name(&each.kind) {
-                        let id = self.push(kind, each.rect, window, cx);
+                        let id = self.push(kind, each.rect, each.state.as_ref(), window, cx);
                         if let Some(win) = self.window_mut(id) {
                             win.minimised = each.minimised;
                             win.maximised = each.maximised;
@@ -237,7 +241,7 @@ impl Canvas {
 
     /// Every window in saved form, back to front.
     #[must_use]
-    pub fn dump(&self) -> Vec<SavedWindow> {
+    pub fn dump(&self, cx: &App) -> Vec<SavedWindow> {
         self.windows
             .iter()
             .enumerate()
@@ -247,6 +251,10 @@ impl Canvas {
                 z,
                 minimised: win.minimised,
                 maximised: win.maximised,
+                state: match win.view.dump(cx).info {
+                    PanelInfo::Panel(value) if !value.is_null() => Some(value),
+                    _ => None,
+                },
             })
             .collect()
     }
@@ -272,12 +280,13 @@ impl Canvas {
         &mut self,
         kind: PaneKind,
         rect: Rect,
+        state: Option<&serde_json::Value>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        let view = kind.build(self.desk.clone(), window, cx);
+        let view = kind.build_with_state(self.desk.clone(), state, window, cx);
         self.windows.push(CanvasWindow {
             id,
             kind,
@@ -310,7 +319,7 @@ impl Canvas {
             });
         let x = base.0.clamp(canvas.x, (canvas.right() - w).max(canvas.x));
         let y = base.1.clamp(canvas.y, (canvas.bottom() - h).max(canvas.y));
-        let id = self.push(kind, Rect::new(x, y, w, h), window, cx);
+        let id = self.push(kind, Rect::new(x, y, w, h), None, window, cx);
         self.focus_window(id, window, cx);
         self.rebase();
         self.changed(cx);
@@ -334,7 +343,7 @@ impl Canvas {
         let x = from.right() + GUTTER;
         if x + w <= canvas.right() {
             let rect = Rect::new(x, from.y, w, h);
-            let new = self.push(kind, rect, window, cx);
+            let new = self.push(kind, rect, None, window, cx);
             self.focus_window(new, window, cx);
             self.rebase();
             self.changed(cx);
@@ -388,7 +397,7 @@ impl Canvas {
         let canvas = self.canvas_rect();
         for &(kind, fraction) in fractions {
             let rect = geometry::place_fraction(fraction, canvas);
-            self.push(kind, rect, window, cx);
+            self.push(kind, rect, None, window, cx);
         }
         self.focused = self.windows.last().map(|win| win.id);
         cx.notify();
@@ -453,7 +462,7 @@ impl Canvas {
             _ => closed.rect,
         };
         let rect = geometry::clamp_to_canvas(live, self.canvas_rect(), TITLE_HEIGHT);
-        let id = self.push(closed.kind, rect, window, cx);
+        let id = self.push(closed.kind, rect, None, window, cx);
         self.focus_window(id, window, cx);
         self.rebase();
         self.changed(cx);

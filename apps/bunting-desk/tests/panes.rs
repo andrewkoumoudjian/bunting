@@ -414,6 +414,7 @@ fn the_ticket_footer_stays_inside_its_window_at_minimum_size(cx: &mut TestAppCon
         z: 0,
         minimised: false,
         maximised: false,
+        state: None,
     }];
     let (fixture, canvas) = open_canvas(cx, bunting_desk::Preset::Trading, Some(&saved));
     connect_with_books(
@@ -466,6 +467,7 @@ fn the_ladder_volume_input_fits_five_digits(cx: &mut TestAppContext) {
         z: 0,
         minimised: false,
         maximised: false,
+        state: None,
     }];
     let (fixture, _canvas) = open_canvas(cx, bunting_desk::Preset::Trading, Some(&saved));
     connect_with_books(
