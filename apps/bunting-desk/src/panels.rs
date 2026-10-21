@@ -62,7 +62,11 @@ pub const LEVEL_COLUMNS: [Col; 3] = [
 /// (priority 2) columns, the gap between the sides, padding and
 /// border. Cards narrower than this cannot show qty and price on
 /// both sides, so the panel stacks venues instead of clipping.
-#[allow(clippy::float_arithmetic, reason = "logical pixel widths")]
+#[allow(
+    clippy::float_arithmetic,
+    clippy::cast_precision_loss,
+    reason = "logical pixel widths; at most six venues"
+)]
 fn essential_card_width(depth: Depth, side_gap: f32) -> f32 {
     let cols: &[Col] = match depth {
         Depth::Orders => &ORDER_COLUMNS,
@@ -228,7 +232,11 @@ impl BooksPanel {
     /// columns; stacked (and thus wider, so more columns fit back
     /// in) once they cannot. Unmeasured keeps the row for the first
     /// frame.
-    #[allow(clippy::float_arithmetic, reason = "logical pixel widths")]
+    #[allow(
+        clippy::float_arithmetic,
+        clippy::cast_precision_loss,
+        reason = "logical pixel widths; at most six venues"
+    )]
     fn venues_stack(&self, venues: usize, cx: &App) -> bool {
         let pane_w = self.pane_width.get();
         let essential = essential_card_width(self.depth, f32::from(ui::rem_size(cx)) * 0.75);
@@ -667,7 +675,7 @@ impl BooksPanel {
         let mut column = v_flex()
             .id(SharedString::from(format!("venue-{venue_id}")))
             .test_support()
-            .when(stacked, |column| column.w_full())
+            .when(stacked, gpui_kit::Styled::w_full)
             .when(!stacked, |column| {
                 column.flex_1().min_w(px(card_width)).max_w(px(640.))
             })
