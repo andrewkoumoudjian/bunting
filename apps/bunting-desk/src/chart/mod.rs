@@ -8,50 +8,53 @@
 //! derived from fills; both say so on the window (the parity spec's
 //! BNP history and valuation gaps).
 //!
-//! Every mark is a gpui-kit chart component (`CandlestickChart`,
-//! `LineChart`, `AreaChart`, `BarChart` in gpui-component 0.7.1);
-//! nothing here paints its own candles, lines or axes. Where 0.7.1
-//! has no composed answer — indicator overlays on candles, a price
-//! axis on the candlestick chart, time-proportional x scales, pan
-//! and zoom — components are composed instead and the seam is noted
-//! where it happens.
+//! The price plot is [`price_chart::PriceChart`], composed from
+//! Longbridge's plot primitives (the finished 0.7.1 chart
+//! components have no price axis, zoom or pan); the P&L area uses
+//! the `AreaChart` component.
 #![allow(
     clippy::float_arithmetic,
+    clippy::cast_precision_loss,
     reason = "chart coordinates and indicator math are f64 by the components' own API"
 )]
+
+pub mod price_chart;
+pub mod range;
 
 use crate::desk::Desk;
 use crate::format;
 use crate::ui;
 use bunting_trading_state::bunting_client::bnp_wire::Listing;
-use bunting_trading_state::{BAR_SIZES_NS, Bar as MarketBar, Instrument, PnlSample};
+use bunting_trading_state::{BAR_SIZES_NS, Bar as MarketBar, FINEST_BAR_NS, Instrument, PnlSample};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
-use gpui_kit::component::chart::{AreaChart, BarChart, CandlestickChart, LineChart};
+use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::plot::AxisLabelPlacement;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, TestSupportExt as _, Window, div, px,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, TestSupportExt as _, Window, div,
+    px,
 };
+use price_chart::{OtherSeries, PriceChart};
+use range::{DEFAULT_BAR, ViewRange, percent_changes, pick_bar_size};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 /// Securities on one chart at most: the fixed categorical palette
 /// has four colours and identity is never carried by a fifth hue
 /// borrowed from the up/down pair.
 const MAX_SERIES: usize = 4;
-/// Bars drawn at most: the latest ones. gpui-component 0.7.1 charts
-/// have no pan or zoom, so older bars are one bar-size step away,
-/// not one scroll away.
+/// P&L samples drawn at most (the price chart has its own
+/// [`range::MAX_VISIBLE`] for bars).
 const MAX_VISIBLE_BARS: usize = 600;
-/// Height of the volume sub-pane.
-const VOLUME_HEIGHT: f32 = 56.;
-/// Height of the RSI sub-pane.
-const RSI_HEIGHT: f32 = 72.;
+/// Empty band slots after the last bar while following.
+const FOLLOW_MARGIN: usize = 3;
 /// Height of the P&L sparkline [`pnl_sparkline`] makes for other
 /// windows to place.
 const SPARKLINE_HEIGHT: f32 = 36.;
@@ -94,6 +97,10 @@ struct SeriesChoice {
 /// [`ChartPanel::restore`]. Listing IDs are decimal strings because
 /// JSON numbers do not hold a `u128`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a flat saved record of independent on/off choices"
+)]
 pub struct SavedChart {
     #[serde(default)]
     mode: Option<String>,
@@ -101,6 +108,10 @@ pub struct SavedChart {
     candles: Option<bool>,
     #[serde(default)]
     bar_ns: Option<u64>,
+    /// The user picked the bar size; otherwise it is auto-picked
+    /// from trade density and `bar_ns` is just where it landed.
+    #[serde(default)]
+    bar_picked: bool,
     /// `[venue_id, instrument_id]` per chosen series, in chip order.
     #[serde(default)]
     listings: Vec<[String; 2]>,
@@ -147,11 +158,6 @@ fn num(value: i64) -> f64 {
 )]
 fn num_wide(value: i128) -> f64 {
     value as f64
-}
-
-/// The latest `MAX_VISIBLE_BARS` of `bars`.
-fn visible(bars: &[MarketBar]) -> &[MarketBar] {
-    &bars[bars.len().saturating_sub(MAX_VISIBLE_BARS)..]
 }
 
 /// Simple moving average of the last `period` closes ending at each
@@ -232,58 +238,41 @@ fn rsi(closes: &[f64], period: usize) -> Vec<f64> {
     values
 }
 
-/// One bar as the chart components read it.
-#[derive(Clone)]
-struct PriceRow {
-    label: SharedString,
-    bar: MarketBar,
-}
-
-impl PriceRow {
-    fn of(bar: MarketBar) -> Self {
-        Self {
-            label: SharedString::from(run_clock(bar.start_ns)),
-            bar,
-        }
-    }
-}
-
-/// One point of an overlay line, sharing the price rows' labels.
+/// One point of the P&L area, labelled by run time.
 #[derive(Clone)]
 struct LineRow {
     label: SharedString,
     value: f64,
 }
 
-/// `values` lined up on `rows`: one line point per price row.
-fn line_rows(rows: &[PriceRow], values: &[f64]) -> Vec<LineRow> {
-    rows.iter()
-        .zip(values)
-        .map(|(row, value)| LineRow {
-            label: row.label.clone(),
-            value: *value,
-        })
-        .collect()
-}
-
 /// Another series' closes lined up on the primary series' bar
 /// starts: a bar the other venue did not trade in carries its last
 /// close forward (the first close backwards to the start), because
-/// a 0.7.1 point scale has no gaps and no time axis.
-fn aligned_closes(primary: &[PriceRow], other: &[MarketBar]) -> Option<Vec<f64>> {
+/// the band scale has one slot per primary bar and no gaps.
+fn aligned_closes(primary: &[MarketBar], other: &[MarketBar]) -> Option<Vec<f64>> {
     let mut held: Option<f64> = None;
     let mut next = other.iter().peekable();
     let mut closes = Vec::with_capacity(primary.len());
-    for row in primary {
+    for bar in primary {
         while next
             .peek()
-            .is_some_and(|bar| bar.start_ns <= row.bar.start_ns)
+            .is_some_and(|other| other.start_ns <= bar.start_ns)
         {
-            held = next.next().map(|bar| num(bar.close));
+            held = next.next().map(|other| num(other.close));
         }
-        closes.push(held.or_else(|| other.first().map(|bar| num(bar.close)))?);
+        closes.push(held.or_else(|| other.first().map(|other| num(other.close)))?);
     }
     Some(closes)
+}
+
+/// A drag-pan in progress: where it started, and the range and
+/// geometry it started from.
+#[derive(Clone, Copy)]
+struct Drag {
+    start_x: f32,
+    range: ViewRange,
+    slot_px: f32,
+    total: usize,
 }
 
 pub struct ChartPanel {
@@ -301,6 +290,20 @@ pub struct ChartPanel {
     seeded: bool,
     /// Why the last ticker did not add, shown beside the field.
     problem: Option<String>,
+    /// Bars on screen: zoom, pan and follow state.
+    view: ViewRange,
+    /// The user picked the bar size (stops auto-picking).
+    bar_picked: bool,
+    /// The listing the automatic bar size was picked for.
+    picked_for: Option<Listing>,
+    /// Primary bars at the current size, refreshed each render
+    /// for the zoom/pan handlers.
+    last_total: usize,
+    drag: Option<Drag>,
+    /// Plot area bounds and measured right gutter, shared with
+    /// the plot element each frame.
+    plot_bounds: Rc<Cell<Bounds<Pixels>>>,
+    plot_gutter: Rc<Cell<f32>>,
     _observe: Subscription,
     _ticker_enter: Subscription,
 }
@@ -324,11 +327,18 @@ impl ChartPanel {
             ticker,
             mode: ChartMode::Security,
             kind: PriceKind::Candles,
-            bar: 0,
+            bar: DEFAULT_BAR,
             series: Vec::new(),
             indicators: Indicators::default(),
             seeded: false,
             problem: None,
+            view: ViewRange::default(),
+            bar_picked: false,
+            picked_for: None,
+            last_total: 0,
+            drag: None,
+            plot_bounds: Rc::new(Cell::new(Bounds::default())),
+            plot_gutter: Rc::new(Cell::new(56.)),
             _ticker_enter: enter,
         }
     }
@@ -346,6 +356,7 @@ impl ChartPanel {
             ),
             candles: Some(self.kind == PriceKind::Candles),
             bar_ns: Some(self.bar_ns()),
+            bar_picked: self.bar_picked,
             listings: self
                 .series
                 .iter()
@@ -381,6 +392,8 @@ impl ChartPanel {
         {
             self.bar = bar;
         }
+        self.bar_picked = saved.bar_picked;
+        self.view = ViewRange::default();
         self.series.clear();
         for [venue, instrument] in &saved.listings {
             if let (Ok(venue_id), Ok(instrument_id)) =
@@ -425,6 +438,27 @@ impl ChartPanel {
     #[must_use]
     pub const fn indicators(&self) -> (bool, bool, bool) {
         (self.indicators.ma, self.indicators.ema, self.indicators.rsi)
+    }
+
+    /// The visible-bar range (zoom, pan, follow).
+    #[must_use]
+    pub const fn view_range(&self) -> ViewRange {
+        self.view
+    }
+
+    /// Whether two or more series with data put the price pane in
+    /// comparison (percent-change) mode.
+    #[must_use]
+    pub fn comparison(&self, cx: &App) -> bool {
+        self.series.len() > 1
+            && self.series.iter().skip(1).any(|choice| {
+                !self
+                    .desk
+                    .read(cx)
+                    .model()
+                    .bars(choice.listing, self.bar_ns())
+                    .is_empty()
+            })
     }
 
     // ---- changing the series -------------------------------------------
@@ -506,6 +540,83 @@ impl ChartPanel {
         }
     }
 
+    /// Per-render upkeep: seed the desk's instrument, auto-pick
+    /// the bar size for a new primary series (until the user picks
+    /// their own), and count its bars for the zoom/pan handlers.
+    fn prepare(&mut self, cx: &mut Context<Self>) {
+        self.seed(cx);
+        let Some(primary) = self.series.first().map(|choice| choice.listing) else {
+            self.last_total = 0;
+            return;
+        };
+        let desk = self.desk.read(cx);
+        let model = desk.model();
+        if !self.bar_picked && self.picked_for != Some(primary) {
+            let fine = model.bars(primary, FINEST_BAR_NS);
+            if let (Some(first), Some(last)) = (fine.first(), fine.last()) {
+                self.bar = pick_bar_size(fine.len(), last.start_ns.saturating_sub(first.start_ns));
+                self.picked_for = Some(primary);
+            }
+        }
+        self.last_total = model.bars(primary, self.bar_ns()).len();
+    }
+
+    /// Plot width inside the axis gutter, from the last frame.
+    fn plot_width(&self) -> f32 {
+        (self.plot_bounds.get().size.width.as_f32() - self.plot_gutter.get()).max(1.)
+    }
+
+    fn zoom_at(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let bounds = self.plot_bounds.get();
+        let fraction =
+            ((event.position.x - bounds.origin.x).as_f32() / self.plot_width()).clamp(0., 1.);
+        let steps = match event.delta {
+            ScrollDelta::Lines(point) => f64::from(point.y),
+            ScrollDelta::Pixels(point) => f64::from(point.y.as_f32()) / 50.,
+        };
+        self.view
+            .zoom(self.last_total, f64::from(fraction), 1.1_f64.powf(steps));
+        cx.notify();
+    }
+
+    fn drag_start(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        if event.click_count >= 2 {
+            self.view.follow_latest();
+            cx.notify();
+            return;
+        }
+        let (start, end) = self.view.resolve(self.last_total);
+        let slots = (end - start)
+            + if self.view.is_following(self.last_total) {
+                FOLLOW_MARGIN
+            } else {
+                0
+            };
+        self.drag = Some(Drag {
+            start_x: event.position.x.as_f32(),
+            range: self.view,
+            slot_px: self.plot_width() / slots.max(1) as f32,
+            total: self.last_total,
+        });
+    }
+
+    fn drag_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(drag) = self.drag else {
+            return;
+        };
+        if drag.slot_px <= 0. {
+            return;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a pan distance in bars, clamped by ViewRange::pan"
+        )]
+        let bars = ((event.position.x.as_f32() - drag.start_x) / drag.slot_px).round() as isize;
+        self.view = drag.range;
+        self.view.pan(drag.total, -bars);
+        cx.notify();
+    }
+
     // ---- rendering ------------------------------------------------------
 
     /// Row one: the mode, then (Security) candles-or-line and the
@@ -571,6 +682,7 @@ impl ChartPanel {
                     bars.on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
                         if let Some(&index) = clicks.first() {
                             this.bar = index.min(BAR_SIZES_NS.len() - 1);
+                            this.bar_picked = true;
                         }
                         cx.notify();
                     })),
@@ -736,15 +848,35 @@ impl ChartPanel {
                     ),
             );
         }
+        let closes: Vec<f64> = self
+            .series
+            .first()
+            .map(|primary| {
+                model
+                    .bars(primary.listing, self.bar_ns())
+                    .iter()
+                    .map(|bar| num(bar.close))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let value = |values: Vec<f64>| {
+            values
+                .last()
+                .map(|last| format!(" {last:.1}"))
+                .unwrap_or_default()
+        };
+        let ma_label = format!("MA(20){}", value(sma(&closes, MA_PERIOD)));
+        let ema_label = format!("EMA(20){}", value(ema(&closes, MA_PERIOD)));
+        let rsi_label = format!("RSI(14){}", value(rsi(&closes, RSI_PERIOD)));
         for (label, on, slot, color) in [
-            ("MA(20)", self.indicators.ma, 0_usize, cx.theme().foreground),
+            (ma_label, self.indicators.ma, 0_usize, cx.theme().foreground),
             (
-                "EMA(20)",
+                ema_label,
                 self.indicators.ema,
                 1,
                 cx.theme().muted_foreground,
             ),
-            ("RSI(14)", self.indicators.rsi, 2, cx.theme().chart_3),
+            (rsi_label, self.indicators.rsi, 2, cx.theme().chart_3),
         ] {
             if !on {
                 continue;
@@ -789,43 +921,13 @@ impl ChartPanel {
         row
     }
 
-    /// A line chart sharing the price plot: same labels, pinned to
-    /// the price extent, no axes or grid of its own, and no hover —
-    /// the chart underneath keeps the crosshair. Neither chart
-    /// draws x labels in this pane (they sit under the lowest
-    /// sub-pane), so both y scales span the same pixels: the
-    /// candlestick scale's `[height, 10]` is the line scale's with
-    /// `y_padding(10, 0)`.
-    fn overlay(
-        id: SharedString,
-        data: Vec<LineRow>,
-        color: Hsla,
-        name: impl Into<SharedString>,
-        extent: (f64, f64),
-    ) -> Div {
-        div().absolute().inset_0().child(
-            LineChart::new(data)
-                .id(id)
-                .x(|row| row.label.clone())
-                .y(|row| row.value)
-                .stroke(color)
-                .linear()
-                .name(name)
-                .y_domain(extent.0, extent.1)
-                .y_padding(10., 0.)
-                .x_axis(false)
-                .y_axis(false)
-                .grid(false)
-                .interactive(false)
-                .appear(false),
-        )
-    }
-
-    /// The Security mode's chart stack: price, volume under it,
-    /// RSI under that. The x labels sit under the lowest pane.
+    /// The Security mode's plot: [`PriceChart`] over the visible
+    /// range, inside the wrapper that owns wheel zoom, drag pan
+    /// and double-click follow. With two or more series that have
+    /// data the pane switches to comparison (percent change).
     #[expect(
         clippy::too_many_lines,
-        reason = "the price, volume and RSI panes line up on one set of rows"
+        reason = "data preparation and the plot wrapper's handlers read best whole"
     )]
     fn security_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let desk = self.desk.read(cx);
@@ -854,206 +956,128 @@ impl ChartPanel {
             )
             .into_any_element();
         }
-        let rows: Vec<PriceRow> = visible(&all).iter().copied().map(PriceRow::of).collect();
-        let closes: Vec<f64> = rows.iter().map(|row| num(row.bar.close)).collect();
-        // The extent every overlaid line is pinned to: the primary
-        // bars' own range (the candlestick chart's scale), widened
-        // by any other series' closes in Line kind, where the lines
-        // are the chart and nothing may clip.
-        let (mut lo, mut hi) = rows.iter().fold((f64::MAX, f64::MIN), |(lo, hi), row| {
-            (lo.min(num(row.bar.low)), hi.max(num(row.bar.high)))
-        });
+        let venue_suffix = |choice: &SeriesChoice| -> String {
+            let name = model
+                .symbol(choice.listing)
+                .map_or_else(|| choice.listing.instrument_id.to_string(), str::to_owned);
+            let multi = self
+                .series
+                .iter()
+                .filter(|each| each.listing.instrument_id == choice.listing.instrument_id)
+                .count()
+                > 1;
+            if multi {
+                format!("{name} · V{}", choice.listing.venue_id)
+            } else {
+                name
+            }
+        };
+        let closes: Vec<f64> = all.iter().map(|bar| num(bar.close)).collect();
+        let (start, end) = self.view.resolve(all.len());
+        let slice = |values: &[f64]| values[start..end].to_vec();
         let mut others: Vec<(SeriesChoice, Vec<f64>)> = Vec::new();
         for choice in self.series.iter().skip(1) {
             let bars = model.bars(choice.listing, self.bar_ns());
-            if let Some(aligned) = aligned_closes(&rows, visible(&bars)) {
-                if self.kind == PriceKind::Line {
-                    for value in &aligned {
-                        lo = lo.min(*value);
-                        hi = hi.max(*value);
-                    }
-                }
+            if let Some(aligned) = aligned_closes(&all, &bars) {
                 others.push((*choice, aligned));
             }
         }
-        if hi <= lo {
-            hi = lo + 1.;
-        }
-        let margin = (rows.len() / 8).max(1);
-        let theme = cx.theme();
-        let uid = format!(
-            "chart-{}-{}",
-            primary.listing.venue_id, primary.listing.instrument_id
+        let comparison = !others.is_empty();
+        let mut chart = PriceChart::new(
+            SharedString::from(format!(
+                "price-{}-{}",
+                primary.listing.venue_id, primary.listing.instrument_id
+            )),
+            all[start..end].to_vec(),
+            self.plot_gutter.clone(),
+        )
+        .candles(self.kind == PriceKind::Candles)
+        .comparison(comparison)
+        .name(venue_suffix(&primary))
+        .primary_color(series_color(primary.color, cx))
+        .margin_slots(if self.view.is_following(all.len()) {
+            FOLLOW_MARGIN
+        } else {
+            0
+        })
+        .rsi(
+            self.indicators
+                .rsi
+                .then(|| slice(&rsi(&closes, RSI_PERIOD))),
         );
-        // Price pane.
-        let mut price = div()
+        if comparison {
+            let mut lines = vec![OtherSeries {
+                name: SharedString::from(venue_suffix(&primary)),
+                values: percent_changes(&slice(&closes), closes[start]),
+                color: series_color(primary.color, cx),
+            }];
+            for (choice, aligned) in &others {
+                lines.push(OtherSeries {
+                    name: SharedString::from(venue_suffix(choice)),
+                    values: percent_changes(&slice(aligned), aligned[start]),
+                    color: series_color(choice.color, cx),
+                });
+            }
+            chart = chart.others(lines);
+        } else {
+            if self.indicators.ma {
+                chart = chart.ma(Some(slice(&sma(&closes, MA_PERIOD))));
+            }
+            if self.indicators.ema {
+                chart = chart.ema(Some(slice(&ema(&closes, MA_PERIOD))));
+            }
+        }
+        let bounds_cell = self.plot_bounds.clone();
+        let following = self.view.is_following(all.len());
+        let mut area = div()
             .id("chart-price")
             .test_support()
             .relative()
             .flex_1()
             .min_h_0()
-            .w_full();
-        match self.kind {
-            PriceKind::Candles => {
-                let tip_name = SharedString::from(symbol.clone());
-                price = price.child(
-                    div().absolute().inset_0().child(
-                        CandlestickChart::new(rows.clone())
-                            .id(SharedString::from(format!("{uid}-candles")))
-                            .x(|row| row.label.clone())
-                            .open(|row| num(row.bar.open))
-                            .high(|row| num(row.bar.high))
-                            .low(|row| num(row.bar.low))
-                            .close(|row| num(row.bar.close))
-                            .tick_margin(margin)
-                            .x_axis(false)
-                            .appear(false)
-                            .tooltip_content(move |row: &PriceRow, _, cx| {
-                                candle_tip(&tip_name, row, cx)
-                            }),
-                    ),
-                );
-            }
-            PriceKind::Line => {
-                price = price.child(
-                    div().absolute().inset_0().child(
-                        LineChart::new(line_rows(&rows, &closes))
-                            .id(SharedString::from(format!("{uid}-line")))
-                            .x(|row| row.label.clone())
-                            .y(|row| row.value)
-                            .stroke(series_color(primary.color, cx))
-                            .linear()
-                            .name(SharedString::from(symbol.clone()))
-                            .y_domain(lo, hi)
-                            .y_axis(true)
-                            .y_axis_label_placement(AxisLabelPlacement::Inside)
-                            .y_tick_count(4)
-                            .y_tick_format(|value| format!("{value:.0}"))
-                            .x_axis(false)
-                            .x_tick_count(6)
-                            .tooltip_title(|row: &LineRow| {
-                                SharedString::from(format!("{} run time", row.label))
-                            })
-                            .tooltip_value(|_, value| SharedString::from(tick_text(value)))
-                            .appear(false),
-                    ),
-                );
-            }
-        }
-        // Other venues and securities over the primary, each its own
-        // labelled line in its own colour — never merged.
-        for (choice, aligned) in &others {
-            let name = model.symbol(choice.listing).map_or_else(
-                || format!("V{}", choice.listing.venue_id),
-                |symbol| format!("{symbol} V{}", choice.listing.venue_id),
-            );
-            price = price.child(Self::overlay(
-                SharedString::from(format!(
-                    "chart-{}-{}-line",
-                    choice.listing.venue_id, choice.listing.instrument_id
-                )),
-                line_rows(&rows, aligned),
-                series_color(choice.color, cx),
-                name,
-                (lo, hi),
-            ));
-        }
-        // MA and EMA over the primary series' closes.
-        if self.indicators.ma {
-            price = price.child(Self::overlay(
-                SharedString::from(format!("{uid}-ma")),
-                line_rows(&rows, &sma(&closes, MA_PERIOD)),
-                theme.foreground,
-                "MA(20)",
-                (lo, hi),
-            ));
-        }
-        if self.indicators.ema {
-            price = price.child(Self::overlay(
-                SharedString::from(format!("{uid}-ema")),
-                line_rows(&rows, &ema(&closes, MA_PERIOD)),
-                theme.muted_foreground,
-                "EMA(20)",
-                (lo, hi),
-            ));
-        }
-        // Volume pane: the primary series' bars, coloured by the
-        // bar's direction (the RIT/Bloomberg convention), bands
-        // lining up with the candles above.
-        let (bullish, bearish) = (theme.chart_bullish, theme.chart_bearish);
-        let volume = div()
-            .id("chart-volume")
-            .test_support()
             .w_full()
-            .h(px(VOLUME_HEIGHT))
-            .flex_shrink_0()
+            .on_scroll_wheel(cx.listener(|this, event, _, cx| this.zoom_at(event, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event, _, cx| this.drag_start(event, cx)),
+            )
+            .on_mouse_move(cx.listener(|this, event, _, cx| this.drag_move(event, cx)))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.drag = None),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.drag = None),
+            )
             .child(
-                BarChart::new(rows.clone())
-                    .id(SharedString::from(format!("{uid}-volume")))
-                    .band(|row| row.label.clone())
-                    .value(|row| num_wide(row.bar.volume))
-                    .fill(move |row: &PriceRow, _, _, _| {
-                        if row.bar.close >= row.bar.open {
-                            bullish.opacity(0.55)
-                        } else {
-                            bearish.opacity(0.55)
-                        }
-                    })
-                    .tick_margin(margin)
-                    .label_axis(!self.indicators.rsi)
-                    .value_axis(true)
-                    .value_axis_label_placement(AxisLabelPlacement::Inside)
-                    .value_tick_count(2)
-                    .value_tick_format(|value| format!("{value:.0}"))
-                    .grid(false)
-                    .name("Volume")
-                    .tooltip_title(|row: &PriceRow| {
-                        SharedString::from(format!("{} run time", row.label))
-                    })
-                    .tooltip_value(|row: &PriceRow, _| {
-                        SharedString::from(format!("{} lots", row.bar.volume))
-                    })
-                    .appear(false),
-            );
-        let mut stack = v_flex()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .child(price)
-            .child(volume);
-        if self.indicators.rsi {
-            stack = stack.child(ui::section_label("RSI(14)", cx)).child(
+                gpui_kit::canvas(
+                    move |bounds, _, _| bounds_cell.set(bounds),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(chart);
+        if !following {
+            area = area.child(
                 div()
-                    .id("chart-rsi")
-                    .test_support()
-                    .w_full()
-                    .h(px(RSI_HEIGHT))
-                    .flex_shrink_0()
+                    .absolute()
+                    .bottom(px(24.))
+                    .right(px(self.plot_gutter.get() + 8.))
                     .child(
-                        LineChart::new(line_rows(&rows, &rsi(&closes, RSI_PERIOD)))
-                            .id(SharedString::from(format!("{uid}-rsi")))
-                            .x(|row| row.label.clone())
-                            .y(|row| row.value)
-                            .stroke(series_color(primary.color, cx))
-                            .linear()
-                            .name("RSI(14)")
-                            .y_domain(0., 100.)
-                            .y_axis(true)
-                            .y_axis_label_placement(AxisLabelPlacement::Inside)
-                            .y_tick_count(3)
-                            .y_tick_format(|value| format!("{value:.0}"))
-                            .reference_line(30.)
-                            .reference_line(70.)
-                            .x_tick_count(6)
-                            .tooltip_title(|row: &LineRow| {
-                                SharedString::from(format!("{} run time", row.label))
-                            })
-                            .tooltip_value(|_, value| SharedString::from(format!("{value:.1}")))
-                            .appear(false),
+                        Button::new("chart-follow")
+                            .ghost()
+                            .xsmall()
+                            .label("Follow latest")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.view.follow_latest();
+                                cx.notify();
+                            })),
                     ),
             );
         }
-        stack.into_any_element()
+        area.into_any_element()
     }
 
     /// The P&L mode: current realized, unrealized and total over
@@ -1148,7 +1172,7 @@ impl ChartPanel {
 
 impl Render for ChartPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.seed(cx);
+        self.prepare(cx);
         let mut body = ui::pane_body("chart", &self.focus).child(self.mode_row(cx));
         body = match self.mode {
             ChartMode::Security => {
@@ -1207,57 +1231,6 @@ impl Focusable for ChartPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
-}
-
-/// A tick value an axis or tooltip reads: whole ticks plain, an
-/// average's fraction to one decimal.
-fn tick_text(value: f64) -> String {
-    if value.fract() == 0. {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
-    }
-}
-
-/// The candlestick hover card: run time, OHLC and volume, text in
-/// text tokens. The highlight band over the hovered candle is the
-/// chart component's own.
-fn candle_tip(symbol: &str, row: &PriceRow, cx: &App) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
-    let foreground = cx.theme().foreground;
-    let line = |label: &'static str, value: String| {
-        h_flex()
-            .gap_2()
-            .child(
-                div()
-                    .text_size(ui::rem(ui::LABEL_SIZE))
-                    .text_color(muted)
-                    .child(label),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(ui::rem(ui::LABEL_SIZE))
-                    .text_color(foreground)
-                    .child(value),
-            )
-    };
-    v_flex()
-        .gap_1()
-        .min_w(px(132.))
-        .font_features(crate::theme::tabular())
-        .child(
-            div()
-                .text_size(ui::rem(ui::LABEL_SIZE))
-                .text_color(foreground)
-                .child(format!("{symbol} · {} run time", row.label)),
-        )
-        .child(line("Open", format::price(Some(row.bar.open))))
-        .child(line("High", format::price(Some(row.bar.high))))
-        .child(line("Low", format::price(Some(row.bar.low))))
-        .child(line("Close", format::price(Some(row.bar.close))))
-        .child(line("Volume", format!("{}", row.bar.volume)))
-        .into_any_element()
 }
 
 /// A compact total-P&L sparkline for another window to place (the
@@ -1368,9 +1341,9 @@ mod tests {
 
     #[test]
     fn other_series_closes_line_up_on_the_primary_bars() {
-        let primary: Vec<PriceRow> = [0, 1, 2, 3]
+        let primary: Vec<MarketBar> = [0, 1, 2, 3]
             .into_iter()
-            .map(|second| PriceRow::of(bar(second * 1_000_000_000, 100)))
+            .map(|second| bar(second * 1_000_000_000, 100))
             .collect();
         // Traded in seconds 1 and 3 only: second 0 backfills the
         // first close, second 2 carries second 1's forward.
