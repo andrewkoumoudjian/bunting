@@ -47,7 +47,7 @@ const OTC_COLUMNS: [Col; 8] = [
 ];
 
 /// Finished tenders and negotiations listed under the open ones.
-const FINISHED_SHOWN: usize = 20;
+pub(crate) const FINISHED_SHOWN: usize = 20;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 pub struct DealsPanel {
@@ -71,7 +71,7 @@ fn number(state: &Entity<InputState>, cx: &App) -> i64 {
     state.read(cx).value().trim().parse().unwrap_or(0)
 }
 
-const fn tender_status(status: TenderStatus) -> &'static str {
+pub(crate) const fn tender_status(status: TenderStatus) -> &'static str {
     match status {
         TenderStatus::Open => "open",
         TenderStatus::Accepted => "accepted",

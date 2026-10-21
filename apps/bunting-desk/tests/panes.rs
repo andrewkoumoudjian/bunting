@@ -146,7 +146,11 @@ fn visible(fixture: &Fixture, cx: &mut TestAppContext, id: &str) -> bool {
 
 /// Connects, lists BNT on two venues and gives each a level book. The
 /// near venue's asks are the caller's, so a test can empty that side.
-fn connect_with_books(fixture: &Fixture, cx: &mut TestAppContext, near_asks: &[Level]) {
+fn connect_with_books(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    near_asks: &[Level],
+) -> Vec<(u32, Listing)> {
     apply(
         fixture,
         cx,
@@ -202,6 +206,7 @@ fn connect_with_books(fixture: &Fixture, cx: &mut TestAppContext, near_asks: &[L
         }
     }
     assert_eq!(subscriptions.len(), 2, "one direct feed per venue");
+    let feeds = subscriptions.clone();
     for (request_id, listing) in subscriptions {
         let asks = if listing == NEAR {
             near_asks.to_vec()
@@ -227,6 +232,7 @@ fn connect_with_books(fixture: &Fixture, cx: &mut TestAppContext, near_asks: &[L
         );
     }
     fixture.sent.take();
+    feeds
 }
 
 #[gpui_kit::test]
@@ -257,12 +263,12 @@ fn the_submit_label_names_side_quantity_price_and_venue(cx: &mut TestAppContext)
     click(&fixture, cx, "bid-1-0");
     assert_eq!(
         label(&fixture, cx, "ticket-send").as_deref(),
-        Some("Buy 1 BNT @ 99 on Venue 1")
+        Some("Submit BUY · 1 BNT @ 99 · Venue 1")
     );
     click(&fixture, cx, "ticket-sell");
     assert_eq!(
         label(&fixture, cx, "ticket-send").as_deref(),
-        Some("Sell 1 BNT @ 99 on Venue 1")
+        Some("Submit SELL · 1 BNT @ 99 · Venue 1")
     );
     click(&fixture, cx, "ticket-send");
     let orders = new_orders(&fixture);
@@ -513,4 +519,452 @@ fn book_columns_fit_at_the_book_trader_minimum_width() {
             .iter()
             .all(|fit| fit.width >= fit.col.min_width - 0.01)
     );
+}
+
+// ---- window parity (RIT): Portfolio, Blotter, Transaction Log ---------------------
+
+use bunting_trading_state::bunting_client::bnp_wire::{
+    CancelReason, Entry, EntryKind, Liquidity, Side, Stamp,
+};
+
+fn request_of(feeds: &[(u32, Listing)], listing: Listing) -> u32 {
+    feeds
+        .iter()
+        .find(|(_, each)| *each == listing)
+        .expect("a feed for the listing")
+        .0
+}
+
+/// A trade on `listing`'s direct feed; `first_report` is the next report
+/// number the feed expects.
+fn trade(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    feeds: &[(u32, Listing)],
+    listing: Listing,
+    first_report: u64,
+    price: i64,
+) {
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::MarketUpdate {
+            request_id: request_of(feeds, listing),
+            listing,
+            first_report,
+            entries: vec![Entry {
+                kind: EntryKind::Trade,
+                price,
+                quantity: 1,
+            }],
+        }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    sequence: u64,
+    client_order_id: u64,
+    side: Side,
+    price: i64,
+    quantity: i64,
+    fee: i128,
+) {
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::Fill {
+            stamp: Stamp {
+                sequence,
+                logical_time_ns: sequence * 1_000_000_000,
+            },
+            client_order_id,
+            order_id: u128::from(client_order_id),
+            listing: NEAR,
+            side,
+            price,
+            quantity,
+            fee,
+            liquidity: Liquidity::Taker,
+        }),
+    );
+}
+
+fn account(
+    fixture: &Fixture,
+    cx: &mut TestAppContext,
+    sequence: u64,
+    balance: i128,
+    position: i64,
+) {
+    use bunting_trading_state::bunting_client::bnp_wire::{CashBalance, Position};
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::Account {
+            request_id: 0,
+            run_sequence: sequence,
+            cash: vec![CashBalance {
+                currency_id: 1,
+                balance,
+                reserved: 0,
+            }],
+            positions: vec![Position {
+                instrument_id: 7,
+                position,
+                open_buy: 0,
+                open_sell: 0,
+            }],
+        }),
+    );
+}
+
+/// Buy 10 at 100 (fee 2), sell 4 at 103 (a rebate of 1): long 6 at cost
+/// 100, with the venue's account at sequence 2.
+fn script_trading(fixture: &Fixture, cx: &mut TestAppContext) -> Vec<(u32, Listing)> {
+    let feeds = connect_with_books(
+        fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    fill(fixture, cx, 1, 11, Side::Buy, 100, 10, 2);
+    fill(fixture, cx, 2, 12, Side::Sell, 103, 4, -1);
+    account(fixture, cx, 2, 100_000, 6);
+    feeds
+}
+
+fn rows(fixture: &Fixture, cx: &mut TestAppContext) -> Vec<bunting_desk::portfolio::Row> {
+    fixture
+        .desk
+        .read_with(cx, |desk, _| bunting_desk::portfolio::rows(desk.model()))
+}
+
+#[gpui_kit::test]
+fn the_portfolio_row_derives_from_fills_and_books(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    let feeds = script_trading(&fixture, cx);
+    trade(&fixture, cx, &feeds, NEAR, 1, 100);
+    trade(&fixture, cx, &feeds, NEAR, 2, 101);
+    let rows = rows(&fixture, cx);
+    assert_eq!(rows.len(), 1, "one row per listed security");
+    let row = &rows[0];
+    assert_eq!(row.symbol, "BNT");
+    assert_eq!(row.position, Some(6));
+    assert_eq!(row.cost, Some(100));
+    // 4 lots closed at +3 each, less the net fee of 1: 12 - 2 + 1.
+    assert_eq!(row.realized, 11);
+    // Best bid 99 on both venues: (99 - 100) x 6 lots.
+    assert_eq!(row.unrealized, Some(-6));
+    assert_eq!(row.nlv, Some(6 * 99));
+    assert_eq!(row.bid.map(|(price, _)| price), Some(99));
+    assert_eq!(row.ask, Some((101, 1)), "the best ask names its venue");
+    assert_eq!(row.volume, 2);
+    let texts = row.texts();
+    assert_eq!(texts[3], "6");
+    assert_eq!(texts[2], "1*", "contract size is assumed until sent");
+    assert_eq!(texts[7], "101 · V1");
+    assert!(visible(&fixture, cx, "positions-table"));
+}
+
+#[gpui_kit::test]
+fn last_ticks_up_then_down_until_the_price_changes(cx: &mut TestAppContext) {
+    use std::cmp::Ordering;
+    let fixture = open(cx);
+    let feeds = script_trading(&fixture, cx);
+    trade(&fixture, cx, &feeds, NEAR, 1, 100);
+    assert_eq!(rows(&fixture, cx)[0].tick, None, "one trade has no tick");
+    trade(&fixture, cx, &feeds, NEAR, 2, 101);
+    let row = rows(&fixture, cx).remove(0);
+    assert_eq!(
+        (row.last, row.tick),
+        (Some((101, 1)), Some(Ordering::Greater))
+    );
+    trade(&fixture, cx, &feeds, NEAR, 3, 101);
+    assert_eq!(
+        rows(&fixture, cx)[0].tick,
+        Some(Ordering::Greater),
+        "an unchanged price keeps the last tick"
+    );
+    trade(&fixture, cx, &feeds, NEAR, 4, 99);
+    let row = rows(&fixture, cx).remove(0);
+    assert_eq!((row.last, row.tick), (Some((99, 1)), Some(Ordering::Less)));
+}
+
+#[gpui_kit::test]
+fn the_transaction_log_lists_fills_and_fees_with_a_running_balance(cx: &mut TestAppContext) {
+    use bunting_desk::transactions::{Kind, entries};
+    let fixture = open(cx);
+    script_trading(&fixture, cx);
+    let list = fixture.desk.read_with(cx, |desk, _| entries(desk.model()));
+    let summary: Vec<(Kind, i128, Option<i128>)> = list
+        .iter()
+        .map(|entry| (entry.kind, entry.flow, entry.balance))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (Kind::Buy, -1_000, Some(99_589)),
+            (Kind::Fee, -2, Some(99_587)),
+            (Kind::Sell, 412, Some(99_999)),
+            (Kind::Rebate, 1, Some(100_000)),
+        ]
+    );
+    let text = fixture.desk.read_with(cx, |desk, _| {
+        bunting_desk::transactions::copy_text(desk.model())
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0].split('\t').count(), 7, "a header row of 7 columns");
+    assert_eq!(lines.len(), 5);
+    assert!(
+        lines[1].contains("Buy fill\t100\t10\t-1,000\t99,589"),
+        "{}",
+        lines[1]
+    );
+}
+
+#[gpui_kit::test]
+fn the_blotter_tabs_cancel_and_copy(cx: &mut TestAppContext) {
+    use bunting_desk::blotter::{Tab, copy_text};
+    let fixture = open(cx);
+    connect_with_books(
+        &fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    // A bid for 1 on the near venue, via the ticket.
+    click(&fixture, cx, "bid-1-0");
+    let _ = fixture.sent.take();
+    click(&fixture, cx, "ticket-send");
+    let id = new_orders(&fixture)[0].client_order_id;
+    let stamp = |sequence| Stamp {
+        sequence,
+        logical_time_ns: 0,
+    };
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderAccepted {
+            stamp: stamp(1),
+            client_order_id: id,
+            order_id: 5,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 1,
+            price: Some(99),
+        }),
+    );
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp: stamp(2),
+            client_order_id: id,
+            order_id: 5,
+            price: 99,
+            remaining: 1,
+            reference: None,
+        }),
+    );
+    assert!(
+        visible(&fixture, cx, &format!("cancel-{id}")),
+        "Live tab has Cancel"
+    );
+    click(&fixture, cx, &format!("cancel-{id}"));
+    assert!(fixture.sent.take().contains(&ClientMessage::CancelOrder {
+        client_order_id: id
+    }));
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderCanceled {
+            stamp: stamp(3),
+            client_order_id: id,
+            order_id: 5,
+            remaining: 1,
+            reason: CancelReason::Requested,
+        }),
+    );
+    assert!(visible(&fixture, cx, "orders-empty"), "nothing live now");
+    click(&fixture, cx, "blotter-tab-done");
+    assert!(visible(&fixture, cx, &format!("order-status-{id}")));
+    let text = fixture
+        .desk
+        .read_with(cx, |desk, _| copy_text(desk.model(), Tab::Done));
+    assert_eq!(text.lines().count(), 2, "header and the cancelled order");
+    assert!(text.contains("canceled"));
+    click(&fixture, cx, "blotter-tab-endowments");
+    assert!(visible(&fixture, cx, "blotter-endowments-empty"));
+    click(&fixture, cx, "blotter-tab-tenders");
+    assert!(visible(&fixture, cx, "blotter-tenders-empty"));
+}
+
+#[gpui_kit::test]
+fn copy_to_clipboard_writes_tab_separated_text(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    script_trading(&fixture, cx);
+    let text = fixture.desk.read_with(cx, |desk, _| {
+        bunting_desk::portfolio::copy_text(desk.model())
+    });
+    cx.update(|cx| bunting_desk::ui::copy_to_clipboard(text.clone(), cx));
+    let copied = cx
+        .update(|cx| cx.read_from_clipboard())
+        .and_then(|item| item.text())
+        .expect("text on the clipboard");
+    assert_eq!(copied, text);
+    let mut lines = copied.lines();
+    let header = lines.next().expect("header");
+    assert!(header.starts_with("ticker\ttype\tsize\tposition\tcost\tlast\tbid\task\tNLV"));
+    assert!(lines.next().expect("row").starts_with("BNT\t—\t1*\t6\t100"));
+}
+
+// ---- window parity (RIT): Order Entry, Kill All, Close all ------------------------
+
+/// Rests a one-lot bid through the ticket and returns its client order ID.
+fn rest_a_bid(fixture: &Fixture, cx: &mut TestAppContext) -> u64 {
+    click(fixture, cx, "bid-1-0");
+    let _ = fixture.sent.take();
+    click(fixture, cx, "ticket-send");
+    let id = new_orders(fixture)[0].client_order_id;
+    let stamp = |sequence| Stamp {
+        sequence,
+        logical_time_ns: 0,
+    };
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderAccepted {
+            stamp: stamp(1),
+            client_order_id: id,
+            order_id: 5,
+            listing: NEAR,
+            side: Side::Buy,
+            quantity: 1,
+            price: Some(99),
+        }),
+    );
+    apply(
+        fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::OrderRested {
+            stamp: stamp(2),
+            client_order_id: id,
+            order_id: 5,
+            price: 99,
+            remaining: 1,
+            reference: None,
+        }),
+    );
+    id
+}
+
+fn step(fixture: &Fixture, cx: &mut TestAppContext, field: &str, button: &str) {
+    let (field, button) = (field.to_owned(), button.to_owned());
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within(field).click(button, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_steppers_move_volume_by_ten_lots_and_price_by_one_tick(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(
+        &fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    click(&fixture, cx, "bid-1-0");
+    let send = |cx: &mut TestAppContext| label(&fixture, cx, "ticket-send").unwrap();
+    assert_eq!(send(cx), "Submit BUY · 1 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-quantity", "increment");
+    step(&fixture, cx, "ticket-quantity", "increment");
+    assert_eq!(send(cx), "Submit BUY · 21 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-quantity", "decrement");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 99 · Venue 1");
+    step(&fixture, cx, "ticket-price", "increment");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 100 · Venue 1");
+    step(&fixture, cx, "ticket-price", "decrement");
+    step(&fixture, cx, "ticket-price", "decrement");
+    assert_eq!(send(cx), "Submit BUY · 11 BNT @ 98 · Venue 1");
+}
+
+#[gpui_kit::test]
+fn plus_in_the_frame_opens_another_order_entry(cx: &mut TestAppContext) {
+    let (fixture, canvas) = open_canvas(cx, bunting_desk::Preset::Trading, None);
+    let tickets = |cx: &mut TestAppContext| {
+        canvas
+            .read_with(cx, |canvas, _| canvas.window_list())
+            .into_iter()
+            .filter(|info| info.kind.name() == "ticket")
+            .map(|info| info.id)
+            .collect::<Vec<_>>()
+    };
+    let before = tickets(cx);
+    assert_eq!(before.len(), 1);
+    click(&fixture, cx, &format!("win-add-{}", before[0]));
+    let after = tickets(cx);
+    assert_eq!(after.len(), 2, "a second Order Entry window");
+}
+
+#[gpui_kit::test]
+fn kill_all_orders_cancels_every_live_order(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    connect_with_books(
+        &fixture,
+        cx,
+        &[Level {
+            price: 101,
+            quantity: 5,
+        }],
+    );
+    let id = rest_a_bid(&fixture, cx);
+    let _ = fixture.sent.take();
+    click(&fixture, cx, "kill-all-orders");
+    assert_eq!(
+        fixture.sent.take(),
+        [ClientMessage::CancelOrder {
+            client_order_id: id
+        }]
+    );
+}
+
+#[gpui_kit::test]
+fn close_all_closes_every_window_and_reopen_brings_one_back(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(visible(&fixture, cx, "ticket"));
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(bunting_desk::actions::CloseAllWindows), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    for pane in bunting_desk::PANELS {
+        assert!(!visible(&fixture, cx, pane), "{pane} closed");
+    }
+    cx.update_window(fixture.window.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(bunting_desk::actions::ReopenClosedWindow), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let open: usize = bunting_desk::PANELS
+        .iter()
+        .filter(|pane| visible(&fixture, cx, pane))
+        .count();
+    assert_eq!(open, 1, "the last closed window is back");
 }

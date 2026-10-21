@@ -285,6 +285,7 @@ impl Render for LadderPanel {
                 .map_or(0, |each| each.position)
                 + model.unreported_position(listing.instrument_id)
         });
+        let cost = model.cost(listing.instrument_id);
         let theme = cx.theme();
         let (accent, quote_bg) = (theme.primary, theme.secondary);
         let position_color = match position {
@@ -302,6 +303,15 @@ impl Render for LadderPanel {
                     position.map_or_else(|| "–".to_owned(), |value| value.to_string()),
                     position_color,
                     cx,
+                ))
+                .child(ui::tipped(
+                    "ladder-cost-tip",
+                    "Volume-weighted average price of your current position, derived from your fills",
+                    ui::stat(
+                        "Cost",
+                        cost.map_or_else(|| "–".to_owned(), |price| price.to_string()),
+                        cx,
+                    ),
                 ))
                 .child(ui::stat(
                     "Last",

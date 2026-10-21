@@ -326,6 +326,11 @@ impl Workspace {
             )
             .item(
                 CommandItem::new()
+                    .label("Close all windows")
+                    .action(Box::new(actions::CloseAllWindows)),
+            )
+            .item(
+                CommandItem::new()
                     .label("Reopen closed window")
                     .action(Box::new(actions::ReopenClosedWindow)),
             )
@@ -653,7 +658,7 @@ impl Workspace {
         let theme = cx.theme();
         let desk = self.desk.read(cx);
         let model = desk.model();
-        let status = model.run_status().unwrap_or("not reported").to_owned();
+        let status = model.run_status().unwrap_or("—").to_owned();
         let time = if model.run_time_ns() == 0 {
             "—".to_owned()
         } else {
@@ -840,6 +845,22 @@ impl Workspace {
                     .min_w_0()
                     .items_center()
                     .justify_end()
+                    .gap_3()
+                    .child(
+                        // RIT's Kill All Orders: cancels every live order of
+                        // yours. The participant kill switch is separate.
+                        Button::new("kill-all-orders")
+                            .label("Kill all orders")
+                            .xsmall()
+                            .outline()
+                            .danger()
+                            .tooltip(
+                                "Cancel all your live orders (F12). The kill switch is a separate, confirmed action",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.desk.update(cx, Desk::cancel_all);
+                            })),
+                    )
                     .child(self.connection_pill(cx)),
             )
     }
@@ -948,6 +969,12 @@ impl Workspace {
                 .update(cx, |canvas, cx| canvas.close_focused(window, cx));
         }))
         .on_action(
+            cx.listener(|this, _: &actions::CloseAllWindows, window, cx| {
+                this.canvas
+                    .update(cx, |canvas, cx| canvas.close_all(window, cx));
+            }),
+        )
+        .on_action(
             cx.listener(|this, _: &actions::ReopenClosedWindow, window, cx| {
                 this.canvas.update(cx, |canvas, cx| {
                     canvas.reopen_closed(window, cx);
@@ -1012,6 +1039,11 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &actions::OpenDeals, window, cx| {
             this.add_pane(PaneKind::Deals, window, cx);
         }))
+        .on_action(
+            cx.listener(|this, _: &actions::OpenTransactions, window, cx| {
+                this.add_pane(PaneKind::Transactions, window, cx);
+            }),
+        )
         .on_action(cx.listener(|this, _: &actions::CancelAll, _, cx| {
             this.desk.update(cx, Desk::cancel_all);
         }))

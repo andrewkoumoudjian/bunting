@@ -9,8 +9,10 @@
 //! [`metrics`]. Pane code must not repeat the literals.
 
 use crate::appearance::metrics;
+use crate::desk::Desk;
 use crate::theme;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{ContextMenu, ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Selectable as _, h_flex, v_flex};
 use gpui_kit::{
@@ -170,6 +172,72 @@ pub fn stat_colored(
                 .text_color(color)
                 .child(value.into()),
         )
+}
+
+/// `child` with a tooltip: for a figure whose reason or provenance does
+/// not fit beside it (a gap the venue does not fill yet, a sequence).
+#[must_use]
+pub fn tipped(
+    id: impl Into<gpui_kit::ElementId>,
+    tip: impl Into<SharedString>,
+    child: impl IntoElement,
+) -> gpui_kit::Stateful<Div> {
+    let tip: SharedString = tip.into();
+    div()
+        .id(id)
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(child)
+}
+
+/// Rows of text as tab-separated lines under a header row, the form a
+/// spreadsheet pastes. Tabs and line breaks inside a cell become spaces.
+#[must_use]
+pub fn tsv(header: &[&str], rows: &[Vec<String>]) -> String {
+    let line = |cells: &mut dyn Iterator<Item = &str>| {
+        cells
+            .map(|cell| cell.replace(['\t', '\n', '\r'], " "))
+            .collect::<Vec<_>>()
+            .join("\t")
+    };
+    let mut text = line(&mut header.iter().copied());
+    for row in rows {
+        text.push('\n');
+        text.push_str(&line(&mut row.iter().map(String::as_str)));
+    }
+    text
+}
+
+/// Writes `text` to the system clipboard.
+pub fn copy_to_clipboard(text: String, cx: &mut App) {
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+}
+
+/// `table` with a right-click "Copy to clipboard" that copies what `text`
+/// reads from the desk at the moment of the click, so a table that
+/// scrolls through thousands of rows costs nothing until it is copied.
+#[must_use]
+pub fn copy_menu<E>(
+    table: E,
+    desk: gpui_kit::Entity<Desk>,
+    text: std::rc::Rc<dyn Fn(&Desk) -> String>,
+) -> ContextMenu<E>
+where
+    E: gpui_kit::InteractiveElement
+        + gpui_kit::ParentElement
+        + gpui_kit::Styled
+        + IntoElement
+        + 'static,
+{
+    table.context_menu(move |menu, _, _| {
+        let desk = desk.clone();
+        let text = text.clone();
+        menu.item(
+            PopupMenuItem::new("Copy to clipboard").on_click(move |_, _, cx| {
+                let copied = text(desk.read(cx));
+                copy_to_clipboard(copied, cx);
+            }),
+        )
+    })
 }
 
 /// An 11 px semibold muted section label.
