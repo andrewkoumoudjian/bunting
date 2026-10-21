@@ -2,6 +2,7 @@
 //! the builder that brings panes back from a saved screen (ADR 0051).
 
 use crate::blotter::OrdersPanel;
+use crate::chart::pnl::PnlPanel;
 use crate::chart::{ChartPanel, SavedChart};
 use crate::deals::DealsPanel;
 use crate::desk::Desk;
@@ -33,10 +34,11 @@ pub enum PaneKind {
     Deals,
     Chart,
     Transactions,
+    Pnl,
 }
 
 impl PaneKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::BookTrader,
         Self::LadderTrader,
         Self::OrderEntry,
@@ -50,6 +52,7 @@ impl PaneKind {
         Self::Deals,
         Self::Chart,
         Self::Transactions,
+        Self::Pnl,
     ];
 
     /// The name saved layouts use, and the pane's element ID.
@@ -68,6 +71,7 @@ impl PaneKind {
             Self::News => "news",
             Self::Deals => "deals",
             Self::Chart => "chart",
+            Self::Pnl => "pnl",
             Self::Transactions => "transactions",
         }
     }
@@ -87,6 +91,7 @@ impl PaneKind {
             Self::News => "News",
             Self::Deals => "Tenders & OTC",
             Self::Chart => "Charting",
+            Self::Pnl => "P&L Chart",
             Self::Transactions => "Transaction Log",
         }
     }
@@ -106,6 +111,7 @@ impl PaneKind {
             Self::News => IconName::Info,
             Self::Deals => IconName::Replace,
             Self::Chart => IconName::Frame,
+            Self::Pnl => IconName::GalleryVerticalEnd,
             Self::Transactions => IconName::FileText,
         }
     }
@@ -130,6 +136,7 @@ impl PaneKind {
             Self::News => (300., 180.),
             Self::Deals => (420., 260.),
             Self::Chart => (360., 240.),
+            Self::Pnl => (320., 200.),
             Self::Transactions => (420., 160.),
         }
     }
@@ -150,6 +157,7 @@ impl PaneKind {
             Self::News => (560., 420.),
             Self::Deals => (560., 440.),
             Self::Chart => (720., 480.),
+            Self::Pnl => (640., 400.),
             Self::Transactions => (640., 320.),
         }
     }
@@ -216,6 +224,7 @@ impl PaneKind {
             Self::News => panel_handle(cx.new(|cx| NewsPanel::new(desk, cx))),
             Self::Deals => panel_handle(cx.new(|cx| DealsPanel::new(desk, window, cx))),
             Self::Chart => panel_handle(cx.new(|cx| ChartPanel::new(desk, window, cx))),
+            Self::Pnl => panel_handle(cx.new(|cx| PnlPanel::new(desk, cx))),
             Self::Transactions => panel_handle(cx.new(|cx| TransactionsPanel::new(desk, cx))),
         }
     }

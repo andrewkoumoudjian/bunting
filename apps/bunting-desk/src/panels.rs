@@ -1727,7 +1727,31 @@ impl Render for FillsPanel {
 
 // ---- positions ---------------------------------------------------------------------
 
-reader_panel!(PositionsPanel);
+/// Portfolio, with its collapsible P&L section's state: open by
+/// default (owner direction, 2026-10-20).
+pub struct PositionsPanel {
+    desk: Entity<Desk>,
+    focus: FocusHandle,
+    pnl_open: bool,
+    _observe: Subscription,
+}
+
+impl PositionsPanel {
+    pub fn new(desk: Entity<Desk>, cx: &mut Context<Self>) -> Self {
+        Self {
+            _observe: cx.observe(&desk, |_, _, cx| cx.notify()),
+            desk,
+            focus: cx.focus_handle(),
+            pnl_open: true,
+        }
+    }
+
+    /// Whether the P&L section is expanded (for the window tests).
+    #[must_use]
+    pub const fn pnl_open(&self) -> bool {
+        self.pnl_open
+    }
+}
 dock_panel!(PositionsPanel, "positions", "Portfolio");
 
 /// The cell for column `index` of a portfolio row: signed figures take
@@ -1779,6 +1803,10 @@ fn portfolio_cell(row: &portfolio::Row, texts: &[String], index: usize, cx: &App
 }
 
 impl Render for PositionsPanel {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "freshness, derived note, the P&L section and the holdings table read best whole"
+    )]
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let desk = self.desk.read(cx);
         let model = desk.model();
@@ -1821,6 +1849,45 @@ impl Render for PositionsPanel {
             "Derived from your fills and the books"
         };
         body = body.child(ui::note("positions-note", short, full, cx));
+        body = body.child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .child(ui::section_label("P&L", cx))
+                .child(div().flex_1())
+                .child(
+                    Button::new("pf-pnl-toggle")
+                        .ghost()
+                        .xsmall()
+                        .icon(if self.pnl_open {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .tooltip(if self.pnl_open {
+                            "Collapse the P&L section"
+                        } else {
+                            "Expand the P&L section"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pnl_open = !this.pnl_open;
+                            cx.notify();
+                        })),
+                ),
+        );
+        if self.pnl_open {
+            // A bounded flex share: ~140 px of chart under the stats
+            // when the window has room, yielding to the table when
+            // it does not.
+            body = body.child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .max_h(px(196.))
+                    .child(crate::chart::pnl::portfolio_section(model, cx)),
+            );
+        }
         let desk = self.desk.clone();
         let table = ui::responsive_table(&portfolio::COLUMNS, move |fitted, _, cx| {
             let mut table = v_flex().size_full().child(ui::table_head(fitted, cx));

@@ -1,23 +1,25 @@
 //! RIT's Charting module (`docs/specs/rit-desk-window-parity.md`):
-//! one window kind, two modes. Security mode charts any security's
+//! one window kind. It charts any security's
 //! bars — candlesticks by default, a line on request — with volume
 //! below and MA/EMA overlays and an RSI sub-pane on request; each
 //! venue's listing is its own series, never merged (ADR 0050
-//! decision 7). P&L mode charts the trader's derived total P&L over
-//! run time. History starts when this desk connected and the P&L is
-//! derived from fills; both say so on the window (the parity spec's
-//! BNP history and valuation gaps).
+//! decision 7). The trader's own P&L has its own window and a
+//! section of Portfolio ([`pnl`]). History starts when this desk
+//! connected; the window says so (the parity spec's BNP history
+//! gap).
 //!
-//! The price plot is [`price_chart::PriceChart`], composed from
-//! Longbridge's plot primitives (the finished 0.7.1 chart
-//! components have no price axis, zoom or pan); the P&L area uses
-//! the `AreaChart` component.
+//! The price plot is [`price_chart::PriceChart`] and the P&L plot
+//! is [`pnl::PnlChart`], both composed from Longbridge's plot
+//! primitives (the finished 0.7.1 chart components have no price
+//! axis, zoom or pan, and their area fill cannot baseline at
+//! zero).
 #![allow(
     clippy::float_arithmetic,
     clippy::cast_precision_loss,
     reason = "chart coordinates and indicator math are f64 by the components' own API"
 )]
 
+pub mod pnl;
 pub mod price_chart;
 pub mod range;
 
@@ -25,13 +27,13 @@ use crate::desk::Desk;
 use crate::format;
 use crate::ui;
 use bunting_trading_state::bunting_client::bnp_wire::Listing;
-use bunting_trading_state::{BAR_SIZES_NS, Bar as MarketBar, FINEST_BAR_NS, Instrument, PnlSample};
+use bunting_trading_state::{BAR_SIZES_NS, Bar as MarketBar, FINEST_BAR_NS, Instrument};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
-use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, h_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
@@ -43,30 +45,17 @@ use price_chart::{OtherSeries, PriceChart};
 use range::{DEFAULT_BAR, ViewRange, percent_changes, pick_bar_size};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 
 /// Securities on one chart at most: the fixed categorical palette
 /// has four colours and identity is never carried by a fifth hue
 /// borrowed from the up/down pair.
 const MAX_SERIES: usize = 4;
-/// P&L samples drawn at most (the price chart has its own
-/// [`range::MAX_VISIBLE`] for bars).
-const MAX_VISIBLE_BARS: usize = 600;
 /// Empty band slots after the last bar while following.
 const FOLLOW_MARGIN: usize = 3;
-/// Height of the P&L sparkline [`pnl_sparkline`] makes for other
-/// windows to place.
-const SPARKLINE_HEIGHT: f32 = 36.;
 /// Periods of the moving averages and the RSI (RIT's defaults).
 const MA_PERIOD: usize = 20;
 const RSI_PERIOD: usize = 14;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChartMode {
-    Security,
-    Pnl,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PriceKind {
@@ -137,26 +126,11 @@ fn series_color(slot: usize, cx: &App) -> Hsla {
     }
 }
 
-/// A run-clock instant as `minutes:seconds`, minutes unbounded so
-/// every second's label is unique on a band or point scale.
-fn run_clock(nanos: u64) -> String {
-    let seconds = nanos / 1_000_000_000;
-    format!("{}:{:02}", seconds / 60, seconds % 60)
-}
-
 #[allow(
     clippy::cast_precision_loss,
     reason = "prices and volumes are drawn, not settled, as f64"
 )]
 fn num(value: i64) -> f64 {
-    value as f64
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "prices and volumes are drawn, not settled, as f64"
-)]
-fn num_wide(value: i128) -> f64 {
     value as f64
 }
 
@@ -238,13 +212,6 @@ fn rsi(closes: &[f64], period: usize) -> Vec<f64> {
     values
 }
 
-/// One point of the P&L area, labelled by run time.
-#[derive(Clone)]
-struct LineRow {
-    label: SharedString,
-    value: f64,
-}
-
 /// Another series' closes lined up on the primary series' bar
 /// starts: a bar the other venue did not trade in carries its last
 /// close forward (the first close backwards to the start), because
@@ -279,7 +246,6 @@ pub struct ChartPanel {
     desk: Entity<Desk>,
     focus: FocusHandle,
     ticker: Entity<InputState>,
-    mode: ChartMode,
     kind: PriceKind,
     /// Index into [`BAR_SIZES_NS`].
     bar: usize,
@@ -325,7 +291,6 @@ impl ChartPanel {
             desk,
             focus: cx.focus_handle(),
             ticker,
-            mode: ChartMode::Security,
             kind: PriceKind::Candles,
             bar: DEFAULT_BAR,
             series: Vec::new(),
@@ -347,13 +312,9 @@ impl ChartPanel {
     #[must_use]
     pub fn saved(&self) -> SavedChart {
         SavedChart {
-            mode: Some(
-                match self.mode {
-                    ChartMode::Security => "security",
-                    ChartMode::Pnl => "pnl",
-                }
-                .to_owned(),
-            ),
+            // Written by the two-mode chart this replaced; always
+            // "security" now, and ignored on restore.
+            mode: Some("security".to_owned()),
             candles: Some(self.kind == PriceKind::Candles),
             bar_ns: Some(self.bar_ns()),
             bar_picked: self.bar_picked,
@@ -377,10 +338,6 @@ impl ChartPanel {
     /// venue no longer lists are kept: their chips name the venue
     /// and the chart is empty until the listing returns.
     pub fn restore(&mut self, saved: &SavedChart) {
-        self.mode = match saved.mode.as_deref() {
-            Some("pnl") => ChartMode::Pnl,
-            _ => ChartMode::Security,
-        };
         self.kind = if saved.candles.unwrap_or(true) {
             PriceKind::Candles
         } else {
@@ -420,12 +377,6 @@ impl ChartPanel {
     #[must_use]
     pub fn listings(&self) -> Vec<Listing> {
         self.series.iter().map(|choice| choice.listing).collect()
-    }
-
-    /// Whether the P&L mode is the one showing.
-    #[must_use]
-    pub const fn shows_pnl(&self) -> bool {
-        matches!(self.mode, ChartMode::Pnl)
     }
 
     /// The bar size in run-time nanoseconds.
@@ -619,81 +570,14 @@ impl ChartPanel {
 
     // ---- rendering ------------------------------------------------------
 
-    /// Row one: the mode, then (Security) candles-or-line and the
-    /// bar size ("S:").
-    fn mode_row(&self, cx: &mut Context<Self>) -> Div {
-        let mut row = ui::toolbar(cx).w_full().child(
-            ButtonGroup::new("chart-mode")
-                .xsmall()
-                .child(ui::segment(
-                    "chart-mode-security",
-                    "Security",
-                    self.mode == ChartMode::Security,
-                ))
-                .child(ui::segment(
-                    "chart-mode-pnl",
-                    "P&L",
-                    self.mode == ChartMode::Pnl,
-                ))
-                .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                    this.mode = if clicks.contains(&0) {
-                        ChartMode::Security
-                    } else {
-                        ChartMode::Pnl
-                    };
-                    cx.notify();
-                })),
-        );
-        if self.mode == ChartMode::Security {
-            let mut bars = ButtonGroup::new("chart-bars").xsmall();
-            for (index, label) in ["1s", "5s", "15s", "1m", "5m"].into_iter().enumerate() {
-                bars = bars.child(ui::segment(
-                    SharedString::from(format!("chart-bar-{label}")),
-                    label,
-                    self.bar == index,
-                ));
-            }
-            row = row
-                .child(div().flex_1())
-                .child(
-                    ButtonGroup::new("chart-kind")
-                        .xsmall()
-                        .child(ui::segment(
-                            "chart-candles",
-                            "Candles",
-                            self.kind == PriceKind::Candles,
-                        ))
-                        .child(ui::segment(
-                            "chart-line",
-                            "Line",
-                            self.kind == PriceKind::Line,
-                        ))
-                        .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                            this.kind = if clicks.contains(&0) {
-                                PriceKind::Candles
-                            } else {
-                                PriceKind::Line
-                            };
-                            cx.notify();
-                        })),
-                )
-                .child(ui::muted("S:", cx))
-                .child(
-                    bars.on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
-                        if let Some(&index) = clicks.first() {
-                            this.bar = index.min(BAR_SIZES_NS.len() - 1);
-                            this.bar_picked = true;
-                        }
-                        cx.notify();
-                    })),
-                );
-        }
-        row
-    }
-
-    /// Row two (Security): the ticker field, the "+" security menu,
-    /// and "Ind:" with its "+" indicator menu.
-    fn pick_row(&self, cx: &mut Context<Self>) -> Div {
+    /// The one toolbar row (owner review): ticker field, "+"
+    /// security menu, "Ind:" indicator menu, then Candles|Line and
+    /// "S:" bar size on the right.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one toolbar row: ticker, two menus and two segmented controls"
+    )]
+    fn toolbar_row(&self, cx: &mut Context<Self>) -> Div {
         let instruments = self.desk.read(cx).instruments();
         let chosen: Vec<Listing> = self.listings();
         let panel = cx.entity();
@@ -779,6 +663,50 @@ impl ChartPanel {
                     .child(problem.clone()),
             );
         }
+        let mut bars = ButtonGroup::new("chart-bars").xsmall();
+        for (index, label) in ["1s", "5s", "15s", "1m", "5m"].into_iter().enumerate() {
+            bars = bars.child(ui::segment(
+                SharedString::from(format!("chart-bar-{label}")),
+                label,
+                self.bar == index,
+            ));
+        }
+        row = row
+            .child(div().flex_1())
+            .child(div().w(px(1.)).h(px(14.)).bg(cx.theme().border))
+            .child(
+                ButtonGroup::new("chart-kind")
+                    .xsmall()
+                    .child(ui::segment(
+                        "chart-candles",
+                        "Candles",
+                        self.kind == PriceKind::Candles,
+                    ))
+                    .child(ui::segment(
+                        "chart-line",
+                        "Line",
+                        self.kind == PriceKind::Line,
+                    ))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        this.kind = if clicks.contains(&0) {
+                            PriceKind::Candles
+                        } else {
+                            PriceKind::Line
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(ui::muted("S:", cx))
+            .child(
+                bars.on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                    if let Some(&index) = clicks.first() {
+                        this.bar = index.min(BAR_SIZES_NS.len() - 1);
+                        this.bar_picked = true;
+                    }
+                    cx.notify();
+                })),
+            );
+
         row
     }
 
@@ -1079,124 +1007,25 @@ impl ChartPanel {
         }
         area.into_any_element()
     }
-
-    /// The P&L mode: current realized, unrealized and total over
-    /// an area chart of total P&L against run time, zero lined.
-    fn pnl_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let desk = self.desk.read(cx);
-        let model = desk.model();
-        let totals = model.pnl_totals();
-        let theme = cx.theme();
-        let signed = |value: i128| match value.cmp(&0) {
-            std::cmp::Ordering::Less => theme.chart_bearish,
-            std::cmp::Ordering::Greater => theme.chart_bullish,
-            std::cmp::Ordering::Equal => theme.foreground,
-        };
-        let stat = |id: &'static str, label: &'static str, value: i128| {
-            div().id(id).test_support().child(ui::stat_colored(
-                label,
-                format!("{value:+}"),
-                signed(value),
-                cx,
-            ))
-        };
-        let mut body = v_flex()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .gap(px(ui::PANE_GAP))
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_4()
-                    .child(stat("chart-pnl-realized", "Realized", totals.realized))
-                    .child(stat(
-                        "chart-pnl-unrealized",
-                        "Unrealized",
-                        totals.unrealized,
-                    ))
-                    .child(stat("chart-pnl-total", "Total", totals.total)),
-            );
-        let samples = model.pnl_series();
-        if samples.is_empty() {
-            return body
-                .child(ui::empty_state(
-                    "chart-pnl-empty",
-                    IconName::Frame,
-                    "No fills yet — P&L appears after your first trade",
-                    None,
-                    cx,
-                ))
-                .into_any_element();
-        }
-        let points: Vec<LineRow> = samples
-            .iter()
-            .skip(samples.len().saturating_sub(MAX_VISIBLE_BARS))
-            .map(|sample| LineRow {
-                label: SharedString::from(run_clock(sample.time_ns)),
-                value: num_wide(sample.total),
-            })
-            .collect();
-        let color = signed(totals.total);
-        body = body.child(
-            div()
-                .id("chart-pnl-area")
-                .test_support()
-                .flex_1()
-                .min_h_0()
-                .w_full()
-                .child(
-                    AreaChart::new(points)
-                        .id("chart-pnl-chart")
-                        .x(|row| row.label.clone())
-                        .y(|row| row.value)
-                        .stroke(color)
-                        .fill(color.opacity(0.25))
-                        .linear()
-                        .name("Total P&L")
-                        .reference_line(0.)
-                        .y_axis(true)
-                        .y_tick_count(4)
-                        .y_tick_format(|value| format!("{value:+.0}"))
-                        .x_tick_count(6)
-                        .tooltip_title(|row: &LineRow| {
-                            SharedString::from(format!("{} run time", row.label))
-                        })
-                        .tooltip_value(|_, _, value| SharedString::from(format!("{value:+.0}")))
-                        .appear(false),
-                ),
-        );
-        body.into_any_element()
-    }
 }
 
 impl Render for ChartPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prepare(cx);
-        let mut body = ui::pane_body("chart", &self.focus).child(self.mode_row(cx));
-        body = match self.mode {
-            ChartMode::Security => {
-                let history = ui::muted(
-                    "History starts when the desk connected · each venue is its own series",
-                    cx,
-                );
-                body.child(self.pick_row(cx))
-                    .child(self.chips(cx))
-                    .child(self.security_body(cx))
-                    .child(history)
-            }
-            ChartMode::Pnl => {
-                let known = self.desk.read(cx).model().pnl_totals().multipliers_known;
-                let mut label = "Derived from your fills and the best bid/ask; \
-                                 the venue's own valuation is not yet on BNP"
-                    .to_owned();
-                if !known {
-                    label.push_str(" · assumes contract size 1");
-                }
-                body.child(self.pnl_body(cx)).child(ui::muted(label, cx))
-            }
-        };
-        body
+        let any_indicator = self.indicators.ma || self.indicators.ema || self.indicators.rsi;
+        ui::pane_body("chart", &self.focus)
+            .child(self.toolbar_row(cx))
+            .when(!self.series.is_empty() || any_indicator, |body| {
+                body.child(self.chips(cx))
+            })
+            .child(self.security_body(cx))
+            .child(ui::note(
+                "chart-history",
+                "History starts when the desk connected",
+                "Bars are built from trades this desk has seen since it connected; \
+                 earlier history is not on BNP yet. Each venue is its own series.",
+                cx,
+            ))
     }
 }
 
@@ -1231,56 +1060,6 @@ impl Focusable for ChartPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
-}
-
-/// A compact total-P&L sparkline for another window to place (the
-/// Portfolio window is another change's; the coordinator places
-/// this there). No axes: the window it sits in carries the figures.
-#[must_use]
-pub fn pnl_sparkline(samples: &VecDeque<PnlSample>, cx: &App) -> AnyElement {
-    if samples.len() < 2 {
-        return div()
-            .id("pnl-sparkline-empty")
-            .test_support()
-            .h(px(SPARKLINE_HEIGHT))
-            .child(ui::muted("No P&L yet", cx))
-            .into_any_element();
-    }
-    let total = samples.back().map_or(0, |sample| sample.total);
-    let color = if total < 0 {
-        cx.theme().chart_bearish
-    } else {
-        cx.theme().chart_bullish
-    };
-    let points: Vec<LineRow> = samples
-        .iter()
-        .skip(samples.len().saturating_sub(MAX_VISIBLE_BARS))
-        .map(|sample| LineRow {
-            label: SharedString::from(run_clock(sample.time_ns)),
-            value: num_wide(sample.total),
-        })
-        .collect();
-    div()
-        .id("pnl-sparkline")
-        .test_support()
-        .w_full()
-        .h(px(SPARKLINE_HEIGHT))
-        .child(
-            AreaChart::new(points)
-                .id("pnl-sparkline-chart")
-                .x(|row| row.label.clone())
-                .y(|row| row.value)
-                .stroke(color)
-                .fill(color.opacity(0.25))
-                .linear()
-                .reference_line(0.)
-                .x_axis(false)
-                .y_axis(false)
-                .grid(false)
-                .interactive(false)
-                .appear(false),
-        )
-        .into_any_element()
 }
 
 #[cfg(test)]
@@ -1353,12 +1132,5 @@ mod tests {
             Some(vec![50., 50., 50., 55.])
         );
         assert_eq!(aligned_closes(&primary, &[]), None);
-    }
-
-    #[test]
-    fn run_clock_labels_every_second_uniquely() {
-        assert_eq!(run_clock(0), "0:00");
-        assert_eq!(run_clock(65_000_000_000), "1:05");
-        assert_eq!(run_clock(3_661_000_000_000), "61:01");
     }
 }

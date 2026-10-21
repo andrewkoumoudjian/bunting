@@ -361,6 +361,24 @@ impl Plot for PriceChart {
             }
         };
 
+        // Tag boxes on the axes, so labels under them can stand down
+        // instead of colliding (coordinator screenshot review).
+        let tag_h = axis_font + 4.;
+        let last_tag_y = (!self.comparison)
+            .then(|| {
+                self.bars
+                    .last()
+                    .map(|bar| y.tick(&(bar.close as f64)).unwrap_or(0.))
+            })
+            .flatten();
+        let cross_price_y = self
+            .hovered
+            .as_ref()
+            .map(|state| state.cross_line.y.as_f32())
+            .filter(|cursor_y| price_pane.contains(*cursor_y));
+        let under_tag =
+            |label_y: f32, tag_y: f32| (label_y - tag_y).abs() < f32::midpoint(axis_font, tag_h);
+
         // ---- price pane: grid, marks -----------------------------------
         let (ticks, decimals) = nice_ticks(lo, hi, 6);
         Grid::new()
@@ -368,6 +386,12 @@ impl Plot for PriceChart {
             .stroke(theme.chart_grid)
             .paint(&price_bounds, window);
         for tick in &ticks {
+            let tick_y = y.tick(tick).unwrap_or(0.);
+            if last_tag_y.is_some_and(|tag_y| under_tag(tick_y, tag_y))
+                || cross_price_y.is_some_and(|tag_y| under_tag(tick_y + price_pane.top, tag_y))
+            {
+                continue;
+            }
             labels.push(
                 Text::new(
                     if self.comparison {
@@ -377,7 +401,7 @@ impl Plot for PriceChart {
                     },
                     point(
                         px(plot_w + 6.),
-                        px(price_pane.top + y.tick(tick).unwrap_or(0.) - axis_font / 2.),
+                        px(price_pane.top + tick_y - axis_font / 2.),
                     ),
                     theme.muted_foreground,
                 )
@@ -492,13 +516,12 @@ impl Plot for PriceChart {
                     Some(prev) if last.close < prev.close => theme.chart_bearish,
                     _ => theme.chart_bullish,
                 };
-                let last_y = y.tick(&(last.close as f64)).unwrap_or(0.);
+                let last_y = last_tag_y.unwrap_or(0.);
                 Grid::new()
                     .y([last_y])
                     .stroke(color)
                     .dash_array(&[px(4.), px(4.)])
                     .paint(&price_bounds, window);
-                let tag_h = axis_font + 4.;
                 quad(
                     window,
                     plot_w + 1.,
@@ -558,14 +581,20 @@ impl Plot for PriceChart {
                     base.opacity(0.45),
                 );
             }
-            labels.push(
-                Text::new(
-                    format!("{max_volume}"),
-                    point(px(plot_w + 6.), px(volume_pane.top + 1.)),
-                    theme.muted_foreground,
-                )
-                .font_size(px(axis_font)),
-            );
+            let cross_in_volume = self
+                .hovered
+                .as_ref()
+                .is_some_and(|state| volume_pane.contains(state.cross_line.y.as_f32()));
+            if !cross_in_volume {
+                labels.push(
+                    Text::new(
+                        format!("{max_volume}"),
+                        point(px(plot_w + 6.), px(volume_pane.top + 1.)),
+                        theme.muted_foreground,
+                    )
+                    .font_size(px(axis_font)),
+                );
+            }
         }
 
         // ---- RSI pane ---------------------------------------------------
@@ -585,17 +614,25 @@ impl Plot for PriceChart {
                     .stroke(theme.muted_foreground.opacity(0.5))
                     .dash_array(&[px(4.), px(4.)])
                     .paint(&rsi_pane.bounds(&bounds, plot_w), window);
-                labels.push(
-                    Text::new(
-                        format!("{level:.0}"),
-                        point(
-                            px(plot_w + 6.),
-                            px(rsi_pane.top + rsi_y.tick(&level).unwrap_or(0.) - axis_font / 2.),
-                        ),
-                        theme.muted_foreground,
-                    )
-                    .font_size(px(axis_font)),
-                );
+                let level_y = rsi_y.tick(&level).unwrap_or(0.);
+                let cross_in_rsi = self.hovered.as_ref().is_some_and(|state| {
+                    let cursor_y = state.cross_line.y.as_f32();
+                    rsi_pane.contains(cursor_y) && under_tag(level_y + rsi_pane.top, cursor_y)
+                });
+                if !cross_in_rsi {
+                    labels.push(
+                        Text::new(
+                            format!("{level:.0}"),
+                            point(
+                                px(plot_w + 6.),
+                                px(rsi_pane.top + rsi_y.tick(&level).unwrap_or(0.)
+                                    - axis_font / 2.),
+                            ),
+                            theme.muted_foreground,
+                        )
+                        .font_size(px(axis_font)),
+                    );
+                }
             }
             line(rsi, self.primary_color, rsi_pane, &rsi_y, window);
         }
@@ -727,7 +764,6 @@ impl Plot for PriceChart {
                 dhi - f64::from(cursor_y - pane.top) / f64::from(pane.height) * (dhi - dlo)
             };
             let tag = |labels: &mut Vec<Text>, pane: Pane, text: String, window: &mut Window| {
-                let tag_h = axis_font + 4.;
                 window.paint_quad(fill(
                     Bounds::new(
                         point(
