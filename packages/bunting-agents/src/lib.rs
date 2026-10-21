@@ -450,7 +450,7 @@ impl AgentPolicy for BuiltInPolicy {
             OrderKind::Limit { price } | OrderKind::LimitWithPolicy { price, .. } => {
                 Some((order.side, price))
             }
-            _ => None,
+            OrderKind::Market => None,
         };
         let mut wanted = Vec::new();
         let mut passthrough = Vec::new();
@@ -1244,7 +1244,7 @@ impl<P: AgentPolicy> ManagedAgent<P> {
                             remaining: managed.remaining_quantity(),
                         })
                     }
-                    _ => None,
+                    OrderKind::Market => None,
                 })
                 .collect();
             self.policy.reconcile(drained, &resting)?
