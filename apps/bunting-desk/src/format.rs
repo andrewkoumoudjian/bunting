@@ -55,6 +55,24 @@ pub const fn liquidity(liquidity: Liquidity) -> &'static str {
     }
 }
 
+/// An average price from exact tick-lots over its lots: one
+/// decimal place, two when the second is needed, never rounded
+/// away to a whole tick. `lots` is signed (the position); the
+/// price is positive either way.
+#[must_use]
+pub fn average_price(tick_lots: i128, lots: i64) -> String {
+    let lots = i128::from(lots).abs().max(1);
+    let hundredths = (tick_lots.abs() * 100 + lots / 2) / lots;
+    let whole = hundredths / 100;
+    let cents = hundredths % 100;
+    let sign = if tick_lots < 0 { "-" } else { "" };
+    if cents % 10 == 0 {
+        format!("{sign}{whole}.{}", cents / 10)
+    } else {
+        format!("{sign}{whole}.{cents:02}")
+    }
+}
+
 /// Prices are integer ticks on the wire; they are shown as sent.
 #[must_use]
 pub fn price(price: Option<i64>) -> String {
@@ -100,6 +118,15 @@ pub fn updated_ago(received_us: u64, now_us: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn average_prices_keep_their_decimals() {
+        assert_eq!(super::average_price(4_220, 40), "105.5");
+        assert_eq!(super::average_price(2_100, 20), "105.0");
+        assert_eq!(super::average_price(10_525, 100), "105.25");
+        assert_eq!(super::average_price(1, 3), "0.33");
+        assert_eq!(super::average_price(4_220, -40), "105.5");
+    }
     use super::*;
 
     #[test]

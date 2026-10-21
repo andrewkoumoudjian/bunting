@@ -508,7 +508,9 @@ fn position_strip(desk: &Entity<Desk>, instrument_id: u128, cx: &App) -> impl In
             .map_or(0, |each| each.position)
             + model.unreported_position(instrument_id)
     });
-    let cost = model.cost(instrument_id);
+    let cost = model
+        .average_cost(instrument_id)
+        .map(|(tick_lots, lots)| format::average_price(tick_lots, lots));
     h_flex()
         .id("books-position")
         .test_support()
@@ -523,11 +525,7 @@ fn position_strip(desk: &Entity<Desk>, instrument_id: u128, cx: &App) -> impl In
         .child(ui::tipped(
             "books-cost-tip",
             "Volume-weighted average price of your current position, derived from your fills",
-            ui::stat(
-                "Cost",
-                cost.map_or_else(|| "–".to_owned(), |price| price.to_string()),
-                cx,
-            ),
+            ui::stat("Cost", cost.unwrap_or_else(|| "–".to_owned()), cx),
         ))
 }
 

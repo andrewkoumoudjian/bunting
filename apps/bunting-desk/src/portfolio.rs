@@ -54,7 +54,9 @@ pub struct Row {
     pub open_sell: Option<i64>,
     /// Fills seen since the last account answer, not yet in `position`.
     pub pending: i64,
-    pub cost: Option<i64>,
+    /// The exact average cost over the open lots, already
+    /// formatted to decimals (never a whole-tick rounding).
+    pub cost: Option<String>,
     /// The last trade: price and the venue it printed on.
     pub last: Option<(i64, u128)>,
     /// Up-tick (`Greater`) or down-tick (`Less`) of the last price
@@ -104,7 +106,7 @@ impl Row {
                 format!("{multiplier}*")
             },
             count(self.position),
-            self.cost.map_or_else(dash, |cost| cost.to_string()),
+            self.cost.clone().unwrap_or_else(dash),
             priced(self.last, self.multi_venue),
             priced(self.bid, self.multi_venue),
             priced(self.ask, self.multi_venue),
@@ -265,7 +267,9 @@ pub fn rows(model: &Model) -> Vec<Row> {
                 open_buy: account.map(|_| held.map_or(0, |held| held.open_buy)),
                 open_sell: account.map(|_| held.map_or(0, |held| held.open_sell)),
                 pending: model.unreported_position(id),
-                cost: model.cost(id),
+                cost: model
+                    .average_cost(id)
+                    .map(|(tick_lots, lots)| crate::format::average_price(tick_lots, lots)),
                 last,
                 tick,
                 bid,

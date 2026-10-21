@@ -296,6 +296,23 @@ fn model_marks_on_the_primary_listings_touch_then_its_last_trade() {
 }
 
 #[test]
+fn average_cost_is_exact_never_a_whole_tick() {
+    let mut model = model_with_listings();
+    fill(&mut model, NEAR, Side::Buy, 105, 20, 0, 1, 0);
+    fill(&mut model, NEAR, Side::Buy, 106, 20, 0, 2, 1_000_000);
+    // 20 @105 + 20 @106 averages 105.5, not 105 or 106.
+    assert_eq!(model.average_cost(7), Some((4_220, 40)));
+    assert_eq!(
+        model
+            .average_cost(7)
+            .map(|(tick_lots, lots)| tick_lots * 10 / i128::from(lots)),
+        Some(1_055),
+        "105.5 in tenths of a tick"
+    );
+    assert_eq!(model.cost(7), Some(106), "cost() still rounds for P&L use");
+}
+
+#[test]
 fn samples_land_once_per_run_second_and_stay_bounded() {
     let mut model = model_with_listings();
     model.series_stamp(0, 0);

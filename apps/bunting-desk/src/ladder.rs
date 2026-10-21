@@ -285,7 +285,9 @@ impl Render for LadderPanel {
                 .map_or(0, |each| each.position)
                 + model.unreported_position(listing.instrument_id)
         });
-        let cost = model.cost(listing.instrument_id);
+        let cost = model
+            .average_cost(listing.instrument_id)
+            .map(|(tick_lots, lots)| crate::format::average_price(tick_lots, lots));
         let theme = cx.theme();
         let (accent, quote_bg) = (theme.primary, theme.secondary);
         let position_color = match position {
@@ -309,7 +311,7 @@ impl Render for LadderPanel {
                     "Volume-weighted average price of your current position, derived from your fills",
                     ui::stat(
                         "Cost",
-                        cost.map_or_else(|| "–".to_owned(), |price| price.to_string()),
+                        cost.clone().unwrap_or_else(|| "–".to_owned()),
                         cx,
                     ),
                 ))
