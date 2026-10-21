@@ -2,6 +2,7 @@
 //! `bunting-desk`: the trading workspace in one native window.
 
 use bunting_desk::connect::{self, Options};
+use bunting_desk::startup::StartupError;
 use bunting_desk::{Desk, LayoutStore, Workspace};
 use clap::Parser as _;
 use futures_lite::StreamExt as _;
@@ -60,22 +61,52 @@ fn quit_on_signals(cx: &mut App) {
 fn main() {
     let options = Options::parse();
     // Connect (or start the local venue) before opening a window, so a
-    // wrong flag is reported on the terminal at once.
-    let (venue, label) = match connect::open(&options) {
-        Ok(opened) => opened,
-        Err(error) => {
-            eprintln!("bunting-desk: {error}");
-            std::process::exit(2);
-        }
-    };
-    let mut venue = Some(venue);
+    // wrong flag is reported on the terminal at once. Launched without a
+    // terminal, the reason is shown in a window instead.
+    let mut opened = Some(connect::open(&options).inspect_err(|error| {
+        eprintln!("bunting-desk: {error}");
+    }));
+    let failed = matches!(opened, Some(Err(_)));
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             bunting_desk::init(cx);
             quit_on_signals(cx);
-            let Some(venue) = venue.take() else { return };
+            // One window per app: closing it quits, as on Linux and
+            // Windows, instead of the macOS habit of running on with no
+            // window (and still holding a participant in the local venue).
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let Some(opened) = opened.take() else { return };
+            let titlebar = Some(TitlebarOptions {
+                title: Some("Bunting".into()),
+                ..TitlebarOptions::default()
+            });
+            let (venue, label) = match opened {
+                Ok(opened) => opened,
+                Err(error) => {
+                    let bounds = Bounds::centered(None, size(px(520.), px(240.)), cx);
+                    let window = WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        app_id: Some("bunting-desk".to_owned()),
+                        titlebar,
+                        ..WindowOptions::default()
+                    };
+                    if gpui_kit::open_window(window, cx, |_, cx| {
+                        cx.new(|_| StartupError::new(&error))
+                    })
+                    .is_err()
+                    {
+                        cx.quit();
+                    }
+                    return;
+                }
+            };
             let desk = cx.new(|cx| {
                 Desk::start_pump(cx);
                 Desk::connected(venue, label.clone())
@@ -86,10 +117,7 @@ fn main() {
                 // The Wayland app_id (window class) and title, so the
                 // compositor can name and rule the window.
                 app_id: Some("bunting-desk".to_owned()),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Bunting".into()),
-                    ..TitlebarOptions::default()
-                }),
+                titlebar,
                 ..WindowOptions::default()
             };
             let store = LayoutStore::default_location();
@@ -100,4 +128,7 @@ fn main() {
                 cx.quit();
             }
         });
+    if failed {
+        std::process::exit(2);
+    }
 }

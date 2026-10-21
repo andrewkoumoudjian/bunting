@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  # A dry run on a branch: builds and bundles everything, publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -57,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
+          tag="${GITHUB_REF_NAME//\//-}"
           package="bunting-${tag}-${{ matrix.target }}"
           mkdir -p "stage/${package}/bin" "stage/${package}/config" dist
           cp "target/${{ matrix.target }}/release/bunting${{ matrix.executable_suffix }}" "stage/${package}/bin/"
@@ -137,7 +139,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="$GITHUB_REF_NAME"
+          tag="${GITHUB_REF_NAME//\//-}"
           package="bunting-desk-${tag}-${{ matrix.target }}"
           mkdir -p "stage/${package}/bin" dist
           cp "apps/bunting-desk/target/${{ matrix.target }}/release/bunting-desk${{ matrix.executable_suffix }}" "stage/${package}/bin/"
@@ -149,8 +151,75 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  bundle:
+    name: Desktop app bundles
+    # Puts `bunting` beside the app in every desktop download, and builds
+    # the universal macOS app and disk image (tools/bundle_desk.sh).
+    needs: [native, desk]
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: archives
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desk-*
+          path: archives
+      - name: Bundle the desktop app
+        run: tools/bundle_desk.sh "${GITHUB_REF_NAME//\//-}" archives bundles
+      - name: Install the disk image's app and open it with no arguments
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME//\//-}"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "bundles/Bunting-${tag}-macOS.dmg"
+          ditto "$mount/Bunting.app" "$HOME/Applications/Bunting.app"
+          hdiutil detach "$mount"
+          app="$HOME/Applications/Bunting.app"
+          lipo -archs "$app/Contents/MacOS/bunting-desk"
+          lipo -archs "$app/Contents/MacOS/bunting"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/bunting-desk" --version
+          open "$app"
+          # Opened from Finder with no flags, the app starts the practice
+          # venue from the `bunting` beside it before opening its window.
+          for _ in $(seq 60); do
+            pgrep -fl "Bunting.app/Contents/MacOS/bunting server" && break
+            sleep 1
+          done
+          pgrep -fl "Bunting.app/Contents/MacOS/bunting server"
+          sleep 10
+          screencapture -x bundles-smoke.png || true
+          # Quitting the app releases its claim and the venue stops.
+          pkill -TERM -f "Bunting.app/Contents/MacOS/bunting-desk"
+          for _ in $(seq 30); do
+            pgrep -f "Bunting.app/Contents/MacOS/bunting" >/dev/null || break
+            sleep 1
+          done
+          if pgrep -fl "Bunting.app/Contents/MacOS/bunting"; then
+            echo "the app or its venue is still running" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bundle-smoke
+          path: bundles-smoke.png
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: bundles/*
+          if-no-files-found: error
+
   container:
     name: Container image
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -172,14 +241,22 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [native, desk, container]
+    if: github.event_name == 'push'
+    needs: [native, bundle, container]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The venue archives, and the desktop bundles in place of the bare
+      # desk archives.
       - uses: actions/download-artifact@v4
         with:
+          pattern: native-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: dist
       # Native artifacts keep their `dist/` and `target/wheels/` folders, so
       # the merged download nests directories; `gh release create dist/*`
       # cannot upload a directory (v0.2.0-preview.1 failed on `dist/dist`).
@@ -196,16 +273,29 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           printf '%s\n' \
-            'Install the native `bunting` executable (venue server, terminal and tools) on Linux or macOS:' \
+            '### Desktop app' \
+            '' \
+            'macOS or Linux, one command installs the app and the `bunting` venue:' \
             '' \
             '```bash' \
             'curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | BUNTING_VERSION='"$tag"' sh' \
+            '```' \
+            '' \
+            '- **macOS:** the installer puts Bunting in Applications. Or download `Bunting-'"$tag"'-macOS.dmg` (Apple Silicon and Intel), open it and drag Bunting to Applications. The app is not notarized yet, so the first time, open it from System Settings → Privacy & Security → **Open Anyway** (the installer avoids this step).' \
+            '- **Windows:** download `bunting-desk-'"$tag"'-x86_64-pc-windows-msvc.zip`, extract it and run `bunting-desk.exe`.' \
+            '- **Linux:** the installer adds Bunting to your app launcher; the `bunting-desk` archives hold the same files.' \
+            '' \
+            'Opened with no options, the app starts or joins the practice market on your computer: built-in traders on two venues and eight seats, so every app you open trades in the same market. Use `--server` and your certificates for a hosted venue.' \
+            '' \
+            '### Venue, terminal and tools' \
+            '' \
+            'The same installer installs `bunting` (venue server, terminal and tools) and `bunting-trader`; set `BUNTING_DESK=0` to skip the app:' \
+            '' \
+            '```bash' \
             'bunting server ~/.config/bunting/server/local.json' \
             '```' \
             '' \
-            'Desktop app: download the `bunting-desk` archive for your platform and put `bunting-desk` beside `bunting` (or on `PATH`) so `bunting-desk --local` can start a practice venue.' \
-            '' \
-            'Windows: download the `x86_64-pc-windows-msvc` archive. Containers: `docker pull ghcr.io/andrewkoumoudjian/bunting:'"$tag"'` (configuration at `/etc/bunting/server.json`, state on `/var/lib/bunting`). Verify manual downloads with `SHA256SUMS`.' \
+            'Windows: download the `bunting-'"$tag"'-x86_64-pc-windows-msvc.tar.gz` archive. Containers: `docker pull ghcr.io/andrewkoumoudjian/bunting:'"$tag"'` (configuration at `/etc/bunting/server.json`, state on `/var/lib/bunting`). Verify manual downloads with `SHA256SUMS`.' \
             '' \
             'See the repository README and docs/deployment.md for configuration and platform details.' \
             > release-notes.md

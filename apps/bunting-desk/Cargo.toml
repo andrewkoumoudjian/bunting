@@ -5,7 +5,7 @@
 
 [package]
 name = "bunting-desk"
-version = "0.2.0-preview.1"
+version = "0.2.0-preview.2"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.97"

@@ -1,7 +1,9 @@
 //! Where the app connects: a hosted venue named by flags or environment
 //! (the same ones as `bunting-trader` and `bunting tui`), or the shared
 //! local practice venue on this machine, joined as one of its eight
-//! participants.
+//! participants. With no venue named, the app practises locally, so a
+//! double-click from Finder, a desktop launcher or Explorer opens a
+//! market.
 
 use crate::desk::Venue;
 use bunting_trading_state::Session;
@@ -16,21 +18,22 @@ use std::path::PathBuf;
 pub struct Options {
     /// Join the shared practice venue on this machine (starting it
     /// first if needed) as the next free of its eight participants, so
-    /// several desks and terminals trade in one local market.
+    /// several desks and terminals trade in one local market. This is
+    /// the default when no --server is given.
     #[arg(long, conflicts_with = "server")]
     pub local: bool,
     /// Directory for the local venue's certificates, configuration and
     /// log (default: the per-user `bunting/local-venue` directory,
     /// shared by every local client).
-    #[arg(long, requires = "local")]
+    #[arg(long, conflicts_with = "server")]
     pub venue_dir: Option<PathBuf>,
     /// Claim exactly this local participant (1-8) instead of the next
     /// free one; fails if another client already holds it.
-    #[arg(long, requires = "local")]
+    #[arg(long, conflicts_with = "server")]
     pub participant: Option<u64>,
     /// Program that runs the local venue (`bunting` or `bunting-server`);
     /// default: `bunting` next to this app, then on `PATH`.
-    #[arg(long, requires = "local")]
+    #[arg(long, conflicts_with = "server")]
     pub server_bin: Option<PathBuf>,
     /// The venue's BNP listener, `host:port`.
     #[arg(long, env = "BUNTING_SERVER")]
@@ -52,12 +55,21 @@ pub struct Options {
     pub resume_after: Option<u64>,
 }
 
+impl Options {
+    /// Whether the app joins the local practice venue: asked for, or no
+    /// hosted venue named.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.local || self.server.is_none()
+    }
+}
+
 /// Connects as `options` say and returns the venue and its label.
 ///
 /// # Errors
 /// Returns why the venue cannot be reached or started.
 pub fn open(options: &Options) -> Result<(Venue, String), String> {
-    let (mut client, label, local) = if options.local {
+    let (mut client, label, local) = if options.is_local() {
         let venue = join_local(options)?;
         let client = venue.client.clone();
         // The title-bar pill and the status line both show this label:
@@ -77,7 +89,7 @@ pub fn open(options: &Options) -> Result<(Venue, String), String> {
 fn hosted(options: &Options) -> Result<ClientConfig, String> {
     let missing = |name: &str| {
         format!(
-            "--{name} (or BUNTING_{}) is required; or use --local to practise on this machine",
+            "--{name} (or BUNTING_{}) is required with --server; or leave out --server to practise on this machine",
             name.to_uppercase()
         )
     };
@@ -100,7 +112,10 @@ fn join_local(options: &Options) -> Result<SharedVenue, String> {
         .server_bin
         .clone()
         .or_else(default_server_bin)
-        .ok_or("--local needs --server-bin: the path of `bunting` or `bunting-server`")?;
+        .ok_or(
+            "the practice market needs the `bunting` program beside this app or on PATH \
+             (or --server-bin with its path)",
+        )?;
     // `bunting` runs the venue as `bunting server`; `bunting-server` takes
     // the configuration directly.
     let arguments = if program
@@ -160,5 +175,31 @@ mod tests {
     fn a_hosted_venue_needs_its_address_and_certificates() {
         let error = hosted(&Options::default()).err();
         assert!(error.is_some_and(|error| error.starts_with("--server")));
+    }
+
+    #[test]
+    fn with_no_venue_named_the_app_practises_locally() {
+        let local = |args: &[&str]| Options::try_parse_from(args).map(|options| options.is_local());
+        // A double-click passes no arguments.
+        assert!(matches!(local(&["bunting-desk"]), Ok(true)));
+        assert!(matches!(
+            local(&["bunting-desk", "--participant", "2"]),
+            Ok(true)
+        ));
+        assert!(matches!(local(&["bunting-desk", "--local"]), Ok(true)));
+        assert!(matches!(
+            local(&["bunting-desk", "--server", "venue.example:9443"]),
+            Ok(false)
+        ));
+        assert!(
+            local(&[
+                "bunting-desk",
+                "--server",
+                "venue.example:9443",
+                "--participant",
+                "2"
+            ])
+            .is_err()
+        );
     }
 }

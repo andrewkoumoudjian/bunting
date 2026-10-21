@@ -13,33 +13,47 @@ optional read-only publisher of results.
 
 ## Install
 
-Release archives contain one native `bunting` executable (venue server,
-terminal and offline tools, with `bunting-server` and `bunting-tui` aliases),
-the `bunting-trader` participant app (Bunting Native Protocol) and the C/C++
-bindings, for Linux x86_64 and aarch64 (glibc 2.35 or newer),
-macOS Apple Silicon and Intel, and Windows x86_64. Nothing else needs to be
-installed ([ADR 0044](docs/adr/0044-native-server-binary-host.md)). macOS and
-Linux users can install the latest release into `~/.local/bin`:
+On macOS or Linux, one command installs the Bunting desktop app and the
+`bunting` executable (venue server, terminal and tools):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh | sh
 ```
 
-Pin a release or choose other binary and configuration directories when
-reproducibility or a system-wide path matters:
+- **macOS:** Bunting goes into Applications (`/Applications`, or
+  `~/Applications` without admin rights). Or download
+  `Bunting-<tag>-macOS.dmg` from
+  [GitHub Releases](https://github.com/andrewkoumoudjian/bunting/releases)
+  (Apple Silicon and Intel), open it and drag Bunting to Applications. The
+  app is not notarized yet, so a downloaded disk image needs **Open Anyway**
+  in System Settings → Privacy & Security the first time; the installer
+  avoids that step.
+- **Linux:** the app goes into `~/.local/bin` and your app launcher when a
+  display is present (Linux x86_64 and aarch64, glibc 2.35 or newer).
+- **Windows:** download `bunting-desk-<tag>-x86_64-pc-windows-msvc.zip`,
+  extract it and run `bunting-desk.exe`.
+
+Opened with no options, the app starts or joins the practice market on your
+computer: built-in traders on two venues and eight seats, so every app you
+open trades in the same market. Nothing else needs to be installed
+([ADR 0044](docs/adr/0044-native-server-binary-host.md)).
+
+Release archives also contain the `bunting-trader` participant app
+(Bunting Native Protocol) and the C/C++ bindings. Pin a release, skip the app
+(`BUNTING_DESK=0`) or choose other directories when reproducibility or a
+system-wide path matters:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh |
-  BUNTING_VERSION=v0.1.0 BUNTING_INSTALL_DIR="$HOME/bin" \
+  BUNTING_VERSION=v0.2.0-preview.2 BUNTING_INSTALL_DIR="$HOME/bin" \
   BUNTING_CONFIG_DIR="$HOME/.config/bunting/server" sh
 ```
 
 The installer detects supported macOS/Linux platforms, downloads the matching
-GitHub release archive, verifies it against `SHA256SUMS`, and installs the
-command plus server configuration templates. It preserves configuration files
-that already exist. Windows users can download and extract the matching
-`.tar.gz` archive from
-[GitHub Releases](https://github.com/andrewkoumoudjian/bunting/releases).
+GitHub release files, verifies them against `SHA256SUMS`, and installs the
+commands, the app and server configuration templates. It preserves
+configuration files that already exist. Windows users can download the
+matching `.tar.gz` archive for the venue and tools.
 
 Practise in the trading terminal against a private local venue (the real
 server, started for you with throwaway certificates):

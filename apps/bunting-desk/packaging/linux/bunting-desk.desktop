@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Bunting
+GenericName=Trading desk
+Comment=Trade in the Bunting practice market or on a hosted venue
+Exec=@EXEC@
+Icon=bunting-desk
+Terminal=false
+Categories=Office;Finance;Education;
+StartupWMClass=bunting-desk

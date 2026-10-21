@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Bunting app icon (Bunting-added, 2026-10-21): a string of pennants
+       on the macOS icon grid (824 px tile, 100 px margin). -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2740"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#shine)"/>
+  <!-- The string: a shallow sag between two pegs. -->
+  <path d="M190 330 Q512 470 834 330" fill="none" stroke="#cbd5e1" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="190" cy="330" r="16" fill="#cbd5e1"/>
+  <circle cx="834" cy="330" r="16" fill="#cbd5e1"/>
+  <!-- Pennants hang from the string; their tops follow the curve. -->
+  <path d="M270 367 L367 392 L319 550 Z" fill="#3b82f6"/>
+  <path d="M399 397 L496 406 L448 572 Z" fill="#22c55e"/>
+  <path d="M528 406 L625 397 L576 572 Z" fill="#f59e0b"/>
+  <path d="M657 392 L754 367 L705 550 Z" fill="#ef4444"/>
+  <!-- A rising price line under the flags. -->
+  <path d="M230 790 L380 700 L480 740 L620 620 L794 660" fill="none" stroke="#22c55e" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

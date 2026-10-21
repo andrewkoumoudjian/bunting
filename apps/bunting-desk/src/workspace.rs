@@ -818,7 +818,12 @@ impl Workspace {
                     .h(crate::ui::rem_px(
                         crate::appearance::metrics(cx).control_height,
                     ))
-                    .w(px(400.))
+                    // 400 px wide when there is room; on a narrow window
+                    // it gives way before the Kill button does.
+                    .flex_basis(px(400.))
+                    .flex_shrink(1.)
+                    .min_w(px(120.))
+                    .overflow_hidden()
                     .items_center()
                     .gap_2()
                     .px_2()
@@ -833,22 +838,31 @@ impl Workspace {
                             .small()
                             .text_color(theme.muted_foreground),
                     )
-                    .child(div().flex_1().child("Type a command or code"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child("Type a command or code"),
+                    )
                     .child(key_hint.unwrap_or_else(|| {
                         Kbd::new(gpui_kit::Keystroke::parse("secondary-k").unwrap_or_default())
                     }))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_palette(window, cx))),
             )
             .child(
+                // No `min_w_0`: this side keeps room for the Kill button
+                // and the pill's dot, so the palette field shrinks first.
                 h_flex()
                     .flex_1()
-                    .min_w_0()
                     .items_center()
                     .justify_end()
                     .gap_3()
                     .child(
                         // RIT's Kill All Orders: cancels every live order of
                         // yours. The participant kill switch is separate.
+                        // It never shrinks under the field beside it.
+                        div().flex_shrink_0().child(
                         Button::new("kill-all-orders")
                             .label("Kill all orders")
                             .xsmall()
@@ -860,6 +874,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.desk.update(cx, Desk::cancel_all);
                             })),
+                        ),
                     )
                     .child(self.connection_pill(cx)),
             )

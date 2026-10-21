@@ -25,6 +25,7 @@ pub mod one_click;
 pub mod panels;
 pub mod panes;
 pub mod portfolio;
+pub mod startup;
 pub mod theme;
 pub mod transactions;
 pub mod ui;
