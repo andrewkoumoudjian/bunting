@@ -1002,11 +1002,18 @@ impl TicketPanel {
             .or_else(|| desk.instrument())
     }
 
-    /// The venue chosen in this window, if it lists the security shown.
+    /// The venue chosen in this window, if it lists the security shown. A
+    /// security listed on one venue only has nothing to choose, so that
+    /// venue is the choice; with two or more the participant picks
+    /// (ADR 0050: no default router).
     fn chosen(&self, cx: &App) -> Option<Listing> {
         let instrument = self.instrument(cx)?;
         self.listing
             .filter(|listing| listing.instrument_id == instrument.instrument_id)
+            .or_else(|| match instrument.listings.as_slice() {
+                [only] => Some(only.listing),
+                _ => None,
+            })
     }
 
     /// The ticket as entered; numbers that do not parse become 0, which the

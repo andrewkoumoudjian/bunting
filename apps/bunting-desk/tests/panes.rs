@@ -278,6 +278,57 @@ fn the_submit_label_names_side_quantity_price_and_venue(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn a_security_on_one_venue_needs_no_venue_choice(cx: &mut TestAppContext) {
+    let fixture = open(cx);
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Connected(Welcome {
+            version: 1,
+            run_id: 1,
+            participant_id: 42,
+            role: Role::Participant,
+            heartbeat_ms: 1_000,
+            max_frame_bytes: 65_536,
+            resume: ResumeStatus::Live,
+            run_sequence: 0,
+        }),
+    );
+    let request_id = fixture
+        .sent
+        .take()
+        .into_iter()
+        .find_map(|message| match message {
+            ClientMessage::ListingsRequest { request_id } => Some(request_id),
+            _ => None,
+        })
+        .expect("a listings request on connect");
+    apply(
+        &fixture,
+        cx,
+        SessionEvent::Message(ServerMessage::Listings {
+            request_id,
+            listings: vec![ListingInfo {
+                listing: NEAR,
+                symbol: "BNT".to_owned(),
+            }],
+        }),
+    );
+    // One listing is no choice, so it is the ticket's venue; with two
+    // the participant still picks (see the test above).
+    assert_eq!(
+        label(&fixture, cx, "ticket-send").as_deref(),
+        Some("Submit BUY · 1 BNT · Venue 1")
+    );
+    click(&fixture, cx, "ticket-market");
+    fixture.sent.take();
+    click(&fixture, cx, "ticket-send");
+    let orders = new_orders(&fixture);
+    assert_eq!(orders.len(), 1, "a market order goes without a venue click");
+    assert_eq!(orders[0].listing, NEAR);
+}
+
+#[gpui_kit::test]
 fn empty_blotter_and_fills_show_their_empty_states(cx: &mut TestAppContext) {
     let fixture = open(cx);
     assert!(visible(&fixture, cx, "orders-empty"), "No open orders");
