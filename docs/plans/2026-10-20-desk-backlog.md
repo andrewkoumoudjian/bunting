@@ -59,6 +59,45 @@ date.
     another measured 7 ms, under heavy CPU load from builds. Re-measure
     on an idle machine before calling it a bug.
 
+## Third multi-desk run (2026-10-21, integrate `adf35a3`, release build)
+
+- **Owner report:** "my trades don't get filled" on a local machine.
+- **Reproduced with the published `v0.2.0-preview.1` Linux archives:**
+  - QRC had no agents on either venue, so QRC orders rested forever.
+  - BNT ran from 100 to about 180 in roughly a minute: a single
+    5-lot static provider faced a momentum buyer.
+  - Sells were refused because nothing was shortable.
+  - SIGTERM left the venue running.
+- **Fixed on integrate:**
+  - Agents on every listing, a random-walk fundamental, resting provider
+    quotes, and signal quit (`sonnet/fundamental-walk`).
+  - Order Entry preselects a security's only venue (`21a8ecb`).
+  - Chart review rounds 1–2 (`muse/charts`).
+- **Measured** (Linux x86_64, release build):
+  - All four listings were 5–6 levels deep.
+  - QRC market orders filled on V1 and V2, and a BNT short filled on V2,
+    from the CLI and from two desks (participants 1 and 2).
+  - The full 32-agent practice venue used 3.1% CPU and 26 MB RSS after
+    60 s.
+  - The desk used 29% CPU on the headless output.
+  - Desk SIGTERM → desk exits → venue stops (last client).
+- **Gates on `adf35a3`:**
+  - metadata, fmt, clippy `-D warnings`, the orderbook-rs tree check,
+    wasm32 check and `git diff --check main` all passed.
+  - `cargo test --locked --workspace`: 85 suites, 339 passed, 0 failed,
+    1 ignored.
+  - `tools/check_desk.sh`: 113 tests passed.
+- **Open:**
+  - Book Trader clips Venue 2's asks when two venues sit side by side.
+  - The P&L time axis labels collide at the start.
+  - Average cost is rounded to a whole tick.
+  - Charting opens BNT V1+V2 in % comparison: it should open on one
+    series and overlay same-instrument venues on the price axis. With
+    `muse/charts`.
+  - **1 tick = 1% of price** makes many candles dojis. Finer ticks need
+    the tick size and display scale on BNP (ADR 0054, Proposed, owner
+    questions open).
+
 ## Next
 
 **Binding contract:** `docs/specs/rit-desk-window-parity.md` (owner,
