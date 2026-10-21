@@ -348,6 +348,27 @@ impl QuarccExecutionEngine {
                         | OrderLifecycle::PartiallyFilled
                         | OrderLifecycle::Filled
                         | OrderLifecycle::Cancelled
+                        | OrderLifecycle::PendingCancel
+                        | OrderLifecycle::PendingReplace
+                ) => {}
+            // Reports about an order that is already finished, or a cancel
+            // answered twice, change nothing: a cancel reaching an order a
+            // fill already completed is rejected as unknown, and that
+            // reject can follow the fill; a repeated cancel or expiry
+            // report is a duplicate.
+            VenueReportKind::Cancelled | VenueReportKind::Expired
+                if matches!(
+                    lifecycle,
+                    OrderLifecycle::Filled | OrderLifecycle::Cancelled | OrderLifecycle::Expired
+                ) => {}
+            VenueReportKind::CancelRejected { .. } | VenueReportKind::Rejected { .. }
+                if matches!(
+                    lifecycle,
+                    OrderLifecycle::Filled
+                        | OrderLifecycle::Cancelled
+                        | OrderLifecycle::Expired
+                        | OrderLifecycle::Live
+                        | OrderLifecycle::PartiallyFilled
                 ) => {}
             VenueReportKind::Rejected { reason }
                 if matches!(
@@ -375,6 +396,10 @@ impl QuarccExecutionEngine {
                     | OrderLifecycle::PendingCancel
                     | OrderLifecycle::PendingReplace
                     | OrderLifecycle::Filled
+                    // A fill committed before a cancel or an expiry can reach
+                    // us after that cancel or expiry did.
+                    | OrderLifecycle::Cancelled
+                    | OrderLifecycle::Expired
             ) =>
             {
                 let (instrument, side, previous, total) = {
@@ -415,6 +440,11 @@ impl QuarccExecutionEngine {
                 order.average_fill_price = Some(*price);
                 order.lifecycle = if *cumulative_quantity == total {
                     OrderLifecycle::Filled
+                } else if matches!(
+                    lifecycle,
+                    OrderLifecycle::Cancelled | OrderLifecycle::Expired
+                ) {
+                    lifecycle
                 } else {
                     OrderLifecycle::PartiallyFilled
                 };

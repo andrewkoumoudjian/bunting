@@ -313,3 +313,122 @@ fn a_cancel_rejected_because_the_order_already_filled_waits_for_the_fill() {
     assert_eq!(order.lifecycle, OrderLifecycle::Filled);
     assert_eq!(order.filled_quantity, QuantityLots::new(10));
 }
+
+fn fill(id: u128, last: i64, cumulative: i64) -> NormalizedVenueReport {
+    report(
+        id,
+        1,
+        "V1",
+        VenueReportKind::Fill {
+            last_quantity: QuantityLots::new(last),
+            cumulative_quantity: QuantityLots::new(cumulative),
+            price: PriceTicks::new(100),
+        },
+    )
+}
+
+/// A live order with a cancel in flight, as the reconcile path leaves it.
+fn live_then_cancelling() -> (QuarccExecutionEngine, LocalOrderId) {
+    let mut engine = QuarccExecutionEngine::new(ExecutionConfig::default());
+    let local = submit(&mut engine, 1);
+    let mut output = ExecutionActionBuffer::with_limit(16);
+    engine
+        .apply_venue_report(&report(2, 1, "V1", VenueReportKind::Accepted), &mut output)
+        .unwrap();
+    engine
+        .submit_intent(
+            ExecutionIntent::Cancel {
+                intent_id: IntentId::new(10),
+                client_order_id: ClientOrderId::new(1),
+            },
+            &mut output,
+        )
+        .unwrap();
+    (engine, local)
+}
+
+fn apply(engine: &mut QuarccExecutionEngine, report: &NormalizedVenueReport) {
+    let mut output = ExecutionActionBuffer::with_limit(16);
+    engine.apply_venue_report(report, &mut output).unwrap();
+}
+
+#[test]
+fn a_fill_committed_before_a_cancel_may_arrive_after_it() {
+    let (mut engine, local) = live_then_cancelling();
+    apply(&mut engine, &report(3, 1, "V1", VenueReportKind::Cancelled));
+    apply(&mut engine, &fill(4, 4, 4));
+    let order = engine.order(local).unwrap();
+    assert_eq!(order.lifecycle, OrderLifecycle::Cancelled);
+    assert_eq!(order.filled_quantity, QuantityLots::new(4));
+    // The position follows the fill.
+    assert_eq!(
+        engine
+            .snapshot()
+            .positions
+            .values()
+            .map(|position| position.quantity.get().abs())
+            .sum::<i64>(),
+        4
+    );
+}
+
+#[test]
+fn reports_about_a_finished_order_change_nothing() {
+    for finish in [
+        fill(3, 10, 10),
+        report(3, 1, "V1", VenueReportKind::Cancelled),
+    ] {
+        let (mut engine, local) = live_then_cancelling();
+        apply(&mut engine, &finish);
+        let settled = engine.order(local).unwrap().lifecycle;
+        let reports = [
+            report(5, 1, "V1", VenueReportKind::Cancelled),
+            report(
+                6,
+                1,
+                "V1",
+                VenueReportKind::Rejected {
+                    reason: "UnknownOrder".to_owned(),
+                },
+            ),
+            report(
+                7,
+                1,
+                "V1",
+                VenueReportKind::CancelRejected {
+                    reason: "UnknownOrder".to_owned(),
+                },
+            ),
+            report(8, 1, "V1", VenueReportKind::Expired),
+            report(9, 1, "V1", VenueReportKind::Accepted),
+        ];
+        for each in &reports {
+            apply(&mut engine, each);
+            // Applied twice: duplicates are harmless too.
+            apply(&mut engine, each);
+        }
+        assert_eq!(engine.order(local).unwrap().lifecycle, settled);
+    }
+}
+
+#[test]
+fn a_cancel_reject_after_the_fill_is_not_an_error() {
+    let (mut engine, local) = live_then_cancelling();
+    // The fill reaches us first this time, then the cancel's reject.
+    apply(&mut engine, &fill(3, 10, 10));
+    apply(
+        &mut engine,
+        &report(
+            4,
+            1,
+            "V1",
+            VenueReportKind::Rejected {
+                reason: "UnknownOrder".to_owned(),
+            },
+        ),
+    );
+    assert_eq!(
+        engine.order(local).unwrap().lifecycle,
+        OrderLifecycle::Filled
+    );
+}
