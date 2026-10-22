@@ -6,6 +6,7 @@
 //! market.
 
 use crate::desk::Venue;
+use crate::ledger::LedgerStore;
 use bunting_trading_state::Session;
 use bunting_trading_state::bunting_client::ClientConfig;
 use bunting_trading_state::local_venue::{self, ServerProgram, SharedVenue};
@@ -93,8 +94,25 @@ pub fn open(options: &Options) -> Result<(Venue, String), String> {
         (client, label, None)
     };
     concat!("bunting-desk/", env!("CARGO_PKG_VERSION")).clone_into(&mut client.client_name);
+    // The desk's own books from a previous launch on this run: resume the
+    // private stream where they stop, so no fill is missed or counted twice.
+    let instance = local.as_ref().map_or("", |venue| venue.instance.as_str());
+    let ledger = LedgerStore::for_client(&client, instance);
+    let record = ledger.as_ref().and_then(LedgerStore::load);
+    if client.resume_after.is_none()
+        && let Some(record) = &record
+    {
+        client.resume_after = Some(record.cursor);
+    }
     let session = Session::start(client).map_err(|error| error.to_string())?;
-    Ok((Venue { session, local }, label))
+    Ok((
+        Venue {
+            session,
+            local,
+            ledger: ledger.map(|store| (store, record)),
+        },
+        label,
+    ))
 }
 
 fn hosted(options: &Options) -> Result<ClientConfig, String> {

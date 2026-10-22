@@ -306,7 +306,7 @@ fn rounded_div(numerator: i128, denominator: i128) -> Option<i64> {
 /// One instrument's derived cost basis: the filled position's
 /// volume-weighted cost, kept exact as `cost_tick_lots` over the open
 /// lots, and what closing has realized so far.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PnlBook {
     /// Signed lots from fills (long positive).
     position: i64,
@@ -479,9 +479,171 @@ pub(super) struct SeriesState {
     /// mark from here instead while it is fresh.
     sampled_marks: BTreeMap<u128, (i64, i64, u64)>,
     samples: VecDeque<PnlSample>,
+    /// A ledger record loaded from disk, applied when the session's
+    /// `Welcome` shows the same run and participant (see
+    /// [`Model::preload_ledger`]).
+    pending: Option<LedgerRecord>,
+    /// Fills at or below this sequence are already in a restored book.
+    restored_through: u64,
+}
+
+/// What a client keeps between launches so its own derived figures
+/// survive a restart: each instrument's book (position, exact cost,
+/// realized P&L, fees), the P&L samples, and the private-stream cursor
+/// they reflect. Reconnecting with `resume_after` at that cursor
+/// replays every later report, so the books stay complete without the
+/// venue valuing anything. The desk decides where it is stored and
+/// keys it to one venue run and one certificate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LedgerRecord {
+    pub run_id: u128,
+    pub participant_id: u128,
+    /// The highest private-stream sequence the books reflect.
+    pub cursor: u64,
+    books: Vec<(u128, PnlBook)>,
+    samples: Vec<PnlSample>,
+}
+
+impl LedgerRecord {
+    /// The record as JSON (128-bit figures as strings).
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let books: Vec<serde_json::Value> = self
+            .books
+            .iter()
+            .map(|(instrument, book)| {
+                json!({
+                    "instrument_id": instrument.to_string(),
+                    "position": book.position,
+                    "cost_tick_lots": book.cost_tick_lots.to_string(),
+                    "cost_known": book.cost_known,
+                    "realized_tick_lots": book.realized_tick_lots.to_string(),
+                    "fees_minor": book.fees_minor.to_string(),
+                    "last_fill_sequence": book.last_fill_sequence,
+                })
+            })
+            .collect();
+        let samples: Vec<serde_json::Value> = self
+            .samples
+            .iter()
+            .map(|sample| {
+                json!([
+                    sample.time_ns,
+                    sample.total.to_string(),
+                    sample.multipliers_known
+                ])
+            })
+            .collect();
+        json!({
+            "version": 1,
+            "run_id": self.run_id.to_string(),
+            "participant_id": self.participant_id.to_string(),
+            "cursor": self.cursor,
+            "books": books,
+            "samples": samples,
+        })
+    }
+
+    /// Reads [`Self::to_json`] back; `None` for anything else.
+    #[must_use]
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        if value["version"].as_u64() != Some(1) {
+            return None;
+        }
+        let big = |value: &serde_json::Value| value.as_str()?.parse::<i128>().ok();
+        let id = |value: &serde_json::Value| value.as_str()?.parse::<u128>().ok();
+        let mut books = Vec::new();
+        for book in value["books"].as_array()?.iter().take(MAX_PNL_BOOKS) {
+            books.push((
+                id(&book["instrument_id"])?,
+                PnlBook {
+                    position: book["position"].as_i64()?,
+                    cost_tick_lots: big(&book["cost_tick_lots"])?,
+                    cost_known: book["cost_known"].as_bool()?,
+                    realized_tick_lots: big(&book["realized_tick_lots"])?,
+                    fees_minor: big(&book["fees_minor"])?,
+                    last_fill_sequence: book["last_fill_sequence"].as_u64()?,
+                    unexplained: None,
+                },
+            ));
+        }
+        let mut samples = Vec::new();
+        for sample in value["samples"].as_array()?.iter().take(MAX_PNL_SAMPLES) {
+            samples.push(PnlSample {
+                time_ns: sample[0].as_u64()?,
+                total: big(&sample[1])?,
+                multipliers_known: sample[2].as_bool()?,
+            });
+        }
+        Some(Self {
+            run_id: id(&value["run_id"])?,
+            participant_id: id(&value["participant_id"])?,
+            cursor: value["cursor"].as_u64()?,
+            books,
+            samples,
+        })
+    }
 }
 
 impl Model {
+    // ---- the ledger record (kept between launches) ---------------------
+
+    /// This session's books and P&L samples as a [`LedgerRecord`], once
+    /// connected and holding at least one book.
+    #[must_use]
+    pub fn ledger_record(&self) -> Option<LedgerRecord> {
+        let super::Connection::Connected { welcome, .. } = self.connection() else {
+            return None;
+        };
+        if self.series.books.is_empty() {
+            return None;
+        }
+        Some(LedgerRecord {
+            run_id: welcome.run_id,
+            participant_id: welcome.participant_id,
+            cursor: self.last_sequence(),
+            books: self
+                .series
+                .books
+                .iter()
+                .map(|(instrument, book)| (*instrument, *book))
+                .collect(),
+            samples: self.series.samples.iter().copied().collect(),
+        })
+    }
+
+    /// Holds `record` until the session connects. It is applied only when
+    /// the `Welcome` names the same run and participant and the run has
+    /// reached the record's cursor (a lower sequence is a different run);
+    /// connect with `resume_after` at [`LedgerRecord::cursor`] so every
+    /// later report replays on top of it.
+    pub fn preload_ledger(&mut self, record: LedgerRecord) {
+        self.series.pending = Some(record);
+    }
+
+    pub(super) fn series_connected(
+        &mut self,
+        run_id: u128,
+        participant_id: u128,
+        run_sequence: u64,
+    ) {
+        let Some(record) = self.series.pending.take() else {
+            return;
+        };
+        if record.run_id != run_id
+            || record.participant_id != participant_id
+            || run_sequence < record.cursor
+            || !self.series.books.is_empty()
+        {
+            return;
+        }
+        self.series.books = record.books.into_iter().collect();
+        self.series.samples = record.samples.into_iter().collect();
+        self.series.restored_through = record.cursor;
+        self.last_sequence = self.last_sequence.max(record.cursor);
+    }
+
     // ---- reading: market series --------------------------------------
 
     /// `listing`'s bars of `bar_ns` run-time nanoseconds (see
@@ -747,6 +909,10 @@ impl Model {
     }
 
     pub(super) fn series_fill(&mut self, fill: &FillRow, now_us: u64) {
+        if fill.sequence <= self.series.restored_through {
+            // Already in a book restored from the ledger record.
+            return;
+        }
         let instrument_id = fill.listing.instrument_id;
         if !self.series.books.contains_key(&instrument_id)
             && self.series.books.len() == MAX_PNL_BOOKS

@@ -23,7 +23,7 @@ mod run;
 mod series;
 pub use run::{Dealt, MAX_DEALS, MAX_NEWS, NewsItem};
 pub use series::{
-    BAR_SIZES_NS, Bar, FINEST_BAR_NS, MAX_FINE_BARS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES,
+    BAR_SIZES_NS, Bar, FINEST_BAR_NS, LedgerRecord, MAX_FINE_BARS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES,
     MAX_SERIES_LISTINGS, PNL_SAMPLE_NS, PnlSample, PnlTotals,
 };
 
@@ -720,6 +720,7 @@ impl Model {
                 }
             ),
         );
+        self.series_connected(welcome.run_id, welcome.participant_id, welcome.run_sequence);
         self.connection = Connection::Connected {
             welcome,
             since_us: now_us,

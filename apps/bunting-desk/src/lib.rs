@@ -20,6 +20,7 @@ pub mod flash;
 pub mod format;
 pub mod ladder;
 pub mod layouts;
+pub mod ledger;
 pub mod news;
 pub mod onboarding;
 pub mod one_click;

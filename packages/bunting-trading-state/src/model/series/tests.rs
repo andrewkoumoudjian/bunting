@@ -590,3 +590,61 @@ fn continuous_bars_stay_bounded_after_a_long_silence() {
             .is_empty()
     );
 }
+
+fn connect(model: &mut Model, run_id: u128, run_sequence: u64) {
+    use bunting_client::bnp_wire::{ResumeStatus, Role, Welcome};
+    let _ = model.apply(
+        crate::model::SessionEvent::Connected(Welcome {
+            version: 1,
+            run_id,
+            participant_id: 1,
+            role: Role::Participant,
+            heartbeat_ms: 1_000,
+            max_frame_bytes: 65_536,
+            resume: ResumeStatus::Replaying,
+            run_sequence,
+        }),
+        0,
+    );
+}
+
+#[test]
+fn a_ledger_record_restores_cost_and_pnl_after_a_relaunch() {
+    let mut first = model_with_listings();
+    connect(&mut first, 7, 0);
+    fill(&mut first, NEAR, Side::Buy, 100, 10, 0, 5, 0);
+    fill(&mut first, NEAR, Side::Buy, 104, 10, 1, 6, 0);
+    first.last_sequence = 6;
+    let record = first.ledger_record().expect("a record once a book exists");
+    let restored = LedgerRecord::from_json(&record.to_json()).expect("round trip");
+    assert_eq!(restored, record);
+
+    // Relaunch on the same run: the books come back, a replayed fill at
+    // or below the cursor is not counted twice, a later one is.
+    let mut second = model_with_listings();
+    second.preload_ledger(restored.clone());
+    connect(&mut second, 7, 9);
+    assert_eq!(second.average_cost(7), Some((2_040, 20)));
+    fill(&mut second, NEAR, Side::Buy, 104, 10, 1, 6, 0);
+    assert_eq!(
+        second.average_cost(7),
+        Some((2_040, 20)),
+        "duplicate skipped"
+    );
+    fill(&mut second, NEAR, Side::Sell, 110, 20, 0, 8, 0);
+    assert_eq!(second.realized_pnl(7), 160 - 1, "8 x 20 lots less the fee");
+
+    // A different run (or one behind the cursor) ignores the record.
+    let mut other = model_with_listings();
+    other.preload_ledger(restored.clone());
+    connect(&mut other, 8, 100);
+    assert_eq!(other.average_cost(7), None);
+    let mut fresh = model_with_listings();
+    fresh.preload_ledger(restored);
+    connect(&mut fresh, 7, 3);
+    assert_eq!(
+        fresh.average_cost(7),
+        None,
+        "run 7 restarted below the cursor"
+    );
+}

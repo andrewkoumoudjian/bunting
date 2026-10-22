@@ -901,6 +901,10 @@ pub struct SharedVenue {
     /// Whether this client started the server (informational only: every
     /// client takes part in the last-leaver shutdown).
     pub started_server: bool,
+    /// Identifies this start of the server (its `venue.json` nonce): a
+    /// restarted practice venue is a new market even though its run ID
+    /// and certificates are the same, so per-run client state keys on it.
+    pub instance: String,
     claim: Option<ParticipantClaim>,
     /// The starter keeps the child handle only to reap it; it is never
     /// killed through the handle, so the server survives this client
@@ -1006,7 +1010,11 @@ pub fn join_or_start(
     let client = prepared
         .client_for(claim.participant_id)
         .ok_or_else(|| LocalVenueError("the claimed participant has no certificate".to_owned()))?;
+    let instance = read_venue_record(&prepared.directory)
+        .map(|record| record.nonce)
+        .unwrap_or_default();
     Ok(SharedVenue {
+        instance,
         participant_id: claim.participant_id,
         prepared,
         client,

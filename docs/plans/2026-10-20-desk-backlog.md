@@ -223,11 +223,30 @@ date.
   feature and spec the desk needs at a minimum.
 - "add the same sounds for order filled, etc as we have in RIT client
   and the same onboarding flow".
-- **TODO:** probe `flserver.rotman.utoronto.ca` to learn how Rotman
-  hosts its RIT server, as inspiration for hosting ours. Only passive,
-  public observation: DNS, reachability and the ports the RIT client
-  documents (10000 for the client, 9999 for the local REST API). No
-  scanning beyond that and no login attempts.
+- **Done (2026-10-22): probed `flserver.rotman.utoronto.ca`** to learn how
+  Rotman hosts its RIT server. Passive only: DNS, ICMP and a TCP connect to
+  the ports the client documents. No login attempts.
+  - **Observed:**
+    - the name is a CNAME to `flserver-02.rotman.utoronto.ca`,
+      142.1.150.10, on the University of Toronto's own network
+      (142.1.0.0/16, `UTORONTO`), with a matching PTR;
+    - siblings `flserver-01` (142.1.150.12) and `flserver-03`
+      (142.1.150.17) resolve;
+    - ICMP is dropped;
+    - **TCP 10000 is open to the internet**: the client's WCF `net.tcp`
+      service;
+    - 9999 is closed, as expected, because it is the client-local REST
+      API;
+    - 80 and 443 are closed.
+  - **Inferred:**
+    - a small pool of numbered, self-hosted Windows servers;
+    - a stable alias moved between them;
+    - one public service port per server, with no web front end.
+  - **For Bunting:**
+    - keep a stable name in front of a numbered host;
+    - one BNP port;
+    - unlike RIT, keep it on the tailnet or behind mutual TLS, never an
+      open plaintext port (ADR 0031, ADR 0044).
 - **TODO** (owner, 2026-10-22): "implement and test the bunting
   server … by the server i mean hosting it onto our oracle instance (in
   our tailnet) … it is a secondary connection option other than local".

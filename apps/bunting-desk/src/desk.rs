@@ -9,6 +9,8 @@
 //! received them, so measured times are the network's and the venue's, not
 //! this app's frame rate.
 
+use crate::ledger::LedgerStore;
+use bunting_trading_state::LedgerRecord;
 use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, OtcDecision, Side};
 use bunting_trading_state::local_venue::SharedVenue;
 use bunting_trading_state::{Instrument, Model, OrderTicket, Session, SessionEvent, TicketError};
@@ -47,7 +49,13 @@ pub struct Venue {
     /// after the session. The claim's drop stops the server only when
     /// this was the market's last client.
     pub local: Option<SharedVenue>,
+    /// Where this run's own books are kept, and what a previous launch
+    /// left there.
+    pub ledger: Option<(LedgerStore, Option<LedgerRecord>)>,
 }
+
+/// How often the desk's own books are written while they change.
+const LEDGER_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct Desk {
     model: Model,
@@ -66,10 +74,14 @@ pub struct Desk {
     /// What has already sounded; set when the session first connects,
     /// so joining never replays history.
     heard: Option<crate::sounds::Watch>,
+    ledger: Option<LedgerStore>,
+    /// The cursor last written to the ledger, and when.
+    ledger_saved: (u64, Instant),
 }
 
 impl Drop for Desk {
     fn drop(&mut self) {
+        self.save_ledger();
         // Log out before releasing the participant claim; releasing the
         // last claim stops the shared local server.
         self.link = Link::None;
@@ -81,9 +93,19 @@ impl Desk {
     /// A desk attached to a venue session.
     #[must_use]
     pub fn connected(venue: Venue, label: String) -> Self {
-        let Venue { session, local } = venue;
+        let Venue {
+            session,
+            local,
+            ledger,
+        } = venue;
         let mut desk = Self::new(Link::Session(session), label);
         desk.local = local;
+        if let Some((store, record)) = ledger {
+            if let Some(record) = record {
+                desk.model.preload_ledger(record);
+            }
+            desk.ledger = Some(store);
+        }
         desk
     }
 
@@ -119,6 +141,8 @@ impl Desk {
             dirty: true,
             last_redraw: Instant::now(),
             heard: None,
+            ledger: None,
+            ledger_saved: (0, Instant::now()),
         }
     }
 
@@ -169,6 +193,9 @@ impl Desk {
         }
         let requests = self.model.tick(self.now_us());
         self.send_all(requests);
+        if self.ledger_saved.1.elapsed() >= LEDGER_SAVE_INTERVAL {
+            self.save_ledger();
+        }
         match &mut self.heard {
             Some(watch) => crate::sounds::play(&watch.cues(&self.model), cx),
             None if self.model.is_connected() => {
@@ -181,6 +208,24 @@ impl Desk {
             self.dirty = false;
             self.last_redraw = Instant::now();
             cx.notify();
+        }
+    }
+
+    /// Writes the desk's own books when they moved since the last write.
+    fn save_ledger(&mut self) {
+        self.ledger_saved.1 = Instant::now();
+        let (Some(store), Some(record)) = (&self.ledger, self.model.ledger_record()) else {
+            return;
+        };
+        if record.cursor == self.ledger_saved.0 {
+            return;
+        }
+        match store.save(&record) {
+            Ok(()) => self.ledger_saved.0 = record.cursor,
+            Err(error) => eprintln!(
+                "bunting-desk: cannot save {}: {error}",
+                store.path().display()
+            ),
         }
     }
 
