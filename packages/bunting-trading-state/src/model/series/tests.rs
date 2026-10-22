@@ -609,14 +609,14 @@ fn connect(model: &mut Model, run_id: u128, run_sequence: u64) {
 }
 
 #[test]
-fn a_ledger_record_restores_cost_and_pnl_after_a_relaunch() {
+fn a_ledger_record_restores_cost_and_pnl_after_a_relaunch() -> Result<(), String> {
     let mut first = model_with_listings();
     connect(&mut first, 7, 0);
     fill(&mut first, NEAR, Side::Buy, 100, 10, 0, 5, 0);
     fill(&mut first, NEAR, Side::Buy, 104, 10, 1, 6, 0);
     first.last_sequence = 6;
-    let record = first.ledger_record().expect("a record once a book exists");
-    let restored = LedgerRecord::from_json(&record.to_json()).expect("round trip");
+    let record = first.ledger_record().ok_or("a record once a book exists")?;
+    let restored = LedgerRecord::from_json(&record.to_json()).ok_or("round trip")?;
     assert_eq!(restored, record);
 
     // Relaunch on the same run: the books come back, a replayed fill at
@@ -647,4 +647,5 @@ fn a_ledger_record_restores_cost_and_pnl_after_a_relaunch() {
         None,
         "run 7 restarted below the cursor"
     );
+    Ok(())
 }
