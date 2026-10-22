@@ -305,7 +305,7 @@ jobs:
             '- **Windows:** download `bunting-desk-'"$tag"'-x86_64-pc-windows-msvc.zip`, extract it and run `bunting-desk.exe`.' \
             '- **Linux:** the installer adds Bunting to your app launcher; the `bunting-desk` archives hold the same files.' \
             '' \
-            'Opened with no options, the app starts or joins the practice market on your computer: built-in traders on two venues and eight seats, so every app you open trades in the same market. Use `--server` and your certificates for a hosted venue.' \
+            'The app opens on a connect screen: **Practice locally** starts or joins the practice market on your computer (built-in traders on two venues and eight seats, so every app you open trades in the same market), and **Hosted venue** joins a venue with an invite from its operator.' \
             '' \
             '### Venue, terminal and tools' \
             '' \

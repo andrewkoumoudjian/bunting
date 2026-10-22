@@ -401,3 +401,28 @@ The owner's answers:
   tender as it arrives.
 - **Still to come:** gating each case module from the venue's case
   information needs ADR 0054 R4.
+
+### Release v0.3.0 and the Oracle redeploy
+
+- **Dry runs:**
+  - The first, `39841533427`, built every platform. Its macOS bundle
+    smoke test failed because it expected a plain open to start the
+    practice venue, and the connect screen now waits for a choice.
+  - The test now checks that a plain open shows the connect screen with no
+    venue, and that `--local` starts the venue and stops it on quit.
+  - The second dry run, `39845768322`, passed every job.
+- **Release:** tag `v0.3.0`, run `39850620253`, published with every
+  archive, `Bunting-v0.3.0-macOS.dmg` and `SHA256SUMS`. The notes template
+  now describes the connect screen.
+- **Oracle** (`instance-20261019-1530`):
+  - v0.3.0 aarch64, checked against `SHA256SUMS`, is installed at
+    `/usr/local/bin/bunting` and `/usr/local/bin/bunting-trader`.
+  - The venue is re-provisioned with `host-init --enrolment`; the CA key
+    was not kept for the earlier one, so its certificates no longer apply.
+    The old directory is kept as `~/bunting/venue-v2-backup`.
+  - Same service, port 7400 and firewall rule.
+- **Live check:**
+  - `bunting invite` on the host, then `bunting-trader enroll` from
+    another tailnet machine;
+  - participant 2 enrolled (venue log: "BNP participant 2 enrolled") and
+    bought 10 at 99.60 with a 4.7 ms order round trip.
