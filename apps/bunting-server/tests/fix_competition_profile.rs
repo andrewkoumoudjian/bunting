@@ -64,5 +64,22 @@ fn a_fix_participant_receives_the_book_and_competition_projections() -> Result<(
             .any(|message| message.value(10010).is_some()),
         "projections carry the committed sequence"
     );
+    // The SecurityList carries the reference data BNP 1.1 publishes, as
+    // standard fields (ADR 0054 §9).
+    let list = client
+        .received
+        .iter()
+        .find(|message| message.msg_type == "y")
+        .ok_or("no SecurityList")?;
+    let entries: usize = list
+        .value(146)
+        .and_then(|count| count.parse().ok())
+        .ok_or("NoRelatedSym")?;
+    assert!(entries >= 1);
+    assert_eq!(list.value(48), Some("1"));
+    assert_eq!(list.value(207), Some("1"));
+    assert_eq!(list.value(167), Some("CS"));
+    assert!(list.value(231).is_some() && list.value(969) == Some("1"));
+    assert!(list.value(10023).is_some(), "quoted decimals");
     Ok(())
 }

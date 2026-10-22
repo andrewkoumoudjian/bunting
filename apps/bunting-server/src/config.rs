@@ -200,6 +200,27 @@ pub struct BnpConfig {
     pub max_messages_per_interval: usize,
     /// Time allowed for the TLS handshake and `Hello` together.
     pub handshake_timeout_ms: u64,
+    /// Enrolment by invite (ADR 0056): when set, a client without a
+    /// certificate may enrol once with an invite and receives a client
+    /// certificate from the CA in `client_ca`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrolment: Option<EnrolmentConfig>,
+}
+
+/// Where enrolment keeps its CA key, invites and enrolled certificates.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnrolmentConfig {
+    /// PEM private key of the client CA in `bnp.client_ca` (mode 0600).
+    pub ca_key: String,
+    /// JSON invites file written by `bunting invite`.
+    pub invites: String,
+    /// JSON file of enrolled roster entries; created when absent.
+    pub enrolled: String,
+    /// Validity of an issued client certificate, in days (1..=3650).
+    pub certificate_days: u32,
+    /// Participants that may enrol at most (1..=1024); bounds the roster.
+    pub max_enrolled: usize,
 }
 
 /// One registered client certificate.
@@ -343,6 +364,9 @@ impl ServerConfig {
                         max_intents_per_wake: 4,
                         instrument_id: None,
                         venue_id: None,
+                        inventory_skew_lots: None,
+                        inventory_limit: None,
+                        poisson_wakes: false,
                     }],
                 },
             }),
@@ -380,6 +404,15 @@ impl ServerConfig {
             .chain(bnp.revocation_lists.iter_mut())
             {
                 resolve_relative(path, base);
+            }
+            if let Some(enrolment) = bnp.enrolment.as_mut() {
+                for path in [
+                    &mut enrolment.ca_key,
+                    &mut enrolment.invites,
+                    &mut enrolment.enrolled,
+                ] {
+                    resolve_relative(path, base);
+                }
             }
         }
     }
@@ -617,8 +650,26 @@ fn validate_bnp(bnp: &BnpConfig) -> Result<(), ConfigError> {
                 .to_owned(),
         ));
     }
-    if bnp.roster.is_empty() {
-        return Err(ConfigError("bnp.roster must be non-empty".to_owned()));
+    let enrolled_capacity = match &bnp.enrolment {
+        Some(enrolment) => {
+            if [&enrolment.ca_key, &enrolment.invites, &enrolment.enrolled]
+                .into_iter()
+                .any(String::is_empty)
+                || !(1..=3_650).contains(&enrolment.certificate_days)
+                || !(1..=1_024).contains(&enrolment.max_enrolled)
+            {
+                return Err(ConfigError(
+                    "bnp.enrolment needs ca_key, invites and enrolled paths, certificate_days 1..=3650 and max_enrolled 1..=1024".to_owned(),
+                ));
+            }
+            enrolment.max_enrolled
+        }
+        None => 0,
+    };
+    if bnp.roster.is_empty() && enrolled_capacity == 0 {
+        return Err(ConfigError(
+            "bnp.roster must be non-empty unless bnp.enrolment is configured".to_owned(),
+        ));
     }
     let mut participants = std::collections::BTreeSet::new();
     let mut fingerprints = std::collections::BTreeSet::new();
@@ -648,7 +699,7 @@ fn validate_bnp(bnp: &BnpConfig) -> Result<(), ConfigError> {
         }
     }
     if bnp.max_connections == 0
-        || bnp.max_connections > bnp.roster.len()
+        || bnp.max_connections > bnp.roster.len() + enrolled_capacity
         || !(100..=60_000).contains(&bnp.heartbeat_ms)
         || !(1_024..=bnp_wire::MAX_FRAME_BYTES).contains(&bnp.max_frame_bytes)
         || !(1..=60_000).contains(&bnp.rate_limit_window_ms)

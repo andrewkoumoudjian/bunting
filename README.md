@@ -45,7 +45,7 @@ system-wide path matters:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/andrewkoumoudjian/bunting/main/install.sh |
-  BUNTING_VERSION=v0.2.0 BUNTING_INSTALL_DIR="$HOME/bin" \
+  BUNTING_VERSION=v0.3.0 BUNTING_INSTALL_DIR="$HOME/bin" \
   BUNTING_CONFIG_DIR="$HOME/.config/bunting/server" sh
 ```
 

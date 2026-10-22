@@ -54,6 +54,15 @@ pub struct RuntimeAgentConfig {
     /// present, its orders are `SubmitOrderAtListing` for that listing.
     #[serde(default)]
     pub venue_id: Option<VenueId>,
+    /// See [`bunting_agents::AgentConfig::inventory_skew_lots`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_skew_lots: Option<i64>,
+    /// See [`bunting_agents::AgentConfig::inventory_limit`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_limit: Option<QuantityLots>,
+    /// See [`bunting_agents::AgentConfig::poisson_wakes`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub poisson_wakes: bool,
 }
 
 /// The fundamental of an instrument other than the scheduler's own. Every
@@ -770,6 +779,9 @@ fn scheduled_agent(
         wake_interval_ns: config.wake_interval_ns,
         seed: config.seed,
         max_intents_per_wake: config.max_intents_per_wake,
+        inventory_skew_lots: config.inventory_skew_lots,
+        inventory_limit: config.inventory_limit,
+        poisson_wakes: config.poisson_wakes,
     });
     // An agent's orders live two wakes, so it never has many; its reports
     // arrive exactly once from the host. Small windows keep the snapshot
@@ -940,6 +952,9 @@ mod tests {
                 max_intents_per_wake: 4,
                 instrument_id: None,
                 venue_id: None,
+                inventory_skew_lots: None,
+                inventory_limit: None,
+                poisson_wakes: false,
             }],
         };
         Ok((
@@ -1077,6 +1092,9 @@ mod tests {
                 max_intents_per_wake: 4,
                 instrument_id: instrument.map(InstrumentId::new),
                 venue_id: venue.map(VenueId::new),
+                inventory_skew_lots: None,
+                inventory_limit: None,
+                poisson_wakes: false,
             };
         let config = RuntimeConfig {
             run_id: RunId::new(1),

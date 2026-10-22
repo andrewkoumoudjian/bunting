@@ -79,6 +79,67 @@ pub fn price(price: Option<i64>) -> String {
     price.map_or_else(|| "market".to_owned(), |price| price.to_string())
 }
 
+pub use bunting_trading_state::display::{fixed, parse_price, ticks};
+
+/// [`ticks`] for an order price; `None` is a market order.
+#[must_use]
+pub fn price_at(price: Option<i64>, decimals: u8) -> String {
+    price.map_or_else(|| "market".to_owned(), |price| ticks(price, decimals))
+}
+
+/// An average price from exact tick-lots over its lots, at the quote's
+/// `decimals` plus up to two more places when the average needs them
+/// (never rounded away to a whole tick). With 0 decimals this is
+/// [`average_price`].
+#[must_use]
+pub fn average_price_at(tick_lots: i128, lots: i64, decimals: u8) -> String {
+    if decimals == 0 {
+        return average_price(tick_lots, lots);
+    }
+    let lots = i128::from(lots).abs().max(1);
+    // Hundredths of a tick, rounded half up.
+    let hundredths = (tick_lots.abs() * 100 + lots / 2) / lots;
+    let text = fixed(hundredths, decimals.saturating_add(2));
+    // Trim the extra places back while they are zero.
+    let trimmed = text
+        .strip_suffix("00")
+        .or_else(|| text.strip_suffix('0'))
+        .unwrap_or(&text);
+    let sign = if tick_lots < 0 { "-" } else { "" };
+    format!("{sign}{trimmed}")
+}
+
+/// Money in minor units shown in major units with digit grouping:
+/// `money(123_456_78, 2)` is `123,456.78`; 0 decimals is [`grouped`].
+#[must_use]
+pub fn money(minor: i128, decimals: u8) -> String {
+    if decimals == 0 {
+        return grouped(minor);
+    }
+    let scale = 10_i128.pow(u32::from(decimals));
+    let whole = grouped(minor / scale);
+    let sign = if minor < 0 && minor / scale == 0 {
+        "-"
+    } else {
+        ""
+    };
+    format!(
+        "{sign}{whole}.{:0width$}",
+        (minor % scale).unsigned_abs(),
+        width = usize::from(decimals)
+    )
+}
+
+/// [`money`] with an explicit `+` on positive amounts, for P&L.
+#[must_use]
+pub fn money_signed(minor: i128, decimals: u8) -> String {
+    if minor > 0 {
+        format!("+{}", money(minor, decimals))
+    } else {
+        money(minor, decimals)
+    }
+}
+
 /// A whole number with a thousands separator: `1234567` as `1,234,567`.
 #[must_use]
 pub fn grouped(value: i128) -> String {
@@ -128,6 +189,31 @@ mod tests {
         assert_eq!(super::average_price(4_220, -40), "105.5");
     }
     use super::*;
+
+    #[test]
+    fn prices_show_and_parse_at_the_quoted_decimals() {
+        assert_eq!(ticks(10_050, 2), "100.50");
+        assert_eq!(ticks(5, 2), "0.05");
+        assert_eq!(ticks(-1_050, 2), "-10.50");
+        assert_eq!(ticks(101, 0), "101");
+        assert_eq!(price_at(None, 2), "market");
+        assert_eq!(parse_price("100.5", 2), Some(10_050));
+        assert_eq!(parse_price("100", 2), Some(10_000));
+        assert_eq!(parse_price(".05", 2), Some(5));
+        assert_eq!(parse_price("100.505", 2), None, "finer than the quote");
+        assert_eq!(parse_price("1e3", 2), None);
+        assert_eq!(parse_price("", 2), None);
+        assert_eq!(parse_price("42", 0), Some(42));
+        assert_eq!(average_price_at(1_005_050, 100, 2), "100.505");
+        assert_eq!(average_price_at(1_005_000, 100, 2), "100.50");
+        assert_eq!(average_price_at(2_010_000, 200, 2), "100.50");
+        assert_eq!(average_price_at(100_001, 10, 2), "100.001");
+        assert_eq!(money(12_345_678, 2), "123,456.78");
+        assert_eq!(money(-5, 2), "-0.05");
+        assert_eq!(money(-12_345, 2), "-123.45");
+        assert_eq!(money_signed(250, 2), "+2.50");
+        assert_eq!(money(1_500, 0), "1,500");
+    }
 
     #[test]
     fn numbers_group_by_thousands() {

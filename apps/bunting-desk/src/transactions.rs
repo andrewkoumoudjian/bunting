@@ -67,6 +67,9 @@ pub struct Entry {
     pub flow: i128,
     /// The derived balance after this movement.
     pub balance: Option<i128>,
+    /// Decimal places of the price and of the money.
+    pub decimals: u8,
+    pub money_decimals: u8,
 }
 
 impl Entry {
@@ -78,11 +81,13 @@ impl Entry {
             format::logical(self.time_ns),
             self.symbol.clone(),
             self.kind.label().to_owned(),
-            self.price.map_or_else(dash, |price| price.to_string()),
+            self.price
+                .map_or_else(dash, |price| format::ticks(price, self.decimals)),
             self.quantity
                 .map_or_else(dash, |quantity| format::grouped(quantity.into())),
-            format::grouped_signed(self.flow),
-            self.balance.map_or_else(dash, format::grouped),
+            format::money_signed(self.flow, self.money_decimals),
+            self.balance
+                .map_or_else(dash, |balance| format::money(balance, self.money_decimals)),
         ]
     }
 }
@@ -94,6 +99,8 @@ pub fn entries(model: &Model) -> Vec<Entry> {
     for fill in model.fills() {
         let symbol = model.symbol(fill.listing).unwrap_or("?").to_owned();
         let (multiplier, _) = model.multiplier(fill.listing.instrument_id);
+        let decimals = model.quoted_decimals(fill.listing.instrument_id);
+        let money_decimals = model.money_decimals(fill.listing.instrument_id);
         let notional = i128::from(fill.price)
             .saturating_mul(i128::from(fill.quantity))
             .saturating_mul(i128::from(multiplier));
@@ -112,6 +119,8 @@ pub fn entries(model: &Model) -> Vec<Entry> {
                 Side::Sell => notional,
             },
             balance: None,
+            decimals,
+            money_decimals,
         });
         if fill.fee != 0 {
             list.push(Entry {
@@ -127,6 +136,8 @@ pub fn entries(model: &Model) -> Vec<Entry> {
                 quantity: None,
                 flow: fill.fee.saturating_neg(),
                 balance: None,
+                decimals,
+                money_decimals,
             });
         }
     }

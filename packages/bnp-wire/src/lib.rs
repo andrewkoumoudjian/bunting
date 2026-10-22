@@ -16,8 +16,38 @@ mod codec;
 
 pub use codec::{FrameDecoder, decode_client, decode_server, encode_client, encode_server};
 
-/// Version both peers state in `Hello` and `Welcome`.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// BNP 1.0, written `1` in `Hello` and `Welcome` (the legacy value).
+pub const VERSION_1_0: u16 = 1;
+/// BNP 1.1 (ADR 0054 §1): `major × 256 + minor`. It adds message types
+/// only; every 1.0 body is unchanged.
+pub const VERSION_1_1: u16 = 257;
+/// The highest version this crate speaks: a client offers it in `Hello`,
+/// and a server answers with [`negotiate`]'s choice in `Welcome`.
+pub const PROTOCOL_VERSION: u16 = VERSION_1_1;
+
+/// The version a server speaks to a client that offered `offered`: the
+/// lower of the two 1.x minors, or `None` for another major.
+#[must_use]
+pub const fn negotiate(offered: u16) -> Option<u16> {
+    if offered == VERSION_1_0 {
+        return Some(VERSION_1_0);
+    }
+    if offered >> 8 != 1 {
+        return None;
+    }
+    let [minor, _] = offered.to_le_bytes();
+    if minor == 0 {
+        Some(VERSION_1_0)
+    } else {
+        Some(VERSION_1_1)
+    }
+}
+
+/// Whether a session negotiated at `version` carries 1.1 messages.
+#[must_use]
+pub const fn speaks_1_1(version: u16) -> bool {
+    version >= VERSION_1_1
+}
 /// First bytes of every `Hello` body, so a non-BNP peer is refused at once.
 pub const MAGIC: [u8; 4] = *b"BNP1";
 /// Bytes of the frame length prefix.
@@ -37,6 +67,9 @@ pub mod msg_type {
     pub const PROBE_REPLY: u8 = 0x03;
     pub const PING: u8 = 0x04;
     pub const CLIENT_LOGOUT: u8 = 0x05;
+    /// BNP 1.1 (ADR 0056): the only message of a session without a
+    /// client certificate.
+    pub const ENROLL: u8 = 0x06;
     pub const NEW_ORDER: u8 = 0x10;
     pub const CANCEL_ORDER: u8 = 0x11;
     pub const KILL_SWITCH: u8 = 0x12;
@@ -52,9 +85,13 @@ pub mod msg_type {
     pub const OPEN_ORDERS_REQUEST: u8 = 0x31;
     pub const ACCOUNT_REQUEST: u8 = 0x32;
     pub const DEALS_REQUEST: u8 = 0x33;
+    /// BNP 1.1.
+    pub const REFERENCE_DATA_REQUEST: u8 = 0x34;
     pub const OPERATOR_COMMAND: u8 = 0x38;
 
     pub const WELCOME: u8 = 0x41;
+    /// BNP 1.1 (ADR 0056).
+    pub const ENROLLED: u8 = 0x4e;
     pub const SERVER_HEARTBEAT: u8 = 0x42;
     pub const PROBE: u8 = 0x43;
     pub const PONG: u8 = 0x44;
@@ -91,6 +128,8 @@ pub mod msg_type {
     pub const DEALS: u8 = 0x73;
     pub const TENDER: u8 = 0x74;
     pub const NEGOTIATION: u8 = 0x75;
+    /// BNP 1.1.
+    pub const REFERENCE_DATA: u8 = 0x76;
 }
 
 /// Why a frame could not be encoded or decoded.
@@ -290,6 +329,22 @@ wire_enum!(
         UnknownListing = 24,
         MarketClosed = 25,
         CallPhaseOrderType = 26,
+        /// BNP 1.1: a limit price off the listing's tick grid. A 1.0
+        /// session receives `PriceOutOfBounds` instead.
+        PriceNotOnTick = 27,
+    }
+);
+
+wire_enum!(
+    /// An instrument's kind in `ReferenceData` (BNP 1.1).
+    InstrumentKind {
+        Equity = 1,
+        Currency = 2,
+        Bond = 3,
+        Option = 4,
+        Future = 5,
+        Commodity = 6,
+        Synthetic = 7,
     }
 );
 
@@ -651,6 +706,19 @@ pub enum ClientMessage {
     DealsRequest {
         request_id: u32,
     },
+    /// BNP 1.1: one page of reference data, instruments after
+    /// `after_instrument` in ID order, at most `limit` (1..=64; 0 is 64).
+    ReferenceDataRequest {
+        request_id: u32,
+        after_instrument: Option<u128>,
+        limit: u16,
+    },
+    /// BNP 1.1 (ADR 0056): an invite's secret and a PEM certificate
+    /// signing request, sent on a session without a client certificate.
+    Enroll {
+        secret: String,
+        csr_pem: String,
+    },
 }
 
 impl ClientMessage {
@@ -679,6 +747,8 @@ impl ClientMessage {
             Self::OtcCounter { .. } => msg_type::OTC_COUNTER,
             Self::OtcDecision { .. } => msg_type::OTC_DECISION,
             Self::DealsRequest { .. } => msg_type::DEALS_REQUEST,
+            Self::ReferenceDataRequest { .. } => msg_type::REFERENCE_DATA_REQUEST,
+            Self::Enroll { .. } => msg_type::ENROLL,
         }
     }
 }
@@ -785,6 +855,73 @@ pub struct TapeEntry {
 pub struct ListingInfo {
     pub listing: Listing,
     pub symbol: String,
+}
+
+/// Instruments per `ReferenceData` page at most.
+pub const MAX_REFERENCE_INSTRUMENTS: u16 = 64;
+
+/// A currency in `ReferenceData` (BNP 1.1). Code and name are empty when
+/// the scenario declares none.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrencyInfo {
+    pub currency_id: u128,
+    pub code: String,
+    pub name: String,
+    pub minor_decimals: u8,
+}
+
+/// An instrument's reference data (BNP 1.1, ADR 0054 §2). Kind
+/// parameters are present only for their kind.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per wire flag, in ADR 0054 order"
+)]
+pub struct InstrumentInfo {
+    pub instrument_id: u128,
+    pub symbol: String,
+    pub kind: InstrumentKind,
+    pub underlying: Option<u128>,
+    pub strike: Option<i64>,
+    pub expiry_ns: Option<u64>,
+    pub is_call: bool,
+    pub physical_delivery: bool,
+    pub coupon_bps: u32,
+    /// `(instrument_id, weight)` of a synthetic.
+    pub components: Vec<(u128, i64)>,
+    pub multiplier: i64,
+    pub currency_id: u128,
+    /// Decimal places for showing a price; display only.
+    pub quoted_decimals: u8,
+    pub shortable: bool,
+    pub tradeable: bool,
+    pub window_start_ns: Option<u64>,
+    pub window_stop_ns: Option<u64>,
+    pub display_unit: String,
+    pub description: String,
+    pub opening_mark: Option<i64>,
+    pub max_order_quantity: Option<i64>,
+}
+
+/// A listing's reference data (BNP 1.1).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one field per wire flag, in ADR 0054 order"
+)]
+pub struct ListingReference {
+    pub listing: Listing,
+    pub symbol: String,
+    pub min_price: i64,
+    pub max_price: i64,
+    /// Smallest price step, in ticks.
+    pub tick_size: i64,
+    pub taker_fee_per_lot: i128,
+    pub maker_fee_per_lot: i128,
+    pub broker_ids: bool,
+    pub primary: bool,
+    pub halted: bool,
+    pub in_window: bool,
 }
 
 /// One live order. `client_order_id` is 0 for an order not entered over BNP.
@@ -1049,6 +1186,24 @@ pub enum ServerMessage {
         tenders: Vec<TenderInfo>,
         negotiations: Vec<NegotiationInfo>,
     },
+    /// BNP 1.1: one page of reference data. `currencies` only on the first
+    /// page; `listings` are the listings of this page's instruments;
+    /// `next_after` is present iff more instruments remain.
+    ReferenceData {
+        request_id: u32,
+        run_sequence: u64,
+        next_after: Option<u128>,
+        currencies: Vec<CurrencyInfo>,
+        instruments: Vec<InstrumentInfo>,
+        listings: Vec<ListingReference>,
+    },
+    /// BNP 1.1 (ADR 0056): the certificate issued for an `Enroll`, and
+    /// the client CA that issued it.
+    Enrolled {
+        participant_id: u128,
+        certificate_pem: String,
+        ca_pem: String,
+    },
 }
 
 impl ServerMessage {
@@ -1093,6 +1248,8 @@ impl ServerMessage {
             Self::OpenOrders { .. } => msg_type::OPEN_ORDERS,
             Self::Account { .. } => msg_type::ACCOUNT,
             Self::Deals { .. } => msg_type::DEALS,
+            Self::ReferenceData { .. } => msg_type::REFERENCE_DATA,
+            Self::Enrolled { .. } => msg_type::ENROLLED,
         }
     }
 
@@ -1124,3 +1281,61 @@ impl ServerMessage {
 
 #[cfg(test)]
 mod tests;
+
+/// An enrolment invite (ADR 0056): where the venue listens, the SHA-256 of
+/// its client CA certificate (DER) that the client pins, and the one-time
+/// secret. Written `bnpi1:<host:port>:<ca-sha256-hex>:<secret-hex>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InviteToken {
+    pub address: String,
+    pub ca_sha256: [u8; 32],
+    pub secret: String,
+}
+
+impl InviteToken {
+    const PREFIX: &'static str = "bnpi1:";
+
+    /// Parses a pasted token (surrounding whitespace ignored).
+    ///
+    /// # Errors
+    /// Returns what is malformed.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let body = text
+            .trim()
+            .strip_prefix(Self::PREFIX)
+            .ok_or("an invite starts with bnpi1:")?;
+        // The address may hold colons (host:port); the pin and the
+        // secret are the last two fields.
+        let (rest, secret) = body.rsplit_once(':').ok_or("the invite has no secret")?;
+        let (address, pin) = rest.rsplit_once(':').ok_or("the invite has no CA pin")?;
+        if address.is_empty() || !address.contains(':') {
+            return Err("the invite's address must be host:port".to_owned());
+        }
+        if secret.len() != 32 || !secret.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("the invite's secret must be 32 hex digits".to_owned());
+        }
+        let mut ca_sha256 = [0_u8; 32];
+        if pin.len() != 64 {
+            return Err("the invite's CA pin must be 64 hex digits".to_owned());
+        }
+        for (index, byte) in ca_sha256.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(pin.get(index * 2..index * 2 + 2).unwrap_or(""), 16)
+                .map_err(|_| "the invite's CA pin must be hex".to_owned())?;
+        }
+        Ok(Self {
+            address: address.to_owned(),
+            ca_sha256,
+            secret: secret.to_ascii_lowercase(),
+        })
+    }
+}
+
+impl std::fmt::Display for InviteToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}:", Self::PREFIX, self.address)?;
+        for byte in self.ca_sha256 {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, ":{}", self.secret)
+    }
+}

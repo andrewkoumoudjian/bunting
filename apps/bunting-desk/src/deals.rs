@@ -134,6 +134,14 @@ impl DealsPanel {
         }
     }
 
+    /// `price` at the instrument's quoted decimals.
+    fn price(&self, instrument_id: u128, price: i64, cx: &App) -> String {
+        format::ticks(
+            price,
+            self.desk.read(cx).model().quoted_decimals(instrument_id),
+        )
+    }
+
     fn symbol(&self, instrument_id: u128, cx: &App) -> String {
         self.desk
             .read(cx)
@@ -160,7 +168,12 @@ impl DealsPanel {
         };
         let counterparty = number(&self.counterparty, cx);
         let quantity = number(&self.quantity, cx);
-        let price = number(&self.price, cx);
+        let decimals = self
+            .desk
+            .read(cx)
+            .model()
+            .quoted_decimals(instrument.instrument_id);
+        let price = format::parse_price(&self.price.read(cx).value(), decimals).unwrap_or(0);
         let seconds = number(&self.expires_in, cx);
         self.problem = if counterparty <= 0 {
             Some("Enter the counterparty's participant number.".to_owned())
@@ -230,7 +243,7 @@ impl DealsPanel {
                 cell(self.symbol(tender.instrument_id, cx)),
                 colored(format::side(tender.side), side_color(tender.side, cx)),
                 cell(tender.quantity.to_string()),
-                cell(tender.price.to_string()),
+                cell(self.price(tender.instrument_id, tender.price, cx)),
                 cell(self.expiry(tender.expires_at_ns, cx)),
                 cell(tender_status(tender.status)),
                 actions,
@@ -312,7 +325,7 @@ impl DealsPanel {
                 cell(self.symbol(info.instrument_id, cx)),
                 colored(format::side(side), side_color(side, cx)),
                 cell(info.quantity.to_string()),
-                cell(info.price.to_string()),
+                cell(self.price(info.instrument_id, info.price, cx)),
                 cell(self.expiry(info.expires_at_ns, cx)),
                 cell(status),
                 actions.into_any_element(),

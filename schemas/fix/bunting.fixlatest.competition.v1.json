@@ -85,7 +85,8 @@
     {"tag":10019,"name":"BuntingStatus","type":"String"},
     {"tag":10020,"name":"BuntingPayloadJSON","type":"data","bounded":true},
     {"tag":10021,"name":"BuntingAnonymous","type":"Boolean"},
-    {"tag":10022,"name":"BuntingExpireTimeNs","type":"String"}
+    {"tag":10022,"name":"BuntingExpireTimeNs","type":"String"},
+    {"tag":10023,"name":"BuntingQuotedDecimals","type":"String"}
   ],
   "participantCoverage": [
     "authentication",

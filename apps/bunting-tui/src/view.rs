@@ -4,6 +4,7 @@
 use crate::ui::{Field, Tab, TicketForm, Ui};
 use bunting_trading_state::bunting_client::QueuedOrder;
 use bunting_trading_state::bunting_client::bnp_wire::{Level, Liquidity, Listing, Side};
+use bunting_trading_state::display;
 use bunting_trading_state::{
     Connection, Feed, FeedState, Instrument, Model, NoticeLevel, OrderStatus, TicketKind,
     TradePrint,
@@ -316,7 +317,11 @@ fn render_book(
     let mut rows = Vec::new();
     if let Some(feed) = feed {
         let (asks, bids) = if by_order {
-            order_rows(feed, depth)
+            order_rows(
+                feed,
+                depth,
+                screen.model.quoted_decimals(listing.instrument_id),
+            )
         } else {
             level_rows(screen.model, feed, listing, depth)
         };
@@ -325,7 +330,13 @@ fn render_book(
         }
         rows.extend(asks);
         let spread = match (feed.book.best_bid(), feed.book.best_ask()) {
-            (Some(bid), Some(ask)) => format!("spread {}", ask.price - bid.price),
+            (Some(bid), Some(ask)) => format!(
+                "spread {}",
+                display::ticks(
+                    ask.price - bid.price,
+                    screen.model.quoted_decimals(listing.instrument_id)
+                )
+            ),
             _ => "one-sided".to_owned(),
         };
         rows.push(Row::new(vec![
@@ -351,7 +362,8 @@ fn render_book(
     frame.render_widget(table, area);
 }
 
-fn book_row(first: String, side: Side, price: i64, quantity: i64) -> Row<'static> {
+fn book_row(first: String, side: Side, price: i64, quantity: i64, decimals: u8) -> Row<'static> {
+    let price = display::ticks(price, decimals);
     match side {
         Side::Buy => Row::new(vec![
             Cell::from(first),
@@ -389,7 +401,13 @@ fn level_rows(
         } else {
             String::new()
         };
-        book_row(mark, side, level.price, level.quantity)
+        book_row(
+            mark,
+            side,
+            level.price,
+            level.quantity,
+            model.quoted_decimals(listing.instrument_id),
+        )
     };
     let asks = feed.book.asks();
     let asks = asks
@@ -410,7 +428,7 @@ fn level_rows(
 
 /// Every displayed order, asks (worst shown first) then bids, each with its
 /// place in its price's queue and its broker where the venue publishes it.
-fn order_rows(feed: &Feed, depth: usize) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
+fn order_rows(feed: &Feed, depth: usize, decimals: u8) -> (Vec<Row<'static>>, Vec<Row<'static>>) {
     let row = |order: &QueuedOrder| {
         let place = order.broker.map_or_else(
             || format!("{}", order.position_at_price),
@@ -421,7 +439,7 @@ fn order_rows(feed: &Feed, depth: usize) -> (Vec<Row<'static>>, Vec<Row<'static>
         } else {
             DIM
         };
-        book_row(place, order.side, order.price, order.quantity).style(style)
+        book_row(place, order.side, order.price, order.quantity, decimals).style(style)
     };
     let asks = feed.book.orders(Side::Sell);
     let asks = asks.iter().take(depth).rev().map(row).collect();
@@ -453,6 +471,7 @@ fn render_tape(
     let (Some(instrument), Some(tape)) = (instrument, tape) else {
         return;
     };
+    let decimals = screen.model.quoted_decimals(instrument.instrument_id);
     let best_bid = tape.book.best(Side::Buy).map(|(venue, _)| venue);
     let best_ask = tape.book.best(Side::Sell).map(|(venue, _)| venue);
     let quote = |venue_id: u128, side: Side, best: Option<u128>| -> Cell<'static> {
@@ -468,7 +487,12 @@ fn render_tape(
         } else {
             style
         };
-        Cell::from(format!("{} × {}", level.quantity, level.price)).style(style)
+        Cell::from(format!(
+            "{} × {}",
+            level.quantity,
+            display::ticks(level.price, decimals)
+        ))
+        .style(style)
     };
     let quotes: Vec<Row<'_>> = instrument
         .listings
@@ -511,7 +535,10 @@ fn render_tape(
             Row::new(vec![
                 Cell::from(clock(print.received_us)).style(DIM),
                 Cell::from(venue(print.listing)),
-                Cell::from(print.price.to_string()),
+                Cell::from(display::ticks(
+                    print.price,
+                    screen.model.quoted_decimals(print.listing.instrument_id),
+                )),
                 Cell::from(print.quantity.to_string()),
             ])
         })
@@ -543,7 +570,10 @@ fn render_trades(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
             Row::new(vec![
                 Cell::from(clock(print.received_us)).style(DIM),
                 Cell::from(venue(print.listing)),
-                Cell::from(print.price.to_string()),
+                Cell::from(display::ticks(
+                    print.price,
+                    screen.model.quoted_decimals(print.listing.instrument_id),
+                )),
                 Cell::from(print.quantity.to_string()),
                 Cell::from(brokers(print)).style(DIM),
             ])
@@ -679,8 +709,14 @@ fn render_fills(frame: &mut Frame<'_>, screen: &Screen<'_>, area: Rect) {
                 Cell::from(venue(fill.listing)),
                 Cell::from(side_span(fill.side)),
                 Cell::from(fill.quantity.to_string()),
-                Cell::from(fill.price.to_string()),
-                Cell::from(fill.fee.to_string()),
+                Cell::from(display::ticks(
+                    fill.price,
+                    screen.model.quoted_decimals(fill.listing.instrument_id),
+                )),
+                Cell::from(display::fixed(
+                    fill.fee,
+                    screen.model.money_decimals(fill.listing.instrument_id),
+                )),
                 Cell::from(match fill.liquidity {
                     Liquidity::Maker => "maker",
                     Liquidity::Taker => "taker",

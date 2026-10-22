@@ -72,18 +72,23 @@ pub struct Row {
     /// Whether the security is listed on more than one venue, so venue
     /// labels are needed.
     pub multi_venue: bool,
+    /// Decimal places of its prices and of its currency.
+    pub decimals: u8,
+    pub money_decimals: u8,
 }
 
-/// A price, with its venue when the security trades on several.
+/// A price at the quote's `decimals`, with its venue when the security
+/// trades on several.
 #[must_use]
-pub fn priced(value: Option<(i64, u128)>, multi_venue: bool) -> String {
+pub fn priced(value: Option<(i64, u128)>, multi_venue: bool, decimals: u8) -> String {
     value.map_or_else(
         || "—".to_owned(),
         |(price, venue)| {
+            let price = format::ticks(price, decimals);
             if multi_venue {
                 format!("{price} · V{venue}")
             } else {
-                price.to_string()
+                price
             }
         },
     )
@@ -107,13 +112,17 @@ impl Row {
             },
             count(self.position),
             self.cost.clone().unwrap_or_else(dash),
-            priced(self.last, self.multi_venue),
-            priced(self.bid, self.multi_venue),
-            priced(self.ask, self.multi_venue),
-            self.nlv.map_or_else(dash, format::grouped),
-            format::grouped_signed(self.realized),
-            self.unrealized.map_or_else(dash, format::grouped_signed),
-            self.vwap.map_or_else(dash, |vwap| vwap.to_string()),
+            priced(self.last, self.multi_venue, self.decimals),
+            priced(self.bid, self.multi_venue, self.decimals),
+            priced(self.ask, self.multi_venue, self.decimals),
+            self.nlv
+                .map_or_else(dash, |nlv| format::money(nlv, self.money_decimals)),
+            format::money_signed(self.realized, self.money_decimals),
+            self.unrealized.map_or_else(dash, |unrealized| {
+                format::money_signed(unrealized, self.money_decimals)
+            }),
+            self.vwap
+                .map_or_else(dash, |vwap| format::ticks(vwap, self.decimals)),
             format::grouped(self.volume),
             count(self.open_buy),
             count(self.open_sell),
@@ -267,9 +276,9 @@ pub fn rows(model: &Model) -> Vec<Row> {
                 open_buy: account.map(|_| held.map_or(0, |held| held.open_buy)),
                 open_sell: account.map(|_| held.map_or(0, |held| held.open_sell)),
                 pending: model.unreported_position(id),
-                cost: model
-                    .average_cost(id)
-                    .map(|(tick_lots, lots)| crate::format::average_price(tick_lots, lots)),
+                cost: model.average_cost(id).map(|(tick_lots, lots)| {
+                    crate::format::average_price_at(tick_lots, lots, model.quoted_decimals(id))
+                }),
                 last,
                 tick,
                 bid,
@@ -280,6 +289,8 @@ pub fn rows(model: &Model) -> Vec<Row> {
                 vwap,
                 volume,
                 multi_venue: instrument.listings.len() > 1,
+                decimals: model.quoted_decimals(id),
+                money_decimals: model.money_decimals(id),
             }
         })
         .collect()

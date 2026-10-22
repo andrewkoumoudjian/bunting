@@ -19,10 +19,14 @@
 mod book;
 #[cfg(not(target_arch = "wasm32"))]
 mod connection;
+#[cfg(not(target_arch = "wasm32"))]
+mod enrol;
 mod tape;
 
 pub use bnp_wire;
 pub use book::{FeedBook, FeedError, QueuedOrder};
 #[cfg(not(target_arch = "wasm32"))]
 pub use connection::{Client, ClientConfig, ClientError, ClientSender, certificate_fingerprint};
+#[cfg(not(target_arch = "wasm32"))]
+pub use enrol::{Enrolment, ca_matches, enroll};
 pub use tape::{TapeBook, TapeTrade};

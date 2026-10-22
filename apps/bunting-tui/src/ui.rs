@@ -4,6 +4,7 @@
 
 use bunting_trading_state::bunting_client::FeedBook;
 use bunting_trading_state::bunting_client::bnp_wire::{ClientMessage, Listing, Side};
+use bunting_trading_state::display;
 use bunting_trading_state::{Instrument, Model, OrderRow, OrderTicket, TicketKind, TicketTif};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -108,6 +109,8 @@ pub struct TicketForm {
     pub price: String,
     pub display: String,
     pub error: Option<String>,
+    /// The instrument's quoted decimals: the price is typed in them.
+    pub decimals: u8,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -245,12 +248,14 @@ impl Ui {
             ),
         };
         let price = same.or(other).map_or(0, |level| level.price);
+        let decimals = listing.map_or(0, |listing| model.quoted_decimals(listing.instrument_id));
         let mut ticket = OrderTicket::new(listing, side);
         ticket.price = price;
         self.ticket = Some(TicketForm {
+            decimals,
             quantity: ticket.quantity.to_string(),
             price: if price > 0 {
-                price.to_string()
+                display::ticks(price, decimals)
             } else {
                 String::new()
             },
@@ -326,7 +331,7 @@ impl TicketForm {
 
     fn read_numbers(&mut self) {
         self.ticket.quantity = self.quantity.parse().unwrap_or(0);
-        self.ticket.price = self.price.parse().unwrap_or(0);
+        self.ticket.price = display::parse_price(&self.price, self.decimals).unwrap_or(0);
         self.ticket.display_quantity = if self.display.is_empty() {
             None
         } else {

@@ -953,11 +953,17 @@ impl Model {
         }
     }
 
-    /// Sets an instrument's contract multiplier as a future BNP
-    /// reference-data message will; only tests can, today.
+    /// Sets an instrument's contract multiplier, as BNP 1.1 reference data
+    /// reports it.
+    pub(super) fn series_set_known_multiplier(&mut self, instrument_id: u128, multiplier: i64) {
+        if multiplier > 0 {
+            self.series.multipliers.insert(instrument_id, multiplier);
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn series_set_multiplier(&mut self, instrument_id: u128, multiplier: i64) {
-        self.series.multipliers.insert(instrument_id, multiplier);
+        self.series_set_known_multiplier(instrument_id, multiplier);
     }
 
     /// Records total P&L for the current run second, replacing that

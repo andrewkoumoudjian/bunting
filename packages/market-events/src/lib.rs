@@ -323,6 +323,9 @@ pub enum RejectCode {
     LogicalTimeRegression,
     SequenceConflict,
     ArithmeticOverflow,
+    /// A limit price that is not a whole number of the listing's tick
+    /// size (ADR 0054 §2).
+    PriceNotOnTick,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

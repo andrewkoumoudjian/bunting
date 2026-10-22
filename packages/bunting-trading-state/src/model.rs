@@ -19,8 +19,10 @@ use bunting_client::bnp_wire::{
 use bunting_client::{FeedBook, QueuedOrder, TapeBook};
 use std::collections::{BTreeMap, VecDeque};
 
+mod reference;
 mod run;
 mod series;
+pub use reference::MAX_REFERENCE;
 pub use run::{Dealt, MAX_DEALS, MAX_NEWS, NewsItem};
 pub use series::{
     BAR_SIZES_NS, Bar, FINEST_BAR_NS, LedgerRecord, MAX_FINE_BARS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES,
@@ -326,6 +328,7 @@ pub struct Model {
     next_client_order_id: u64,
     run: run::RunState,
     series: series::SeriesState,
+    reference: reference::ReferenceState,
 }
 
 impl Model {
@@ -360,6 +363,7 @@ impl Model {
             next_client_order_id: first_client_order_id.max(1),
             run: run::RunState::default(),
             series: series::SeriesState::default(),
+            reference: reference::ReferenceState::default(),
         }
     }
 
@@ -764,8 +768,11 @@ impl Model {
         }
         match message {
             ServerMessage::Listings { listings, .. } => {
-                return self.apply_listings(listings, now_us);
+                let mut messages = self.apply_listings(listings, now_us);
+                messages.extend(self.request_reference());
+                return messages;
             }
+            ServerMessage::ReferenceData { .. } => return self.apply_reference(message),
             ServerMessage::MarketSnapshot { request_id, .. }
             | ServerMessage::MarketUpdate { request_id, .. }
             | ServerMessage::OrderSnapshot { request_id, .. }
@@ -1024,7 +1031,10 @@ impl Model {
             | ServerMessage::Pong { .. }
             | ServerMessage::Logout { .. }
             // Operator commands are not sent from this model.
-            | ServerMessage::OperatorDone { .. } => {}
+            | ServerMessage::OperatorDone { .. }
+            // Only an enrolment session (ADR 0056) receives this; it never
+            // reaches a trading model.
+            | ServerMessage::Enrolled { .. } => {}
             // The run stream (ADR 0042) and deals (ADR 0043).
             run @ (ServerMessage::DealDone { .. }
             | ServerMessage::Tender { .. }

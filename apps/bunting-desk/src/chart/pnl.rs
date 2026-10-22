@@ -103,16 +103,18 @@ pub fn stepped_runs(points: &[(f64, f64)]) -> Vec<(bool, Vec<(f64, f64)>)> {
     runs
 }
 
-/// Money in minor units, signed, for axis and stats.
-fn money(value: f64) -> String {
-    format!("{value:+.0}")
+/// Money in minor units, signed, for the axis and tooltip, shown in
+/// major units at `decimals` (0 shows minor units as sent).
+fn money(value: f64, decimals: u8) -> String {
+    let places = usize::from(decimals);
+    format!("{:+.places$}", value * 10_f64.powi(-i32::from(decimals)))
 }
 
 /// The stats row shared by both P&L homes: Realized, Unrealized
 /// and Total in minor units, coloured by sign. `prefix` keeps the
 /// element ids apart when both windows are open.
 #[must_use]
-pub fn stats_row(prefix: &'static str, totals: PnlTotals, cx: &App) -> Div {
+pub fn stats_row(prefix: &'static str, totals: PnlTotals, decimals: u8, cx: &App) -> Div {
     let theme = cx.theme();
     let signed = |value: i128| match value.cmp(&0) {
         std::cmp::Ordering::Greater => theme.chart_bullish,
@@ -125,7 +127,7 @@ pub fn stats_row(prefix: &'static str, totals: PnlTotals, cx: &App) -> Div {
             .test_support()
             .child(ui::stat_colored(
                 label,
-                format!("{value:+}"),
+                crate::format::money_signed(value, decimals),
                 signed(value),
                 cx,
             ))
@@ -156,7 +158,12 @@ pub fn derived_note(id: &'static str, totals: PnlTotals, cx: &App) -> impl IntoE
 /// The chart element for `samples`, filling its container, or the
 /// empty line when nothing has been sampled yet.
 #[must_use]
-pub fn chart_or_empty(id: &'static str, samples: &VecDeque<PnlSample>, cx: &App) -> AnyElement {
+pub fn chart_or_empty(
+    id: &'static str,
+    samples: &VecDeque<PnlSample>,
+    decimals: u8,
+    cx: &App,
+) -> AnyElement {
     if samples.is_empty() {
         return ui::muted("No fills yet — P&L appears after your first trade", cx)
             .into_any_element();
@@ -166,7 +173,9 @@ pub fn chart_or_empty(id: &'static str, samples: &VecDeque<PnlSample>, cx: &App)
         .skip(samples.len().saturating_sub(MAX_POINTS))
         .map(|sample| (sample.time_ns, sample.total as f64))
         .collect();
-    PnlChart::new(SharedString::from(format!("{id}-plot")), points).into_any_element()
+    PnlChart::new(SharedString::from(format!("{id}-plot")), points)
+        .decimals(decimals)
+        .into_any_element()
 }
 
 /// The baseline P&L plot. Points are `(run time ns, total P&L in
@@ -178,6 +187,8 @@ pub struct PnlChart {
     points: Vec<(u64, f64)>,
     gutter: f32,
     hovered: Option<TooltipState>,
+    /// The currency's decimals for the money labels.
+    decimals: u8,
 }
 
 impl PnlChart {
@@ -187,7 +198,15 @@ impl PnlChart {
             points,
             gutter: DEFAULT_GUTTER,
             hovered: None,
+            decimals: 0,
         }
+    }
+
+    /// Labels money at the currency's decimals.
+    #[must_use]
+    pub const fn decimals(mut self, decimals: u8) -> Self {
+        self.decimals = decimals;
+        self
     }
 
     /// Y domain: the samples' range with zero in it, padded.
@@ -241,7 +260,13 @@ impl Plot for PnlChart {
         let font = px(Self::axis_font(window));
         let widest = ticks
             .iter()
-            .map(|tick| measure_text_width(&SharedString::from(money(*tick)), font, window))
+            .map(|tick| {
+                measure_text_width(
+                    &SharedString::from(money(*tick, self.decimals)),
+                    font,
+                    window,
+                )
+            })
             .fold(0_f32, f32::max);
         self.gutter = (widest + 14.).clamp(40., 110.);
         Vec::new()
@@ -314,7 +339,7 @@ impl Plot for PnlChart {
             Tooltip::new(cursor, bounds.size)
                 .gap(px(8.))
                 .title(format!("{} run time", run_clock_axis(time_ns)))
-                .row(color, "Total P&L", money(value))
+                .row(color, "Total P&L", money(value, self.decimals))
                 .cross_line(
                     CrossLine::new(state.cross_line)
                         .both()
@@ -365,7 +390,7 @@ impl Plot for PnlChart {
             }
             labels.push(
                 Text::new(
-                    money(*tick),
+                    money(*tick, self.decimals),
                     point(
                         px(plot_w + 6.),
                         px(y.tick(tick).unwrap_or(0.) - axis_font / 2.),
@@ -460,7 +485,7 @@ impl Plot for PnlChart {
             ));
             labels.push(
                 Text::new(
-                    money(*last),
+                    money(*last, self.decimals),
                     point(px(plot_w + self.gutter / 2.), px(last_y - axis_font / 2.)),
                     text_color,
                 )
@@ -507,7 +532,7 @@ impl Render for PnlPanel {
         let samples = model.pnl_series();
         let empty = samples.is_empty();
         let mut body = ui::pane_body("pnl", &self.focus)
-            .child(stats_row("pnl", totals, cx))
+            .child(stats_row("pnl", totals, model.account_money_decimals(), cx))
             .child(derived_note("pnl-note", totals, cx));
         body = if empty {
             body.child(ui::empty_state(
@@ -525,7 +550,12 @@ impl Render for PnlPanel {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .child(chart_or_empty("pnl", samples, cx)),
+                    .child(chart_or_empty(
+                        "pnl",
+                        samples,
+                        model.account_money_decimals(),
+                        cx,
+                    )),
             )
         };
         body
@@ -568,11 +598,12 @@ pub fn portfolio_chart_h(region_h: f32) -> f32 {
 /// stand alone rather than crush the holdings table.
 #[must_use]
 pub fn portfolio_section(model: &Model, chart_h: f32, cx: &App) -> Div {
-    let mut section =
-        v_flex()
-            .w_full()
-            .gap(px(ui::PANE_GAP))
-            .child(stats_row("pf-pnl", model.pnl_totals(), cx));
+    let mut section = v_flex().w_full().gap(px(ui::PANE_GAP)).child(stats_row(
+        "pf-pnl",
+        model.pnl_totals(),
+        model.account_money_decimals(),
+        cx,
+    ));
     if chart_h >= 24. {
         section = section.child(
             div()
@@ -581,7 +612,12 @@ pub fn portfolio_section(model: &Model, chart_h: f32, cx: &App) -> Div {
                 .w_full()
                 .h(px(chart_h))
                 .flex_shrink(0.)
-                .child(chart_or_empty("pf-pnl", model.pnl_series(), cx)),
+                .child(chart_or_empty(
+                    "pf-pnl",
+                    model.pnl_series(),
+                    model.account_money_decimals(),
+                    cx,
+                )),
         );
     }
     section

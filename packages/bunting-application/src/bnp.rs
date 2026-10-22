@@ -14,12 +14,14 @@
 use crate::competition::{DealChanges, account, negotiation_visible, news_visible, tender_visible};
 use crate::{ApplicationError, VerifiedActor};
 use bnp_wire::{
-    CancelReason as WireCancelReason, CashBalance, ClientMessage, Liquidity, Listing, ListingInfo,
-    NegotiationInfo, NegotiationStatus, NewOrder, NewsAudience as WireNewsAudience, OpenOrder,
-    OperatorAction, OrderType, OtcDecision as WireOtcDecision, Position, RejectReason,
-    ServerMessage, Side as WireSide, Stamp, TenderInfo, TenderStatus, TimeInForce,
+    CancelReason as WireCancelReason, CashBalance, ClientMessage, CurrencyInfo, InstrumentInfo,
+    InstrumentKind as WireInstrumentKind, Liquidity, Listing, ListingInfo, ListingReference,
+    MAX_REFERENCE_INSTRUMENTS, NegotiationInfo, NegotiationStatus, NewOrder,
+    NewsAudience as WireNewsAudience, OpenOrder, OperatorAction, OrderType,
+    OtcDecision as WireOtcDecision, Position, RejectReason, ServerMessage, Side as WireSide, Stamp,
+    TenderInfo, TenderStatus, TimeInForce,
 };
-use bunting_engine::simulation::{OtcState, TenderState};
+use bunting_engine::simulation::{InstrumentKind, OtcState, TenderState};
 use bunting_engine::{OwnedOrderState, RunState};
 use bunting_market_events::{
     CancelOrder, CancelReason, Command, CommandPayload, EventEnvelope, EventPayload, NewsAudience,
@@ -893,6 +895,156 @@ pub fn listings(state: &RunState) -> Vec<ListingInfo> {
         .collect()
 }
 
+/// One page of reference data (BNP 1.1, ADR 0054 §2): instruments after
+/// `after` in ID order, at most `limit` (0 or more than 64 means 64), their
+/// listings, and on the first page every currency they use. Currency code
+/// and name stay empty until a scenario declares them (ADR 0054 §10).
+#[must_use]
+pub fn reference_data(
+    state: &RunState,
+    after: Option<u128>,
+    limit: u16,
+) -> (
+    Option<u128>,
+    Vec<CurrencyInfo>,
+    Vec<InstrumentInfo>,
+    Vec<ListingReference>,
+) {
+    let limit = if limit == 0 || limit > MAX_REFERENCE_INSTRUMENTS {
+        MAX_REFERENCE_INSTRUMENTS
+    } else {
+        limit
+    };
+    let mut remaining = state
+        .instruments()
+        .values()
+        .filter(|definition| after.is_none_or(|after| definition.instrument_id.get() > after));
+    let page: Vec<_> = remaining.by_ref().take(usize::from(limit)).collect();
+    let next_after = remaining
+        .next()
+        .and(page.last().map(|definition| definition.instrument_id.get()));
+    let currencies = if after.is_none() {
+        let mut ids: Vec<u128> = state
+            .instruments()
+            .values()
+            .map(|definition| definition.currency.get())
+            .chain(std::iter::once(state.reporting_currency().get()))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter()
+            .map(|currency_id| CurrencyInfo {
+                currency_id,
+                code: String::new(),
+                name: String::new(),
+                minor_decimals: 2,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let halted = &state.simulation().halted_instruments;
+    let instruments: Vec<InstrumentInfo> = page
+        .iter()
+        .map(|definition| instrument_info(definition))
+        .collect();
+    let listings = state
+        .listings()
+        .iter()
+        .filter(|(key, _)| {
+            page.iter()
+                .any(|definition| definition.instrument_id == key.instrument_id)
+        })
+        .map(|(key, listing)| {
+            let definition = listing.definition();
+            let fees = definition.fees();
+            ListingReference {
+                listing: wire_listing(*key),
+                symbol: definition.symbol().to_owned(),
+                min_price: definition.price_bounds().min.get(),
+                max_price: definition.price_bounds().max.get(),
+                tick_size: definition.tick_size(),
+                taker_fee_per_lot: fees.taker_per_lot.get(),
+                maker_fee_per_lot: fees.maker_per_lot.get(),
+                broker_ids: definition.broker_ids(),
+                primary: definition.primary(),
+                halted: halted.contains(&key.instrument_id),
+                in_window: true,
+            }
+        })
+        .collect();
+    (next_after, currencies, instruments, listings)
+}
+
+fn instrument_info(definition: &bunting_engine::InstrumentDefinition) -> InstrumentInfo {
+    let mut info = InstrumentInfo {
+        instrument_id: definition.instrument_id.get(),
+        symbol: definition.symbol.clone(),
+        kind: WireInstrumentKind::Equity,
+        underlying: None,
+        strike: None,
+        expiry_ns: None,
+        is_call: false,
+        physical_delivery: false,
+        coupon_bps: 0,
+        components: Vec::new(),
+        multiplier: definition.multiplier,
+        currency_id: definition.currency.get(),
+        quoted_decimals: definition.quoted_decimals,
+        shortable: definition.shortable,
+        tradeable: true,
+        window_start_ns: None,
+        window_stop_ns: None,
+        display_unit: definition.display_unit.clone(),
+        description: definition.description.clone(),
+        opening_mark: definition.opening_mark.map(PriceTicks::get),
+        max_order_quantity: None,
+    };
+    match &definition.kind {
+        InstrumentKind::Equity => {}
+        InstrumentKind::Currency => info.kind = WireInstrumentKind::Currency,
+        InstrumentKind::Bond {
+            coupon_bps,
+            maturity,
+        } => {
+            info.kind = WireInstrumentKind::Bond;
+            info.coupon_bps = *coupon_bps;
+            info.expiry_ns = Some(maturity.get());
+        }
+        InstrumentKind::Option {
+            underlying,
+            strike,
+            expiry,
+            is_call,
+        } => {
+            info.kind = WireInstrumentKind::Option;
+            info.underlying = Some(underlying.get());
+            info.strike = Some(strike.get());
+            info.expiry_ns = Some(expiry.get());
+            info.is_call = *is_call;
+        }
+        InstrumentKind::Future {
+            underlying,
+            expiry,
+            physical_delivery,
+        } => {
+            info.kind = WireInstrumentKind::Future;
+            info.underlying = Some(underlying.get());
+            info.expiry_ns = Some(expiry.get());
+            info.physical_delivery = *physical_delivery;
+        }
+        InstrumentKind::Commodity => info.kind = WireInstrumentKind::Commodity,
+        InstrumentKind::Synthetic { components } => {
+            info.kind = WireInstrumentKind::Synthetic;
+            info.components = components
+                .iter()
+                .map(|(instrument, weight)| (instrument.get(), *weight))
+                .collect();
+        }
+    }
+    info
+}
+
 /// The actor's cash and positions from the authoritative ledger.
 ///
 /// # Errors
@@ -955,6 +1107,7 @@ pub const fn reject_reason(code: RejectCode) -> RejectReason {
         RejectCode::InvalidQuantity => RejectReason::InvalidQuantity,
         RejectCode::InvalidInstrument => RejectReason::InvalidInstrument,
         RejectCode::PriceOutOfBounds => RejectReason::PriceOutOfBounds,
+        RejectCode::PriceNotOnTick => RejectReason::PriceNotOnTick,
         RejectCode::MaxOrderQuantity => RejectReason::MaxOrderQuantity,
         RejectCode::MaxOpenOrderQuantity => RejectReason::MaxOpenOrderQuantity,
         RejectCode::MaxLiveOrders => RejectReason::MaxLiveOrders,

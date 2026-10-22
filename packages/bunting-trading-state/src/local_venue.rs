@@ -208,6 +208,10 @@ pub struct VenueSpec {
     /// Keep the run in `origin.json` beside the configuration (file
     /// storage) instead of memory, so a restart recovers it.
     pub durable: bool,
+    /// Traders enrol by invite (ADR 0056) instead of receiving
+    /// certificates: no participant keys are written, the CA key stays
+    /// with the venue, and `bunting invite` mints invites.
+    pub enrolment: bool,
 }
 
 impl VenueSpec {
@@ -219,6 +223,7 @@ impl VenueSpec {
             bind_host: "127.0.0.1".to_owned(),
             bnp_port: None,
             durable: false,
+            enrolment: false,
         }
     }
 
@@ -231,7 +236,15 @@ impl VenueSpec {
             bind_host,
             bnp_port: Some(bnp_port),
             durable: true,
+            enrolment: false,
         }
+    }
+
+    /// This venue enrols traders by invite (ADR 0056).
+    #[must_use]
+    pub const fn with_enrolment(mut self) -> Self {
+        self.enrolment = true;
+        self
     }
 
     fn certificate_name(&self) -> &str {
@@ -277,7 +290,7 @@ pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue,
         ExtendedKeyUsagePurpose::ServerAuth,
     )?;
     let mut issued: Vec<(u128, String, String, String)> = Vec::new();
-    for participant_id in participant_ids() {
+    for participant_id in participant_ids().into_iter().filter(|_| !spec.enrolment) {
         let (certificate, key) = authority.issue(
             Vec::new(),
             &format!("local participant {participant_id}"),
@@ -293,7 +306,18 @@ pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue,
         Ok(path)
     };
     write("ca.pem", &authority.ca_pem)?;
-    write("venue.pem", &server.0)?;
+    if spec.enrolment {
+        // The venue sends its CA with its certificate, so an enrolling
+        // client can check the CA against its invite's pin.
+        write("venue.pem", &format!("{}{}", server.0, authority.ca_pem))?;
+        write("ca.key", &authority.key_pem)?;
+        write(
+            "invites.json",
+            &json!({"version": 1, "invites": []}).to_string(),
+        )?;
+    } else {
+        write("venue.pem", &server.0)?;
+    }
     write("venue.key", &server.1)?;
     for (participant_id, _, certificate, key) in &issued {
         write(&format!("participant-{participant_id}.pem"), certificate)?;
@@ -305,7 +329,12 @@ pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue,
         None => free_port()?,
     };
     let fix_port = free_port()?;
-    let fingerprints: Vec<&str> = issued.iter().map(|(_, f, _, _)| f.as_str()).collect();
+    let fix_secrets = if spec.enrolment {
+        enrolment_fix_secrets(directory)?
+    } else {
+        issued.iter().map(|(_, f, _, _)| f.clone()).collect()
+    };
+    let fingerprints: Vec<&str> = fix_secrets.iter().map(String::as_str).collect();
     let config = server_config(spec, bnp_port, fix_port, &fingerprints);
     let config_path = write("server.json", &config.to_string())?;
     let participants: Vec<ParticipantIdentity> = issued
@@ -326,10 +355,19 @@ pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue,
             },
         )
         .collect();
-    let client = participants
-        .first()
-        .map(|identity| identity.client.clone())
-        .ok_or_else(|| LocalVenueError("the local venue has no participants".to_owned()))?;
+    let client = match participants.first() {
+        Some(identity) => identity.client.clone(),
+        // An enrolment venue issues no participant certificate: this is
+        // only where traders connect.
+        None if spec.enrolment => {
+            client_config(spec, bnp_port, authority.ca_pem.as_bytes(), &[], &[])
+        }
+        None => {
+            return Err(LocalVenueError(
+                "the local venue has no participants".to_owned(),
+            ));
+        }
+    };
     Ok(PreparedVenue {
         directory: directory.to_path_buf(),
         config_path,
@@ -338,6 +376,30 @@ pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue,
         bnp_port,
         fix_port,
     })
+}
+
+/// FIX passwords for an enrolment venue, which issues no participant
+/// certificate to derive them from: fresh secrets, written to
+/// `fix-credentials.json` for the operator.
+fn enrolment_fix_secrets(directory: &Path) -> Result<Vec<String>, LocalVenueError> {
+    let secrets = participant_ids()
+        .iter()
+        .map(|_| crate::enrolment::new_secret().map(|secret| format!("{secret}{secret}")))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(LocalVenueError)?;
+    let credentials: Vec<Value> = participant_ids()
+        .iter()
+        .zip(&secrets)
+        .map(|(id, secret)| {
+            json!({"participant_id": id, "username": format!("trader{id}"), "password": &secret[..24]})
+        })
+        .collect();
+    write_private(
+        &directory.join("fix-credentials.json"),
+        &Value::Array(credentials).to_string(),
+    )
+    .map_err(|e| error("fix-credentials.json")(&e))?;
+    Ok(secrets)
 }
 
 /// Reads a venue directory provisioned by [`prepare`] back into a
@@ -1086,23 +1148,25 @@ impl Drop for LocalVenue {
 }
 
 /// A seeded random walk on the run clock (one run second per second): the
-/// base annualised volatility over a 60 s "trading day" (a 15120 s year),
-/// and double that from the fifth minute so the regime change shows on a
-/// chart. At 40% base that is about 8% (one sigma) over the first five
-/// minutes.
+/// base annualised volatility over a 10-minute "trading day" (a 42-hour
+/// year), stepping every 250 ms, and double that from the fifth minute so
+/// the regime change shows on a chart. At 40% base that is about 1.8% (one
+/// sigma) over the first five minutes, a few cents a step at $100.
 fn fundamental_path(seed: u64, base_bps: u32) -> Value {
     json!({
-        "kind": "random_walk", "seed": seed, "step_ns": 500_000_000_u64,
+        "kind": "random_walk", "seed": seed, "step_ns": 250_000_000_u64,
         "annual_volatility_bps": base_bps, "trading_days_per_year": 252,
-        "run_ns_per_day": 60_000_000_000_u64,
+        "run_ns_per_day": 600_000_000_000_u64,
         "regimes": [{"from_ns": 300_000_000_000_u64, "annual_volatility_bps": base_bps * 2}],
         "min_price_ticks": 1, "max_price_ticks": 1_000_000
     })
 }
 
 /// The built-in agents of one listing: five fundamental liquidity
-/// providers at spreads 1 to 5, noise, mean reversion and an informed
-/// trader, with participant IDs in `ids` (providers first). The
+/// providers 1, 2, 3, 5 and 8 cents from the fundamental that lean away
+/// from their inventory, and noise, mean reversion and an informed trader
+/// arriving as Poisson processes, with participant IDs in `ids`
+/// (providers first). Prices are cents (quoted with 2 decimals). The
 /// providers re-quote every 250 ms and size up with distance (100 lots
 /// at the touch, 1,150 a side), so a desk's 100-lot order takes one
 /// level, not the book, and the book refills before the next one.
@@ -1111,8 +1175,8 @@ fn book_agents(ids: [u128; 8], instrument: u128, venue: u128) -> Vec<Value> {
         ("fundamental_liquidity_provider", 100, 1, 250),
         ("fundamental_liquidity_provider", 150, 2, 250),
         ("fundamental_liquidity_provider", 200, 3, 250),
-        ("fundamental_liquidity_provider", 300, 4, 250),
-        ("fundamental_liquidity_provider", 400, 5, 250),
+        ("fundamental_liquidity_provider", 300, 5, 250),
+        ("fundamental_liquidity_provider", 400, 8, 250),
         ("zero_intelligence_noise", 10, 4, 500),
         ("mean_reversion", 5, 2, 500),
         ("fully_informed", 40, 2, 500),
@@ -1121,13 +1185,22 @@ fn book_agents(ids: [u128; 8], instrument: u128, venue: u128) -> Vec<Value> {
         .iter()
         .zip(ids)
         .map(|((kind, base_quantity, spread_ticks, wake_ms), id)| {
-            json!({
+            let mut agent = json!({
                 "kind": kind, "participant_id": id, "base_quantity": base_quantity,
                 "spread_ticks": spread_ticks, "inventory_target": 0,
                 "wake_interval_ns": wake_ms * 1_000_000,
                 "seed": u64::try_from(id).unwrap_or(0) + 32, "max_intents_per_wake": 4,
                 "instrument_id": instrument, "venue_id": venue
-            })
+            });
+            if *kind == "fundamental_liquidity_provider" {
+                // Lean a cent per 200 lots held and stop adding past 2,000.
+                agent["inventory_skew_lots"] = json!(200);
+                agent["inventory_limit"] = json!(2_000);
+            } else {
+                // Takers arrive as a Poisson process, not on a beat.
+                agent["poisson_wakes"] = json!(true);
+            }
+            agent
         })
         .collect()
 }
@@ -1141,6 +1214,17 @@ fn practice_agents() -> Vec<Value> {
     agents.extend(book_agents([36, 37, 38, 39, 40, 41, 42, 43], 1, 2));
     agents.extend(book_agents([20, 21, 22, 23, 24, 25, 26, 27], 2, 1));
     agents.extend(book_agents([28, 29, 30, 31, 32, 33, 34, 35], 2, 2));
+    // A QUARCC signal trader per instrument on venue 1: it holds up to 500
+    // lots toward the fundamental, fully confident 20 cents away, through
+    // QUARCC's order management (ADR 0018 participant side).
+    for (id, instrument) in [(44_u128, 1_u128), (45, 2)] {
+        agents.push(json!({
+            "kind": "quarcc_signal_trader", "participant_id": id, "base_quantity": 500,
+            "spread_ticks": 20, "inventory_target": 0, "wake_interval_ns": 1_000_000_000_u64,
+            "seed": u64::try_from(id).unwrap_or(0) + 32, "max_intents_per_wake": 4,
+            "instrument_id": instrument, "venue_id": 1
+        }));
+    }
     agents
 }
 
@@ -1152,11 +1236,11 @@ pub fn practice_runtime() -> Value {
     json!({
         "wall_tick_ms": 100,
         "scheduler": {
-            "run_id": 1, "instrument_id": 1, "fundamental_price": 100,
+            "run_id": 1, "instrument_id": 1, "fundamental_price": 10_000,
             "remaining_parent_quantity": 1000, "max_actions_per_tick": 256,
             "fundamental_path": fundamental_path(20_261_020, 4000),
             "other_instruments": [{
-                "instrument_id": 2, "fundamental_price": 100,
+                "instrument_id": 2, "fundamental_price": 10_000,
                 "fundamental_path": fundamental_path(20_261_021, 5000)
             }],
             "agents": practice_agents()
@@ -1187,13 +1271,14 @@ fn server_config(spec: &VenueSpec, bnp_port: u16, fix_port: u16, fingerprints: &
         .collect();
     let bnp_roster: Vec<Value> = fingerprints
         .iter()
+        .filter(|_| !spec.enrolment)
         .enumerate()
         .map(|(index, fingerprint)| {
             let participant_id = FIRST_PARTICIPANT + u128::try_from(index).unwrap_or(0);
             json!({"certificate_sha256": fingerprint, "participant_id": participant_id, "role": "participant"})
         })
         .collect();
-    json!({
+    let mut config = json!({
         "version": 1,
         "profile": "local",
         "storage": {
@@ -1235,12 +1320,23 @@ fn server_config(spec: &VenueSpec, bnp_port: u16, fix_port: u16, fingerprints: &
             "roster": bnp_roster,
             "heartbeat_ms": 1000, "max_connections": BNP_MAX_CONNECTIONS, "max_frame_bytes": 65536,
             "rate_limit_window_ms": 100, "max_messages_per_interval": 64,
-            "handshake_timeout_ms": 5000
+            "handshake_timeout_ms": 5000,
+            "enrolment": spec.enrolment.then(|| json!({
+                "ca_key": "ca.key", "invites": "invites.json", "enrolled": "enrolled.json",
+                "certificate_days": 365, "max_enrolled": PARTICIPANT_COUNT
+            }))
         },
         "admin": null,
         "scenario": {"path": "scenario.json", "run_id": 1, "iteration_id": 1},
         "runtime": practice_runtime()
-    })
+    });
+    // Practice venues keep exactly the configuration they always had.
+    if !spec.enrolment
+        && let Some(bnp) = config["bnp"].as_object_mut()
+    {
+        bnp.remove("enrolment");
+    }
+    config
 }
 
 fn free_port() -> Result<u16, LocalVenueError> {
@@ -1250,7 +1346,7 @@ fn free_port() -> Result<u16, LocalVenueError> {
         .map_err(|e| error("cannot reserve a local port")(&e))
 }
 
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -1264,6 +1360,7 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
 struct Authority {
     issuer: Issuer<'static, KeyPair>,
     ca_pem: String,
+    key_pem: String,
 }
 
 impl Authority {
@@ -1281,6 +1378,7 @@ impl Authority {
             .push(DnType::CommonName, "Bunting local practice CA");
         let certificate = params.self_signed(&key).map_err(|e| failed(&e))?;
         Ok(Self {
+            key_pem: key.serialize_pem(),
             issuer: Issuer::new(params, key),
             ca_pem: certificate.pem(),
         })

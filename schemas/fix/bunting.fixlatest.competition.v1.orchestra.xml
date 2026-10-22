@@ -27,6 +27,7 @@
     <fixr:field id="10020" name="BuntingPayloadJSON" type="data"/>
     <fixr:field id="10021" name="BuntingAnonymous" type="String"/>
     <fixr:field id="10022" name="BuntingExpireTimeNs" type="String"/>
+    <fixr:field id="10023" name="BuntingQuotedDecimals" type="String"/>
   </fixr:fields>
   <fixr:messages>
     <fixr:message id="9001" name="BuntingTender" msgType="U6" category="Bunting"/>

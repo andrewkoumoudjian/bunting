@@ -100,6 +100,7 @@ fn clients() -> Vec<ClientMessage> {
         ClientMessage::DealsRequest { request_id: 14 },
     ]
     .into_iter()
+    .chain(reference_requests())
     .chain(
         operator_actions()
             .into_iter()
@@ -107,6 +108,26 @@ fn clients() -> Vec<ClientMessage> {
             .map(|(action, request_id)| ClientMessage::OperatorCommand { request_id, action }),
     )
     .collect()
+}
+
+/// BNP 1.1 requests.
+fn reference_requests() -> Vec<ClientMessage> {
+    vec![
+        ClientMessage::ReferenceDataRequest {
+            request_id: 15,
+            after_instrument: Some(u128::MAX - 1),
+            limit: 64,
+        },
+        ClientMessage::ReferenceDataRequest {
+            request_id: 16,
+            after_instrument: None,
+            limit: 0,
+        },
+        ClientMessage::Enroll {
+            secret: "00112233445566778899aabbccddeeff".to_owned(),
+            csr_pem: "-----BEGIN CERTIFICATE REQUEST-----".to_owned(),
+        },
+    ]
 }
 
 fn tender() -> TenderInfo {
@@ -491,6 +512,58 @@ fn servers() -> Vec<ServerMessage> {
                 open_sell: 4,
             }],
         },
+        ServerMessage::ReferenceData {
+            request_id: 6,
+            run_sequence: 7,
+            next_after: Some(3),
+            currencies: vec![CurrencyInfo {
+                currency_id: 1,
+                code: "USD".to_owned(),
+                name: "US dollar".to_owned(),
+                minor_decimals: 2,
+            }],
+            instruments: vec![InstrumentInfo {
+                instrument_id: 3,
+                symbol: "SPY-C".to_owned(),
+                kind: InstrumentKind::Option,
+                underlying: Some(2),
+                strike: Some(45_000),
+                expiry_ns: Some(u64::MAX),
+                is_call: true,
+                physical_delivery: false,
+                coupon_bps: 0,
+                components: vec![(2, -1), (u128::MAX, i64::MAX)],
+                multiplier: 100,
+                currency_id: 1,
+                quoted_decimals: 2,
+                shortable: true,
+                tradeable: true,
+                window_start_ns: Some(0),
+                window_stop_ns: None,
+                display_unit: "contracts".to_owned(),
+                description: "a call ü".to_owned(),
+                opening_mark: Some(-1),
+                max_order_quantity: None,
+            }],
+            listings: vec![ListingReference {
+                listing: listing(),
+                symbol: "SPY-C".to_owned(),
+                min_price: 1,
+                max_price: i64::MAX,
+                tick_size: 5,
+                taker_fee_per_lot: -2,
+                maker_fee_per_lot: i128::MIN,
+                broker_ids: true,
+                primary: false,
+                halted: true,
+                in_window: false,
+            }],
+        },
+        ServerMessage::Enrolled {
+            participant_id: u128::MAX,
+            certificate_pem: "-----BEGIN CERTIFICATE-----".to_owned(),
+            ca_pem: String::new(),
+        },
     ]
 }
 
@@ -532,8 +605,8 @@ fn every_message_type_is_covered_and_directional() -> Result<(), WireError> {
     let mut server_types: Vec<u8> = servers().iter().map(ServerMessage::msg_type).collect();
     client_types.dedup();
     server_types.dedup();
-    assert_eq!(client_types.len(), 21);
-    assert_eq!(server_types.len(), 37);
+    assert_eq!(client_types.len(), 23);
+    assert_eq!(server_types.len(), 39);
     for message in servers() {
         let mut frame = Vec::new();
         encode_server(&message, &mut frame)?;
@@ -716,7 +789,8 @@ fn wire_enums_cover_their_values_exactly() {
         assert_eq!(RejectReason::from_wire(reason.to_wire()), Ok(reason));
     }
     assert!(RejectReason::from_wire(0).is_err());
-    assert_eq!(RejectReason::ALL.len(), 26);
+    assert_eq!(RejectReason::ALL.len(), 27);
+    assert_eq!(InstrumentKind::ALL.len(), 7);
     assert_eq!(CancelReason::ALL.len(), 6);
     assert!(FeedFlags::ALL.contains(FeedFlags::OFFERS));
     assert!(!FeedFlags::BIDS.contains(FeedFlags::OFFERS));
@@ -767,5 +841,43 @@ fn an_order_by_order_entry_has_the_documented_layout() -> Result<(), WireError> 
     expected.push(1);
     expected.extend(7_u128.to_le_bytes());
     assert_eq!(&frame[LENGTH_BYTES..], expected.as_slice());
+    Ok(())
+}
+
+#[test]
+fn versions_negotiate_to_the_lower_1x_minor() {
+    assert_eq!(negotiate(VERSION_1_0), Some(VERSION_1_0));
+    assert_eq!(negotiate(256), Some(VERSION_1_0), "1.0 in the 1.1 encoding");
+    assert_eq!(negotiate(VERSION_1_1), Some(VERSION_1_1));
+    assert_eq!(
+        negotiate(258),
+        Some(VERSION_1_1),
+        "a later 1.x speaks 1.1 here"
+    );
+    assert_eq!(negotiate(2), None);
+    assert_eq!(negotiate(513), None, "2.1 is another major");
+    assert!(speaks_1_1(PROTOCOL_VERSION));
+    assert!(!speaks_1_1(VERSION_1_0));
+}
+
+#[test]
+fn an_invite_token_round_trips_and_rejects_malformed_text() -> Result<(), String> {
+    let token = InviteToken {
+        address: "100.113.213.48:7400".to_owned(),
+        ca_sha256: [0xab; 32],
+        secret: "0123456789abcdef0123456789abcdef".to_owned(),
+    };
+    let text = token.to_string();
+    assert!(text.starts_with("bnpi1:100.113.213.48:7400:abab"));
+    assert_eq!(InviteToken::parse(&format!("  {text}\n"))?, token);
+    for bad in [
+        "bnpi2:h:1:00",
+        "bnpi1:host:abab:0123456789abcdef0123456789abcdef",
+        "bnpi1:nohostport:abababababababababababababababababababababababababababababababab:0123456789abcdef0123456789abcdef",
+        "bnpi1:h:1:zz:0123456789abcdef0123456789abcdef",
+        "bnpi1:h:1:abababababababababababababababababababababababababababababababab:short",
+    ] {
+        assert!(InviteToken::parse(bad).is_err(), "{bad}");
+    }
     Ok(())
 }

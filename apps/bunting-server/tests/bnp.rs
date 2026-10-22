@@ -157,6 +157,7 @@ fn start_venue_with(name: &str, map: LatencyMap) -> Result<Venue, String> {
         rate_limit_window_ms: 100,
         max_messages_per_interval: 64,
         handshake_timeout_ms: 5_000,
+        enrolment: None,
     });
     config.validate().map_err(|error| error.to_string())?;
     std::thread::spawn(move || bunting_server::runtime::run(&config));
@@ -301,6 +302,43 @@ fn orders_fill_against_a_fix_maker_and_the_feed_shows_the_trade() -> Result<(), 
         listings.last(),
         Some(ServerMessage::Listings { listings, .. }) if listings.iter().any(|info| info.listing == LISTING && info.symbol == "BNT")
     ));
+    // BNP 1.1 reference data (ADR 0054 §2): the client spoke 1.1, so the
+    // venue answers with the listing's tick and the instrument's terms.
+    team.send(&ClientMessage::ReferenceDataRequest {
+        request_id: 2,
+        after_instrument: None,
+        limit: 0,
+    })
+    .map_err(|error| error.to_string())?;
+    let reference = until(&team, |message| {
+        matches!(message, ServerMessage::ReferenceData { .. })
+    })?;
+    let Some(ServerMessage::ReferenceData {
+        request_id: 2,
+        next_after: None,
+        currencies,
+        instruments,
+        listings,
+        ..
+    }) = reference.last()
+    else {
+        return Err(format!("no reference data: {:?}", reference.last()));
+    };
+    assert!(!currencies.is_empty(), "the first page lists currencies");
+    let bnt = instruments
+        .iter()
+        .find(|instrument| instrument.instrument_id == LISTING.instrument_id)
+        .ok_or("BNT reference")?;
+    assert_eq!(
+        (bnt.symbol.as_str(), bnt.multiplier, bnt.quoted_decimals),
+        ("BNT", 1, 2)
+    );
+    let listing = listings
+        .iter()
+        .find(|reference| reference.listing == LISTING)
+        .ok_or("BNT listing reference")?;
+    assert_eq!(listing.tick_size, 1);
+    assert!(listing.max_price > listing.min_price);
     team.send(&ClientMessage::Subscribe {
         request_id: 7,
         listing: LISTING,

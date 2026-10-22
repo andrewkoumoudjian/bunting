@@ -130,7 +130,10 @@ fn order_texts(model: &Model, order: &OrderRow, tab: Tab) -> Vec<String> {
         model.symbol(order.listing).unwrap_or("?").to_owned(),
         format::side(order.side).to_owned(),
         filled,
-        format::price(order.price),
+        format::price_at(
+            order.price,
+            model.quoted_decimals(order.listing.instrument_id),
+        ),
         format::grouped(order.remaining.into()),
         order.status.label(),
     ];
@@ -207,9 +210,9 @@ fn tender_texts(
         symbol,
         format::side(tender.side).to_owned(),
         format::grouped(tender.quantity.into()),
-        tender.price.to_string(),
-        portfolio::priced(touch.0, multi),
-        portfolio::priced(touch.1, multi),
+        format::ticks(tender.price, model.quoted_decimals(tender.instrument_id)),
+        portfolio::priced(touch.0, multi, model.quoted_decimals(tender.instrument_id)),
+        portfolio::priced(touch.1, multi, model.quoted_decimals(tender.instrument_id)),
         deals::tender_status(tender.status).to_owned(),
     ]
 }

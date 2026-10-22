@@ -508,9 +508,9 @@ fn position_strip(desk: &Entity<Desk>, instrument_id: u128, cx: &App) -> impl In
             .map_or(0, |each| each.position)
             + model.unreported_position(instrument_id)
     });
-    let cost = model
-        .average_cost(instrument_id)
-        .map(|(tick_lots, lots)| format::average_price(tick_lots, lots));
+    let cost = model.average_cost(instrument_id).map(|(tick_lots, lots)| {
+        format::average_price_at(tick_lots, lots, model.quoted_decimals(instrument_id))
+    });
     h_flex()
         .id("books-position")
         .test_support()
@@ -591,6 +591,7 @@ impl BooksPanel {
         let desk = self.desk.read(cx);
         let model = desk.model();
         let now = desk.now_us();
+        let decimals = model.quoted_decimals(listing.instrument_id);
         let feed = model.feed(listing);
         let theme = cx.theme();
         let (state, state_color) = match feed.map(|feed| &feed.state) {
@@ -759,7 +760,7 @@ impl BooksPanel {
                         self.flashes
                             .get(listing, flash::Key::Order(order.reference), clock);
                     let mine = model.own_order(listing, order.reference).is_some();
-                    Self::order_row(row, order, index, flash, mine, &order_fit, cx)
+                    Self::order_row(row, order, index, flash, mine, decimals, &order_fit, cx)
                 };
                 let asks = feed.book.orders(Side::Sell);
                 let bids = feed.book.orders(Side::Buy);
@@ -803,6 +804,7 @@ impl BooksPanel {
                 own(level.price, side),
                 index,
                 flash,
+                decimals,
                 &level_fit,
                 cx,
             )
@@ -872,12 +874,17 @@ impl BooksPanel {
 
     /// One displayed order: its place at its price, the displayed quantity
     /// ahead of it, its size, price and broker. Yours are highlighted.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one book row's data and its display context, read at the call site"
+    )]
     fn order_row(
         row: one_click::Row,
         order: &QueuedOrder,
         index: usize,
         flash: Option<Flash>,
         mine: bool,
+        decimals: u8,
         fitted: &[ui::Fit],
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -907,7 +914,7 @@ impl BooksPanel {
                 cell(format!("#{}", order.position_at_price)),
                 cell(order.quantity_ahead.to_string()),
                 cell(order.quantity.to_string()),
-                colored(order.price.to_string(), color),
+                colored(format::ticks(order.price, decimals), color),
                 cell(broker),
             ],
             cx,
@@ -915,12 +922,17 @@ impl BooksPanel {
         .into_any_element()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one book row's data and its display context, read at the call site"
+    )]
     fn level_row(
         row: one_click::Row,
         level: Level,
         mine: i64,
         index: usize,
         flash: Option<Flash>,
+        decimals: u8,
         fitted: &[ui::Fit],
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -946,7 +958,7 @@ impl BooksPanel {
             vec![
                 cell(mark),
                 cell(level.quantity.to_string()),
-                colored(level.price.to_string(), color),
+                colored(format::ticks(level.price, decimals), color),
             ],
             cx,
         ))
@@ -974,6 +986,8 @@ pub struct TicketPanel {
     post_only: bool,
     anonymous: bool,
     seen_hint: u64,
+    /// The decimals the price field steps in (one tick), once set.
+    price_decimals: Option<u8>,
     /// Why the last order was not sent.
     problem: Option<String>,
     /// The pane content width last measured by the body's width probe,
@@ -997,8 +1011,14 @@ impl TicketPanel {
                 }
                 if let Some(price) = price {
                     this.kind = TicketKind::Limit;
+                    let text = format::ticks(
+                        price,
+                        desk.read(cx)
+                            .model()
+                            .quoted_decimals(this.instrument.unwrap_or_default()),
+                    );
                     this.price.update(cx, |state, cx| {
-                        state.set_value(price.to_string(), window, cx);
+                        state.set_value(text, window, cx);
                     });
                 }
             }
@@ -1025,6 +1045,7 @@ impl TicketPanel {
             post_only: false,
             anonymous: false,
             seen_hint,
+            price_decimals: None,
             problem: None,
             width: std::rc::Rc::new(std::cell::Cell::new(0.)),
             _observe: observation,
@@ -1062,12 +1083,19 @@ impl TicketPanel {
     fn ticket(&self, cx: &App) -> OrderTicket {
         let number =
             |state: &Entity<InputState>| state.read(cx).value().trim().parse::<i64>().unwrap_or(0);
+        let decimals = self.instrument(cx).map_or(0, |instrument| {
+            self.desk
+                .read(cx)
+                .model()
+                .quoted_decimals(instrument.instrument_id)
+        });
         OrderTicket {
             listing: self.chosen(cx),
             side: self.side,
             quantity: number(&self.quantity),
             kind: self.kind,
-            price: number(&self.price),
+            // Typed in the quote's decimals; anything else is 0, refused.
+            price: format::parse_price(&self.price.read(cx).value(), decimals).unwrap_or(0),
             tif: self.tif,
             post_only: self.post_only,
             anonymous: self.anonymous,
@@ -1123,6 +1151,17 @@ impl Render for TicketPanel {
     )]
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let instrument = self.instrument(cx);
+        // The price field steps by one tick at the quote's decimals.
+        let decimals = instrument.as_ref().map_or(0, |i| {
+            self.desk.read(cx).model().quoted_decimals(i.instrument_id)
+        });
+        if self.price_decimals != Some(decimals) {
+            self.price_decimals = Some(decimals);
+            let step = 10_f64.powi(-i32::from(decimals));
+            self.price.update(cx, |state, cx| {
+                state.set_step(Some(step.into()), window, cx);
+            });
+        }
         let chosen = self.chosen(cx);
         let desk = self.desk.read(cx);
         let instruments = desk.instruments();
@@ -1594,11 +1633,10 @@ impl TradesPanel {
                 .gap_1()
                 .items_center()
                 .child(format!("{} ×", level.quantity))
-                .child(
-                    div()
-                        .text_color(side_color(side, cx))
-                        .child(level.price.to_string()),
-                );
+                .child(div().text_color(side_color(side, cx)).child(format::ticks(
+                    level.price,
+                    desk.model().quoted_decimals(instrument.instrument_id),
+                )));
             if best == Some(venue_id) {
                 element
                     .font_weight(gpui_kit::FontWeight::BOLD)
@@ -1694,7 +1732,10 @@ impl Render for TradesPanel {
                                         cell(format::clock(print.received_us)),
                                         cell(format::venue(print.listing)),
                                         cell(model.symbol(print.listing).unwrap_or("?").to_owned()),
-                                        cell(print.price.to_string()),
+                                        cell(format::ticks(
+                                            print.price,
+                                            model.quoted_decimals(print.listing.instrument_id),
+                                        )),
                                         cell(print.quantity.to_string()),
                                     ],
                                     cx,
@@ -1757,8 +1798,14 @@ impl Render for FillsPanel {
                                                 side_color(fill.side, cx),
                                             ),
                                             cell(fill.quantity.to_string()),
-                                            cell(fill.price.to_string()),
-                                            cell(fill.fee.to_string()),
+                                            cell(format::ticks(
+                                                fill.price,
+                                                model.quoted_decimals(fill.listing.instrument_id),
+                                            )),
+                                            cell(format::money(
+                                                fill.fee,
+                                                model.money_decimals(fill.listing.instrument_id),
+                                            )),
                                             cell(format::liquidity(fill.liquidity)),
                                         ],
                                         cx,
@@ -2048,6 +2095,7 @@ impl Render for AccountPanel {
             _ => "—".to_owned(),
         };
         let totals = model.pnl_totals();
+        let money_decimals = model.account_money_decimals();
         let currencies = account.cash.len();
         // The sections scroll when the window is shorter than they are.
         let mut stats = v_flex()
@@ -2076,20 +2124,20 @@ impl Render for AccountPanel {
                     .child(
                         div().id("account-pnl").test_support().child(ui::stat_colored(
                             "P&L",
-                            format::grouped_signed(totals.total),
+                            format::money_signed(totals.total, money_decimals),
                             signed_color(totals.total, cx),
                             cx,
                         )),
                     )
                     .child(ui::stat_colored(
                         "Realized",
-                        format::grouped_signed(totals.realized),
+                        format::money_signed(totals.realized, money_decimals),
                         signed_color(totals.realized, cx),
                         cx,
                     ))
                     .child(ui::stat_colored(
                         "Unrealized",
-                        format::grouped_signed(totals.unrealized),
+                        format::money_signed(totals.unrealized, money_decimals),
                         signed_color(totals.unrealized, cx),
                         cx,
                     )),
@@ -2105,10 +2153,12 @@ impl Render for AccountPanel {
                 cx,
             ));
         for balance in &account.cash {
-            let heading = if currencies > 1 {
-                format!("Cash · currency {}", balance.currency_id)
-            } else {
-                "Cash".to_owned()
+            let currency = model.currency(balance.currency_id);
+            let decimals = currency.map_or(0, |currency| currency.minor_decimals);
+            let heading = match currency.map(|currency| currency.code.as_str()) {
+                Some(code) if !code.is_empty() => format!("Cash · {code}"),
+                _ if currencies > 1 => format!("Cash · currency {}", balance.currency_id),
+                _ => "Cash".to_owned(),
             };
             stats = stats.child(ui::section_label(heading, cx)).child(
                 h_flex()
@@ -2116,11 +2166,15 @@ impl Render for AccountPanel {
                     .items_start()
                     .child(ui::stat_colored(
                         "Balance",
-                        format::grouped(balance.balance),
+                        format::money(balance.balance, decimals),
                         signed_color(balance.balance, cx),
                         cx,
                     ))
-                    .child(ui::stat("Reserved", format::grouped(balance.reserved), cx)),
+                    .child(ui::stat(
+                        "Reserved",
+                        format::money(balance.reserved, decimals),
+                        cx,
+                    )),
             );
         }
         stats = stats

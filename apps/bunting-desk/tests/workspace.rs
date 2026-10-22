@@ -1073,7 +1073,8 @@ fn tenders_and_otc_are_answered_from_the_deals_pane(cx: &mut TestAppContext) {
     let fixture = open(cx);
     connect_with_books(&fixture, cx);
     run_stream(&fixture, cx);
-    add_pane(&fixture, cx, "deals");
+    // The stream offered a tender: Deals opened itself (tenders are
+    // case-specific and off the default screens).
     // Maximise it so every action column is on screen.
     let deals = window_id(&fixture, cx, "deals");
     click(&fixture, cx, &format!("win-max-{deals}"));

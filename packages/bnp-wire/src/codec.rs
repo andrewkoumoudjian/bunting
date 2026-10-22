@@ -2,12 +2,13 @@
 //! documented in `docs/specs/bnp-v1.md`.
 
 use crate::{
-    BookOrder, CancelReason, CashBalance, ClientMessage, DelaySource, Entry, EntryKind, FeedFlags,
-    LENGTH_BYTES, Level, Liquidity, Listing, ListingInfo, MAGIC, MAX_FRAME_BYTES,
-    MAX_GROUP_ENTRIES, MAX_STRING_BYTES, NegotiationInfo, NegotiationStatus, NewOrder,
-    NewsAudience, OpenOrder, OperatorAction, OrderAction, OrderEntry, OrderType, OtcDecision,
-    Position, RejectReason, ResumeStatus, Role, ServerMessage, Side, Stamp, TapeEntry, TapeQuote,
-    TenderInfo, TenderStatus, TimeInForce, Welcome, WireError, msg_type as t,
+    BookOrder, CancelReason, CashBalance, ClientMessage, CurrencyInfo, DelaySource, Entry,
+    EntryKind, FeedFlags, InstrumentInfo, InstrumentKind, LENGTH_BYTES, Level, Liquidity, Listing,
+    ListingInfo, ListingReference, MAGIC, MAX_FRAME_BYTES, MAX_GROUP_ENTRIES, MAX_STRING_BYTES,
+    NegotiationInfo, NegotiationStatus, NewOrder, NewsAudience, OpenOrder, OperatorAction,
+    OrderAction, OrderEntry, OrderType, OtcDecision, Position, RejectReason, ResumeStatus, Role,
+    ServerMessage, Side, Stamp, TapeEntry, TapeQuote, TenderInfo, TenderStatus, TimeInForce,
+    Welcome, WireError, msg_type as t,
 };
 
 /// Kind byte of an order-by-order trade entry; order entries use their
@@ -217,6 +218,15 @@ pub fn decode_client(frame: &[u8]) -> Result<ClientMessage, WireError> {
         t::DEALS_REQUEST => ClientMessage::DealsRequest {
             request_id: r.u32()?,
         },
+        t::ENROLL => ClientMessage::Enroll {
+            secret: r.string()?,
+            csr_pem: r.string()?,
+        },
+        t::REFERENCE_DATA_REQUEST => ClientMessage::ReferenceDataRequest {
+            request_id: r.u32()?,
+            after_instrument: r.option(Reader::u128)?,
+            limit: r.u16()?,
+        },
         0x40..=0x7f => return Err(WireError::WrongDirection(kind)),
         other => return Err(WireError::UnknownMessageType(other)),
     };
@@ -284,6 +294,40 @@ pub fn decode_server(frame: &[u8]) -> Result<ServerMessage, WireError> {
             run_sequence: r.u64()?,
             tenders: r.group(read_tender)?,
             negotiations: r.group(read_negotiation)?,
+        },
+        t::ENROLLED => ServerMessage::Enrolled {
+            participant_id: r.u128()?,
+            certificate_pem: r.string()?,
+            ca_pem: r.string()?,
+        },
+        t::REFERENCE_DATA => ServerMessage::ReferenceData {
+            request_id: r.u32()?,
+            run_sequence: r.u64()?,
+            next_after: r.option(Reader::u128)?,
+            currencies: r.group(|r| {
+                Ok(CurrencyInfo {
+                    currency_id: r.u128()?,
+                    code: r.string()?,
+                    name: r.string()?,
+                    minor_decimals: r.u8()?,
+                })
+            })?,
+            instruments: r.group(read_instrument)?,
+            listings: r.group(|r| {
+                Ok(ListingReference {
+                    listing: r.listing()?,
+                    symbol: r.string()?,
+                    min_price: r.i64()?,
+                    max_price: r.i64()?,
+                    tick_size: r.i64()?,
+                    taker_fee_per_lot: r.i128()?,
+                    maker_fee_per_lot: r.i128()?,
+                    broker_ids: r.bool()?,
+                    primary: r.bool()?,
+                    halted: r.bool()?,
+                    in_window: r.bool()?,
+                })
+            })?,
         },
         t::RUN_STATUS => ServerMessage::RunStatus {
             stamp: r.stamp()?,
@@ -820,6 +864,19 @@ fn write_client(w: &mut Writer<'_>, message: &ClientMessage) -> Result<(), WireE
         | ClientMessage::OpenOrdersRequest { request_id }
         | ClientMessage::AccountRequest { request_id }
         | ClientMessage::DealsRequest { request_id } => w.u32(*request_id),
+        ClientMessage::Enroll { secret, csr_pem } => {
+            w.string(secret)?;
+            w.string(csr_pem)?;
+        }
+        ClientMessage::ReferenceDataRequest {
+            request_id,
+            after_instrument,
+            limit,
+        } => {
+            w.u32(*request_id);
+            w.option(*after_instrument, Writer::u128);
+            w.u16(*limit);
+        }
         ClientMessage::OperatorCommand { request_id, action } => {
             w.u64(*request_id);
             write_operator_action(w, action)?;
@@ -954,6 +1011,49 @@ fn write_server(w: &mut Writer<'_>, message: &ServerMessage) -> Result<(), WireE
             })?;
             w.group(negotiations, |w, negotiation| {
                 write_negotiation(w, negotiation);
+                Ok(())
+            })?;
+        }
+        ServerMessage::Enrolled {
+            participant_id,
+            certificate_pem,
+            ca_pem,
+        } => {
+            w.u128(*participant_id);
+            w.string(certificate_pem)?;
+            w.string(ca_pem)?;
+        }
+        ServerMessage::ReferenceData {
+            request_id,
+            run_sequence,
+            next_after,
+            currencies,
+            instruments,
+            listings,
+        } => {
+            w.u32(*request_id);
+            w.u64(*run_sequence);
+            w.option(*next_after, Writer::u128);
+            w.group(currencies, |w, currency| {
+                w.u128(currency.currency_id);
+                w.string(&currency.code)?;
+                w.string(&currency.name)?;
+                w.u8(currency.minor_decimals);
+                Ok(())
+            })?;
+            w.group(instruments, write_instrument)?;
+            w.group(listings, |w, listing| {
+                w.listing(listing.listing);
+                w.string(&listing.symbol)?;
+                w.i64(listing.min_price);
+                w.i64(listing.max_price);
+                w.i64(listing.tick_size);
+                w.i128(listing.taker_fee_per_lot);
+                w.i128(listing.maker_fee_per_lot);
+                w.bool(listing.broker_ids);
+                w.bool(listing.primary);
+                w.bool(listing.halted);
+                w.bool(listing.in_window);
                 Ok(())
             })?;
         }
@@ -1483,4 +1583,59 @@ impl<'a> Reader<'a> {
             Err(WireError::TrailingBytes)
         }
     }
+}
+
+fn write_instrument(w: &mut Writer<'_>, instrument: &InstrumentInfo) -> Result<(), WireError> {
+    w.u128(instrument.instrument_id);
+    w.string(&instrument.symbol)?;
+    w.u8(instrument.kind.to_wire());
+    w.option(instrument.underlying, Writer::u128);
+    w.option(instrument.strike, Writer::i64);
+    w.option(instrument.expiry_ns, Writer::u64);
+    w.bool(instrument.is_call);
+    w.bool(instrument.physical_delivery);
+    w.u32(instrument.coupon_bps);
+    w.group(&instrument.components, |w, (component, weight)| {
+        w.u128(*component);
+        w.i64(*weight);
+        Ok(())
+    })?;
+    w.i64(instrument.multiplier);
+    w.u128(instrument.currency_id);
+    w.u8(instrument.quoted_decimals);
+    w.bool(instrument.shortable);
+    w.bool(instrument.tradeable);
+    w.option(instrument.window_start_ns, Writer::u64);
+    w.option(instrument.window_stop_ns, Writer::u64);
+    w.string(&instrument.display_unit)?;
+    w.string(&instrument.description)?;
+    w.option(instrument.opening_mark, Writer::i64);
+    w.option(instrument.max_order_quantity, Writer::i64);
+    Ok(())
+}
+
+fn read_instrument(r: &mut Reader<'_>) -> Result<InstrumentInfo, WireError> {
+    Ok(InstrumentInfo {
+        instrument_id: r.u128()?,
+        symbol: r.string()?,
+        kind: InstrumentKind::from_wire(r.u8()?)?,
+        underlying: r.option(Reader::u128)?,
+        strike: r.option(Reader::i64)?,
+        expiry_ns: r.option(Reader::u64)?,
+        is_call: r.bool()?,
+        physical_delivery: r.bool()?,
+        coupon_bps: r.u32()?,
+        components: r.group(|r| Ok((r.u128()?, r.i64()?)))?,
+        multiplier: r.i64()?,
+        currency_id: r.u128()?,
+        quoted_decimals: r.u8()?,
+        shortable: r.bool()?,
+        tradeable: r.bool()?,
+        window_start_ns: r.option(Reader::u64)?,
+        window_stop_ns: r.option(Reader::u64)?,
+        display_unit: r.string()?,
+        description: r.string()?,
+        opening_mark: r.option(Reader::i64)?,
+        max_order_quantity: r.option(Reader::i64)?,
+    })
 }

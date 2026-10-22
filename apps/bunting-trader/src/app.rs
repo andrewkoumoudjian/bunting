@@ -51,6 +51,16 @@ struct Connection {
 enum Command {
     /// Print a certificate's SHA-256 fingerprint for the venue roster.
     Fingerprint { certificate: PathBuf },
+    /// Enrol with an invite (ADR 0056): create a key here, receive this
+    /// participant's certificate, and write `ca.pem`, `participant.pem`
+    /// and `participant.key` into `out`. Then pass them with --ca, --cert
+    /// and --key.
+    Enroll {
+        /// The invite line (`bnpi1:…`).
+        invite: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// List the venue's listings.
     Listings,
     /// Show one listing's visible book; `--watch` keeps it live.
@@ -380,6 +390,22 @@ pub(crate) fn run() -> Result<(), String> {
         );
         return Ok(());
     }
+    if let Command::Enroll { invite, out } = &cli.command {
+        let identity = bunting_trading_state::enrolment::enroll_with_invite(invite)?;
+        identity
+            .save(out)
+            .map_err(|error| format!("cannot write {}: {error}", out.display()))?;
+        println!(
+            "enrolled as participant {} at {}; connect with --server {} --ca {} --cert {} --key {}",
+            identity.participant_id,
+            identity.address,
+            identity.address,
+            out.join("ca.pem").display(),
+            out.join("participant.pem").display(),
+            out.join("participant.key").display(),
+        );
+        return Ok(());
+    }
     let client = connect(&cli.connection)?;
     let welcome = client.welcome();
     eprintln!(
@@ -433,7 +459,7 @@ fn next_ids() -> impl FnMut() -> u64 {
 
 fn execute(client: &Client, command: Command, ids: &mut impl FnMut() -> u64) -> Result<(), String> {
     match command {
-        Command::Fingerprint { .. } => Ok(()),
+        Command::Fingerprint { .. } | Command::Enroll { .. } => Ok(()),
         Command::Listings => request(client, &ClientMessage::ListingsRequest { request_id: 1 }),
         Command::Book {
             venue,

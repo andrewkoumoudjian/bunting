@@ -506,7 +506,7 @@ impl CompetitionDictionary {
         for field in &message.fields {
             if self.session.field_by_tag(field.tag).is_none()
                 && self.application.field_by_tag(field.tag).is_none()
-                && !(10_000..=10_022).contains(&field.tag)
+                && !(10_000..=10_023).contains(&field.tag)
             {
                 return Err(WireError::UnknownTag(field.tag));
             }

@@ -765,7 +765,10 @@ impl ChartPanel {
                 label = format!("{label} · V{}", listing.venue_id);
             }
             if let Some(last) = model.last_price(listing) {
-                label = format!("{label} · {}", format::price(Some(last)));
+                label = format!(
+                    "{label} · {}",
+                    format::ticks(last, model.quoted_decimals(listing.instrument_id))
+                );
             }
             let remove = panel.clone();
             row = row.child(
@@ -814,15 +817,25 @@ impl ChartPanel {
                     .collect()
             })
             .unwrap_or_default();
-        let value = |values: Vec<f64>| {
+        let quote = self.series.first().map_or(0, |primary| {
+            model.quoted_decimals(primary.listing.instrument_id)
+        });
+        let value = |values: Vec<f64>, scaled: bool| {
             values
                 .last()
-                .map(|last| format!(" {last:.1}"))
+                .map(|last| {
+                    if scaled {
+                        let places = usize::from(quote) + 1;
+                        format!(" {:.places$}", last * 10_f64.powi(-i32::from(quote)))
+                    } else {
+                        format!(" {last:.1}")
+                    }
+                })
                 .unwrap_or_default()
         };
-        let ma_label = format!("MA(20){}", value(sma(&closes, MA_PERIOD)));
-        let ema_label = format!("EMA(20){}", value(ema(&closes, MA_PERIOD)));
-        let rsi_label = format!("RSI(14){}", value(rsi(&closes, RSI_PERIOD)));
+        let ma_label = format!("MA(20){}", value(sma(&closes, MA_PERIOD), true));
+        let ema_label = format!("EMA(20){}", value(ema(&closes, MA_PERIOD), true));
+        let rsi_label = format!("RSI(14){}", value(rsi(&closes, RSI_PERIOD), false));
         for (label, on, slot, color) in [
             (ma_label, self.indicators.ma, 0_usize, cx.theme().foreground),
             (
@@ -961,6 +974,7 @@ impl ChartPanel {
             0
         })
         .min_slots(self.band_slots(end - start))
+        .quote_decimals(model.quoted_decimals(primary.listing.instrument_id))
         .rsi(
             self.indicators
                 .rsi

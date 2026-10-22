@@ -64,6 +64,8 @@ pub struct Workspace {
     renaming: Option<(usize, Entity<InputState>, Subscription)>,
     /// The command palette while it is open.
     palette: Option<Entity<CommandState>>,
+    /// Tenders already offered, so Deals opens itself only once.
+    tenders_seen: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -92,7 +94,10 @@ impl Workspace {
         let shared = desk.clone();
         let canvas = cx.new(|_| Canvas::new(shared, canvas_size));
         let subscriptions = vec![
-            cx.observe(&desk, |_, _, cx| cx.notify()),
+            cx.observe_in(&desk, window, |this: &mut Self, _, window, cx| {
+                this.open_deals_on_first_tender(window, cx);
+                cx.notify();
+            }),
             cx.subscribe(&canvas, |this, _, event: &CanvasEvent, cx| match event {
                 CanvasEvent::Changed => {
                     this.schedule_save(cx);
@@ -112,6 +117,7 @@ impl Workspace {
             sidebar_visible: true,
             renaming: None,
             palette: None,
+            tenders_seen: 0,
             _subscriptions: subscriptions,
         };
         this.show(active, window, cx);
@@ -194,6 +200,62 @@ impl Workspace {
     }
 
     /// Opens another window of `kind`, cascaded from the focused one.
+    /// Tenders are case-specific (only some cases offer them): the Deals
+    /// window stays off the default screens and opens itself when the
+    /// venue offers this participant its first tender, as RIT pops a tender
+    /// as soon as it arrives.
+    fn open_deals_on_first_tender(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tenders = self.desk.read(cx).model().tenders().len();
+        if tenders <= self.tenders_seen {
+            self.tenders_seen = tenders;
+            return;
+        }
+        let first = self.tenders_seen == 0;
+        self.tenders_seen = tenders;
+        let open = self
+            .canvas
+            .read(cx)
+            .window_list()
+            .iter()
+            .any(|info| info.kind == PaneKind::Deals);
+        if first && !open {
+            self.add_pane(PaneKind::Deals, window, cx);
+        }
+    }
+
+    /// RIT's logout: closes this workspace (its session logs out and its
+    /// local claim is released) and returns to the connect screen.
+    fn switch_venue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_layout(cx);
+        let options = crate::connect::Options::default();
+        let bounds = gpui_kit::Bounds::centered(None, gpui_kit::size(px(560.), px(560.)), cx);
+        let opened = gpui_kit::open_window(
+            gpui_kit::WindowOptions {
+                window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
+                app_id: Some("bunting-desk".to_owned()),
+                titlebar: Some(gpui_kit::TitlebarOptions {
+                    title: Some("Bunting".into()),
+                    ..gpui_kit::TitlebarOptions::default()
+                }),
+                ..gpui_kit::WindowOptions::default()
+            },
+            cx,
+            |window, cx| {
+                cx.new(|cx| {
+                    crate::onboarding::Onboarding::new(
+                        options,
+                        crate::onboarding::default_choice_path(),
+                        window,
+                        cx,
+                    )
+                })
+            },
+        );
+        if opened.is_ok() {
+            window.remove_window();
+        }
+    }
+
     pub fn add_pane(&mut self, kind: PaneKind, window: &mut Window, cx: &mut Context<Self>) {
         self.canvas.update(cx, |canvas, cx| {
             canvas.open(kind, window, cx);
@@ -300,6 +362,11 @@ impl Workspace {
                 CommandItem::new()
                     .label("Toggle sounds")
                     .action(Box::new(actions::ToggleSounds)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Switch venue (log out)")
+                    .action(Box::new(actions::SwitchVenue)),
             );
         // Entries after the fixed ones show a screen; confirming one
         // switches (see `on_confirm` below).
@@ -999,6 +1066,9 @@ impl Workspace {
                 this.step_screen(false, window, cx);
             }),
         )
+        .on_action(cx.listener(|this, _: &actions::SwitchVenue, window, cx| {
+            this.switch_venue(window, cx);
+        }))
         .on_action(cx.listener(|_, _: &actions::ToggleSounds, _, cx| {
             crate::sounds::toggle(cx);
             cx.notify();

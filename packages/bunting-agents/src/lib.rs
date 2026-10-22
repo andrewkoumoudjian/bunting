@@ -64,6 +64,14 @@ pub enum PolicyKind {
     TenderHedger,
     MultiVenueParentOrder,
     OptionsFlow,
+    /// A strategy expressed as QUARCC signals (`StrategySignal`: side,
+    /// target quantity, confidence) and executed by QUARCC's order
+    /// management: each wake it forms a signal from the fundamental's gap
+    /// to the mid, and its working order is cancelled or replaced until
+    /// the position reaches the signal's target. Bunting-native semantics;
+    /// only the contract's fields are taken from the C++ engine
+    /// (`docs/ports/quarcc-trading-engine.md`).
+    QuarccSignalTrader,
 }
 
 impl PolicyKind {
@@ -124,6 +132,86 @@ pub struct AgentConfig {
     pub wake_interval_ns: u64,
     pub seed: u64,
     pub max_intents_per_wake: usize,
+    /// Fundamental liquidity providers: every this many lots of inventory
+    /// beyond `inventory_target` move both quotes one tick against the
+    /// position, so a provider leans out of what it holds. None keeps the
+    /// quotes centred on the fundamental.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_skew_lots: Option<i64>,
+    /// Fundamental liquidity providers: past this inventory (either way)
+    /// the side that would add to it is withdrawn until the position
+    /// comes back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_limit: Option<QuantityLots>,
+    /// Built-in agents that take liquidity: wake after exponentially
+    /// distributed gaps with mean `wake_interval_ns` (a Poisson arrival
+    /// process, the research note's null flow) instead of on a fixed beat.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub poisson_wakes: bool,
+}
+
+/// A QUARCC strategy signal turned into the one working order that moves
+/// the position toward the signal's target, or `None` at the target.
+///
+/// - Signal: side is the sign of `fundamental − mid`; confidence (in
+///   thousandths) is the gap over `spread_ticks`, capped at 1.
+/// - Target position: `confidence × base_quantity` on that side (so
+///   `base_quantity` is the most the strategy will hold).
+/// - Order: the remaining distance to the target, joining the near touch
+///   while confidence is below 0.7, taking the far touch above it.
+#[must_use]
+pub fn quarcc_signal(
+    context: &AgentContext,
+    observation: &AgentObservation,
+    config: &AgentConfig,
+) -> Option<(Side, QuantityLots, PriceTicks)> {
+    let mid = observation
+        .best_bid
+        .get()
+        .checked_add(observation.best_ask.get())?
+        / 2;
+    let gap = observation.fundamental.get().checked_sub(mid)?;
+    let scale = config.spread_ticks.max(1);
+    let confidence = gap.unsigned_abs().saturating_mul(1_000) / scale.unsigned_abs();
+    let confidence = i64::try_from(confidence.min(1_000)).ok()?;
+    let target = gap.signum() * config.base_quantity.get().saturating_mul(confidence) / 1_000;
+    let delta = target.checked_sub(context.current_position.get())?;
+    if delta == 0 {
+        return None;
+    }
+    let side = if delta > 0 { Side::Buy } else { Side::Sell };
+    let price = match (side, confidence >= 700) {
+        (Side::Buy, true) | (Side::Sell, false) => observation.best_ask,
+        (Side::Buy, false) | (Side::Sell, true) => observation.best_bid,
+    };
+    Some((side, QuantityLots::new(delta.abs()), price))
+}
+
+/// `-ln(u)` for `u = x / 2^32`, `x` in `1..2^32`, in millionths: an
+/// exponential draw in integer arithmetic, so a replay on any host makes
+/// the same draw. `u = m × 2^-k` with `m` in [0.5, 1): `-ln u = k ln 2 −
+/// ln m`, and `−ln m` comes from a 16-step table interpolated linearly
+/// (error below 0.001).
+#[must_use]
+pub fn exponential_millionths(x: u32) -> u64 {
+    // -ln(0.5 + i/32) in millionths, i = 0..=16.
+    const TABLE: [u64; 17] = [
+        693_147, 632_523, 575_364, 521_297, 470_004, 421_213, 374_693, 330_242, 287_682, 246_860,
+        207_639, 169_899, 133_531, 98_440, 64_539, 31_749, 0,
+    ];
+    const LN2: u64 = 693_147;
+    let x = x.max(1);
+    let k = x.leading_zeros();
+    // `x` normalized into [2^31, 2^32): `m` of [0.5, 1) scaled by 2^32.
+    let m = u64::from(x) << k;
+    let offset = m - (1 << 31);
+    // Sixteen steps of 1/32 of 2^32 across [0.5, 1).
+    let step = 1_u64 << 27;
+    let index = usize::try_from(offset / step).unwrap_or(15).min(15);
+    let within = offset % step;
+    let (high, low) = (TABLE[index], TABLE[index + 1]);
+    let interpolated = high - (high - low) * within / step;
+    u64::from(k) * LN2 + interpolated
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -339,6 +427,111 @@ impl BuiltInPolicy {
         })
     }
 
+    /// One taker's order for this wake: side and price from its model.
+    fn take_liquidity(
+        &mut self,
+        context: &AgentContext,
+        observation: &AgentObservation,
+        output: &mut IntentBuffer,
+    ) -> Result<(), AgentError> {
+        let random = self.next_random();
+        let momentum = observation
+            .last_trade
+            .get()
+            .saturating_sub(observation.previous_trade.get());
+        let fundamental_gap = observation
+            .fundamental
+            .get()
+            .saturating_sub(observation.last_trade.get());
+        let side = match self.state.config.kind {
+            PolicyKind::LongMomentum | PolicyKind::OrderFlowMomentum => {
+                if momentum >= 0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                }
+            }
+            PolicyKind::ShortMomentum | PolicyKind::MeanReversion => {
+                if momentum >= 0 {
+                    Side::Sell
+                } else {
+                    Side::Buy
+                }
+            }
+            PolicyKind::FullyInformed
+            | PolicyKind::PartiallyInformed
+            | PolicyKind::DelayedInformation => {
+                if fundamental_gap >= 0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                }
+            }
+            PolicyKind::CrossVenueArbitrage | PolicyKind::Microprice | PolicyKind::Imbalance => {
+                if observation.bid_quantity >= observation.ask_quantity {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                }
+            }
+            _ => {
+                if random & 1 == 0 {
+                    Side::Buy
+                } else {
+                    Side::Sell
+                }
+            }
+        };
+        let quantity = if self.state.config.kind.is_institutional() {
+            QuantityLots::new(
+                context
+                    .remaining_parent_quantity
+                    .get()
+                    .min(self.state.config.base_quantity.get())
+                    .max(1),
+            )
+        } else {
+            self.state.config.base_quantity
+        };
+        if self.state.config.kind == PolicyKind::MultivariateHawkes {
+            self.state.hawkes_intensity = self
+                .state
+                .hawkes_intensity
+                .saturating_mul(7)
+                .saturating_div(8)
+                .saturating_add(1 + (random % 3));
+        }
+        let displacement = i64::try_from(random % 3).unwrap_or(0);
+        let price = match (self.state.config.kind.crosses_spread(), side) {
+            (true, Side::Buy) => observation.best_ask.get(),
+            (true, Side::Sell) => observation.best_bid.get(),
+            (false, Side::Buy) => observation
+                .best_bid
+                .get()
+                .saturating_sub(displacement)
+                .max(1),
+            (false, Side::Sell) => observation.best_ask.get().saturating_add(displacement),
+        };
+        self.submit(side, quantity, PriceTicks::new(price), output)?;
+        Ok(())
+    }
+
+    /// The gap to the next wake: the configured interval, or with
+    /// `poisson_wakes` an exponential draw of that mean, at least 1 ms and
+    /// at most five means.
+    fn wake_gap(&mut self) -> u64 {
+        let mean = self.state.config.wake_interval_ns;
+        if !self.state.config.poisson_wakes || self.state.config.kind.is_market_maker() {
+            return mean;
+        }
+        let draw = u32::try_from(self.next_random() >> 32).unwrap_or(1);
+        u64::try_from(
+            (u128::from(mean) * u128::from(exponential_millionths(draw)) / 1_000_000)
+                .clamp(1_000_000, u128::from(mean).saturating_mul(5).max(1_000_000)),
+        )
+        .unwrap_or(mean)
+    }
+
     fn quote_both_sides(
         &mut self,
         context: &AgentContext,
@@ -414,19 +607,43 @@ impl BuiltInPolicy {
             .spread_ticks
             .max(1)
             .saturating_add(adjustment);
-        let center = mid.saturating_add(model_adjustment);
-        self.submit(
-            Side::Buy,
-            self.state.config.base_quantity,
-            PriceTicks::new(center.saturating_sub(half_spread).max(1)),
-            output,
-        )?;
-        self.submit(
-            Side::Sell,
-            self.state.config.base_quantity,
-            PriceTicks::new(center.saturating_add(half_spread).max(1)),
-            output,
-        )
+        // A fundamental provider leans its quotes away from its inventory,
+        // one tick per `inventory_skew_lots`, and past `inventory_limit`
+        // stops quoting the side that would add to it.
+        let excess = context
+            .current_position
+            .get()
+            .saturating_sub(self.state.config.inventory_target.get());
+        let lean = match self.state.config.inventory_skew_lots {
+            Some(lots) if follows_fundamental && lots > 0 => excess / lots,
+            _ => 0,
+        };
+        let limit = self
+            .state
+            .config
+            .inventory_limit
+            .filter(|_| follows_fundamental)
+            .map(QuantityLots::get);
+        let quote_bid = limit.is_none_or(|limit| excess < limit);
+        let quote_ask = limit.is_none_or(|limit| excess > -limit);
+        let center = mid.saturating_add(model_adjustment).saturating_sub(lean);
+        if quote_bid {
+            self.submit(
+                Side::Buy,
+                self.state.config.base_quantity,
+                PriceTicks::new(center.saturating_sub(half_spread).max(1)),
+                output,
+            )?;
+        }
+        if quote_ask {
+            self.submit(
+                Side::Sell,
+                self.state.config.base_quantity,
+                PriceTicks::new(center.saturating_add(half_spread).max(1)),
+                output,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -435,7 +652,10 @@ impl AgentPolicy for BuiltInPolicy {
     type Snapshot = PolicySnapshot;
 
     fn rests_quotes(&self) -> bool {
-        self.state.config.kind == PolicyKind::FundamentalLiquidityProvider
+        matches!(
+            self.state.config.kind,
+            PolicyKind::FundamentalLiquidityProvider | PolicyKind::QuarccSignalTrader
+        )
     }
 
     fn reconcile(
@@ -524,99 +744,20 @@ impl AgentPolicy for BuiltInPolicy {
         {
             return Err(AgentError::InvalidObservation);
         }
-        if self.state.config.kind.is_market_maker() {
+        if self.state.config.kind == PolicyKind::QuarccSignalTrader {
+            if let Some((side, quantity, price)) =
+                quarcc_signal(context, observation, &self.state.config)
+            {
+                self.submit(side, quantity, price, output)?;
+            }
+        } else if self.state.config.kind.is_market_maker() {
             self.quote_both_sides(context, observation, output)?;
         } else {
-            let random = self.next_random();
-            let momentum = observation
-                .last_trade
-                .get()
-                .saturating_sub(observation.previous_trade.get());
-            let fundamental_gap = observation
-                .fundamental
-                .get()
-                .saturating_sub(observation.last_trade.get());
-            let side = match self.state.config.kind {
-                PolicyKind::LongMomentum | PolicyKind::OrderFlowMomentum => {
-                    if momentum >= 0 {
-                        Side::Buy
-                    } else {
-                        Side::Sell
-                    }
-                }
-                PolicyKind::ShortMomentum | PolicyKind::MeanReversion => {
-                    if momentum >= 0 {
-                        Side::Sell
-                    } else {
-                        Side::Buy
-                    }
-                }
-                PolicyKind::FullyInformed
-                | PolicyKind::PartiallyInformed
-                | PolicyKind::DelayedInformation => {
-                    if fundamental_gap >= 0 {
-                        Side::Buy
-                    } else {
-                        Side::Sell
-                    }
-                }
-                PolicyKind::CrossVenueArbitrage
-                | PolicyKind::Microprice
-                | PolicyKind::Imbalance => {
-                    if observation.bid_quantity >= observation.ask_quantity {
-                        Side::Buy
-                    } else {
-                        Side::Sell
-                    }
-                }
-                _ => {
-                    if random & 1 == 0 {
-                        Side::Buy
-                    } else {
-                        Side::Sell
-                    }
-                }
-            };
-            let quantity = if self.state.config.kind.is_institutional() {
-                QuantityLots::new(
-                    context
-                        .remaining_parent_quantity
-                        .get()
-                        .min(self.state.config.base_quantity.get())
-                        .max(1),
-                )
-            } else {
-                self.state.config.base_quantity
-            };
-            if self.state.config.kind == PolicyKind::MultivariateHawkes {
-                self.state.hawkes_intensity = self
-                    .state
-                    .hawkes_intensity
-                    .saturating_mul(7)
-                    .saturating_div(8)
-                    .saturating_add(1 + (random % 3));
-            }
-            let displacement = i64::try_from(random % 3).unwrap_or(0);
-            let price = match (self.state.config.kind.crosses_spread(), side) {
-                (true, Side::Buy) => observation.best_ask.get(),
-                (true, Side::Sell) => observation.best_bid.get(),
-                (false, Side::Buy) => observation
-                    .best_bid
-                    .get()
-                    .saturating_sub(displacement)
-                    .max(1),
-                (false, Side::Sell) => observation.best_ask.get().saturating_add(displacement),
-            };
-            self.submit(side, quantity, PriceTicks::new(price), output)?;
+            self.take_liquidity(context, observation, output)?;
         }
+        let next = context.logical_time.get().checked_add(self.wake_gap());
         Ok(NextWake {
-            logical_time: LogicalTimeNs::new(
-                context
-                    .logical_time
-                    .get()
-                    .checked_add(self.state.config.wake_interval_ns)
-                    .ok_or(AgentError::ArithmeticOverflow)?,
-            ),
+            logical_time: LogicalTimeNs::new(next.ok_or(AgentError::ArithmeticOverflow)?),
         })
     }
 
@@ -1319,6 +1460,9 @@ mod tests {
 
     fn config(kind: PolicyKind) -> AgentConfig {
         AgentConfig {
+            inventory_skew_lots: None,
+            inventory_limit: None,
+            poisson_wakes: false,
             kind,
             participant_id: ParticipantId::new(1),
             instrument_id: InstrumentId::new(2),
@@ -1664,5 +1808,171 @@ mod tests {
         assert_eq!(left.intents, right.intents);
         assert_eq!(restored.snapshot().stream_name, snapshot.stream_name);
         Ok(())
+    }
+
+    fn at(logical_time: u64) -> AgentContext {
+        AgentContext {
+            logical_time: LogicalTimeNs::new(logical_time),
+            current_position: QuantityLots::new(0),
+            remaining_parent_quantity: QuantityLots::new(0),
+        }
+    }
+
+    #[test]
+    fn exponential_draws_match_minus_ln_u() {
+        // u = 1/2, 1/4 and 1/8 of 2^32: -ln u = 0.693147, 1.386294, 2.079442.
+        assert_eq!(exponential_millionths(1 << 31), 693_147);
+        assert_eq!(exponential_millionths(1 << 30), 1_386_294);
+        assert_eq!(exponential_millionths(1 << 29), 2_079_441);
+        assert!(exponential_millionths(u32::MAX) <= 1, "u near 1");
+        // -ln(0.75) = 0.287682.
+        assert_eq!(exponential_millionths(3 << 30), 287_682);
+        // Between table points the error stays under 0.001.
+        // u = 3e9 / 2^32 = 0.698492: -ln u = 0.358851.
+        assert!(exponential_millionths(3_000_000_000).abs_diff(358_851) < 1_000);
+    }
+
+    #[test]
+    fn poisson_wakes_vary_around_the_mean_and_stay_bounded() -> Result<(), AgentError> {
+        let mut agent = BuiltInPolicy::new(AgentConfig {
+            poisson_wakes: true,
+            wake_interval_ns: 1_000_000_000,
+            ..config(PolicyKind::ZeroIntelligenceNoise)
+        });
+        let mut gaps = Vec::new();
+        for _ in 0..400 {
+            let mut output = IntentBuffer::with_limit(8);
+            let woken = agent.on_wake(&at(0), &observation(), &mut output)?;
+            gaps.push(woken.logical_time.get());
+        }
+        let mean = agent.state.config.wake_interval_ns;
+        assert!(gaps.iter().all(|gap| (1_000_000..=mean * 5).contains(gap)));
+        let average = gaps.iter().sum::<u64>() / 400;
+        assert!(
+            average > mean * 7 / 10 && average < mean * 13 / 10,
+            "{average}"
+        );
+        assert!(
+            gaps.windows(2).any(|pair| pair[0] != pair[1]),
+            "not a fixed beat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fundamental_provider_leans_from_inventory_and_withdraws_past_its_limit()
+    -> Result<(), AgentError> {
+        let provider = |position: i64| -> Result<Vec<(Side, i64)>, AgentError> {
+            let mut agent = BuiltInPolicy::new(AgentConfig {
+                inventory_skew_lots: Some(10),
+                inventory_limit: Some(QuantityLots::new(50)),
+                ..config(PolicyKind::FundamentalLiquidityProvider)
+            });
+            let mut output = IntentBuffer::with_limit(8);
+            let mut held = at(0);
+            held.current_position = QuantityLots::new(position);
+            let mut seen = observation();
+            seen.fundamental = PriceTicks::new(100);
+            agent.on_wake(&held, &seen, &mut output)?;
+            Ok(output
+                .drain()
+                .filter_map(|intent| match intent {
+                    ExecutionIntent::Submit { order, .. } => match order.kind {
+                        OrderKind::Limit { price } => Some((order.side, price.get())),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect())
+        };
+        let flat = provider(0)?;
+        let long = provider(30)?;
+        assert_eq!(long.len(), 2);
+        for ((side, flat_price), (_, long_price)) in flat.iter().zip(&long) {
+            assert_eq!(flat_price - long_price, 3, "{side:?} leans 3 ticks lower");
+        }
+        // Long past the limit: only the offer remains.
+        let capped = provider(60)?;
+        assert_eq!(
+            capped.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            vec![Side::Sell]
+        );
+        let short = provider(-60)?;
+        assert_eq!(
+            short.iter().map(|(side, _)| *side).collect::<Vec<_>>(),
+            vec![Side::Buy]
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod quarcc_signal_tests {
+    use super::*;
+
+    fn config() -> AgentConfig {
+        AgentConfig {
+            kind: PolicyKind::QuarccSignalTrader,
+            participant_id: ParticipantId::new(44),
+            instrument_id: InstrumentId::new(1),
+            base_quantity: QuantityLots::new(500),
+            spread_ticks: 20,
+            inventory_target: QuantityLots::new(0),
+            wake_interval_ns: 1_000_000_000,
+            seed: 1,
+            max_intents_per_wake: 4,
+            inventory_skew_lots: None,
+            inventory_limit: None,
+            poisson_wakes: false,
+        }
+    }
+
+    fn seen(fundamental: i64) -> AgentObservation {
+        AgentObservation {
+            best_bid: PriceTicks::new(9_999),
+            best_ask: PriceTicks::new(10_001),
+            bid_quantity: QuantityLots::new(100),
+            ask_quantity: QuantityLots::new(100),
+            last_trade: PriceTicks::new(10_000),
+            fundamental: PriceTicks::new(fundamental),
+            previous_trade: PriceTicks::new(10_000),
+            observed_volume: QuantityLots::new(200),
+            stress_bps: 0,
+        }
+    }
+
+    fn holding(position: i64) -> AgentContext {
+        AgentContext {
+            logical_time: LogicalTimeNs::new(0),
+            current_position: QuantityLots::new(position),
+            remaining_parent_quantity: QuantityLots::new(0),
+        }
+    }
+
+    #[test]
+    fn a_signal_sets_a_target_and_the_order_closes_the_distance() {
+        // Fundamental 10 ticks above mid: confidence 0.5, target +250,
+        // joined at the bid.
+        assert_eq!(
+            quarcc_signal(&holding(0), &seen(10_010), &config()),
+            Some((Side::Buy, QuantityLots::new(250), PriceTicks::new(9_999)))
+        );
+        // Already holding 100: only the rest.
+        assert_eq!(
+            quarcc_signal(&holding(100), &seen(10_010), &config()).map(|(_, q, _)| q.get()),
+            Some(150)
+        );
+        // Strong signal below mid: target −500, taken at the bid.
+        assert_eq!(
+            quarcc_signal(&holding(0), &seen(9_960), &config()),
+            Some((Side::Sell, QuantityLots::new(500), PriceTicks::new(9_999)))
+        );
+        // At the target: nothing; the working order is cancelled.
+        assert_eq!(quarcc_signal(&holding(250), &seen(10_010), &config()), None);
+        // The signal flips: unwind, joining the ask.
+        assert_eq!(
+            quarcc_signal(&holding(250), &seen(10_000), &config()),
+            Some((Side::Sell, QuantityLots::new(250), PriceTicks::new(10_001)))
+        );
     }
 }

@@ -275,6 +275,7 @@ impl Render for LadderPanel {
             }
         }
         let last = feed.and_then(|feed| feed.book.trades().last().map(|(price, _)| *price));
+        let decimals = model.quoted_decimals(listing.instrument_id);
         let best_bid = bids.keys().next_back().copied();
         let best_ask = asks.keys().next().copied();
         let position = model.account().map(|account| {
@@ -287,7 +288,7 @@ impl Render for LadderPanel {
         });
         let cost = model
             .average_cost(listing.instrument_id)
-            .map(|(tick_lots, lots)| crate::format::average_price(tick_lots, lots));
+            .map(|(tick_lots, lots)| crate::format::average_price_at(tick_lots, lots, decimals));
         let theme = cx.theme();
         let (accent, quote_bg) = (theme.primary, theme.secondary);
         let position_color = match position {
@@ -317,7 +318,7 @@ impl Render for LadderPanel {
                 ))
                 .child(ui::stat(
                     "Last",
-                    last.map_or_else(|| "–".to_owned(), |price| price.to_string()),
+                    last.map_or_else(|| "–".to_owned(), |price| format::ticks(price, decimals)),
                     cx,
                 )),
         );
@@ -363,7 +364,7 @@ impl Render for LadderPanel {
                     cx,
                 )
             };
-            let mut price_cell = div().child(price.to_string());
+            let mut price_cell = div().child(format::ticks(price, decimals));
             if last == Some(price) {
                 price_cell = price_cell
                     .font_weight(FontWeight::SEMIBOLD)

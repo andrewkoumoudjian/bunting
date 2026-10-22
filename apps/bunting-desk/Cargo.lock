@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "bunting-desk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-signal",
  "bunting-trading-state",
@@ -851,6 +851,7 @@ version = "0.1.0"
 dependencies = [
  "bunting-client",
  "rcgen",
+ "ring",
  "rustix",
  "serde_json",
 ]

@@ -118,6 +118,34 @@ pub struct ListingDefinition {
     /// with a calendar, one listed on several venues must flag exactly one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     primary: bool,
+    /// Smallest price step in ticks (ADR 0054 §2): a limit price must be a
+    /// whole number of steps. 1, the default, admits every tick.
+    #[serde(default = "one_tick", skip_serializing_if = "is_one_tick")]
+    tick_size: i64,
+}
+
+const fn one_tick() -> i64 {
+    1
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_one_tick(tick_size: &i64) -> bool {
+    *tick_size == 1
+}
+
+const fn two_decimals() -> u8 {
+    2
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_two_decimals(decimals: &u8) -> bool {
+    *decimals == 2
 }
 
 impl ListingDefinition {
@@ -140,7 +168,20 @@ impl ListingDefinition {
             fees: FeeSchedule::default(),
             broker_ids: false,
             primary: false,
+            tick_size: 1,
         })
+    }
+
+    /// Sets the smallest price step, in ticks (at least 1).
+    #[must_use]
+    pub const fn with_tick_size(mut self, tick_size: i64) -> Self {
+        self.tick_size = tick_size;
+        self
+    }
+
+    #[must_use]
+    pub const fn tick_size(&self) -> i64 {
+        self.tick_size
     }
 
     /// Marks this listing as its instrument's primary listing.
@@ -212,6 +253,17 @@ pub struct InstrumentDefinition {
     /// Opening valuation mark; required when any participant starts with a position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opening_mark: Option<PriceTicks>,
+    /// Decimal places a client shows when it formats a price (ADR 0054
+    /// §2): display only, never tick arithmetic. 2 by default, so 10050
+    /// ticks read 100.50.
+    #[serde(default = "two_decimals", skip_serializing_if = "is_two_decimals")]
+    pub quoted_decimals: u8,
+    /// What one unit is, for display (at most 256 bytes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display_unit: String,
+    /// A short description for traders (at most 256 bytes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 impl InstrumentDefinition {
@@ -231,7 +283,17 @@ impl InstrumentDefinition {
             multiplier: 1,
             shortable: false,
             opening_mark: None,
+            quoted_decimals: 2,
+            display_unit: String::new(),
+            description: String::new(),
         }
+    }
+
+    /// Sets the decimal places clients show for prices.
+    #[must_use]
+    pub const fn with_quoted_decimals(mut self, decimals: u8) -> Self {
+        self.quoted_decimals = decimals;
+        self
     }
 
     #[must_use]
@@ -477,6 +539,10 @@ impl ScenarioDefinition {
                 .price_bounds
                 .validate(listing.price_bounds.min)
                 .map_err(|_| ScenarioError::InvalidListing)?;
+            // Prices step in whole ticks from the lower bound.
+            if listing.tick_size < 1 || listing.price_bounds.min.get() % listing.tick_size != 0 {
+                return Err(ScenarioError::InvalidListing);
+            }
             // Broker identifiers are a venue's policy, not a listing's.
             if self.listings.values().any(|other| {
                 other.key.venue_id == key.venue_id && other.broker_ids != listing.broker_ids
@@ -1891,6 +1957,7 @@ impl RunState {
             bunting_risk_engine::ListingTerms {
                 price_bounds: definition.price_bounds,
                 fee_bound: definition.fees.bound(),
+                tick_size: definition.tick_size,
             },
             &self.ledger,
             limit.is_none().then_some(market_bound),

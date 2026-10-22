@@ -85,6 +85,8 @@ pub struct ListingTerms {
     pub price_bounds: PriceBounds,
     /// Largest per-lot fee the order can incur; reserved with buy notional.
     pub fee_bound: MoneyMinor,
+    /// Smallest price step in ticks; a limit price must be a multiple.
+    pub tick_size: i64,
 }
 
 /// Accepted admission: the price that bounds the order's cash use and the
@@ -122,6 +124,9 @@ pub fn admit(
                 .price_bounds
                 .validate(price)
                 .map_err(|_| RejectCode::PriceOutOfBounds)?;
+            if listing.tick_size > 1 && price.get() % listing.tick_size != 0 {
+                return Err(RejectCode::PriceNotOnTick);
+            }
             price
         }
         OrderKind::Market => market_reservation_price.ok_or(RejectCode::InsufficientLiquidity)?,
@@ -237,7 +242,39 @@ mod tests {
         ListingTerms {
             price_bounds: PriceBounds::new(PriceTicks::new(1), PriceTicks::new(1_000)).unwrap(),
             fee_bound: MoneyMinor::new(1),
+            tick_size: 1,
         }
+    }
+
+    #[test]
+    fn a_limit_price_off_the_tick_grid_is_refused() {
+        let ledger = ledger(false);
+        let ticked = ListingTerms {
+            tick_size: 5,
+            ..listing()
+        };
+        assert_eq!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Buy, 1, 12),
+                ticked,
+                &ledger,
+                None
+            ),
+            Err(RejectCode::PriceNotOnTick)
+        );
+        assert_ne!(
+            admit(
+                &limits(),
+                true,
+                &order(Side::Buy, 1, 15),
+                ticked,
+                &ledger,
+                None
+            ),
+            Err(RejectCode::PriceNotOnTick)
+        );
     }
 
     fn limits() -> RiskLimits {

@@ -175,8 +175,15 @@ fn build(config: &BnpConfig) -> Result<TrustState, String> {
         }
         revocations.extend(lists);
     }
-    let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-        .with_crls(revocations)
+    let mut builder =
+        WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+            .with_crls(revocations);
+    if config.enrolment.is_some() {
+        // A client without a certificate may connect to enrol (ADR 0056);
+        // the session then accepts nothing but `Enroll`.
+        builder = builder.allow_unauthenticated();
+    }
+    let verifier = builder
         .build()
         .map_err(|error| {
             // webpki parses only v2 CRLs carrying a CRL number; plain

@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "bunting-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bunting-api-contract",
  "bunting-market-types",
@@ -421,9 +421,10 @@ dependencies = [
 
 [[package]]
 name = "bunting-trader"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bunting-client",
+ "bunting-trading-state",
  "clap",
 ]
 
@@ -433,6 +434,7 @@ version = "0.1.0"
 dependencies = [
  "bunting-client",
  "rcgen",
+ "ring",
  "rustix",
  "serde_json",
 ]

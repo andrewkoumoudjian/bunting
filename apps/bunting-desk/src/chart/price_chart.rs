@@ -113,6 +113,9 @@ pub struct PriceChart {
     rsi: Option<Vec<f64>>,
     margin_slots: usize,
     min_slots: usize,
+    /// The instrument's quoted decimals: bars are integer ticks, labels
+    /// show `ticks / 10^quote_decimals`.
+    quote_decimals: u8,
     /// The measured right-axis gutter, shared back to the panel
     /// for its zoom/pan arithmetic.
     gutter_out: Rc<Cell<f32>>,
@@ -135,6 +138,7 @@ impl PriceChart {
             rsi: None,
             margin_slots: 0,
             min_slots: 0,
+            quote_decimals: 0,
             gutter_out,
             gutter: DEFAULT_GUTTER,
             hovered: None,
@@ -195,6 +199,23 @@ impl PriceChart {
     pub fn margin_slots(mut self, slots: usize) -> Self {
         self.margin_slots = slots;
         self
+    }
+
+    /// Labels prices at the instrument's quoted decimals.
+    #[must_use]
+    pub const fn quote_decimals(mut self, decimals: u8) -> Self {
+        self.quote_decimals = decimals;
+        self
+    }
+
+    /// A price-axis value (ticks) as text: scaled to the quote, with
+    /// the axis step's own `decimals` on top of the quote's.
+    fn price_label(&self, ticks: f64, decimals: usize) -> String {
+        let quote = i32::from(self.quote_decimals);
+        format_tick(
+            ticks * 10_f64.powi(-quote),
+            decimals + usize::from(self.quote_decimals),
+        )
     }
 
     /// Band slots the plot always has room for, so a short series
@@ -332,7 +353,7 @@ impl Plot for PriceChart {
                 let label = SharedString::from(if self.comparison {
                     format!("{tick:+.1}%")
                 } else {
-                    format_tick(*tick, decimals)
+                    self.price_label(*tick, decimals)
                 });
                 measure_text_width(&label, font, window)
             })
@@ -444,7 +465,7 @@ impl Plot for PriceChart {
                     if self.comparison {
                         format!("{tick:+.1}%")
                     } else {
-                        format_tick(*tick, decimals)
+                        self.price_label(*tick, decimals)
                     },
                     point(
                         px(plot_w + 6.),
@@ -586,7 +607,7 @@ impl Plot for PriceChart {
                 );
                 labels.push(
                     Text::new(
-                        format_tick(last.close as f64, decimals),
+                        self.price_label(last.close as f64, decimals),
                         point(
                             px(plot_w + self.gutter / 2.),
                             px(price_pane.top + last_y - axis_font / 2.),
@@ -793,7 +814,10 @@ impl Plot for PriceChart {
                 (
                     format!(
                         "O {}  H {}  L {}  C {}",
-                        bar.open, bar.high, bar.low, bar.close
+                        crate::format::ticks(bar.open, self.quote_decimals),
+                        crate::format::ticks(bar.high, self.quote_decimals),
+                        crate::format::ticks(bar.low, self.quote_decimals),
+                        crate::format::ticks(bar.close, self.quote_decimals)
                     ),
                     direction,
                 ),
@@ -882,7 +906,7 @@ impl Plot for PriceChart {
                     if self.comparison {
                         format!("{value:+.1}%")
                     } else {
-                        format_tick(value, decimals)
+                        self.price_label(value, decimals)
                     },
                     window,
                 );

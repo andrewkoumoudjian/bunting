@@ -2,7 +2,8 @@
 //! (`docs/research/rit-binary-audit/desk-client-inventory-1.8.466.md`,
 //! "Onboarding"). BNP identity is a registered certificate, never a
 //! password, so the choices are the practice market on this machine or a
-//! hosted venue with its address and certificate files. The last choice
+//! hosted venue joined with a one-time invite (ADR 0056: the key is made
+//! here) or with operator-issued certificate files. The last choice
 //! is remembered, Enter connects, and a failure leaves the form filled in
 //! with the reason under it. Flags (`--local`, `--server`, ...) skip this
 //! screen, so scripts behave as before.
@@ -10,6 +11,7 @@
 use crate::connect::{self, Options};
 use crate::theme;
 use crate::ui;
+use bunting_trading_state::enrolment::enroll_with_invite;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{
@@ -119,6 +121,24 @@ impl Choice {
     }
 }
 
+/// Where an identity enrolled at `address` as `participant_id` is kept:
+/// one directory per venue and participant under the desk's config.
+fn identity_dir(address: &str, participant_id: u128) -> PathBuf {
+    let venue: String = address
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    crate::appearance::desk_config_dir()
+        .join("identities")
+        .join(format!("{venue}-participant-{participant_id}"))
+}
+
 /// The saved connect choice's default location, beside the workspaces.
 #[must_use]
 pub fn default_choice_path() -> PathBuf {
@@ -172,6 +192,8 @@ pub struct Onboarding {
     ca: Field,
     cert: Field,
     key: Field,
+    /// A one-time invite (ADR 0056); never saved.
+    invite: Field,
     phase: Phase,
     _enter: Vec<Subscription>,
 }
@@ -190,6 +212,7 @@ impl Onboarding {
             Field::new(&saved.ca, "ca.pem", window, cx),
             Field::new(&saved.cert, "participant.pem", window, cx),
             Field::new(&saved.key, "participant.key", window, cx),
+            Field::new("", "bnpi1:… from your venue operator", window, cx),
         ];
         let enter = fields
             .iter()
@@ -205,7 +228,7 @@ impl Onboarding {
                 )
             })
             .collect();
-        let [participant, server, server_name, ca, cert, key] = fields;
+        let [participant, server, server_name, ca, cert, key, invite] = fields;
         Self {
             base,
             store,
@@ -216,6 +239,7 @@ impl Onboarding {
             ca,
             cert,
             key,
+            invite,
             phase: Phase::Idle,
             _enter: enter,
         }
@@ -253,6 +277,11 @@ impl Onboarding {
         if self.connecting() {
             return;
         }
+        let invite = self.invite.text(cx);
+        if self.mode == Mode::Hosted && !invite.is_empty() {
+            self.join_with_invite(invite, window, cx);
+            return;
+        }
         let options = match self.choice(cx).and_then(|choice| {
             let options = choice.options(&self.base)?;
             if let Err(error) = choice.save(&self.store) {
@@ -282,6 +311,57 @@ impl Onboarding {
         cx.spawn_in(window, async move |this, cx| {
             let opened = cx
                 .background_spawn(async move { connect::open(&options) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match opened {
+                Ok((venue, label)) => match crate::open_desk_window(venue, label, cx) {
+                    Ok(()) => window.remove_window(),
+                    Err(error) => {
+                        this.phase = Phase::Failed(error.into());
+                        cx.notify();
+                    }
+                },
+                Err(error) => {
+                    this.phase = Phase::Failed(sentence(&error).into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Enrols with `invite` (ADR 0056) off the UI thread: a key is created
+    /// here, the venue issues its certificate, the identity is saved under
+    /// the desk's config directory and remembered, and the desk connects.
+    fn join_with_invite(&mut self, invite: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.phase = Phase::Connecting("Joining with your invite…".into());
+        cx.notify();
+        let (base, store) = (self.base.clone(), self.store.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let opened = cx
+                .background_spawn(async move {
+                    let identity = enroll_with_invite(&invite)?;
+                    let directory = identity_dir(&identity.address, identity.participant_id);
+                    identity.save(&directory).map_err(|error| {
+                        format!(
+                            "cannot save your identity in {}: {error}",
+                            directory.display()
+                        )
+                    })?;
+                    let file = |name: &str| directory.join(name).display().to_string();
+                    let choice = Choice {
+                        mode: Mode::Hosted,
+                        participant: None,
+                        server: identity.address.clone(),
+                        server_name: identity.server_name.clone(),
+                        ca: file("ca.pem"),
+                        cert: file("participant.pem"),
+                        key: file("participant.key"),
+                    };
+                    if let Err(error) = choice.save(&store) {
+                        eprintln!("bunting-desk: cannot save {}: {error}", store.display());
+                    }
+                    connect::open(&choice.options(&base)?)
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match opened {
                 Ok((venue, label)) => match crate::open_desk_window(venue, label, cx) {
@@ -349,6 +429,12 @@ impl Onboarding {
                 )),
             Mode::Hosted => v_flex()
                 .gap_3()
+                .child(ui::field(
+                    "Invite",
+                    Input::new(&self.invite.state).small().into_any_element(),
+                    cx,
+                ))
+                .child(ui::muted("Or join with certificate files", cx))
                 .child(ui::field(
                     "Address",
                     Input::new(&self.server.state).small().into_any_element(),

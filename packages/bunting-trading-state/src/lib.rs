@@ -21,17 +21,21 @@ mod model;
 mod ticket;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod enrolment;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local_venue;
 #[cfg(not(target_arch = "wasm32"))]
 mod session;
 
+pub mod display;
 pub use bunting_client;
 pub use model::{
     AccessDelay, AccountView, BAR_SIZES_NS, Bar, Connection, Dealt, FINEST_BAR_NS, Feed, FeedState,
     FillRow, Instrument, LedgerRecord, MAX_DEALS, MAX_FEEDS, MAX_FILLS, MAX_FINE_BARS, MAX_NEWS,
-    MAX_NOTICES, MAX_ORDERS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES, MAX_PRINTS, MAX_SERIES_LISTINGS,
-    Model, NewsItem, Notice, NoticeLevel, OrderRow, OrderStatus, PNL_SAMPLE_NS, PnlSample,
-    PnlTotals, ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, Tape, TradePrint, VenueRoundTrip,
+    MAX_NOTICES, MAX_ORDERS, MAX_PNL_BOOKS, MAX_PNL_SAMPLES, MAX_PRINTS, MAX_REFERENCE,
+    MAX_SERIES_LISTINGS, Model, NewsItem, Notice, NoticeLevel, OrderRow, OrderStatus,
+    PNL_SAMPLE_NS, PnlSample, PnlTotals, ROUND_TRIP_WINDOW, RoundTrips, SessionEvent, Tape,
+    TradePrint, VenueRoundTrip,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{SendError, Session};

@@ -82,6 +82,28 @@ enum Command {
         /// BNP port.
         #[arg(long, default_value_t = 7400)]
         port: u16,
+        /// Traders enrol by invite (ADR 0056) instead of receiving
+        /// certificate files: no participant keys are written, the CA key
+        /// stays with the venue, and `bunting invite` mints invites.
+        #[arg(long)]
+        enrolment: bool,
+    },
+    /// Mint a one-time invite for a participant of an enrolment venue
+    /// (made with `host-init --enrolment`); print the line to give them.
+    Invite {
+        /// The venue directory.
+        #[arg(long)]
+        dir: PathBuf,
+        /// The participant this invite enrols (1-8 in the practice market).
+        #[arg(long)]
+        participant: u128,
+        /// Hours the invite stays valid (default: until used).
+        #[arg(long)]
+        hours: Option<u64>,
+        /// The `host:port` traders dial, when the venue binds every
+        /// interface.
+        #[arg(long)]
+        address: Option<String>,
     },
     /// Export the configured participant roster to a new protected JSON file.
     ExportRoster { config: PathBuf, output: PathBuf },
@@ -158,7 +180,15 @@ fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
             names,
             bind,
             port,
-        } => host_init(&dir, names, bind, port),
+            enrolment,
+        } => host_init(&dir, names, bind, port, enrolment),
+        Command::Invite {
+            dir,
+            participant,
+            hours,
+            address,
+        } => bunting_trading_state::enrolment::mint_invite(&dir, participant, hours, address)
+            .map(|invite| println!("{invite}")),
         Command::ExportArchive {
             config,
             output,
@@ -367,7 +397,13 @@ fn init(config_dir: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn host_init(dir: &Path, names: Vec<String>, bind: String, port: u16) -> Result<(), String> {
+fn host_init(
+    dir: &Path,
+    names: Vec<String>,
+    bind: String,
+    port: u16,
+    enrolment: bool,
+) -> Result<(), String> {
     use bunting_trading_state::local_venue::{VenueSpec, prepare_with};
     if dir.join("server.json").exists() {
         return Err(format!(
@@ -375,10 +411,21 @@ fn host_init(dir: &Path, names: Vec<String>, bind: String, port: u16) -> Result<
             dir.display()
         ));
     }
-    let spec = VenueSpec::hosted(names, bind, port);
+    let mut spec = VenueSpec::hosted(names, bind, port);
+    if enrolment {
+        spec = spec.with_enrolment();
+    }
     let prepared = prepare_with(dir, &spec).map_err(|error| error.to_string())?;
     println!("provisioned {}", prepared.directory.display());
     println!("start: bunting server {}", prepared.config_path.display());
+    if enrolment {
+        println!(
+            "invite a trader: bunting invite --dir {} --participant N",
+            prepared.directory.display()
+        );
+        println!("FIX logons are in fix-credentials.json");
+        return Ok(());
+    }
     println!(
         "traders connect to {} (certificate name {}) with ca.pem and:",
         prepared.client.address, prepared.client.server_name

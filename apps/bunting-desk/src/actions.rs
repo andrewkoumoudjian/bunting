@@ -58,6 +58,8 @@ actions!(
         CycleDensity,
         /// Turns alert sounds on or off (RIT's status-bar speaker).
         ToggleSounds,
+        /// Logs out and returns to the connect screen (RIT's logout).
+        SwitchVenue,
     ]
 );
 

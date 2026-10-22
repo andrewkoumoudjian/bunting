@@ -9,10 +9,14 @@ description = "Participant trading state over the Bunting Native Protocol: books
 
 [dependencies]
 bunting-client.workspace = true
+# The ledger record (books kept between launches) is JSON on every target.
+serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
-serde_json.workspace = true
+# Random invite secrets and their SHA-256 (ADR 0056); already in the lock
+# file as the crypto provider of rustls and rcgen.
+ring = "=0.17.14"
 
 # Advisory file locks and process signals for the shared local venue
 # (claims, join-or-start, last-client shutdown). Already in both lock

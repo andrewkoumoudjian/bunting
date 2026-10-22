@@ -134,6 +134,7 @@ fn start_venue(name: &str) -> Result<Venue, String> {
         rate_limit_window_ms: 100,
         max_messages_per_interval: 64,
         handshake_timeout_ms: 5_000,
+        enrolment: None,
     });
     config.validate().map_err(|error| error.to_string())?;
     std::thread::spawn(move || bunting_server::runtime::run(&config));

@@ -941,6 +941,56 @@ fn competition_messages<O: OriginStore>(
     Ok(vec![report])
 }
 
+/// The reference data BNP 1.1 publishes (ADR 0054 §2, §9), as `SecurityList`
+/// standard fields: one `NoRelatedSym` (146) entry per listing with `Symbol`
+/// (55), `SecurityID` (48, the instrument), `SecurityExchange` (207, the
+/// venue), `SecurityType` (167), `Currency` (15), `ContractMultiplier` (231)
+/// and `MinPriceIncrement` (969, in ticks), plus `BuntingQuotedDecimals`
+/// (10023).
+fn append_reference_data(report: &mut FixMessage, state: &RunState) {
+    let mut entries = Vec::new();
+    let mut after = None;
+    loop {
+        let (next_after, _, instruments, listings) =
+            bunting_application::bnp::reference_data(state, after, 0);
+        for listing in listings {
+            let Some(instrument) = instruments
+                .iter()
+                .find(|instrument| instrument.instrument_id == listing.listing.instrument_id)
+            else {
+                continue;
+            };
+            entries.push((listing, instrument.clone()));
+        }
+        match next_after {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    report.push(146, entries.len().to_string());
+    for (listing, instrument) in entries {
+        report.push(55, listing.symbol);
+        report.push(48, listing.listing.instrument_id.to_string());
+        report.push(207, listing.listing.venue_id.to_string());
+        report.push(
+            167,
+            match instrument.kind {
+                bnp_wire::InstrumentKind::Equity => "CS",
+                bnp_wire::InstrumentKind::Currency => "FXSPOT",
+                bnp_wire::InstrumentKind::Bond => "CORP",
+                bnp_wire::InstrumentKind::Option => "OPT",
+                bnp_wire::InstrumentKind::Future => "FUT",
+                bnp_wire::InstrumentKind::Commodity => "CMDTY",
+                bnp_wire::InstrumentKind::Synthetic => "MLEG",
+            },
+        );
+        report.push(15, instrument.currency_id.to_string());
+        report.push(231, instrument.multiplier.to_string());
+        report.push(969, listing.tick_size.to_string());
+        report.push(10023, instrument.quoted_decimals.to_string());
+    }
+}
+
 /// Read-only report for one competition request over the committed run.
 fn competition_report_for(
     state: &RunState,
@@ -956,7 +1006,11 @@ fn competition_report_for(
             "ok",
             state.sequence().get(),
             &discovery(state),
-        ),
+        )
+        .map(|mut report| {
+            append_reference_data(&mut report, state);
+            report
+        }),
         CompetitionRequest::Account => competition_report(
             "AP",
             "private",

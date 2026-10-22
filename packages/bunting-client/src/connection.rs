@@ -2,8 +2,8 @@
 //! `Hello`/`Welcome`, and a reader thread.
 
 use bnp_wire::{
-    ClientMessage, FrameDecoder, MAX_FRAME_BYTES, PROTOCOL_VERSION, ServerMessage, Welcome,
-    decode_server, encode_client,
+    ClientMessage, FrameDecoder, MAX_FRAME_BYTES, PROTOCOL_VERSION, ServerMessage, VERSION_1_0,
+    Welcome, decode_server, encode_client,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig as TlsClientConfig, ClientConnection, RootCertStore};
@@ -230,6 +230,20 @@ impl Client {
     /// Returns [`ClientError::Refused`] when the venue answers `Hello` with
     /// `Logout`, and other errors for network, TLS or protocol failures.
     pub fn connect(config: &ClientConfig) -> Result<Self, ClientError> {
+        // Offer the newest 1.x; a venue that only speaks 1.0 logs the
+        // session out, and one retry at 1.0 joins it (ADR 0054 §1).
+        match Self::connect_at(config, PROTOCOL_VERSION) {
+            Err(ClientError::Refused(reason))
+                if PROTOCOL_VERSION != VERSION_1_0
+                    && reason.starts_with("unsupported BNP version") =>
+            {
+                Self::connect_at(config, VERSION_1_0)
+            }
+            other => other,
+        }
+    }
+
+    fn connect_at(config: &ClientConfig, version: u16) -> Result<Self, ClientError> {
         let deadline = Instant::now() + config.connect_timeout;
         let address =
             config.address.to_socket_addrs()?.next().ok_or_else(|| {
@@ -254,7 +268,7 @@ impl Client {
             last_sent: Instant::now(),
         };
         writer.send(&ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
+            version,
             resume_after: config.resume_after,
             client_name: config.client_name.clone(),
         })?;

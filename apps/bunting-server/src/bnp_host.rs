@@ -26,14 +26,15 @@ use crate::outbound::OutboundHold;
 use crate::public_feed::FeedMessage;
 use crate::wake::{SessionEvent, Waker};
 use bnp_wire::{
-    ClientMessage, DelaySource, FeedFlags, FrameDecoder, PROTOCOL_VERSION, ResumeStatus, Role,
-    ServerMessage, Welcome, decode_client, encode_server,
+    ClientMessage, DelaySource, FeedFlags, FrameDecoder, PROTOCOL_VERSION, RejectReason,
+    ResumeStatus, Role, ServerMessage, VERSION_1_0, Welcome, decode_client, encode_server,
+    negotiate, speaks_1_1,
 };
 use bunting_admission_sequencer::{DelayEstimator, Endpoint, RttSource};
 use bunting_api_contract::{ActorIdentity, ActorRole, UnsignedDecimalString};
 use bunting_application::bnp::{
     BnpIdentity, account_balances, deal_messages, deals, has_run_messages, listing_key, listings,
-    run_messages,
+    reference_data, run_messages,
 };
 use bunting_application::{ApplicationService, VerifiedActor, listing_for_command};
 use bunting_engine::RunState;
@@ -46,12 +47,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Registered client certificates by SHA-256 fingerprint.
-type Roster = BTreeMap<[u8; 32], BnpRosterEntry>;
+use crate::bnp_enrol::{Enrolment, Roster};
 
 pub(crate) fn run(
     config: &BnpConfig,
@@ -60,7 +61,20 @@ pub(crate) fn run(
 ) -> Result<(), String> {
     let trust = Arc::new(Trust::load(config)?);
     trust.watch(config.clone())?;
-    let roster = Arc::new(roster(config)?);
+    let mut entries = roster(config)?;
+    let enrolment = match &config.enrolment {
+        Some(enrolment) => {
+            let enrolment = Enrolment::load(enrolment, &config.client_ca)?;
+            // Certificates enrolled before a restart keep their identity.
+            for entry in enrolment.enrolled()? {
+                let fingerprint = fingerprint_of(&entry)?;
+                entries.insert(fingerprint, entry);
+            }
+            Some(Arc::new(enrolment))
+        }
+        None => None,
+    };
+    let roster = Arc::new(RwLock::new(entries));
     let listener = TcpListener::bind(&config.bind)
         .map_err(|error| format!("cannot bind BNP listener {}: {error}", config.bind))?;
     let slots = Arc::new(ConnectionSlots::new(config.max_connections));
@@ -84,6 +98,7 @@ pub(crate) fn run(
         let config = config.clone();
         let trust = trust.clone();
         let roster = roster.clone();
+        let enrolment = enrolment.clone();
         let origin = origin.clone();
         let admission = admission.clone();
         let slots = slots.clone();
@@ -94,6 +109,7 @@ pub(crate) fn run(
                     config: &config,
                     trust: &trust,
                     roster: &roster,
+                    enrolment: enrolment.as_deref(),
                     origin: &origin,
                     admission: &admission,
                     slots: &slots,
@@ -172,7 +188,8 @@ fn limit_slow_consumer(stream: &TcpStream, heartbeat_ms: u32) -> Result<(), Stri
 struct Session<'a> {
     config: &'a BnpConfig,
     trust: &'a Trust,
-    roster: &'a Roster,
+    roster: &'a RwLock<Roster>,
+    enrolment: Option<&'a Enrolment>,
     origin: &'a PublishingOrigin,
     admission: &'a AdmissionService,
     slots: &'a ConnectionSlots,
@@ -182,18 +199,61 @@ fn roster(config: &BnpConfig) -> Result<Roster, String> {
     config
         .roster
         .iter()
-        .map(|entry| {
-            let mut fingerprint = [0_u8; 32];
-            for (index, byte) in fingerprint.iter_mut().enumerate() {
-                *byte = entry
-                    .certificate_sha256
-                    .get(index * 2..index * 2 + 2)
-                    .and_then(|digits| u8::from_str_radix(digits, 16).ok())
-                    .ok_or("bnp.roster fingerprint is not hex SHA-256")?;
-            }
-            Ok((fingerprint, entry.clone()))
-        })
+        .map(|entry| Ok((fingerprint_of(entry)?, entry.clone())))
         .collect()
+}
+
+fn fingerprint_of(entry: &BnpRosterEntry) -> Result<[u8; 32], String> {
+    let mut fingerprint = [0_u8; 32];
+    for (index, byte) in fingerprint.iter_mut().enumerate() {
+        *byte = entry
+            .certificate_sha256
+            .get(index * 2..index * 2 + 2)
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok())
+            .ok_or("bnp.roster fingerprint is not hex SHA-256")?;
+    }
+    Ok(fingerprint)
+}
+
+/// One enrolment session: exactly one `Enroll`, answered with the issued
+/// certificate or one generic refusal, then closed.
+fn enrol(
+    channel: &mut Channel,
+    deadline: Instant,
+    enrolment: &Enrolment,
+    roster: &RwLock<Roster>,
+) -> Result<(), String> {
+    let frames = channel.read_until_frame(deadline)?;
+    let Some(Ok(ClientMessage::Enroll { secret, csr_pem })) =
+        frames.first().map(|frame| decode_client(frame))
+    else {
+        channel.send(&[ServerMessage::Logout {
+            reason: "a client without a certificate may only enrol".to_owned(),
+        }])?;
+        return Err("BNP client without a certificate did not enrol".to_owned());
+    };
+    match enrolment.enroll(&secret, &csr_pem, roster) {
+        Ok((participant_id, certificate_pem, ca_pem)) => {
+            channel.send(&[
+                ServerMessage::Enrolled {
+                    participant_id,
+                    certificate_pem,
+                    ca_pem,
+                },
+                ServerMessage::Logout {
+                    reason: "enrolled; reconnect with your certificate".to_owned(),
+                },
+            ])?;
+            eprintln!("bunting-server: BNP participant {participant_id} enrolled");
+            Ok(())
+        }
+        Err(reason) => {
+            channel.send(&[ServerMessage::Logout {
+                reason: "invite refused".to_owned(),
+            }])?;
+            Err(format!("BNP enrolment refused: {reason}"))
+        }
+    }
 }
 
 /// How long a reconnecting participant waits for its previous BNP session
@@ -221,6 +281,7 @@ fn handle_connection(
         config,
         trust,
         roster,
+        enrolment,
         origin,
         admission,
         slots,
@@ -256,17 +317,30 @@ fn handle_connection(
         .peer_certificates()
         .map(|chain| chain.iter().map(|der| der.clone().into_owned()).collect())
         .unwrap_or_default();
-    let fingerprint: [u8; 32] = peer_chain
-        .first()
-        .map(|leaf| Sha256::digest(leaf.as_ref()).into())
-        .ok_or("BNP client presented no certificate")?;
     let mut channel = Channel {
         connection,
         stream,
         decoder: FrameDecoder::new(config.max_frame_bytes),
         last_sent: Instant::now(),
+        version: VERSION_1_0,
     };
-    let Some(entry) = roster.get(&fingerprint) else {
+    let Some(fingerprint) = peer_chain
+        .first()
+        .map(|leaf| <[u8; 32]>::from(Sha256::digest(leaf.as_ref())))
+    else {
+        // Only an enrolment venue admits a client without a certificate,
+        // and then for one `Enroll` (ADR 0056).
+        return match enrolment {
+            Some(enrolment) => enrol(&mut channel, deadline, enrolment, roster),
+            None => Err("BNP client presented no certificate".to_owned()),
+        };
+    };
+    let registered = roster
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&fingerprint)
+        .cloned();
+    let Some(entry) = registered.as_ref() else {
         channel.send(&[ServerMessage::Logout {
             reason: "certificate is not registered for this run".to_owned(),
         }])?;
@@ -279,12 +353,14 @@ fn handle_connection(
     let hello_frames = channel.read_until_frame(deadline)?;
     let hello_us = admission.clock().now_us();
     let mut frames = hello_frames.into_iter();
-    let resume_after = match frames.next().map(|frame| decode_client(&frame)) {
+    let (version, resume_after) = match frames.next().map(|frame| decode_client(&frame)) {
         Some(Ok(ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
+            version,
             resume_after,
             ..
-        })) => resume_after,
+        })) if negotiate(version).is_some() => {
+            (negotiate(version).unwrap_or(VERSION_1_0), resume_after)
+        }
         Some(Ok(ClientMessage::Hello { version, .. })) => {
             channel.send(&[ServerMessage::Logout {
                 reason: format!(
@@ -377,8 +453,9 @@ fn handle_connection(
         (Resume::Replay(_), Some(_)) => ResumeStatus::Replaying,
         (Resume::Gap, Some(_)) => ResumeStatus::Gap,
     };
+    channel.version = version;
     channel.send(&[ServerMessage::Welcome(Welcome {
-        version: PROTOCOL_VERSION,
+        version,
         run_id: config.run_id,
         participant_id: entry.participant_id,
         role: match entry.role {
@@ -449,6 +526,7 @@ fn handle_connection(
         identity: &identity,
         operator,
         run_id,
+        version,
     };
     let heartbeat = Duration::from_millis(u64::from(config.heartbeat_ms));
     let mut last_received = Instant::now();
@@ -657,6 +735,39 @@ struct Channel {
     stream: TcpStream,
     decoder: FrameDecoder,
     last_sent: Instant,
+    /// The negotiated BNP version; until `Hello`, 1.0.
+    version: u16,
+}
+
+/// `message` as a session negotiated at 1.0 may receive it: a 1.1-only
+/// reject reason becomes its 1.0 meaning (ADR 0054 §1). `None` when it
+/// needs no change.
+fn for_1_0(message: &ServerMessage) -> Option<ServerMessage> {
+    let downgrade = |reason: RejectReason| match reason {
+        RejectReason::PriceNotOnTick => Some(RejectReason::PriceOutOfBounds),
+        _ => None,
+    };
+    match message {
+        ServerMessage::OrderRejected {
+            stamp,
+            client_order_id,
+            reason,
+        } => downgrade(*reason).map(|reason| ServerMessage::OrderRejected {
+            stamp: *stamp,
+            client_order_id: *client_order_id,
+            reason,
+        }),
+        ServerMessage::CancelRejected {
+            stamp,
+            client_order_id,
+            reason,
+        } => downgrade(*reason).map(|reason| ServerMessage::CancelRejected {
+            stamp: *stamp,
+            client_order_id: *client_order_id,
+            reason,
+        }),
+        _ => None,
+    }
 }
 
 impl Channel {
@@ -665,7 +776,10 @@ impl Channel {
     fn send(&mut self, messages: &[ServerMessage]) -> Result<(), String> {
         let mut bytes = Vec::new();
         for message in messages {
-            encode_server(message, &mut bytes)
+            let downgraded = (!speaks_1_1(self.version))
+                .then(|| for_1_0(message))
+                .flatten();
+            encode_server(downgraded.as_ref().unwrap_or(message), &mut bytes)
                 .map_err(|error| format!("cannot encode BNP message: {error}"))?;
         }
         self.connection
@@ -776,6 +890,8 @@ struct SessionContext<'a> {
     /// An instructor or administrator session.
     operator: bool,
     run_id: RunId,
+    /// The negotiated BNP version (ADR 0054 §1).
+    version: u16,
 }
 
 /// Per-session counters and per-destination release floors.
@@ -842,6 +958,19 @@ fn handle_frame<'a>(
             }])?;
             return Err("repeated BNP Hello".to_owned());
         }
+        ClientMessage::Enroll { .. } => {
+            channel.send(&[ServerMessage::Logout {
+                reason: "Enroll is only valid without a client certificate".to_owned(),
+            }])?;
+            return Err("BNP Enroll on a certified session".to_owned());
+        }
+        ClientMessage::ReferenceDataRequest { .. } if !speaks_1_1(context.version) => {
+            // A 1.1 request on a 1.0 session is an unknown type there.
+            channel.send(&[ServerMessage::Logout {
+                reason: "invalid message: a BNP 1.1 request on a 1.0 session".to_owned(),
+            }])?;
+            return Err("BNP 1.1 request on a 1.0 session".to_owned());
+        }
         _ => {}
     }
     let request_type = message.msg_type();
@@ -900,7 +1029,8 @@ const fn request_reference(message: &ClientMessage) -> u64 {
         | ClientMessage::ListingsRequest { request_id }
         | ClientMessage::OpenOrdersRequest { request_id }
         | ClientMessage::AccountRequest { request_id }
-        | ClientMessage::DealsRequest { request_id } => *request_id as u64,
+        | ClientMessage::DealsRequest { request_id }
+        | ClientMessage::ReferenceDataRequest { request_id, .. } => *request_id as u64,
         _ => 0,
     }
 }
@@ -1152,6 +1282,35 @@ fn admit<'a>(
                 }),
             )
         }
+        ClientMessage::ReferenceDataRequest {
+            request_id,
+            after_instrument,
+            limit,
+        } => {
+            let (request_id, after, limit) = (*request_id, *after_instrument, *limit);
+            (
+                Endpoint::Hub,
+                Box::new(move |job| {
+                    let (run_sequence, (next_after, currencies, instruments, listings)) =
+                        ApplicationService::new(job.origin)
+                            .read(run_id, |state| {
+                                (
+                                    state.event_sequence().get(),
+                                    reference_data(state, after, limit),
+                                )
+                            })
+                            .map_err(|error| format!("run read failed: {error}"))?;
+                    Ok(vec![ServerMessage::ReferenceData {
+                        request_id,
+                        run_sequence,
+                        next_after,
+                        currencies,
+                        instruments,
+                        listings,
+                    }])
+                }),
+            )
+        }
         ClientMessage::OpenOrdersRequest { request_id } => {
             let request_id = *request_id;
             let identity = *context.identity;
@@ -1204,7 +1363,8 @@ fn admit<'a>(
         | ClientMessage::Heartbeat
         | ClientMessage::ProbeReply { .. }
         | ClientMessage::Ping { .. }
-        | ClientMessage::Logout { .. } => return Ok(None),
+        | ClientMessage::Logout { .. }
+        | ClientMessage::Enroll { .. } => return Ok(None),
     };
     let inbound = Inbound {
         received_us,
