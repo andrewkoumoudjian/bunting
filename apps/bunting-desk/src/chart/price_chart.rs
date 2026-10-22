@@ -112,6 +112,7 @@ pub struct PriceChart {
     ema: Option<Vec<f64>>,
     rsi: Option<Vec<f64>>,
     margin_slots: usize,
+    min_slots: usize,
     /// The measured right-axis gutter, shared back to the panel
     /// for its zoom/pan arithmetic.
     gutter_out: Rc<Cell<f32>>,
@@ -133,6 +134,7 @@ impl PriceChart {
             ema: None,
             rsi: None,
             margin_slots: 0,
+            min_slots: 0,
             gutter_out,
             gutter: DEFAULT_GUTTER,
             hovered: None,
@@ -195,6 +197,15 @@ impl PriceChart {
         self
     }
 
+    /// Band slots the plot always has room for, so a short series
+    /// draws at the window's usual candle width from the left
+    /// rather than stretched across it.
+    #[must_use]
+    pub fn min_slots(mut self, slots: usize) -> Self {
+        self.min_slots = slots;
+        self
+    }
+
     fn layout(&self, size: (f32, f32)) -> Layout {
         let (width, height) = size;
         let plot_w = (width - self.gutter).max(40.);
@@ -227,7 +238,7 @@ impl PriceChart {
 
     fn x_scale(&self, plot_w: f32) -> ScaleBand<usize> {
         ScaleBand::new(0..self.bars.len(), [0., plot_w])
-            .band_count(self.bars.len() + self.margin_slots)
+            .band_count((self.bars.len() + self.margin_slots).max(self.min_slots))
     }
 
     /// The price (or percent) domain over the visible bars,

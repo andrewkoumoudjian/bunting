@@ -64,6 +64,16 @@ pub const MAX_PNL_BOOKS: usize = 256;
 pub const PNL_SAMPLE_NS: u64 = FINEST_BAR_NS;
 /// P&L samples kept: one a second for 4 hours of run time.
 pub const MAX_PNL_SAMPLES: usize = 14_400;
+/// How long an account answer must keep disagreeing with this client's
+/// fills, by the same number of lots, before its position is adopted
+/// (client µs). Fill reports and account answers travel separately, and
+/// a fill on a farther venue can arrive after an answer that already
+/// counts it; adopting at once would mark the cost unknown for good.
+const ACCOUNT_GRACE_US: u64 = 2_000_000;
+/// The oldest two-sided touch a P&L sample marks from (client µs). Past
+/// this the book is one-sided for real, not re-quoting, and samples use
+/// the live mark like the figures do.
+const SAMPLED_MARK_MAX_AGE_US: u64 = 2_000_000;
 
 /// One bar of trades: run-time start, open/high/low/close in price
 /// ticks, and the lots traded (quantities as reported).
@@ -148,6 +158,17 @@ impl SeriesClock {
         }
     }
 
+    /// [`Self::now_ns`] without handing the time out: what the clock
+    /// would read at `now_us`, for drawing.
+    fn peek_ns(&self, now_us: u64) -> u64 {
+        let estimated = match (self.anchor, self.first_us) {
+            (Some((ns, at_us)), _) => ns.saturating_add(now_us.saturating_sub(at_us) * 1_000),
+            (None, Some(first)) => now_us.saturating_sub(first) * 1_000,
+            (None, None) => 0,
+        };
+        self.last_ns.max(estimated)
+    }
+
     fn now_ns(&mut self, now_us: u64) -> u64 {
         let first = *self.first_us.get_or_insert(now_us);
         let estimated = match self.anchor {
@@ -210,6 +231,55 @@ impl ListingSeries {
         folded
     }
 
+    /// [`Self::bars`] with no holes, as a trading chart draws them:
+    /// a period without trades is a flat bar at the previous close
+    /// with no volume, and the bars run on to the period holding
+    /// `through_ns`, so the latest one is the forming bar. At most
+    /// [`MAX_FINE_BARS`] bars, the latest kept.
+    fn continuous_bars(&self, bar_ns: u64, through_ns: u64) -> Vec<Bar> {
+        let bar_ns = bar_ns.max(FINEST_BAR_NS);
+        let traded = self.bars(bar_ns);
+        let Some(first) = traded.first() else {
+            return traded;
+        };
+        let last_start = traded
+            .last()
+            .map_or(first.start_ns, |bar| bar.start_ns)
+            .max(through_ns - through_ns % bar_ns);
+        let span = (last_start - first.start_ns) / bar_ns;
+        let skip = span.saturating_sub(MAX_FINE_BARS as u64 - 1);
+        let from = first.start_ns + skip * bar_ns;
+        let mut out: Vec<Bar> = Vec::with_capacity(usize::try_from(span - skip + 1).unwrap_or(0));
+        let mut next = traded.iter().peekable();
+        let mut close = first.open;
+        let mut start = first.start_ns;
+        while start <= last_start {
+            match next.peek() {
+                Some(bar) if bar.start_ns == start => {
+                    close = bar.close;
+                    if start >= from {
+                        out.push(**bar);
+                    }
+                    next.next();
+                }
+                _ => {
+                    if start >= from {
+                        out.push(Bar {
+                            start_ns: start,
+                            open: close,
+                            high: close,
+                            low: close,
+                            close,
+                            volume: 0,
+                        });
+                    }
+                }
+            }
+            start += bar_ns;
+        }
+        out
+    }
+
     /// Volume-weighted average traded price since subscribing, in
     /// ticks, rounded to the nearest tick.
     fn vwap_ticks(&self) -> Option<i64> {
@@ -256,6 +326,10 @@ struct PnlBook {
     fees_minor: i128,
     /// Highest committed sequence of a fill in this book.
     last_fill_sequence: u64,
+    /// The venue's position minus this book's, from an account answer
+    /// the fills did not explain, and when that difference was first
+    /// seen (client µs). Adopted once it outlasts [`ACCOUNT_GRACE_US`].
+    unexplained: Option<(i64, u64)>,
 }
 
 impl PnlBook {
@@ -329,14 +403,32 @@ impl PnlBook {
         }
     }
 
-    /// The venue's account answer at `run_sequence`: adopt a position
-    /// the fills in this book do not explain, cost unknown. An answer
-    /// older than the latest fill says nothing.
-    fn account(&mut self, position: i64, run_sequence: u64) {
-        if run_sequence >= self.last_fill_sequence && position != self.position {
-            self.position = position;
-            self.cost_tick_lots = 0;
-            self.cost_known = position == 0;
+    /// The venue's account answer at `run_sequence`, received at
+    /// `now_us`: adopt a position the fills in this book do not explain,
+    /// cost unknown, once the same difference has lasted
+    /// [`ACCOUNT_GRACE_US`]. A difference that fills still in flight
+    /// explain closes before then. An answer older than the latest fill
+    /// says nothing.
+    fn account(&mut self, position: i64, run_sequence: u64, now_us: u64) {
+        if run_sequence < self.last_fill_sequence {
+            return;
+        }
+        if position == self.position {
+            self.unexplained = None;
+            return;
+        }
+        let difference = position.saturating_sub(self.position);
+        match self.unexplained {
+            Some((held, since))
+                if held == difference && now_us.saturating_sub(since) >= ACCOUNT_GRACE_US =>
+            {
+                self.unexplained = None;
+                self.position = position;
+                self.cost_tick_lots = 0;
+                self.cost_known = position == 0;
+            }
+            Some((held, _)) if held == difference => {}
+            _ => self.unexplained = Some((difference, now_us)),
         }
     }
 
@@ -381,10 +473,11 @@ pub(super) struct SeriesState {
     /// (the reference-data gap); empty today.
     multipliers: BTreeMap<u128, i64>,
     /// The last two-sided touch (bid, ask) per instrument with a
-    /// book, refreshed while sampling: agents re-quoting leave a
-    /// one-sided or thinned book for an instant, and sampling that
-    /// instant spikes the series. Samples mark from here instead.
-    sampled_marks: BTreeMap<u128, (i64, i64)>,
+    /// book and when it was seen (client µs), refreshed while sampling:
+    /// agents re-quoting leave a one-sided or thinned book for an
+    /// instant, and sampling that instant spikes the series. Samples
+    /// mark from here instead while it is fresh.
+    sampled_marks: BTreeMap<u128, (i64, i64, u64)>,
     samples: VecDeque<PnlSample>,
 }
 
@@ -402,6 +495,21 @@ impl Model {
             .listings
             .get(&listing)
             .map_or_else(Vec::new, |series| series.bars(bar_ns))
+    }
+
+    /// [`Self::bars`] as a chart draws them: every period from the
+    /// first trade through the one holding client time `now_us` has a
+    /// bar, a period without trades being a flat bar at the previous
+    /// close with no volume, so candles sit side by side on the run
+    /// clock and the latest one forms live.
+    #[must_use]
+    pub fn continuous_bars(&self, listing: Listing, bar_ns: u64, now_us: u64) -> Vec<Bar> {
+        self.series
+            .listings
+            .get(&listing)
+            .map_or_else(Vec::new, |series| {
+                series.continuous_bars(bar_ns, self.series.clock.peek_ns(now_us))
+            })
     }
 
     /// The last price `listing` traded at on its direct feed.
@@ -531,10 +639,12 @@ impl Model {
     }
 
     /// [`Self::pnl_totals`] with each open position marked from
-    /// the last two-sided book the sampler saw, when it has one:
-    /// what the samples record, so a momentarily one-sided book
-    /// (an agent re-quoting) cannot spike the series.
-    fn sampled_totals(&self) -> PnlTotals {
+    /// the last two-sided book the sampler saw at most
+    /// [`SAMPLED_MARK_MAX_AGE_US`] before `now_us`: what the samples
+    /// record, so a momentarily one-sided book (an agent re-quoting)
+    /// cannot spike the series, and a book one-sided for longer cannot
+    /// freeze it.
+    fn sampled_totals(&self, now_us: u64) -> PnlTotals {
         let mut totals = self.pnl_totals();
         // Recompute unrealized from the sampled marks.
         let mut unrealized: i128 = 0;
@@ -547,7 +657,8 @@ impl Model {
                 .series
                 .sampled_marks
                 .get(instrument_id)
-                .map(|(bid, ask)| if book.position > 0 { *bid } else { *ask })
+                .filter(|(_, _, seen)| now_us.saturating_sub(*seen) <= SAMPLED_MARK_MAX_AGE_US)
+                .map(|(bid, ask, _)| if book.position > 0 { *bid } else { *ask })
                 .or_else(|| self.mark(*instrument_id, book.position));
             if let Some(mark) = mark
                 && let Some(open) = book.unrealized_tick_lots(mark)
@@ -656,7 +767,12 @@ impl Model {
         self.series_sample(now_us);
     }
 
-    pub(super) fn series_account(&mut self, positions: &[Position], run_sequence: u64) {
+    pub(super) fn series_account(
+        &mut self,
+        positions: &[Position],
+        run_sequence: u64,
+        now_us: u64,
+    ) {
         for position in positions {
             if !self.series.books.contains_key(&position.instrument_id)
                 && (position.position == 0 || self.series.books.len() == MAX_PNL_BOOKS)
@@ -667,7 +783,7 @@ impl Model {
                 .books
                 .entry(position.instrument_id)
                 .or_insert_with(PnlBook::known)
-                .account(position.position, run_sequence);
+                .account(position.position, run_sequence, now_us);
         }
     }
 
@@ -697,7 +813,9 @@ impl Model {
             }
         }
         for (instrument_id, bid, ask) in two_sided {
-            self.series.sampled_marks.insert(instrument_id, (bid, ask));
+            self.series
+                .sampled_marks
+                .insert(instrument_id, (bid, ask, now_us));
         }
         let time_ns = self.series.clock.now_ns(now_us);
         // Before the first fill the participant's P&L is zero; say
@@ -710,7 +828,7 @@ impl Model {
                 multipliers_known: true,
             });
         }
-        let totals = self.sampled_totals();
+        let totals = self.sampled_totals(now_us);
         if let Some(last) = self.series.samples.back_mut()
             && last.time_ns / PNL_SAMPLE_NS == time_ns / PNL_SAMPLE_NS
         {

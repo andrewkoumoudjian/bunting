@@ -526,7 +526,22 @@ impl ChartPanel {
                 self.picked_for = Some(primary);
             }
         }
-        self.last_total = model.bars(primary, self.bar_ns()).len();
+        self.last_total = model
+            .continuous_bars(primary, self.bar_ns(), desk.now_us())
+            .len();
+    }
+
+    /// Band slots across the plot for `shown` bars: one per bar, the
+    /// follow margin while following, and never fewer than the view's
+    /// bar count, so candles keep their width while history is short.
+    fn band_slots(&self, shown: usize) -> usize {
+        let following = self.view.is_following(self.last_total);
+        let margin = if following { FOLLOW_MARGIN } else { 0 };
+        (shown + margin).max(if following {
+            self.view.count() + margin
+        } else {
+            0
+        })
     }
 
     /// Plot width inside the axis gutter, from the last frame.
@@ -554,12 +569,7 @@ impl ChartPanel {
             return;
         }
         let (start, end) = self.view.resolve(self.last_total);
-        let slots = (end - start)
-            + if self.view.is_following(self.last_total) {
-                FOLLOW_MARGIN
-            } else {
-                0
-            };
+        let slots = self.band_slots(end - start);
         self.drag = Some(Drag {
             start_x: event.position.x.as_f32(),
             range: self.view,
@@ -798,7 +808,7 @@ impl ChartPanel {
             .first()
             .map(|primary| {
                 model
-                    .bars(primary.listing, self.bar_ns())
+                    .continuous_bars(primary.listing, self.bar_ns(), desk.now_us())
                     .iter()
                     .map(|bar| num(bar.close))
                     .collect()
@@ -890,7 +900,7 @@ impl ChartPanel {
         let symbol = model
             .symbol(primary.listing)
             .map_or_else(|| primary.listing.instrument_id.to_string(), str::to_owned);
-        let all = model.bars(primary.listing, self.bar_ns());
+        let all = model.continuous_bars(primary.listing, self.bar_ns(), desk.now_us());
         if all.is_empty() {
             return ui::empty_state(
                 "chart-empty",
@@ -922,7 +932,7 @@ impl ChartPanel {
         let slice = |values: &[f64]| values[start..end].to_vec();
         let mut others: Vec<(SeriesChoice, Vec<f64>)> = Vec::new();
         for choice in self.series.iter().skip(1) {
-            let bars = model.bars(choice.listing, self.bar_ns());
+            let bars = model.continuous_bars(choice.listing, self.bar_ns(), desk.now_us());
             if let Some(aligned) = aligned_closes(&all, &bars) {
                 others.push((*choice, aligned));
             }
@@ -950,6 +960,7 @@ impl ChartPanel {
         } else {
             0
         })
+        .min_slots(self.band_slots(end - start))
         .rsi(
             self.indicators
                 .rsi

@@ -1004,7 +1004,7 @@ impl Model {
                         .fills
                         .back()
                         .is_some_and(|fill| fill.sequence > run_sequence);
-                self.series_account(&positions, run_sequence);
+                self.series_account(&positions, run_sequence, now_us);
                 self.account = Some(AccountView {
                     run_sequence,
                     cash,

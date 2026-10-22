@@ -200,10 +200,14 @@ fn an_account_position_without_fills_has_unknown_cost_until_flat() {
     let mut book = PnlBook::known();
     book.fill(Side::Buy, 100, 10, 0, 5);
     // An answer older than the fill changes nothing.
-    book.account(0, 4);
+    book.account(0, 4, 0);
     assert_eq!(book.position, 10);
-    // A newer answer the fills do not explain is adopted, costless.
-    book.account(40, 6);
+    // A newer answer the fills do not explain is adopted, costless,
+    // once the same difference has outlasted the grace period.
+    book.account(40, 6, 0);
+    assert_eq!(book.position, 10, "not adopted on first sight");
+    assert_eq!(book.cost_ticks(), Some(100));
+    book.account(40, 6, ACCOUNT_GRACE_US);
     assert_eq!(book.position, 40);
     assert_eq!(book.cost_ticks(), None);
     assert_eq!(book.unrealized_tick_lots(200), None);
@@ -491,4 +495,98 @@ fn samples_mark_from_the_last_two_sided_book_not_a_requote_instant() {
 
     let totals: Vec<i128> = model.pnl_series().iter().map(|s| s.total).collect();
     assert_eq!(totals, vec![-10, -10, -30]);
+}
+
+#[test]
+fn an_account_answer_ahead_of_its_fill_report_keeps_the_cost() {
+    // The venue's answer already counts a fill on a farther venue
+    // whose report is still in flight: the gap closes when it lands.
+    let mut book = PnlBook::known();
+    book.fill(Side::Buy, 100, 10, 0, 5);
+    book.account(20, 9, 1_000_000);
+    book.fill(Side::Buy, 102, 10, 0, 8);
+    book.account(20, 10, 1_500_000);
+    assert_eq!(book.position, 20);
+    assert_eq!(book.cost_ticks(), Some(101), "cost stays known");
+    // Long after, the same answer is not an unexplained difference.
+    book.account(20, 11, 1_000_000 + 10 * ACCOUNT_GRACE_US);
+    assert_eq!(book.cost_ticks(), Some(101));
+}
+
+#[test]
+fn a_difference_that_changes_restarts_the_grace_period() {
+    let mut book = PnlBook::known();
+    book.account(30, 1, 0);
+    book.account(35, 2, ACCOUNT_GRACE_US);
+    assert_eq!(book.position, 0, "a new difference starts its own wait");
+    book.account(35, 3, 2 * ACCOUNT_GRACE_US);
+    assert_eq!(book.position, 35);
+    assert_eq!(book.cost_ticks(), None);
+}
+
+#[test]
+fn a_book_one_sided_for_longer_than_a_requote_does_not_freeze_samples() {
+    let mut model = model_with_listings();
+    touch(&mut model, NEAR, 99, 101);
+    model.series_stamp(0, 0);
+    fill(&mut model, NEAR, Side::Buy, 100, 10, 0, 1, 0);
+    // The bid side goes away for good and trades keep printing lower.
+    one_sided(&mut model, NEAR, 101);
+    for second in 1..=5_u64 {
+        let at = second * 1_000_000;
+        model.series_trade(NEAR, 100 - i64::try_from(second).unwrap_or(0), 1, at);
+        model.series_stamp(second * SEC, at);
+        model.series_sample(at);
+    }
+    let totals: Vec<i128> = model.pnl_series().iter().map(|s| s.total).collect();
+    // Seconds 1-2 keep the last two-sided bid (99); from second 3 the
+    // sampled touch is stale and the last trade marks the position.
+    assert_eq!(totals, vec![-10, -10, -10, -30, -40, -50]);
+}
+
+#[test]
+fn continuous_bars_fill_quiet_periods_and_run_to_now() {
+    let mut series = ListingSeries::default();
+    series.trade(10 * SEC, 100, 2);
+    series.trade(10 * SEC + 5, 103, 1);
+    series.trade(13 * SEC, 101, 4);
+
+    let bars = series.continuous_bars(SEC, 15 * SEC + 400);
+    let starts: Vec<u64> = bars.iter().map(|bar| bar.start_ns / SEC).collect();
+    assert_eq!(starts, vec![10, 11, 12, 13, 14, 15], "one bar per second");
+    let flat = Bar {
+        start_ns: 11 * SEC,
+        open: 103,
+        high: 103,
+        low: 103,
+        close: 103,
+        volume: 0,
+    };
+    assert_eq!(bars[1], flat, "a quiet second holds the previous close");
+    assert_eq!(bars[3].close, 101);
+    assert_eq!(bars[5].close, 101, "the forming bar carries the last close");
+    assert_eq!(bars[5].volume, 0);
+
+    // Wider bars fold first, then fill.
+    let five: Vec<u64> = series
+        .continuous_bars(5 * SEC, 21 * SEC)
+        .iter()
+        .map(|bar| bar.start_ns / SEC)
+        .collect();
+    assert_eq!(five, vec![10, 15, 20]);
+}
+
+#[test]
+fn continuous_bars_stay_bounded_after_a_long_silence() {
+    let mut series = ListingSeries::default();
+    series.trade(0, 100, 1);
+    let bars = series.continuous_bars(SEC, 100_000 * SEC);
+    assert_eq!(bars.len(), MAX_FINE_BARS);
+    assert_eq!(bars.last().map(|bar| bar.start_ns), Some(100_000 * SEC));
+    assert!(bars.iter().all(|bar| bar.close == 100));
+    assert!(
+        ListingSeries::default()
+            .continuous_bars(SEC, SEC)
+            .is_empty()
+    );
 }
