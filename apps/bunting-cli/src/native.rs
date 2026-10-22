@@ -63,6 +63,26 @@ enum Command {
         #[arg(long)]
         agent: String,
     },
+    /// Provision a hosted practice venue: a CA, a venue certificate for
+    /// the given names, eight funded participants, the practice market
+    /// and its agents, BNP on `--bind`:`--port`, and the run on disk.
+    /// Start it with `bunting server <dir>/server.json`; give each trader
+    /// `ca.pem` and one `participant-N.pem`/`.key` pair.
+    HostInit {
+        /// Directory to write; must not hold a venue yet.
+        #[arg(long)]
+        dir: PathBuf,
+        /// A DNS name or IP address on the venue certificate (repeat for
+        /// several; the first is the name traders' desks check).
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+        /// Address BNP listens on (a tailnet address, or 0.0.0.0).
+        #[arg(long)]
+        bind: String,
+        /// BNP port.
+        #[arg(long, default_value_t = 7400)]
+        port: u16,
+    },
     /// Export the configured participant roster to a new protected JSON file.
     ExportRoster { config: PathBuf, output: PathBuf },
     /// Export a run's full journaled history from a file origin as a
@@ -133,6 +153,12 @@ fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> 
         Command::Doctor { config } => doctor(config.as_deref()),
         Command::Conformance { agent } => conformance(&agent),
         Command::ExportRoster { config, output } => export_roster(&config, &output),
+        Command::HostInit {
+            dir,
+            names,
+            bind,
+            port,
+        } => host_init(&dir, names, bind, port),
         Command::ExportArchive {
             config,
             output,
@@ -338,6 +364,33 @@ fn init(config_dir: Option<&Path>) -> Result<(), String> {
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
     }
     println!("initialized {}", destination.display());
+    Ok(())
+}
+
+fn host_init(dir: &Path, names: Vec<String>, bind: String, port: u16) -> Result<(), String> {
+    use bunting_trading_state::local_venue::{VenueSpec, prepare_with};
+    if dir.join("server.json").exists() {
+        return Err(format!(
+            "{} already holds a venue; choose an empty directory",
+            dir.display()
+        ));
+    }
+    let spec = VenueSpec::hosted(names, bind, port);
+    let prepared = prepare_with(dir, &spec).map_err(|error| error.to_string())?;
+    println!("provisioned {}", prepared.directory.display());
+    println!("start: bunting server {}", prepared.config_path.display());
+    println!(
+        "traders connect to {} (certificate name {}) with ca.pem and:",
+        prepared.client.address, prepared.client.server_name
+    );
+    for participant in &prepared.participants {
+        println!(
+            "  participant {}: {} + {}",
+            participant.participant_id,
+            participant.certificate_path.display(),
+            participant.private_key_path.display()
+        );
+    }
     Ok(())
 }
 

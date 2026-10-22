@@ -237,6 +237,7 @@ dependencies = [
  "bunting-market-types",
  "bunting-rs",
  "bunting-server",
+ "bunting-trading-state",
  "bunting-tui",
  "clap",
  "serde_json",

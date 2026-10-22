@@ -174,20 +174,80 @@ fn participant_file(directory: &Path, participant_id: u128, extension: &str) -> 
 }
 
 fn client_config(
+    spec: &VenueSpec,
     bnp_port: u16,
     ca_pem: &[u8],
     certificate_pem: &[u8],
     private_key_pem: &[u8],
 ) -> ClientConfig {
     ClientConfig {
-        address: format!("127.0.0.1:{bnp_port}"),
-        server_name: "localhost".to_owned(),
+        address: format!("{}:{bnp_port}", spec.connect_host()),
+        server_name: spec.certificate_name().to_owned(),
         ca_pem: ca_pem.to_vec(),
         certificate_pem: certificate_pem.to_vec(),
         private_key_pem: private_key_pem.to_vec(),
         resume_after: None,
         client_name: concat!("bunting-trading-state/", env!("CARGO_PKG_VERSION")).to_owned(),
         connect_timeout: Duration::from_secs(10),
+    }
+}
+
+/// Where a provisioned venue listens and what its certificate names.
+/// [`VenueSpec::local`] is the practice venue on this machine; a hosted
+/// venue (a server on the tailnet, say) names its host and port and
+/// keeps its record on disk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VenueSpec {
+    /// DNS names or IP addresses on the venue's certificate; the first
+    /// is the name clients check.
+    pub server_names: Vec<String>,
+    /// Address BNP binds to.
+    pub bind_host: String,
+    /// BNP port; a free loopback port when `None`.
+    pub bnp_port: Option<u16>,
+    /// Keep the run in `origin.json` beside the configuration (file
+    /// storage) instead of memory, so a restart recovers it.
+    pub durable: bool,
+}
+
+impl VenueSpec {
+    /// The shared practice venue: loopback, a free port, in memory.
+    #[must_use]
+    pub fn local() -> Self {
+        Self {
+            server_names: vec!["localhost".to_owned()],
+            bind_host: "127.0.0.1".to_owned(),
+            bnp_port: None,
+            durable: false,
+        }
+    }
+
+    /// A hosted venue on `bind_host:bnp_port` whose certificate names
+    /// `server_names`, with its run kept on disk.
+    #[must_use]
+    pub fn hosted(server_names: Vec<String>, bind_host: String, bnp_port: u16) -> Self {
+        Self {
+            server_names,
+            bind_host,
+            bnp_port: Some(bnp_port),
+            durable: true,
+        }
+    }
+
+    fn certificate_name(&self) -> &str {
+        self.server_names
+            .first()
+            .map_or("localhost", String::as_str)
+    }
+
+    /// The address clients dial: the bind address, unless it listens on
+    /// every interface, then the certificate's name.
+    fn connect_host(&self) -> &str {
+        if self.bind_host == "0.0.0.0" || self.bind_host == "::" {
+            self.certificate_name()
+        } else {
+            &self.bind_host
+        }
     }
 }
 
@@ -198,11 +258,22 @@ fn client_config(
 /// # Errors
 /// Returns an error when a file cannot be written or a port reserved.
 pub fn prepare(directory: &Path) -> Result<PreparedVenue, LocalVenueError> {
+    prepare_with(directory, &VenueSpec::local())
+}
+
+/// [`prepare`] for any [`VenueSpec`]: the practice market, its agents and
+/// eight funded participants, served where `spec` says. For a hosted
+/// venue, copy `ca.pem` and one `participant-N.pem`/`.key` pair to each
+/// trader; the venue key and the other participants' keys stay here.
+///
+/// # Errors
+/// Returns an error when a file cannot be written or a port reserved.
+pub fn prepare_with(directory: &Path, spec: &VenueSpec) -> Result<PreparedVenue, LocalVenueError> {
     std::fs::create_dir_all(directory).map_err(|e| error("cannot create venue directory")(&e))?;
     let mut authority = Authority::new()?;
     let server = authority.issue(
-        vec!["localhost".to_owned()],
-        "Bunting local venue",
+        spec.server_names.clone(),
+        "Bunting venue",
         ExtendedKeyUsagePurpose::ServerAuth,
     )?;
     let mut issued: Vec<(u128, String, String, String)> = Vec::new();
@@ -229,10 +300,13 @@ pub fn prepare(directory: &Path) -> Result<PreparedVenue, LocalVenueError> {
         write(&format!("participant-{participant_id}.key"), key)?;
     }
     write("scenario.json", SCENARIO)?;
-    let bnp_port = free_port()?;
+    let bnp_port = match spec.bnp_port {
+        Some(port) => port,
+        None => free_port()?,
+    };
     let fix_port = free_port()?;
     let fingerprints: Vec<&str> = issued.iter().map(|(_, f, _, _)| f.as_str()).collect();
-    let config = server_config(bnp_port, fix_port, &fingerprints);
+    let config = server_config(spec, bnp_port, fix_port, &fingerprints);
     let config_path = write("server.json", &config.to_string())?;
     let participants: Vec<ParticipantIdentity> = issued
         .into_iter()
@@ -243,6 +317,7 @@ pub fn prepare(directory: &Path) -> Result<PreparedVenue, LocalVenueError> {
                 certificate_path: participant_file(directory, participant_id, "pem"),
                 private_key_path: participant_file(directory, participant_id, "key"),
                 client: client_config(
+                    spec,
                     bnp_port,
                     authority.ca_pem.as_bytes(),
                     certificate.as_bytes(),
@@ -341,6 +416,7 @@ pub fn load_prepared(directory: &Path) -> Result<PreparedVenue, LocalVenueError>
             certificate_path: participant_file(directory, participant_id, "pem"),
             private_key_path: participant_file(directory, participant_id, "key"),
             client: client_config(
+                &VenueSpec::local(),
                 bnp_port,
                 ca_pem.as_bytes(),
                 certificate.as_bytes(),
@@ -1018,14 +1094,17 @@ fn fundamental_path(seed: u64, base_bps: u32) -> Value {
 
 /// The built-in agents of one listing: five fundamental liquidity
 /// providers at spreads 1 to 5, noise, mean reversion and an informed
-/// trader, with participant IDs in `ids` (providers first).
+/// trader, with participant IDs in `ids` (providers first). The
+/// providers re-quote every 250 ms and size up with distance (100 lots
+/// at the touch, 1,150 a side), so a desk's 100-lot order takes one
+/// level, not the book, and the book refills before the next one.
 fn book_agents(ids: [u128; 8], instrument: u128, venue: u128) -> Vec<Value> {
     const SHAPE: [(&str, u64, u64, u64); 8] = [
-        ("fundamental_liquidity_provider", 40, 1, 500),
-        ("fundamental_liquidity_provider", 40, 2, 500),
-        ("fundamental_liquidity_provider", 40, 3, 500),
-        ("fundamental_liquidity_provider", 40, 4, 500),
-        ("fundamental_liquidity_provider", 40, 5, 500),
+        ("fundamental_liquidity_provider", 100, 1, 250),
+        ("fundamental_liquidity_provider", 150, 2, 250),
+        ("fundamental_liquidity_provider", 200, 3, 250),
+        ("fundamental_liquidity_provider", 300, 4, 250),
+        ("fundamental_liquidity_provider", 400, 5, 250),
         ("zero_intelligence_noise", 10, 4, 500),
         ("mean_reversion", 5, 2, 500),
         ("fully_informed", 40, 2, 500),
@@ -1077,7 +1156,7 @@ pub fn practice_runtime() -> Value {
     })
 }
 
-fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
+fn server_config(spec: &VenueSpec, bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
     let link = |a: &str, b: &str, latency_us: u64| json!({"between": [a, b], "latency_us": latency_us, "jitter_us": latency_us / 20});
     // FIX for a participant's own program beside any desk; the apps use
     // BNP. Every participant is listed with its own target comp ID, and
@@ -1110,7 +1189,9 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
         "version": 1,
         "profile": "local",
         "storage": {
-            "kind": "memory", "path": null, "max_runs": 4,
+            "kind": if spec.durable { "file" } else { "memory" },
+            "path": spec.durable.then_some("origin.json"),
+            "max_runs": 4,
             "max_commands_per_run": 1_000_000, "max_events_per_run": 8_000_000,
             "checkpoint_interval": 8192
         },
@@ -1138,7 +1219,7 @@ fn server_config(bnp_port: u16, fix_port: u16, fingerprints: &[&str]) -> Value {
             }
         },
         "bnp": {
-            "bind": format!("127.0.0.1:{bnp_port}"),
+            "bind": format!("{}:{bnp_port}", spec.bind_host),
             "run_id": 1,
             "certificate_chain": "venue.pem",
             "private_key": "venue.key",
@@ -1436,7 +1517,12 @@ mod tests {
         let participants = scenario["participants"]
             .as_object()
             .ok_or("scenario participants")?;
-        let config = server_config(1, 2, &["0123456789abcdef0123456789abcdef"]);
+        let config = server_config(
+            &VenueSpec::local(),
+            1,
+            2,
+            &["0123456789abcdef0123456789abcdef"],
+        );
         let agents = config["runtime"]["scheduler"]["agents"]
             .as_array()
             .ok_or("agents")?;
@@ -1475,6 +1561,36 @@ mod tests {
         assert!(!image_names_match("bunting", "bunting-desk"));
         assert!(!image_names_match("bunting", ""));
         assert!(!image_names_match("", ""));
+    }
+
+    #[test]
+    fn a_hosted_venue_binds_its_address_names_its_host_and_keeps_its_run() -> Result<(), String> {
+        let directory =
+            std::env::temp_dir().join(format!("bunting-hosted-venue-{}", std::process::id()));
+        let spec = VenueSpec::hosted(
+            vec!["venue.example".to_owned(), "100.64.0.9".to_owned()],
+            "100.64.0.9".to_owned(),
+            7400,
+        );
+        let prepared = prepare_with(&directory, &spec).map_err(|e| e.0)?;
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(&prepared.config_path).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        assert_eq!(config["bnp"]["bind"], json!("100.64.0.9:7400"));
+        assert_eq!(config["storage"]["kind"], json!("file"));
+        assert_eq!(config["storage"]["path"], json!("origin.json"));
+        assert_eq!(prepared.client.address, "100.64.0.9:7400");
+        assert_eq!(prepared.client.server_name, "venue.example");
+        assert_eq!(prepared.participants.len(), PARTICIPANT_COUNT);
+        let local = server_config(&VenueSpec::local(), 1, 2, &[]);
+        assert_eq!(
+            local["storage"]["kind"],
+            json!("memory"),
+            "practice stays in memory"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+        Ok(())
     }
 
     #[test]
