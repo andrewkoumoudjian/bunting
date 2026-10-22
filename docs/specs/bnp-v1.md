@@ -3,7 +3,8 @@
 - Status: **Current** (slice 25; order-by-order and tape feeds and access
   delay added in slice 35; operators and the run stream in slice 41,
   [ADR 0042](../adr/0042-bnp-operators-and-run-stream.md); own order
-  reference in reports in slice 44). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
+  reference in reports in slice 44; BNP 1.1 reference data, ADR 0054 R1,
+  2026-10-22). Decision record: [ADR 0040](../adr/0040-bunting-native-protocol-v1.md).
 - Code: `packages/bnp-wire` (types and codec; the field order in
   `src/codec.rs` is this contract), `packages/bunting-application/src/bnp.rs`
   (identity and event mapping), `apps/bunting-server/src/bnp_host.rs` (venue
@@ -156,7 +157,7 @@ and 5 built-in agent are reserved). `resume` 0 live, 1 replaying, 2 gap.
 absolute visible quantity after the change, 0 when it is gone). Reject
 `reason` codes 1–23 mirror the engine's `RejectCode` in order
 (`packages/bnp-wire/src/lib.rs`, `RejectReason`); 24 is an unknown listing,
-25 a closed session and 26 a market, IOC or FOK order in a call phase
+25 a closed session, 26 a market, IOC or FOK order in a call phase and (1.1) 27 a limit price off the tick grid
 (ADR 0037).
 An order entry starts with `kind:u8`: 0 is a trade,
 `price:i64 quantity:i64 resting_reference:option<u64> buyer:option<u128> seller:option<u128>`;
@@ -276,6 +277,83 @@ instrument_id:u128 side:u8 quantity:i64 price:i64 expires_at_ns:u64`.
   to every operator session, stamped in the private stream and replayed on
   resume. `DealsRequest` lists every visible tender and negotiation.
 - FIX carries tender decisions but no OTC messages.
+
+## BNP 1.1 (ADR 0054, slice R1)
+
+1.1 adds message types only; every 1.0 body is byte-identical.
+
+- **Version encoding:** `Hello.version` and `Welcome.version` are
+  `major × 256 + minor`. The legacy `1` means 1.0 and 1.1 is `257`.
+- **Negotiation:**
+  - the client offers the highest 1.x it speaks;
+  - the venue answers with the lower minor;
+  - another major is logged out with "unsupported BNP version …";
+  - the reference client (`bunting-client`) retries once at `1`
+    after that, so it still joins a 1.0 venue.
+- **A session negotiated at 1.0:**
+  - never receives a 1.1 message type or a 1.1-only enum value;
+  - receives reject reason 27 as 11 (`PriceOutOfBounds`);
+  - is logged out if it sends a 1.1 request, as for any unknown
+    type.
+
+| Type | Name | Direction | Body |
+|---|---|---|---|
+| 0x34 | ReferenceDataRequest | client | `request_id:u32 after_instrument:option<u128> limit:u16` |
+| 0x76 | ReferenceData | server | `request_id:u32 run_sequence:u64 next_after:option<u128> currencies:group<currency> instruments:group<instrument> listings:group<listing>` |
+
+- `currency`: `currency_id:u128 code:string name:string minor_decimals:u8`.
+- `instrument`: `instrument_id:u128 symbol:string kind:u8
+  underlying:option<u128> strike:option<i64> expiry_ns:option<u64>
+  is_call:bool physical_delivery:bool coupon_bps:u32
+  components:group<instrument_id:u128 weight:i64> multiplier:i64
+  currency_id:u128 quoted_decimals:u8 shortable:bool tradeable:bool
+  window_start_ns:option<u64> window_stop_ns:option<u64>
+  display_unit:string description:string opening_mark:option<i64>
+  max_order_quantity:option<i64>`.
+- **`kind` codes:** 1 equity, 2 currency, 3 bond (`coupon_bps`, maturity
+  in `expiry_ns`), 4 option, 5 future, 6 commodity, 7 synthetic.
+- `listing`: `listing symbol:string min_price:i64 max_price:i64
+  tick_size:i64 taker_fee_per_lot:i128 maker_fee_per_lot:i128
+  broker_ids:bool primary:bool halted:bool in_window:bool`.
+- **Paging:**
+  - the request asks for instruments after `after_instrument`, in ID
+    order; `limit` is 1..=64, and 0 means 64;
+  - `next_after` is present iff more remain;
+  - currencies come only on the first page;
+  - `listings` are this page's instruments' listings.
+- **Where it runs:** the job runs at the hub, like `ListingsRequest`.
+- **Display:** `quoted_decimals` is display only: a price is shown as
+  `ticks / 10^quoted_decimals`. Money is shown at the currency's
+  `minor_decimals`.
+- **Not yet published:**
+  - currency `code` and `name` stay empty until a scenario declares a
+    currency table (ADR 0054 §10);
+  - `tradeable` is true, the window absent and `in_window` true until
+    ADR 0055.
+- **Ticks:** a limit price that is not a multiple of the listing's
+  `tick_size` is rejected with reason 27, `PriceNotOnTick`.
+- **FIX:** the SecurityList (`y`) that answers `x` carries the same
+  fields in a `NoRelatedSym` (146) group: 55, 48, 207, 167, 15, 231,
+  969 (ticks) and BuntingQuotedDecimals (10023).
+
+### Enrolment by invite (ADR 0056)
+
+| Type | Name | Direction | Body |
+|---|---|---|---|
+| 0x06 | Enroll | client | `secret:string csr_pem:string` |
+| 0x4e | Enrolled | server | `participant_id:u128 certificate_pem:string ca_pem:string` |
+
+- **Which sessions:** a venue with `bnp.enrolment` also accepts a TLS
+  client without a certificate. That session's first and only message
+  must be `Enroll`; anything else is logged out.
+- **Success:** `Enrolled`, then `Logout` ("enrolled; reconnect with your
+  certificate").
+- **Refusal:** `Logout` ("invite refused"), whatever the reason (unknown,
+  used or expired invite, participant already enrolled, bad request).
+- **On a certified session,** `Enroll` is logged out.
+- **The invite** is `bnpi1:<host:port>:<ca-sha256-hex>:<secret-hex>`. The
+  client accepts the venue's chain only if it ends in the pinned CA,
+  before sending the secret (`bunting_client::enroll`).
 
 ## Private stream and resume
 

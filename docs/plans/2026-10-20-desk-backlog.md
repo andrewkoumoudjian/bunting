@@ -118,7 +118,7 @@ date.
     the price axis.
   - `tools/check_desk.sh`: 118 tests passed.
 
-## Next release targets (owner, 2026-10-22)
+## Next release targets (owner, 2026-10-22) — done for v0.3.0, see the 2026-10-22 implementation log
 
 - **Configurable onboarding at launch** (owner: "make sure the next
   bunting release include configurable onboarding when app is launched

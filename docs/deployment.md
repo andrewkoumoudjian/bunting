@@ -126,6 +126,24 @@ To deploy it on the host:
 - **Not public:** never bind BNP to a public address for this profile.
   It has no admin listener and no terminator.
 
+### Enrolment by invite (ADR 0056)
+
+Add `--enrolment` to `host-init` and no participant keys are written.
+The venue keeps its CA key (`ca.key`) and issues certificates itself. For
+each trader:
+
+```bash
+bunting invite --dir ./venue --participant 3 --hours 48
+```
+
+- Give the printed `bnpi1:…` line to the trader. It is single-use.
+- The desk's connect screen takes it under "Hosted venue → Invite", or a
+  script runs `bunting-trader enroll '<invite>' --out ./me`.
+- The trader's key is created on their machine, and the venue adds the
+  certificate to `enrolled.json`. Copy `ca.key` and `invites.json` to the
+  host as well.
+- FIX logons for the same participants are in `fix-credentials.json`.
+
 ## Cloudflare publication wrapper
 
 Cloudflare supports Rust Workers through `workers-rs` and `worker-build`, with

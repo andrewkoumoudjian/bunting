@@ -187,3 +187,217 @@ See the closing commit's message for the gate results.
   not visually reviewed (no screenshot pass in this session).
 - **Oracle host:** runs the v0.2.0 server. It needs the next release's
   binary for future server changes (none in this change).
+
+## Second round (2026-10-22, owner answers)
+
+The owner's answers:
+
+1. ADR 0054: "its the app that should determine realized and
+   unrealized P&L … why is the venue calculating Pnl ???".
+2. Certificates "should be generated on connection".
+3. Release "if all TODOs are done".
+
+### The desk keeps its own books across a relaunch
+
+- **The gap:** a relaunched desk had no fills behind an open position, so
+  its cost and unrealized P&L were unknown until flat.
+- **The record:** `bunting-trading-state` `LedgerRecord` holds every book
+  (position, exact cost, realized, fees), the P&L samples and the
+  private-stream cursor. It is restored only when `Welcome` names the
+  same run and participant at or past the cursor. Replayed fills at or
+  below the cursor are skipped.
+- **The desk side:**
+  - it saves the record every 2 s and on exit, under
+    `ledgers/<certificate>-<venue start nonce>.json`;
+  - it reconnects with `resume_after` at the record's cursor, so the
+    venue replays every later report.
+  - The venue computes nothing new.
+- **Live on the Oracle venue**, participant 3:
+  - buy 30, then relaunch without the record: cost unknown;
+  - relaunch with the record, then buy 10: cost exactly 40 lots at
+    75.00, and the P&L history was restored.
+- **Test:** `a_ledger_record_restores_cost_and_pnl_after_a_relaunch`.
+
+### ADR 0054 accepted in part; slice R1 (BNP 1.1 reference data)
+
+- **ADR:** status "Accepted in part". §4 Valuation is rejected (owner),
+  and its type bytes stay unassigned.
+- **Engine:** `ListingDefinition.tick_size` (default 1) and
+  `InstrumentDefinition.quoted_decimals` (default 2), `display_unit` and
+  `description`.
+  - Defaults serialize as before, so existing runs, snapshots and archive
+    hashes are unchanged.
+  - Scenario validation requires the lower price bound on the tick
+    grid.
+  - Risk admission rejects an off-grid limit with the new `RejectCode`
+    `PriceNotOnTick`.
+- **BNP 1.1:**
+  - `VERSION_1_1 = 257`, `negotiate`, `ReferenceDataRequest` 0x34 and
+    `ReferenceData` 0x76 with currency, instrument and listing records;
+  - reason 27 `PriceNotOnTick`, sent to 1.0 sessions as 11;
+  - a 1.1 request on a 1.0 session is logged out;
+  - the client offers 1.1 and retries once at 1.0.
+  - Spec: `docs/specs/bnp-v1.md` "BNP 1.1".
+- **FIX parity:** the `y` SecurityList that answers `x` gains a
+  `NoRelatedSym` group with tags 55, 48, 207, 167, 15, 231, 969 and the
+  new BuntingQuotedDecimals (10023). It is in the profile, the Orchestra
+  XML and `PROTOCOL.md`.
+- **Client:**
+  - `Model` requests reference data after `Listings` and pages through
+    it;
+  - it sets contract multipliers (so "contract size assumed 1" goes away
+    on 1.1);
+  - new accessors: `quoted_decimals`, `tick_size`, `money_decimals`,
+    `currency`.
+  - `bunting_trading_state::display` holds the shared `ticks`, `fixed`
+    and `parse_price`.
+- **Desk and terminal:** every price shows at the instrument's quoted
+  decimals and every money figure at the currency's:
+  - Book Trader, Ladder, Order Entry, Blotter, Portfolio, Transaction
+    Log, Deals, Fills, Tape, Charting (axis, legend, MA/EMA) and P&L;
+  - Order Entry and OTC parse "100.50" back to ticks, and the price field
+    steps one tick.
+  - Against a 1.0 venue the decimals are 0 and everything shows as
+    before.
+- **Practice market in cents:**
+  - fundamental and opening mark at 10000 ticks ($100.00);
+  - providers 1, 2, 3, 5 and 8 cents from the fundamental;
+  - the walk steps every 250 ms on a 10-minute "day".
+- **Measured** (Linux x86_64, release build, 60 s, fresh local venue):
+  - BNP 1.1 negotiated (257);
+  - reference data: 2 decimals, tick 1, multiplier 1 (known);
+  - BNT ran 99.45–100.83;
+  - touch spread median 2 ticks (2 cents), p90 6, max 9;
+  - 9–11 visible levels across both sides;
+  - a 100-lot buy and sell filled, cost 99.835;
+  - the new `bunting-trader` joined the Oracle v0.2.0 venue at 1.0.
+- **Tests added:**
+  - `bnp-wire`: the new messages round-trip, and
+    `versions_negotiate_to_the_lower_1x_minor`;
+  - `risk-engine`: `a_limit_price_off_the_tick_grid_is_refused`;
+  - server `tests/bnp.rs` asserts `ReferenceData`;
+  - `tests/fix_competition_profile.rs` asserts the `y` reference
+    fields;
+  - desk and trading-state formatter tests.
+- **Remaining for R1:**
+  - the scenario currency table (code and name);
+  - built-in agents do not yet round to a tick size above 1, which no
+    shipped scenario uses.
+
+### ADR 0056: enrolment by invite (owner: "certificates should be generated on connection")
+
+- **ADR:** `docs/adr/0056-bnp-enrolment-by-invite.md`, Accepted.
+- **`bnp-wire`:** `Enroll` (0x06) and `Enrolled` (0x4e) messages, and
+  `InviteToken` (`bnpi1:<host:port>:<ca-sha256>:<secret>`).
+- **`bunting-client::enroll`:** a session without a client certificate.
+  Its verifier accepts the venue's chain only through the pinned CA, so
+  the secret is never sent to another venue.
+- **Server** (`bnp_enrol.rs`):
+  - `bnp.enrolment` config (CA key, invites, enrolled file,
+    certificate days, max enrolled);
+  - the TLS verifier allows unauthenticated clients only when it is set;
+  - the roster is shared and growable;
+  - an `Enroll` checks the invite (hashed secret, unused, unexpired, one
+    per participant), verifies the request's signature, and issues a
+    client-auth certificate;
+  - it writes `enrolled.json`, marks the invite used, and adds the
+    roster entry, all under one lock;
+  - a refusal is one generic `Logout`.
+  - `rcgen` became a server dependency with `x509-parser` (recorded in
+    `docs/reference-adoption.md`).
+- **`bunting-trading-state::enrolment`:**
+  - `enroll_with_invite` makes a P-256 key here and sends only the CSR;
+  - `Identity` save and load;
+  - `mint_invite`;
+  - `ring` (already in the lock) for the secret and its hash.
+  - `local_venue::VenueSpec::with_enrolment()` writes no participant
+    keys. It writes `ca.key`, `invites.json`, `fix-credentials.json`,
+    and a `venue.pem` chain that includes the CA. Practice configs are
+    unchanged.
+- **CLI:**
+  - `bunting host-init --enrolment`;
+  - `bunting invite --dir … --participant N [--hours H] [--address …]`;
+  - `bunting-trader enroll <invite> --out <dir>`.
+- **Desk:** "Hosted venue" takes an invite. The desk enrols off the UI
+  thread, saves the identity under `identities/<venue>-participant-N/`,
+  remembers it, and connects. Certificate files remain the alternative.
+- **Tests:**
+  - `apps/bunting-server/tests/bnp_enrolment.rs`:
+    - an invite enrols once, and the certificate logs in without a
+      restart;
+    - a spent invite, a wrong secret, a second invite for an enrolled
+      participant and an invalid CSR are all refused ("invite
+      refused");
+    - a wrong CA pin fails before the secret is sent, and that invite
+      still works afterwards;
+    - the enrolled roster survives a restart on a copied venue.
+  - `bnp-wire` covers the token round trip and malformed tokens;
+    `bnp_enrol` covers the date arithmetic and the PEM bundle.
+- **Live** (release build, Linux x86_64): five fresh enrolment venues;
+  each `bunting invite`, then `bunting-trader enroll`, then a market buy
+  with the new certificate filled.
+- **One failure seen during development:** a stale server from an earlier
+  run held the old CA key while its TLS chain was re-read from a
+  recreated directory. The client refused it as "CA does not match".
+  Correct behaviour; operators should not swap the CA under a running
+  venue.
+
+### Liquidity agents (SIM-AGENT-003/004)
+
+- **New `AgentConfig` options**, defaulted off so existing scenarios and
+  snapshots replay unchanged:
+  - `inventory_skew_lots`: a fundamental provider moves both quotes one
+    tick against its position per that many lots;
+  - `inventory_limit`: past it, the provider withdraws the side that
+    would add exposure;
+  - `poisson_wakes`: takers wake after exponential gaps with the
+    configured mean, bounded to 1 ms–5×.
+  - The draw is `exponential_millionths`, integer `-ln u` from a 16-step
+    table (error under 0.001), so a replay makes the same draw on every
+    host.
+- **Practice market:** providers lean 1 cent per 200 lots and stop adding
+  past 2,000. Noise, mean reversion and informed traders arrive as Poisson
+  processes.
+- **Measured** (release build, Linux x86_64, 90 s; a desk market-bought
+  300 lots every 2 s for 50 s, 7,500 lots):
+  - total visible depth p10 1,900 lots, median 2,250;
+  - touch spread median 2 ticks, p90 6, max 13;
+  - BNT mid 99.46–101.19, starting at 99.94 and ending at 100.22: the
+    pressure was absorbed and the price came back.
+- **Tests:**
+  - `exponential_draws_match_minus_ln_u`;
+  - `poisson_wakes_vary_around_the_mean_and_stay_bounded`;
+  - `a_fundamental_provider_leans_from_inventory_and_withdraws_past_its_limit`.
+
+### An agent on QUARCC's order management
+
+- **The policy:** `PolicyKind::QuarccSignalTrader`. Each wake it forms a
+  QUARCC-style strategy signal:
+  - side from the fundamental's gap to the mid;
+  - confidence from that gap over `spread_ticks`;
+  - a target position of confidence × `base_quantity`.
+- **Execution:** QUARCC's order management cancels or replaces its
+  working order until the position reaches the target. The order joins
+  the touch below 0.7 confidence and takes above it. Like every built-in
+  agent, it goes through `QuarccExecutionEngine`'s pre-trade risk,
+  lifecycle, ID mapping and positions.
+- **Provenance:** only the `StrategySignal` contract's field meanings are
+  used (`docs/ports/quarcc-trading-engine.md`). Nothing is translated
+  from the C++ code.
+- **Practice market:** participants 44 (BNT) and 45 (QRC) on venue 1, up
+  to 500 lots each, fully confident 20 cents away.
+- **Measured:** in a 45 s durable practice run, the archive held 192 and
+  198 commands from 44 and 45, and they traded on 34 and 29 fills.
+- **Test:** `a_signal_sets_a_target_and_the_order_closes_the_distance`.
+
+### Connect-screen follow-ups
+
+- **Switch venue:** a "Switch venue (log out)" action (palette,
+  `SwitchVenue`) saves the screens, closes the workspace (the session
+  logs out and the local claim drops) and returns to the connect screen.
+  This is RIT's logout.
+- **Case-specific windows:** Deals (tenders, OTC) stays off the default
+  screens and opens itself on the first tender offered, as RIT pops a
+  tender as it arrives.
+- **Still to come:** gating each case module from the venue's case
+  information needs ADR 0054 R4.
