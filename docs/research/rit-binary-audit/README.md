@@ -17,3 +17,5 @@ Evidence labels follow the repository-wide vocabulary:
 Start with [`source-manifest.md`](source-manifest.md), then [`extraction-method.md`](extraction-method.md), [`protocol-inventory.md`](protocol-inventory.md), and [`market-feature-ledger.md`](market-feature-ledger.md). [`inventory.json`](inventory.json) is the machine-readable hash and payload record; its `generated_from` path identifies the local ignored evidence workspace.
 
 No installer, executable, DLL, service, or DLL entry point was run. Dynamic claims remain unresolved until separately authorized in a disposable environment.
+
+[`desk-client-inventory-1.8.466.md`](desk-client-inventory-1.8.466.md) (2026-10-22) audits a later client build, 1.8.466, for the desktop app. It covers windows, gestures, settings, alert sounds and the onboarding flow.

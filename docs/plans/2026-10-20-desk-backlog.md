@@ -118,6 +118,136 @@ date.
     the price axis.
   - `tools/check_desk.sh`: 118 tests passed.
 
+## Next release targets (owner, 2026-10-22)
+
+- **Configurable onboarding at launch** (owner: "make sure the next
+  bunting release include configurable onboarding when app is launched
+  so user have choice to connect to either local, remote, etc.").
+  - A connect screen with "Practice locally" or "Hosted venue", the
+    last choice remembered.
+  - Flags skip it.
+  - First cut in `apps/bunting-desk/src/onboarding.rs`.
+- **More liquidity from better, more proactive market making** (owner:
+  "more liquidity into the market by better and more proactive market
+  making and liquidity agents").
+  - First step (2026-10-22): practice providers re-quote every 250 ms
+    and quote 100–400 lots per level. Measured at about 1,200 lots a
+    side, against about 400 before.
+  - Next: makers that do the following, each through the same
+    sequencer:
+    - quote inside the spread when it widens;
+    - refill a level within one wake after it is taken;
+    - skew on inventory without leaving the market;
+    - layer more levels as volatility rises.
+  - Finer ticks (ADR 0054 display scale) so quotes can sit 1 cent
+    apart, not 1%.
+  - **What the specs already require** (read 2026-10-22; owner: "read
+    the existing specs and docs on how all the simulated agents should
+    be on the market"):
+    - **`docs/specs/rit-class-market-simulation.md`:**
+      - SIM-AGENT-001: agents submit ordinary commands through risk and
+        the sequencer, and never touch a book.
+      - SIM-AGENT-002: named, seeded RNG streams, snapshotted.
+      - SIM-AGENT-003: noise traders with bounded arrival, side, size
+        and price displacement.
+      - SIM-AGENT-004: **inventory-aware liquidity providers with
+        configurable levels, spread, quantity, replenishment and
+        withdrawal**.
+      - SIM-AGENT-005: informed agents on a versioned fundamental path.
+      - SIM-AGENT-006: further kinds only with provenance and tests.
+    - **`docs/specs/rit-case-primitives.md` §7:**
+      - per-security liquidity and volatility levels (LT3);
+      - extra closing liquidity, so the close cannot be pushed;
+      - an option market maker at a lagged volatility;
+      - a price authority for regulated spot;
+      - news-linked fundamental jumps.
+    - **`docs/research/2026-10-08-agent-market-simulation-implementations.md`
+      and `…-expanded-market-algorithm-survey.md`:**
+      - a seeded Poisson / zero-intelligence null;
+      - then **queue-reactive, state-dependent flow** as the preferred
+        background generator;
+      - a maker layer with quote IDs, queue position, cancel/replace,
+        inventory limits and markouts;
+      - AS/GLFT only as faithful policies, never relabelled
+        heuristics;
+      - latent value feeds agents and is never a second tape;
+      - tickets T0–T3.
+  - **Gaps against those requirements today** (`bunting-agents`,
+    `local_venue.rs`):
+    - each `fundamental_liquidity_provider` quotes one level per side;
+    - it has no inventory skew (the skew applies only to the
+      inventory-skewed kinds) and no withdrawal;
+    - it refills only on its next wake;
+    - the noise trader fires on a fixed wake, not a Poisson clock;
+    - nothing adds closing liquidity.
+  - **Plan:**
+    - multi-level providers (levels, spacing, size curve) that skew on
+      inventory, refill on fill reports and widen or withdraw under
+      stress;
+    - Poisson-timed noise flow;
+    - per-listing liquidity profiles (low, medium, high);
+    - a closing-liquidity schedule;
+    - each change measured live (depth, spread, trades per second,
+      price path) like the 2026-10-22 run.
+- **An agent on QUARCC's order management** (owner: "implement agent
+  that uses the built in quarcc orders management (ported from CPP)").
+  - Today the built-in policies only emit QUARCC execution intents.
+    They do not run QUARCC's order manager.
+  - The new agent runs a strategy on `quarcc-execution-engine`, the
+    port of the C++ QUARCC engine:
+    - its order manager and ID mapping;
+    - participant risk and the kill switch;
+    - positions, and reconciliation against committed reports.
+  - It submits through the same sequencer as every agent (ADR 0035).
+  - QUARCC stays participant-side, never market authority (AGENTS.md).
+  - Read `docs/reference-functionality-audit.md` (QUARCC rows) first.
+- **Hosted venue on the Oracle instance** as the second connection
+  option (below).
+
+## Owner feedback on v0.2.0 (2026-10-22)
+
+- "the traders (simulated agents) on the market doesnt give enough
+  liquidity and doesnt smooth out the market for me to trade".
+  - Cause (observed in `local_venue.rs`): one tick is 1% of the price,
+    so five providers quoting 1 to 5 ticks from the fundamental give a
+    2-tick (2%) touch spread and 5 levels a side. Every fundamental
+    step moves the whole book by 1%.
+  - A smooth market needs finer ticks, which needs the display scale
+    on BNP (ADR 0054, Proposed).
+- "the PnL graph is bugged and stops showing evolution at a certain
+  point".
+- "cost for each stock doesnt show up".
+- "the candle chart should be dynamic and not have spaced out candles".
+- Decompile the original RIT client (owner sent it by Taildrop; 1.8.466
+  from the FRTL repository was used until it arrived) to list every
+  feature and spec the desk needs at a minimum.
+- "add the same sounds for order filled, etc as we have in RIT client
+  and the same onboarding flow".
+- **TODO:** probe `flserver.rotman.utoronto.ca` to learn how Rotman
+  hosts its RIT server, as inspiration for hosting ours. Only passive,
+  public observation: DNS, reachability and the ports the RIT client
+  documents (10000 for the client, 9999 for the local REST API). No
+  scanning beyond that and no login attempts.
+- **TODO** (owner, 2026-10-22): "implement and test the bunting
+  server … by the server i mean hosting it onto our oracle instance (in
+  our tailnet) … it is a secondary connection option other than local".
+  - **The host** (observed 2026-10-22 over SSH as `opc`):
+    - `instance-20261019-1530`, tailnet `100.113.213.48`;
+    - Oracle Linux 9.8, aarch64, 2 vCPU, 10.9 GB RAM;
+    - Docker installed, about 4 GB free on `/` (87% used).
+  - **Serve** the practice market as a durable `bunting server` (the
+    aarch64 release binary or the container image, ADR 0044), with BNP
+    listening on the tailnet address only.
+    - A roster of participant certificates handed to desks.
+    - The server certificate names the tailnet host.
+  - **Desk:** a "Join hosted venue" choice on the connect screen next to
+    "Practice locally" (the default). It remembers the address and
+    certificate files.
+  - **Test it end to end:**
+    - several desks on different machines trading, with latency
+      measured;
+    - a restart and recovery in durable mode.
+
 ## Next
 
 **Binding contract:** `docs/specs/rit-desk-window-parity.md` (owner,

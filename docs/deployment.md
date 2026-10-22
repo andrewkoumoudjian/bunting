@@ -92,6 +92,40 @@ client certificate, two rostered clients complete FIX Logon, one participant's
 order is visible to the other, and a restart returns the acknowledged run and
 session sequences from the same files. A plaintext public bind or shared origin file fails the deployment contract.
 
+## Hosted practice venue (tailnet)
+
+`bunting host-init` provisions the practice market for traders on other
+machines:
+
+- what it writes:
+  - a CA and a venue certificate for the names you give;
+  - eight funded participants;
+  - the built-in agents;
+  - BNP on the address you give;
+  - the run on disk (`origin.wal`), so a restart recovers it;
+- how to run it:
+
+```bash
+bunting host-init --dir ./venue \
+  --name 100.113.213.48 --name instance-20261019-1530.tail166795.ts.net \
+  --bind 100.113.213.48 --port 7400
+bunting server ./venue/server.json
+```
+
+To deploy it on the host:
+
+- **Files:** copy only `server.json`, `scenario.json`, `venue.pem`,
+  `venue.key` and `ca.pem` to the host.
+- **Traders:** give each trader `ca.pem` and one
+  `participant-N.pem`/`.key` pair.
+- **Connecting:** a trader's desk joins it from the connect screen
+  ("Hosted venue"); the CLI uses `bunting-trader --server host:7400 …`.
+- **Firewall:** the host's firewall must admit the BNP port from the
+  tailnet only. With firewalld, add a rich rule for source
+  `100.64.0.0/10`, TCP 7400.
+- **Not public:** never bind BNP to a public address for this profile.
+  It has no admin listener and no terminator.
+
 ## Cloudflare publication wrapper
 
 Cloudflare supports Rust Workers through `workers-rs` and `worker-build`, with

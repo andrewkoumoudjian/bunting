@@ -29,6 +29,11 @@ Trading 3 case:
   Feature Guide*, build 1.04 (14 pp.):
   <https://haskayne.ucalgary.ca/sites/default/files/teams/94/RIT%20-%20User%20Guide%20-%20Client%20Software%20Feature%20Guide.pdf>
 
+The client binary itself was audited on 2026-10-22 (RIT User Application
+1.8.466): [`research/rit-binary-audit/desk-client-inventory-1.8.466.md`](../research/rit-binary-audit/desk-client-inventory-1.8.466.md)
+lists every window, gesture, setting, alert sound and the onboarding flow
+from the binary, plus the gaps it adds to this contract.
+
 The guides are copyright Rotman School of Management. This spec
 paraphrases behaviour; it copies no text, layout or image (AGENTS.md
 "prohibited to copy"). Behaviour that the guides do not state is marked
