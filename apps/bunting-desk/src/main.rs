@@ -2,8 +2,8 @@
 //! `bunting-desk`: the trading workspace in one native window.
 
 use bunting_desk::connect::{self, Options};
+use bunting_desk::onboarding::{Onboarding, default_choice_path};
 use bunting_desk::startup::StartupError;
-use bunting_desk::{Desk, LayoutStore, Workspace};
 use clap::Parser as _;
 use futures_lite::StreamExt as _;
 use gpui_kit::assets::{Assets, icon_assets};
@@ -16,7 +16,7 @@ use std::borrow::Cow;
 // The default component icon bundle plus the few catalog icons the desk
 // uses, composed as in gpui-kit's examples (longbridge/gpui-kit,
 // Apache-2.0, examples/speech/src/main.rs at 4d63c73).
-icon_assets!(ExtraIcons, [Pencil, Trash]);
+icon_assets!(ExtraIcons, [Pencil, Trash, Volume2, VolumeX]);
 
 struct AppAssets;
 
@@ -60,12 +60,16 @@ fn quit_on_signals(cx: &mut App) {
 
 fn main() {
     let options = Options::parse();
-    // Connect (or start the local venue) before opening a window, so a
-    // wrong flag is reported on the terminal at once. Launched without a
-    // terminal, the reason is shown in a window instead.
-    let mut opened = Some(connect::open(&options).inspect_err(|error| {
-        eprintln!("bunting-desk: {error}");
-    }));
+    // With no venue on the command line the app opens on the connect
+    // screen (the RIT-style login): practise locally or join a hosted
+    // venue. Flags connect at once, before a window opens, so a wrong one
+    // is reported on the terminal; launched without a terminal, the
+    // reason is shown in a window instead.
+    let mut opened = options.names_a_venue().then(|| {
+        connect::open(&options).inspect_err(|error| {
+            eprintln!("bunting-desk: {error}");
+        })
+    });
     let failed = matches!(opened, Some(Err(_)));
     gpui_kit::application()
         .with_assets(AppAssets)
@@ -73,30 +77,49 @@ fn main() {
             gpui_kit::init(cx);
             bunting_desk::init(cx);
             quit_on_signals(cx);
-            // One window per app: closing it quits, as on Linux and
-            // Windows, instead of the macOS habit of running on with no
-            // window (and still holding a participant in the local venue).
+            // Closing the last window quits, as on Linux and Windows,
+            // instead of the macOS habit of running on with no window (and
+            // still holding a participant in the local venue).
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
             })
             .detach();
-            let Some(opened) = opened.take() else { return };
-            let titlebar = Some(TitlebarOptions {
-                title: Some("Bunting".into()),
-                ..TitlebarOptions::default()
-            });
-            let (venue, label) = match opened {
-                Ok(opened) => opened,
+            let small_window = |width: f32, height: f32, cx: &mut App| WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(width), px(height)),
+                    cx,
+                ))),
+                app_id: Some("bunting-desk".to_owned()),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Bunting".into()),
+                    ..TitlebarOptions::default()
+                }),
+                ..WindowOptions::default()
+            };
+            let Some(opened) = opened.take() else {
+                let base = options.clone();
+                let window = small_window(560., 560., cx);
+                if gpui_kit::open_window(window, cx, |window, cx| {
+                    cx.new(|cx| Onboarding::new(base, default_choice_path(), window, cx))
+                })
+                .is_err()
+                {
+                    cx.quit();
+                }
+                return;
+            };
+            match opened {
+                Ok((venue, label)) => {
+                    if let Err(error) = bunting_desk::open_desk_window(venue, label, cx) {
+                        eprintln!("bunting-desk: {error}");
+                        cx.quit();
+                    }
+                }
                 Err(error) => {
-                    let bounds = Bounds::centered(None, size(px(520.), px(240.)), cx);
-                    let window = WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        app_id: Some("bunting-desk".to_owned()),
-                        titlebar,
-                        ..WindowOptions::default()
-                    };
+                    let window = small_window(520., 240., cx);
                     if gpui_kit::open_window(window, cx, |_, cx| {
                         cx.new(|_| StartupError::new(&error))
                     })
@@ -104,28 +127,7 @@ fn main() {
                     {
                         cx.quit();
                     }
-                    return;
                 }
-            };
-            let desk = cx.new(|cx| {
-                Desk::start_pump(cx);
-                Desk::connected(venue, label.clone())
-            });
-            let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-            let window = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                // The Wayland app_id (window class) and title, so the
-                // compositor can name and rule the window.
-                app_id: Some("bunting-desk".to_owned()),
-                titlebar,
-                ..WindowOptions::default()
-            };
-            let store = LayoutStore::default_location();
-            if let Err(error) = gpui_kit::open_window(window, cx, |window, cx| {
-                cx.new(|cx| Workspace::new(desk.clone(), Some(store), window, cx))
-            }) {
-                eprintln!("bunting-desk: cannot open a window: {error}");
-                cx.quit();
             }
         });
     if failed {

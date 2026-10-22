@@ -63,6 +63,9 @@ pub struct Desk {
     price_hint: (u64, Option<i64>),
     dirty: bool,
     last_redraw: Instant,
+    /// What has already sounded; set when the session first connects,
+    /// so joining never replays history.
+    heard: Option<crate::sounds::Watch>,
 }
 
 impl Drop for Desk {
@@ -115,6 +118,7 @@ impl Desk {
             price_hint: (0, None),
             dirty: true,
             last_redraw: Instant::now(),
+            heard: None,
         }
     }
 
@@ -165,6 +169,13 @@ impl Desk {
         }
         let requests = self.model.tick(self.now_us());
         self.send_all(requests);
+        match &mut self.heard {
+            Some(watch) => crate::sounds::play(&watch.cues(&self.model), cx),
+            None if self.model.is_connected() => {
+                self.heard = Some(crate::sounds::Watch::of(&self.model));
+            }
+            None => {}
+        }
         let since = self.last_redraw.elapsed();
         if (self.dirty && since >= REDRAW_INTERVAL) || since >= IDLE_REDRAW {
             self.dirty = false;

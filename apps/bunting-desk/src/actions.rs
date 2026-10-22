@@ -56,6 +56,8 @@ actions!(
         ResetUiFontSize,
         /// Cycles compact, default and comfortable density.
         CycleDensity,
+        /// Turns alert sounds on or off (RIT's status-bar speaker).
+        ToggleSounds,
     ]
 );
 

@@ -56,6 +56,17 @@ pub struct Options {
 }
 
 impl Options {
+    /// Whether the command line already says where to connect, so the
+    /// connect screen is skipped: any of the local or hosted flags (or
+    /// their environment variables).
+    #[must_use]
+    pub fn names_a_venue(&self) -> bool {
+        self.local
+            || self.server.is_some()
+            || self.participant.is_some()
+            || self.venue_dir.is_some()
+    }
+
     /// Whether the app joins the local practice venue: asked for, or no
     /// hosted venue named.
     #[must_use]

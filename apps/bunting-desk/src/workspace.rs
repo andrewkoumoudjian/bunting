@@ -295,6 +295,11 @@ impl Workspace {
                 CommandItem::new()
                     .label("Toggle sidebar")
                     .action(Box::new(actions::ToggleSidebar)),
+            )
+            .item(
+                CommandItem::new()
+                    .label("Toggle sounds")
+                    .action(Box::new(actions::ToggleSounds)),
             );
         // Entries after the fixed ones show a screen; confirming one
         // switches (see `on_confirm` below).
@@ -772,6 +777,30 @@ impl Workspace {
 
     // ---- title bar -----------------------------------------------------------
 
+    /// RIT's status-bar speaker: alert sounds on or off.
+    fn sounds_button(cx: &mut Context<Self>) -> impl IntoElement {
+        // RIT's status-bar speaker: alert sounds on or off.
+        let on = crate::sounds::enabled(cx);
+        div().flex_shrink_0().child(
+            Button::new("toggle-sounds")
+                .icon(if on {
+                    CatalogIcon::Volume2
+                } else {
+                    CatalogIcon::VolumeX
+                })
+                .ghost()
+                .xsmall()
+                .tooltip(if on {
+                    "Sounds on: fills, rejects, news, tenders, disconnects. Click to mute"
+                } else {
+                    "Sounds off. Click to turn them on"
+                })
+                .on_click(cx.listener(|_, _, window, cx| {
+                    window.dispatch_action(Box::new(actions::ToggleSounds), cx);
+                })),
+        )
+    }
+
     fn title_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let name = self
@@ -858,6 +887,7 @@ impl Workspace {
                     .items_center()
                     .justify_end()
                     .gap_3()
+                    .child(Self::sounds_button(cx))
                     .child(
                         // RIT's Kill All Orders: cancels every live order of
                         // yours. The participant kill switch is separate.
@@ -969,6 +999,10 @@ impl Workspace {
                 this.step_screen(false, window, cx);
             }),
         )
+        .on_action(cx.listener(|_, _: &actions::ToggleSounds, _, cx| {
+            crate::sounds::toggle(cx);
+            cx.notify();
+        }))
         .on_action(cx.listener(|this, _: &actions::ToggleSidebar, _, cx| {
             this.sidebar_visible = !this.sidebar_visible;
             cx.notify();
