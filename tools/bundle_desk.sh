@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the desktop app's release bundles from the release workflow's native
 # and desk archives. Each bundle carries `bunting` beside the app, so the app
-# opened with no flags starts or joins the local practice market.
+# opened with no flags shows the connect screen, whose "Practice locally"
+# starts or joins the local practice market with it.
 #
 #   tools/bundle_desk.sh <tag> <archives-dir> <out-dir>
 #

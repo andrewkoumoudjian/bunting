@@ -186,15 +186,34 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/bunting-desk" --version
           open "$app"
-          # Opened from Finder with no flags, the app starts the practice
-          # venue from the `bunting` beside it before opening its window.
+          # Opened from Finder with no flags, the app shows its connect
+          # screen and starts nothing until the trader chooses.
+          for _ in $(seq 60); do
+            pgrep -fl "Bunting.app/Contents/MacOS/bunting-desk" && break
+            sleep 1
+          done
+          pgrep -fl "Bunting.app/Contents/MacOS/bunting-desk"
+          sleep 10
+          screencapture -x bundles-smoke.png || true
+          if pgrep -fl "Bunting.app/Contents/MacOS/bunting server"; then
+            echo "the connect screen must not start a venue" >&2
+            exit 1
+          fi
+          pkill -TERM -f "Bunting.app/Contents/MacOS/bunting-desk"
+          for _ in $(seq 30); do
+            pgrep -f "Bunting.app/Contents/MacOS/bunting-desk" >/dev/null || break
+            sleep 1
+          done
+          # Practising locally starts the venue from the `bunting` beside
+          # the app.
+          "$app/Contents/MacOS/bunting-desk" --local &
           for _ in $(seq 60); do
             pgrep -fl "Bunting.app/Contents/MacOS/bunting server" && break
             sleep 1
           done
           pgrep -fl "Bunting.app/Contents/MacOS/bunting server"
-          sleep 10
-          screencapture -x bundles-smoke.png || true
+          sleep 5
+          screencapture -x bundles-smoke-local.png || true
           # Quitting the app releases its claim and the venue stops.
           pkill -TERM -f "Bunting.app/Contents/MacOS/bunting-desk"
           for _ in $(seq 30); do
@@ -209,7 +228,7 @@ jobs:
         if: always()
         with:
           name: bundle-smoke
-          path: bundles-smoke.png
+          path: bundles-smoke*.png
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:

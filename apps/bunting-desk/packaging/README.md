@@ -2,7 +2,8 @@
 
 Release packaging for `bunting-desk`, used by `tools/bundle_desk.sh` and
 `install.sh`. Every bundle carries the `bunting` executable beside the app,
-so opening the app with no flags starts or joins the local practice market.
+so the connect screen's "Practice locally" (shown when the app opens with no
+flags) starts or joins the local practice market.
 
 - `bunting.svg`: the app icon (Bunting-added, 2026-10-21), and
   `bunting.png`, its 1024 px rendering (`rsvg-convert -w 1024 -h 1024
